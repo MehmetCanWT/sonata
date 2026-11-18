@@ -27,7 +27,7 @@ pub async fn fetch_lyrics(http: &Client, ytm: &YtMusicClient, track: &Track) -> 
         }
     }
 
-    // 1. LRCLIB (Synced preferred; keep Plain only if synced fallbacks miss)
+    // 1. LRCLIB synced first; keep plain lyrics only as a backup parachute
     let mut plain_fallback: Option<Vec<String>> = None;
     if let Some((synced, plain)) = query_lrclib(http, artist, &clean_title, track).await {
         if let Some(lines) = synced {

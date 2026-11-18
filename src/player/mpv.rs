@@ -80,7 +80,7 @@ impl MpvController {
             req_id: AtomicU64::new(1),
         };
 
-        // Observe key properties so mpv pushes updates only on change (zero polling)
+        // Make mpv snitch on property changes so we never have to poll
         ctrl.send_command(json!(["observe_property", 1, "time-pos"]))
             .await?;
         ctrl.send_command(json!(["observe_property", 2, "duration"]))

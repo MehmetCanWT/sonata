@@ -54,17 +54,11 @@ pub enum SidebarEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActiveModal {
     None,
-    /// Selected button index: 0 = Okay, 1 = Don't Show Again, 2 = Exit
     ImageWarning(usize),
-    /// (selected_idx, original_theme_name_for_cancel)
     ThemePicker(usize, String),
-    /// Text buffer for Spotify URL / ID
     SpotifyImport(String),
-    /// Selected writable YouTube Music playlist index
     AddToPlaylist(usize),
-    /// Title buffer for creating a new YouTube Music playlist
     CreatePlaylist(String),
-    /// Settings modal (selected row 0..=2)
     Settings(usize),
     Help,
 }

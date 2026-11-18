@@ -111,7 +111,6 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Event-driven UI loop: redraws only when state or input changes
     terminal.draw(|f| ui::render(f, &mut app))?;
 
     while !app.should_quit {
@@ -134,7 +133,7 @@ async fn main() -> Result<()> {
             }
             Some(aev) = app_rx.recv() => {
                 app.handle_app_event(aev);
-                // Drain queued mpv/app updates before redrawing to avoid redundant frames
+                // Drain queued updates so we don't redraw like a caffeinated squirrel
                 while let Ok(more) = app_rx.try_recv() {
                     app.handle_app_event(more);
                 }
