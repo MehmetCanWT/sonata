@@ -266,7 +266,7 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) {
                 app.focus = FocusPane::Sidebar;
                 move_cursor(app, -1);
             } else if contains(rects.player_bar, x, y) {
-                app.adjust_volume(5);
+                app.adjust_volume(2);
             }
         }
         MouseEventKind::ScrollDown => {
@@ -277,7 +277,21 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) {
                 app.focus = FocusPane::Sidebar;
                 move_cursor(app, 1);
             } else if contains(rects.player_bar, x, y) {
-                app.adjust_volume(-5);
+                app.adjust_volume(-2);
+            }
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            if contains(rects.volume_bar, x, y) && rects.volume_bar.width > 0 {
+                let rel = (x.saturating_sub(rects.volume_bar.x) + 1) as f64
+                    / rects.volume_bar.width as f64;
+                app.set_volume((rel.clamp(0.0, 1.0) * 100.0).round() as u8);
+            } else if contains(rects.progress_bar, x, y)
+                && app.playback.duration_secs > 1.0
+                && rects.progress_bar.width > 0
+            {
+                let rel = (x.saturating_sub(rects.progress_bar.x)) as f64
+                    / rects.progress_bar.width as f64;
+                app.seek_to((rel.clamp(0.0, 1.0)) * app.playback.duration_secs);
             }
         }
         MouseEventKind::Down(MouseButton::Left) => {
@@ -327,6 +341,10 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) {
                         app.last_track_click = Some((now, idx));
                     }
                 }
+            } else if contains(rects.volume_bar, x, y) && rects.volume_bar.width > 0 {
+                let rel = (x.saturating_sub(rects.volume_bar.x) + 1) as f64
+                    / rects.volume_bar.width as f64;
+                app.set_volume((rel.clamp(0.0, 1.0) * 100.0).round() as u8);
             } else if contains(rects.progress_bar, x, y) {
                 if app.playback.duration_secs > 1.0 && rects.progress_bar.width > 0 {
                     let rel = (x.saturating_sub(rects.progress_bar.x)) as f64

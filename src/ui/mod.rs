@@ -69,10 +69,15 @@ fn render_mini_layout(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     if area.width < 58 || area.height < 15 {
         now_playing::render_artwork(frame, root[0], app);
     } else {
-        // Tier 1: Mini Mode -> Album Art (left) + Synced Lyrics (right) + Mini player bar
+        // Tier 1: Mini Mode -> Album Art (left) + Lyrics (right) + Mini player bar
+        let (fw, fh) = app.picker.font_size();
+        let inner_h = root[0].height.saturating_sub(2) as u32;
+        let ideal_art_w = ((inner_h * fh.max(1) as u32) / fw.max(1) as u32) as u16 + 2;
+        let max_art_w = (root[0].width * 55 / 100).max(16);
+        let art_w = ideal_art_w.clamp(16.min(max_art_w), max_art_w);
         let cols = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+            .constraints([Constraint::Length(art_w), Constraint::Min(16)])
             .split(root[0]);
         now_playing::render_artwork(frame, cols[0], app);
         now_playing::render_lyrics(frame, cols[1], app);
@@ -101,6 +106,7 @@ fn render_mini_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 
     app.ui_rects.player_top = rows[0];
     app.ui_rects.progress_bar = rows[1];
+    app.ui_rects.volume_bar = Rect::default();
 
     let title_text = match app.playback.current_track() {
         Some(t) => format!("{} — {}", t.title, t.artist),
@@ -126,6 +132,7 @@ fn render_mini_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         format_duration(Some(app.playback.duration_secs as u64))
     );
     let gauge = Gauge::default()
+        .use_unicode(true)
         .gauge_style(
             Style::default()
                 .fg(app.theme.accent)
@@ -203,6 +210,7 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 
     app.ui_rects.player_top = rows[0];
     app.ui_rects.progress_bar = rows[1];
+    app.ui_rects.volume_bar = Rect::default();
 
     let (title, artist) = match app.playback.current_track() {
         Some(t) => (t.title.as_str(), t.artist.as_str()),
@@ -253,6 +261,7 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     );
 
     let gauge = Gauge::default()
+        .use_unicode(true)
         .gauge_style(
             Style::default()
                 .fg(app.theme.accent)
@@ -262,14 +271,50 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         .label(time_label);
     frame.render_widget(gauge, rows[1]);
 
+    let bottom_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(22), Constraint::Min(10)])
+        .split(rows[2]);
+
+    let vol_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Length(10),
+            Constraint::Length(6),
+        ])
+        .split(bottom_cols[0]);
+    app.ui_rects.volume_bar = vol_cols[1];
+
+    frame.render_widget(
+        Paragraph::new(Span::styled(" Vol ", Style::default().fg(app.theme.muted))),
+        vol_cols[0],
+    );
+    let vol_ratio = (app.playback.volume as f64 / 100.0).clamp(0.0, 1.0);
+    let vol_bar = smooth_bar(vol_ratio, vol_cols[1].width as usize);
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            vol_bar,
+            Style::default()
+                .fg(app.theme.accent)
+                .bg(app.theme.highlight_bg),
+        )),
+        vol_cols[1],
+    );
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            format!(" {:>3}% ", app.playback.volume),
+            Style::default()
+                .fg(app.theme.fg)
+                .add_modifier(Modifier::BOLD),
+        )),
+        vol_cols[2],
+    );
+
     let bottom_line = Line::from(vec![
         Span::styled(
-            format!(" Vol: {}% ", app.playback.volume),
-            Style::default().fg(app.theme.fg),
-        ),
-        Span::styled(
             format!(
-                "| Shuffle: {} | Repeat: {} | Theme: {} (t) | Settings (S) | Keybinds (k)   ",
+                "│ Shuffle: {} | Repeat: {} | Theme: {} (t) | Settings (S) | Keybinds (k)   ",
                 if app.playback.shuffle { "On" } else { "Off" },
                 app.playback.repeat.label(),
                 app.theme.name
@@ -279,7 +324,29 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         Span::styled(app.status_line.as_str(), Style::default().fg(app.theme.fg)),
     ]);
     frame.render_widget(
-        Paragraph::new(bottom_line).alignment(Alignment::Center),
-        rows[2],
+        Paragraph::new(bottom_line).alignment(Alignment::Left),
+        bottom_cols[1],
     );
+}
+
+fn smooth_bar(ratio: f64, width: usize) -> String {
+    const EIGHTHS: [&str; 8] = [" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
+    if width == 0 {
+        return String::new();
+    }
+    let total_eighths =
+        ((ratio.clamp(0.0, 1.0) * (width * 8) as f64).round() as usize).min(width * 8);
+    let full = total_eighths / 8;
+    let rem = total_eighths % 8;
+    let mut out = String::with_capacity(width * 3);
+    for _ in 0..full {
+        out.push('█');
+    }
+    if full < width {
+        out.push_str(EIGHTHS[rem]);
+        for _ in (full + 1)..width {
+            out.push(' ');
+        }
+    }
+    out
 }

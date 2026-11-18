@@ -32,6 +32,7 @@ pub struct UiRects {
     pub player_bar: Rect,
     pub player_top: Rect,
     pub progress_bar: Rect,
+    pub volume_bar: Rect,
     pub ctrl_prev: Rect,
     pub ctrl_play: Rect,
     pub ctrl_next: Rect,
@@ -1006,8 +1007,11 @@ impl App {
         }
     }
 
-    pub fn adjust_volume(&mut self, delta: i8) {
-        let next = (self.playback.volume as i16 + delta as i16).clamp(0, 100) as u8;
+    pub fn set_volume(&mut self, vol: u8) {
+        let next = vol.min(100);
+        if self.playback.volume == next {
+            return;
+        }
         self.playback.volume = next;
         self.config.volume = next;
         let _ = self.config.save();
@@ -1017,6 +1021,27 @@ impl App {
                 let _ = mpv.set_volume(next).await;
             });
         }
+    }
+
+    pub fn adjust_volume(&mut self, delta: i8) {
+        let next = (self.playback.volume as i16 + delta as i16).clamp(0, 100) as u8;
+        self.set_volume(next);
+    }
+
+    pub fn tick_playback(&mut self, dt_secs: f64) -> bool {
+        if self.playback.paused
+            || self.playback.loading_track
+            || self.playback.current_track().is_none()
+        {
+            return false;
+        }
+        let dur = self.playback.duration_secs;
+        if dur > 0.0 {
+            self.playback.position_secs = (self.playback.position_secs + dt_secs).min(dur);
+        } else {
+            self.playback.position_secs += dt_secs;
+        }
+        true
     }
 
     pub fn seek(&self, secs: f64) {

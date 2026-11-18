@@ -111,10 +111,19 @@ async fn main() -> Result<()> {
         }
     });
 
+    let mut smooth_tick = tokio::time::interval(std::time::Duration::from_millis(80));
+    smooth_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     terminal.draw(|f| ui::render(f, &mut app))?;
 
     while !app.should_quit {
         tokio::select! {
+            _ = smooth_tick.tick(), if !app.playback.paused && !app.playback.loading_track && app.playback.current_track().is_some() => {
+                if app.tick_playback(0.08) {
+                    terminal.draw(|f| ui::render(f, &mut app))?;
+                    app.export_now_playing();
+                }
+            }
             Some(ev) = term_rx.recv() => {
                 match ev {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {

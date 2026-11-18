@@ -9,9 +9,15 @@ use ratatui_image::picker::ProtocolType;
 use ratatui_image::{FilterType, Resize, StatefulImage};
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
+    let (fw, fh) = app.picker.font_size();
+    let inner_w = area.width.saturating_sub(2) as u32;
+    let ideal_art_h = ((inner_w * fw.max(1) as u32) / fh.max(1) as u32) as u16 + 2;
+    let max_art_h = area.height.saturating_sub(6).max(8);
+    let art_h = ideal_art_h.clamp(8.min(max_art_h), max_art_h);
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+        .constraints([Constraint::Length(art_h), Constraint::Min(6)])
         .split(area);
 
     render_artwork(frame, chunks[0], app);
@@ -83,7 +89,7 @@ pub fn render_artwork(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 
 pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let block = Block::default()
-        .title(" Synced Lyrics ")
+        .title(" Lyrics ")
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
