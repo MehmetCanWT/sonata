@@ -870,7 +870,7 @@ impl App {
         self.base_theme
             .hyprland_opacity
             .unwrap_or(self.config.hyprland_opacity)
-            .clamp(0.00, 1.00)
+            .clamp(0.50, 1.00)
     }
 
     pub fn sync_appearance(&mut self) {
@@ -908,7 +908,7 @@ impl App {
     }
 
     pub fn cycle_hyprland_opacity(&mut self, forward: bool) {
-        const STEPS: &[f32] = &[0.00, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00];
+        const STEPS: &[f32] = &[0.50, 0.60, 0.70, 0.80, 0.90, 1.00];
         let cur = self.config.hyprland_opacity;
         let idx = STEPS
             .iter()
@@ -919,7 +919,7 @@ impl App {
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
             .map(|(i, _)| i)
-            .unwrap_or(9);
+            .unwrap_or(4);
         let next = if forward {
             (idx + 1) % STEPS.len()
         } else {

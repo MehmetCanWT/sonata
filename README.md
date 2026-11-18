@@ -27,7 +27,7 @@ A fast, modular Rust terminal music player for **YouTube Music** and **Spotify**
 - **Real-Time Synced Lyrics**:
   - Multi-source fetcher (LRCLIB, KuGou, YouTube Music native, Genius) with local caching and high-contrast pure-white active line highlighting.
 - **Hyprland Glass Transparency & Custom Themes**:
-  - Transparent TUI background (`Color::Reset`) plus automatic Hyprland active & inactive window opacity (`0%`–`100%` in `10%` steps via `hl.dispatch(hl.dsp.window.set_prop(...))`, restored to `1.0` on exit).
+  - Transparent TUI background (`Color::Reset`) plus automatic Hyprland active & inactive window opacity (`50%`–`100%` in `10%` steps via `hl.dispatch(hl.dsp.window.set_prop(...))`, restored to `1.0` on exit).
   - Ships with `Catppuccin Mocha`, `Ghostty Dark`, `Tokyo Night`, `Gruvbox Dark`, `Rosé Pine`, and `Nord`, plus custom `.toml` themes in `~/.config/sonata/themes/*.toml`.
 - **Full Mouse Support & 3-Tier Responsive Mini Mode**:
   - Click tracks/playlists/buttons, scroll lists and volume, seek on the progress bar, and double-click Album Art (or press `m`) to toggle Mini Mode.

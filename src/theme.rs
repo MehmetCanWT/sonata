@@ -252,7 +252,7 @@ impl Theme {
             .or(raw.opacity)
             .or(parsed.hyprland_opacity)
             .or(parsed.opacity)
-            .map(|o| o.clamp(0.00, 1.00));
+            .map(|o| o.clamp(0.50, 1.00));
         Some(Self {
             name,
             transparent_bg,
