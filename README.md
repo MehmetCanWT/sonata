@@ -84,6 +84,10 @@ error = "#f85149"
 
 Global settings are stored in `~/.config/sonata/config.toml` and can also be adjusted live in the Settings modal (`S`).
 
+## External Integrations (`now_playing.json`)
+
+Sonata atomically exports live playback state to `$XDG_RUNTIME_DIR/sonata/now_playing.json` (fallback: `~/.cache/sonata/now_playing.json`) for Waybar, Hyprlock, Eww, or custom scripts (`status`, `title`, `artist`, `album`, `source`, `quality`, `position_secs`, `duration_secs`, `position`, `duration`, `lyric`, `art_path`, `art_url`, `updated_at`), and removes the file on exit.
+
 ## Requirements
 
 - `mpv` (audio playback & DSP filters)

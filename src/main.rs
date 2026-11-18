@@ -130,6 +130,7 @@ async fn main() -> Result<()> {
                 }
                 terminal.draw(|f| ui::render(f, &mut app))?;
                 app.sync_kitty_artwork();
+                app.export_now_playing();
             }
             Some(aev) = app_rx.recv() => {
                 app.handle_app_event(aev);
@@ -139,12 +140,14 @@ async fn main() -> Result<()> {
                 }
                 terminal.draw(|f| ui::render(f, &mut app))?;
                 app.sync_kitty_artwork();
+                app.export_now_playing();
             }
             else => break,
         }
     }
 
     app.clear_kitty_images();
+    app.clear_now_playing();
     app.restore_hyprland_opacity();
     if let Some(mpv) = app.mpv.take() {
         mpv.shutdown().await;

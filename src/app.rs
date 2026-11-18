@@ -105,6 +105,16 @@ pub enum AppEvent {
     StatusMessage(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportFingerprint {
+    track_id: String,
+    status: String,
+    lyric: Option<String>,
+    art_path: Option<String>,
+    pos_secs: u64,
+    dur_secs: u64,
+}
+
 pub struct App {
     pub config: AppConfig,
     pub themes: Vec<Theme>,
@@ -148,6 +158,7 @@ pub struct App {
     pub cache_db: Option<CacheDb>,
     pub mpv: Option<Arc<MpvController>>,
     pub tx: mpsc::UnboundedSender<AppEvent>,
+    pub last_exported_state: Option<ExportFingerprint>,
 }
 
 impl App {
@@ -225,6 +236,7 @@ impl App {
             cache_db,
             mpv: None,
             tx,
+            last_exported_state: None,
         };
         app.sync_appearance();
         app
@@ -1273,9 +1285,122 @@ impl App {
         self.status_line = "Refreshing browser session & playlists...".to_string();
         self.start_background_init();
     }
+
+    pub fn now_playing_path() -> std::path::PathBuf {
+        dirs::runtime_dir()
+            .unwrap_or_else(AppConfig::cache_dir)
+            .join("sonata")
+            .join("now_playing.json")
+    }
+
+    pub fn export_now_playing(&mut self) {
+        let track = self.playback.current_track();
+        let status = match track {
+            None => "Stopped",
+            Some(_) if self.playback.loading_track => "Loading",
+            Some(_) if self.playback.paused => "Paused",
+            Some(_) => "Playing",
+        };
+        let track_id = track.map(|t| t.id.clone()).unwrap_or_default();
+        let pos_secs = self.playback.position_secs.max(0.0).floor() as u64;
+        let dur_secs = self.playback.duration_secs.max(0.0).floor() as u64;
+
+        let active_lyric = match &self.lyrics {
+            LyricsState::Synced(lines) => {
+                crate::lyrics::active_line_index(lines, self.playback.position_secs)
+                    .and_then(|idx| lines.get(idx))
+                    .map(|l| l.text.clone())
+                    .filter(|s| !s.is_empty())
+            }
+            _ => None,
+        };
+
+        let art_url = track.and_then(|t| t.thumbnail_url.clone());
+        let art_path = art_url
+            .as_deref()
+            .map(art_cache_path)
+            .filter(|p| p.exists())
+            .map(|p| p.to_string_lossy().into_owned());
+
+        let fingerprint = ExportFingerprint {
+            track_id,
+            status: status.to_string(),
+            lyric: active_lyric.clone(),
+            art_path: art_path.clone(),
+            pos_secs,
+            dur_secs,
+        };
+        if self.last_exported_state.as_ref() == Some(&fingerprint) {
+            return;
+        }
+        self.last_exported_state = Some(fingerprint);
+
+        let payload = build_now_playing_json(
+            status,
+            track,
+            &self.playback.stream_badge,
+            pos_secs,
+            dur_secs,
+            active_lyric.as_deref(),
+            art_path.as_deref(),
+            art_url.as_deref(),
+        );
+
+        let path = Self::now_playing_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let tmp = path.with_extension("json.tmp");
+        if let Ok(bytes) = serde_json::to_vec(&payload) {
+            if std::fs::write(&tmp, bytes).is_ok() {
+                let _ = std::fs::rename(&tmp, &path);
+            }
+        }
+    }
+
+    pub fn clear_now_playing(&self) {
+        let _ = std::fs::remove_file(Self::now_playing_path());
+    }
 }
 
-async fn fetch_and_decode_art(http: &Client, url: &str) -> Option<(DynamicImage, Vec<u8>)> {
+fn format_mm_ss(secs: u64) -> String {
+    format!("{}:{:02}", secs / 60, secs % 60)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_now_playing_json(
+    status: &str,
+    track: Option<&Track>,
+    quality: &str,
+    position_secs: u64,
+    duration_secs: u64,
+    lyric: Option<&str>,
+    art_path: Option<&str>,
+    art_url: Option<&str>,
+) -> serde_json::Value {
+    let updated_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    serde_json::json!({
+        "status": status,
+        "title": track.map(|t| t.title.as_str()),
+        "artist": track.map(|t| t.artist.as_str()),
+        "album": track.map(|t| t.album.as_str()).filter(|s| !s.is_empty()),
+        "source": track.map(|t| t.source.short_tag()),
+        "quality": if track.is_some() && !quality.is_empty() { Some(quality) } else { None },
+        "position_secs": position_secs,
+        "duration_secs": duration_secs,
+        "position": format_mm_ss(position_secs),
+        "duration": format_mm_ss(duration_secs),
+        "lyric": lyric,
+        "art_path": art_path,
+        "art_url": art_url,
+        "updated_at": updated_at,
+    })
+}
+
+fn art_cache_path(url: &str) -> std::path::PathBuf {
     let mut hasher = Sha1::new();
     hasher.update(url.as_bytes());
     let hex: String = hasher
@@ -1283,7 +1408,11 @@ async fn fetch_and_decode_art(http: &Client, url: &str) -> Option<(DynamicImage,
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
-    let cache_path = AppConfig::art_cache_dir().join(format!("{hex}.png"));
+    AppConfig::art_cache_dir().join(format!("{hex}.png"))
+}
+
+async fn fetch_and_decode_art(http: &Client, url: &str) -> Option<(DynamicImage, Vec<u8>)> {
+    let cache_path = art_cache_path(url);
 
     if let Ok(disk_bytes) = std::fs::read(&cache_path) {
         let bytes_clone = disk_bytes.clone();
@@ -1320,4 +1449,42 @@ async fn fetch_and_decode_art(http: &Client, url: &str) -> Option<(DynamicImage,
     .await
     .ok()
     .flatten()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builds_external_now_playing_json() {
+        let track = Track {
+            id: "abc".into(),
+            title: "Midnight".into(),
+            artist: "M83".into(),
+            album: "HUWD".into(),
+            duration_secs: Some(243),
+            source: ProviderSource::YouTubeMusic,
+            thumbnail_url: Some("https://img.example/1.jpg".into()),
+            audio_badge: None,
+            liked: false,
+            set_video_id: None,
+        };
+        let v = build_now_playing_json(
+            "Playing",
+            Some(&track),
+            "320kbps AAC · Hi-Fi",
+            65,
+            243,
+            Some("Waiting in a car"),
+            Some("/tmp/art.png"),
+            track.thumbnail_url.as_deref(),
+        );
+        assert_eq!(v["status"], "Playing");
+        assert_eq!(v["title"], "Midnight");
+        assert_eq!(v["artist"], "M83");
+        assert_eq!(v["position"], "1:05");
+        assert_eq!(v["duration"], "4:03");
+        assert_eq!(v["lyric"], "Waiting in a car");
+        assert_eq!(v["art_path"], "/tmp/art.png");
+    }
 }
