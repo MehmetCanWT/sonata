@@ -292,6 +292,7 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
     let lines = vec![
         "Navigation:  Tab / h / l   Switch pane  |  ↑/↓ / j   Move up/down",
+        "Resize:      H / L         Resize pane  |  Mouse Drag Drag pane borders",
         "Search:      /             Search       |  Enter     Play",
         "Playback:    Space         Play/Pause   |  n / p     Next / Prev",
         "Seek/Vol:    < / >         Seek ±5s     |  - / +     Volume ±5%",

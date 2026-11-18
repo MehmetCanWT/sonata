@@ -1,4 +1,4 @@
-use crate::app::{ActiveModal, App, FocusPane};
+use crate::app::{ActiveModal, App, FocusPane, SplitTarget};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use std::time::{Duration, Instant};
@@ -192,6 +192,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Left | KeyCode::Char('h') => app.focus = FocusPane::Tracks,
         KeyCode::Right | KeyCode::Char('l') => app.focus = FocusPane::Sidebar,
+        KeyCode::Char('H') => app.adjust_focused_pane_width(-2),
+        KeyCode::Char('L') => app.adjust_focused_pane_width(2),
         KeyCode::Down | KeyCode::Char('j') => move_cursor(app, 1),
         KeyCode::Up => move_cursor(app, -1),
         KeyCode::Char('g') => jump_cursor(app, true),
@@ -272,7 +274,9 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) {
             }
         }
         MouseEventKind::Drag(MouseButton::Left) => {
-            if contains(rects.volume_bar, x, y) && rects.volume_bar.width > 0 {
+            if let Some(target) = app.dragging_split {
+                resize_split(app, target, x, y);
+            } else if contains(rects.volume_bar, x, y) && rects.volume_bar.width > 0 {
                 let rel = (x.saturating_sub(rects.volume_bar.x) + 1) as f64
                     / rects.volume_bar.width as f64;
                 app.set_volume((rel.clamp(0.0, 1.0) * 100.0).round() as u8);
@@ -285,7 +289,32 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) {
                 app.seek_to((rel.clamp(0.0, 1.0)) * app.playback.duration_secs);
             }
         }
+        MouseEventKind::Up(MouseButton::Left) => {
+            if app.dragging_split.take().is_some() {
+                let _ = app.config.save();
+            }
+        }
         MouseEventKind::Down(MouseButton::Left) => {
+            if rects.main_area.width > 0
+                && y >= rects.main_area.y
+                && y < rects.main_area.y + rects.main_area.height
+            {
+                if rects.split_left_x > 0 && x.abs_diff(rects.split_left_x) <= 1 {
+                    app.dragging_split = Some(SplitTarget::LeftCol);
+                    return;
+                }
+                if rects.split_right_x > 0 && x.abs_diff(rects.split_right_x) <= 1 {
+                    app.dragging_split = Some(SplitTarget::RightCol);
+                    return;
+                }
+                if rects.split_art_y > 0
+                    && x < rects.split_left_x
+                    && y.abs_diff(rects.split_art_y) <= 1
+                {
+                    app.dragging_split = Some(SplitTarget::ArtLyrics);
+                    return;
+                }
+            }
             if contains(rects.album_art_box, x, y) {
                 let now = Instant::now();
                 let is_double = app
@@ -354,6 +383,37 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) {
                 app.track_table_state.select(Some(idx));
                 app.open_add_to_playlist_modal();
             }
+        }
+        _ => {}
+    }
+}
+
+fn resize_split(app: &mut App, target: SplitTarget, x: u16, y: u16) {
+    let main = app.ui_rects.main_area;
+    match target {
+        SplitTarget::LeftCol if main.width > 0 => {
+            let pct = (((x.saturating_sub(main.x)) as u32 * 100) / main.width as u32).clamp(18, 52)
+                as u16;
+            if 100u16.saturating_sub(pct + app.config.right_pane_pct) >= 20 {
+                app.config.left_pane_pct = pct;
+            }
+        }
+        SplitTarget::RightCol if main.width > 0 => {
+            let right_w = (main.x + main.width).saturating_sub(x);
+            let pct = ((right_w as u32 * 100) / main.width as u32).clamp(14, 48) as u16;
+            if 100u16.saturating_sub(app.config.left_pane_pct + pct) >= 20 {
+                app.config.right_pane_pct = pct;
+            }
+        }
+        SplitTarget::ArtLyrics if app.ui_rects.left_col_area.height > 0 => {
+            let area = app.ui_rects.left_col_area;
+            let (fw, fh) = app.picker.font_size();
+            let inner_w = area.width.saturating_sub(2) as u32;
+            let ideal_art_h = ((inner_w * fw.max(1) as u32) / fh.max(1) as u32) as i32 + 2;
+            let desired_h = y.saturating_sub(area.y) as i32;
+            let max_art_h = area.height.saturating_sub(6).max(8) as i32;
+            let clamped_h = desired_h.clamp(8.min(max_art_h), max_art_h);
+            app.config.art_height_offset = (clamped_h - ideal_art_h) as i16;
         }
         _ => {}
     }

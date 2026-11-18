@@ -28,14 +28,21 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
             .split(area);
 
         // Mirrored layout: Now Playing + Lyrics (left) | Tracks (center) | Library (right)
+        let left_pct = app.config.left_pane_pct.clamp(18, 52);
+        let right_pct = app.config.right_pane_pct.clamp(14, 48);
+        let center_pct = 100u16.saturating_sub(left_pct + right_pct).max(20);
         let main_cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Percentage(32),
-                Constraint::Percentage(46),
-                Constraint::Percentage(22),
+                Constraint::Percentage(left_pct),
+                Constraint::Percentage(center_pct),
+                Constraint::Percentage(right_pct),
             ])
             .split(root[0]);
+
+        app.ui_rects.main_area = root[0];
+        app.ui_rects.split_left_x = main_cols[1].x;
+        app.ui_rects.split_right_x = main_cols[2].x;
 
         now_playing::render(frame, main_cols[0], app);
         track_list::render(frame, main_cols[1], app);
@@ -208,12 +215,19 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         "⏸"
     };
 
+    let badge_str = format!(
+        "[{}] [{}] ",
+        app.playback.stream_badge,
+        app.playback.enhancer.label()
+    );
+    let badge_w = (badge_str.chars().count() as u16).min(rows[0].width / 2);
+
     let top_cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Length(14),
-            Constraint::Min(16),
-            Constraint::Length(36),
+            Constraint::Min(12),
+            Constraint::Length(badge_w),
         ])
         .split(rows[0]);
 
@@ -282,7 +296,7 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         top_cols[2],
     );
 
-    render_progress_row(frame, rows[1], app);
+    render_progress_row(frame, rows[2], app);
 
     let bottom_cols = Layout::default()
         .direction(Direction::Horizontal)

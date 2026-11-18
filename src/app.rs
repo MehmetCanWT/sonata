@@ -23,12 +23,24 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitTarget {
+    LeftCol,
+    RightCol,
+    ArtLyrics,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct UiRects {
     pub search_bar: Rect,
     pub tracks_rows: Rect,
     pub sidebar_inner: Rect,
     pub album_art_box: Rect,
+    pub main_area: Rect,
+    pub left_col_area: Rect,
+    pub split_left_x: u16,
+    pub split_right_x: u16,
+    pub split_art_y: u16,
     pub player_bar: Rect,
     pub player_top: Rect,
     pub progress_bar: Rect,
@@ -143,6 +155,7 @@ pub struct App {
     pub tracks_heading: String,
     pub track_table_state: TableState,
     pub ui_rects: UiRects,
+    pub dragging_split: Option<SplitTarget>,
     pub last_track_click: Option<(Instant, usize)>,
     pub last_art_click: Option<Instant>,
     pub mini_mode: bool,
@@ -238,6 +251,7 @@ impl App {
             tracks_heading: "Search (press /)".to_string(),
             track_table_state,
             ui_rects: UiRects::default(),
+            dragging_split: None,
             last_track_click: None,
             last_art_click: None,
             mini_mode: false,
@@ -1095,6 +1109,25 @@ impl App {
             "Shuffle: {}",
             if self.playback.shuffle { "On" } else { "Off" }
         );
+    }
+
+    pub fn adjust_focused_pane_width(&mut self, delta_pct: i16) {
+        match self.focus {
+            FocusPane::Sidebar => {
+                let next = (self.config.right_pane_pct as i16 + delta_pct).clamp(14, 48) as u16;
+                if 100u16.saturating_sub(self.config.left_pane_pct + next) >= 20 {
+                    self.config.right_pane_pct = next;
+                    let _ = self.config.save();
+                }
+            }
+            FocusPane::Tracks | FocusPane::SearchInput => {
+                let next = (self.config.left_pane_pct as i16 + delta_pct).clamp(18, 52) as u16;
+                if 100u16.saturating_sub(next + self.config.right_pane_pct) >= 20 {
+                    self.config.left_pane_pct = next;
+                    let _ = self.config.save();
+                }
+            }
+        }
     }
 
     pub fn cycle_repeat(&mut self) {

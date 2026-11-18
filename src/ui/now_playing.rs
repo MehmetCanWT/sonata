@@ -9,17 +9,20 @@ use ratatui_image::picker::ProtocolType;
 use ratatui_image::{FilterType, Resize, StatefulImage};
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
+    app.ui_rects.left_col_area = area;
     let (fw, fh) = app.picker.font_size();
     let inner_w = area.width.saturating_sub(2) as u32;
-    let ideal_art_h = ((inner_w * fw.max(1) as u32) / fh.max(1) as u32) as u16 + 2;
-    let max_art_h = area.height.saturating_sub(6).max(8);
-    let art_h = ideal_art_h.clamp(8.min(max_art_h), max_art_h);
+    let ideal_art_h = ((inner_w * fw.max(1) as u32) / fh.max(1) as u32) as i32 + 2;
+    let max_art_h = area.height.saturating_sub(6).max(8) as i32;
+    let art_h = (ideal_art_h + app.config.art_height_offset as i32)
+        .clamp(8.min(max_art_h), max_art_h) as u16;
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(art_h), Constraint::Min(6)])
         .split(area);
 
+    app.ui_rects.split_art_y = chunks[1].y;
     render_artwork(frame, chunks[0], app);
     render_lyrics(frame, chunks[1], app);
 }
