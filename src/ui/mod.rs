@@ -112,7 +112,10 @@ fn render_mini_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             .fg(app.theme.accent)
             .add_modifier(Modifier::BOLD),
     ));
-    frame.render_widget(Paragraph::new(top_line).alignment(Alignment::Center), rows[0]);
+    frame.render_widget(
+        Paragraph::new(top_line).alignment(Alignment::Center),
+        rows[0],
+    );
 
     let pos = app.playback.position_secs.max(0.0);
     let dur = app.playback.duration_secs.max(1.0);
@@ -221,7 +224,10 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                 .fg(app.theme.accent)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!("— {artist}   "), Style::default().fg(app.theme.muted)),
+        Span::styled(
+            format!("— {artist}   "),
+            Style::default().fg(app.theme.muted),
+        ),
         Span::styled(
             format!("[{}]", app.playback.stream_badge),
             Style::default().fg(app.theme.success),
@@ -232,7 +238,10 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             Style::default().fg(app.theme.warning),
         ),
     ]);
-    frame.render_widget(Paragraph::new(top_line).alignment(Alignment::Center), rows[0]);
+    frame.render_widget(
+        Paragraph::new(top_line).alignment(Alignment::Center),
+        rows[0],
+    );
 
     let pos = app.playback.position_secs.max(0.0);
     let dur = app.playback.duration_secs.max(1.0);
@@ -267,10 +276,10 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             ),
             Style::default().fg(app.theme.muted),
         ),
-        Span::styled(
-            app.status_line.as_str(),
-            Style::default().fg(app.theme.fg),
-        ),
+        Span::styled(app.status_line.as_str(), Style::default().fg(app.theme.fg)),
     ]);
-    frame.render_widget(Paragraph::new(bottom_line).alignment(Alignment::Center), rows[2]);
+    frame.render_widget(
+        Paragraph::new(bottom_line).alignment(Alignment::Center),
+        rows[2],
+    );
 }

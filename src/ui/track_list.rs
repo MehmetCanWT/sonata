@@ -26,7 +26,8 @@ fn render_search_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
     };
 
     let text = if app.search_query.is_empty() && !is_search {
-        "Press / to search YouTube Music & Spotify, or i to import Spotify playlist URL...".to_string()
+        "Press / to search YouTube Music & Spotify, or i to import Spotify playlist URL..."
+            .to_string()
     } else if is_search {
         format!("{}▏", app.search_query)
     } else {

@@ -105,9 +105,11 @@ async fn search_kugou_candidate(
     keyword: Option<&str>,
     duration_secs: Option<u64>,
 ) -> Option<(String, String)> {
-    let mut req = http
-        .get("https://lyrics.kugou.com/search")
-        .query(&[("ver", "1"), ("man", "yes"), ("client", "pc")]);
+    let mut req = http.get("https://lyrics.kugou.com/search").query(&[
+        ("ver", "1"),
+        ("man", "yes"),
+        ("client", "pc"),
+    ]);
     if let Some(h) = hash {
         req = req.query(&[("hash", h)]);
     } else if let Some(kw) = keyword {
@@ -131,11 +133,7 @@ async fn search_kugou_candidate(
 }
 
 /// Scrapes plain lyrics from Genius using BitChord's plain User-Agent pattern.
-pub async fn fetch_genius_lyrics(
-    http: &Client,
-    title: &str,
-    artist: &str,
-) -> Option<Vec<String>> {
+pub async fn fetch_genius_lyrics(http: &Client, title: &str, artist: &str) -> Option<Vec<String>> {
     let query = if artist.is_empty() || artist == "Unknown Artist" {
         title.to_string()
     } else {
@@ -164,7 +162,9 @@ pub async fn fetch_genius_lyrics(
         if let Some(hits) = sec.get("hits").and_then(|v| v.as_array()) {
             let norm_title = title.to_ascii_lowercase();
             for hit in hits {
-                let Some(res) = hit.get("result") else { continue };
+                let Some(res) = hit.get("result") else {
+                    continue;
+                };
                 let hit_title = res
                     .get("title")
                     .and_then(|v| v.as_str())
@@ -218,14 +218,15 @@ pub fn extract_genius_lyrics_from_html(html: &str) -> Option<Vec<String>> {
     static RE_LIKE: OnceLock<Regex> = OnceLock::new();
 
     let re_header = RE_HEADER.get_or_init(|| {
-        Regex::new(r#"(?is)<div[^>]*class="[^"]*LyricsHeader__Container[^"]*"[^>]*>.*?</div>\s*</div>"#)
-            .unwrap()
+        Regex::new(
+            r#"(?is)<div[^>]*class="[^"]*LyricsHeader__Container[^"]*"[^>]*>.*?</div>\s*</div>"#,
+        )
+        .unwrap()
     });
     let re_br = RE_BR.get_or_init(|| Regex::new(r"(?i)<br\s*/?>|</p>").unwrap());
     let re_tag = RE_TAG.get_or_init(|| Regex::new(r"(?s)<[^>]+>").unwrap());
     let re_embed = RE_EMBED.get_or_init(|| Regex::new(r"(?i)\d*Embed\s*$").unwrap());
-    let re_like =
-        RE_LIKE.get_or_init(|| Regex::new(r"(?i)\d*You might also like").unwrap());
+    let re_like = RE_LIKE.get_or_init(|| Regex::new(r"(?i)\d*You might also like").unwrap());
 
     let marker = "data-lyrics-container=\"true\"";
     let mut chunks = Vec::new();

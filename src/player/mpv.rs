@@ -33,7 +33,9 @@ impl MpvController {
         event_tx: mpsc::UnboundedSender<MpvEvent>,
     ) -> Result<Self> {
         let pid = std::process::id();
-        let sock_path = PathBuf::from(format!("/tmp/sonata-mpv-{pid}.sock"));
+        let sock_dir = dirs::runtime_dir().unwrap_or_else(crate::config::AppConfig::cache_dir);
+        let _ = std::fs::create_dir_all(&sock_dir);
+        let sock_path = sock_dir.join(format!("sonata-mpv-{pid}.sock"));
         let _ = std::fs::remove_file(&sock_path);
 
         let mut cmd = Command::new("mpv");
@@ -140,8 +142,10 @@ impl MpvController {
     }
 
     pub async fn load_url(&self, url: &str) -> Result<()> {
-        self.send_command(json!(["loadfile", url, "replace"])).await?;
-        self.send_command(json!(["set_property", "pause", false])).await
+        self.send_command(json!(["loadfile", url, "replace"]))
+            .await?;
+        self.send_command(json!(["set_property", "pause", false]))
+            .await
     }
 
     pub async fn load_url_at(&self, url: &str, start_secs: f64) -> Result<()> {
@@ -158,7 +162,8 @@ impl MpvController {
     }
 
     pub async fn set_paused(&self, paused: bool) -> Result<()> {
-        self.send_command(json!(["set_property", "pause", paused])).await
+        self.send_command(json!(["set_property", "pause", paused]))
+            .await
     }
 
     pub async fn seek_relative(&self, secs: f64) -> Result<()> {

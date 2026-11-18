@@ -137,7 +137,12 @@ impl SpotifyClient {
                                 meta.secret_version = ver;
                                 meta.secret_codes = codes;
                             }
-                            for op in ["libraryV3", "fetchPlaylist", "fetchLibraryTracks", "searchTracks"] {
+                            for op in [
+                                "libraryV3",
+                                "fetchPlaylist",
+                                "fetchLibraryTracks",
+                                "searchTracks",
+                            ] {
                                 if let Some(hash) = extract_query_hash(&js, op) {
                                     meta.hashes.insert(op.to_string(), hash);
                                 }
@@ -146,7 +151,9 @@ impl SpotifyClient {
                             if let Some(search_url) = extract_search_chunk_url(&js) {
                                 if let Ok(s_resp) = self.http.get(&search_url).send().await {
                                     if let Ok(s_js) = s_resp.text().await {
-                                        if let Some(hash) = extract_query_hash(&s_js, "searchTracks") {
+                                        if let Some(hash) =
+                                            extract_query_hash(&s_js, "searchTracks")
+                                        {
                                             meta.hashes.insert("searchTracks".to_string(), hash);
                                         }
                                     }
@@ -211,7 +218,9 @@ impl SpotifyClient {
                 continue;
             }
             if json_body.get("isAnonymous").and_then(|v| v.as_bool()) == Some(true) {
-                return Err(anyhow!("Spotify cookie expired; please sign in on open.spotify.com"));
+                return Err(anyhow!(
+                    "Spotify cookie expired; please sign in on open.spotify.com"
+                ));
             }
             if let Some(access) = json_body.get("accessToken").and_then(|v| v.as_str()) {
                 let expires_ms = json_body
@@ -224,7 +233,9 @@ impl SpotifyClient {
                     .and_then(|v| v.as_str())
                     .map(str::to_string);
                 let client_token = if let Some(cid) = client_id {
-                    self.fetch_client_token(&meta.client_version, &cid).await.ok()
+                    self.fetch_client_token(&meta.client_version, &cid)
+                        .await
+                        .ok()
                 } else {
                     None
                 };
@@ -434,7 +445,10 @@ impl SpotifyClient {
         let mut is_first = true;
         loop {
             let root = self
-                .gql("fetchLibraryTracks", json!({ "offset": offset, "limit": 100 }))
+                .gql(
+                    "fetchLibraryTracks",
+                    json!({ "offset": offset, "limit": 100 }),
+                )
                 .await?;
             let items = root
                 .pointer("/data/me/library/tracks/items")
@@ -721,7 +735,8 @@ pub fn compute_totp(codes: &[u32], epoch_ms: u128) -> String {
         .collect();
     let step = (epoch_ms / 1000 / 30) as u64;
     let counter = step.to_be_bytes();
-    let mut mac = HmacSha1::new_from_slice(key_str.as_bytes()).expect("HMAC accepts any key length");
+    let mut mac =
+        HmacSha1::new_from_slice(key_str.as_bytes()).expect("HMAC accepts any key length");
     mac.update(&counter);
     let hash = mac.finalize().into_bytes();
     let offset = (hash[hash.len() - 1] & 0x0f) as usize;
@@ -733,7 +748,8 @@ pub fn compute_totp(codes: &[u32], epoch_ms: u128) -> String {
 }
 
 fn extract_client_version(html: &str) -> Option<String> {
-    let re = Regex::new(r#"<script id="appServerConfig" type="text/plain">([^<]+)</script>"#).ok()?;
+    let re =
+        Regex::new(r#"<script id="appServerConfig" type="text/plain">([^<]+)</script>"#).ok()?;
     let b64 = re.captures(html)?.get(1)?.as_str();
     let decoded = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
     let val: Value = serde_json::from_slice(&decoded).ok()?;
@@ -743,7 +759,10 @@ fn extract_client_version(html: &str) -> Option<String> {
 }
 
 fn extract_bundle_url(html: &str) -> Option<String> {
-    let re = Regex::new(r#"https://open\.spotifycdn\.com/cdn/build/web-player/web-player\.[0-9a-f]+\.js"#).ok()?;
+    let re = Regex::new(
+        r#"https://open\.spotifycdn\.com/cdn/build/web-player/web-player\.[0-9a-f]+\.js"#,
+    )
+    .ok()?;
     re.find(html).map(|m| m.as_str().to_string())
 }
 

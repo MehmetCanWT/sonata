@@ -316,9 +316,9 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) {
                 let idx = app.track_table_state.offset() + (y - rects.tracks_rows.y) as usize;
                 if idx < app.visible_tracks.len() {
                     let now = Instant::now();
-                    let is_double = app
-                        .last_track_click
-                        .is_some_and(|(t, prev)| prev == idx && now.duration_since(t) <= Duration::from_millis(450));
+                    let is_double = app.last_track_click.is_some_and(|(t, prev)| {
+                        prev == idx && now.duration_since(t) <= Duration::from_millis(450)
+                    });
                     app.track_table_state.select(Some(idx));
                     if is_double {
                         app.last_track_click = None;

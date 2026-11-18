@@ -105,7 +105,5 @@ pub fn set_window_opacity_sync(addr: &str, opacity: f32) {
     let Some(script) = lua_set_opacity_script(addr, opacity) else {
         return;
     };
-    let _ = StdCommand::new("hyprctl")
-        .args(["eval", &script])
-        .output();
+    let _ = StdCommand::new("hyprctl").args(["eval", &script]).output();
 }

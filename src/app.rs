@@ -157,11 +157,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(
-        config: AppConfig,
-        picker: Picker,
-        tx: mpsc::UnboundedSender<AppEvent>,
-    ) -> Self {
+    pub fn new(config: AppConfig, picker: Picker, tx: mpsc::UnboundedSender<AppEvent>) -> Self {
         let themes = Theme::load_all(&AppConfig::themes_dir());
         let base_theme = themes
             .iter()
@@ -183,7 +179,8 @@ impl App {
         let cache_db = CacheDb::open_default();
         let ytm = YtMusicClient::new(http.clone(), cookies.clone());
         let spotify = SpotifyClient::new(http.clone(), None);
-        let resolver = StreamResolver::new(http.clone(), ytm.clone(), cookies.clone(), cache_db.clone());
+        let resolver =
+            StreamResolver::new(http.clone(), ytm.clone(), cookies.clone(), cache_db.clone());
         let playback = PlaybackState::new(config.volume, config.enhancer_mode);
 
         let sidebar_items = vec![SidebarEntry::Search, SidebarEntry::Queue];
@@ -324,7 +321,11 @@ impl App {
                 self.tracks_heading = heading;
                 self.visible_tracks = tracks;
                 self.track_table_state
-                    .select(if self.visible_tracks.is_empty() { None } else { Some(0) });
+                    .select(if self.visible_tracks.is_empty() {
+                        None
+                    } else {
+                        Some(0)
+                    });
                 self.status_line = format!("Loaded {} tracks", self.visible_tracks.len());
             }
             AppEvent::TracksAppended { heading, tracks } => {
@@ -501,7 +502,11 @@ impl App {
         let _ = self.config.save();
         self.status_line = format!(
             "Hi-Fi 320kbps Substitution: {}",
-            if self.config.hifi_substitution { "Enabled" } else { "Disabled" }
+            if self.config.hifi_substitution {
+                "Enabled"
+            } else {
+                "Disabled"
+            }
         );
     }
 
@@ -605,23 +610,26 @@ impl App {
                         }
                         ProviderSource::Spotify => {
                             spotify
-                                .fetch_playlist_tracks_progressive(&pl.id, |name, batch, is_first| {
-                                    cached_name = name.to_string();
-                                    all_tracks.extend(batch.iter().cloned());
-                                    let resolved_heading = format!("[SPF] {name}");
-                                    if is_first {
-                                        let _ = tx.send(AppEvent::TracksLoaded {
-                                            playlist_id: None,
-                                            heading: resolved_heading,
-                                            tracks: batch,
-                                        });
-                                    } else {
-                                        let _ = tx.send(AppEvent::TracksAppended {
-                                            heading: resolved_heading,
-                                            tracks: batch,
-                                        });
-                                    }
-                                })
+                                .fetch_playlist_tracks_progressive(
+                                    &pl.id,
+                                    |name, batch, is_first| {
+                                        cached_name = name.to_string();
+                                        all_tracks.extend(batch.iter().cloned());
+                                        let resolved_heading = format!("[SPF] {name}");
+                                        if is_first {
+                                            let _ = tx.send(AppEvent::TracksLoaded {
+                                                playlist_id: None,
+                                                heading: resolved_heading,
+                                                tracks: batch,
+                                            });
+                                        } else {
+                                            let _ = tx.send(AppEvent::TracksAppended {
+                                                heading: resolved_heading,
+                                                tracks: batch,
+                                            });
+                                        }
+                                    },
+                                )
                                 .await
                         }
                     };
@@ -811,7 +819,9 @@ impl App {
         tokio::spawn(async move {
             if let Ok(fast) = resolver.resolve_fast(&next_track, hifi).await {
                 if hifi {
-                    let _ = resolver.resolve_hifi_upgrade(&next_track, &fast.badge).await;
+                    let _ = resolver
+                        .resolve_hifi_upgrade(&next_track, &fast.badge)
+                        .await;
                 }
             }
         });
@@ -903,7 +913,11 @@ impl App {
         self.sync_appearance();
         self.status_line = format!(
             "Transparent TUI Background: {}",
-            if self.config.transparent_bg { "Enabled" } else { "Disabled" }
+            if self.config.transparent_bg {
+                "Enabled"
+            } else {
+                "Disabled"
+            }
         );
     }
 
@@ -1115,7 +1129,8 @@ impl App {
             return;
         }
         if self.writable_ytm_playlists().is_empty() {
-            self.status_line = "No writable YouTube Music playlists found (press c to create)".to_string();
+            self.status_line =
+                "No writable YouTube Music playlists found (press c to create)".to_string();
             return;
         }
         self.modal = ActiveModal::AddToPlaylist(0);
@@ -1185,7 +1200,8 @@ impl App {
             return;
         };
         let Some(set_vid) = track.set_video_id.clone() else {
-            self.status_line = "Track missing playlistSetVideoId; press R to refresh playlist".to_string();
+            self.status_line =
+                "Track missing playlistSetVideoId; press R to refresh playlist".to_string();
             return;
         };
 
@@ -1268,15 +1284,17 @@ impl App {
 async fn fetch_and_decode_art(http: &Client, url: &str) -> Option<(DynamicImage, Vec<u8>)> {
     let mut hasher = Sha1::new();
     hasher.update(url.as_bytes());
-    let hex: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    let hex: String = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     let cache_path = AppConfig::art_cache_dir().join(format!("{hex}.png"));
 
     if let Ok(disk_bytes) = std::fs::read(&cache_path) {
         let bytes_clone = disk_bytes.clone();
-        if let Ok(Some(img)) = tokio::task::spawn_blocking(move || {
-            image::load_from_memory(&bytes_clone).ok()
-        })
-        .await
+        if let Ok(Some(img)) =
+            tokio::task::spawn_blocking(move || image::load_from_memory(&bytes_clone).ok()).await
         {
             return Some((img, disk_bytes));
         }
@@ -1297,7 +1315,10 @@ async fn fetch_and_decode_art(http: &Client, url: &str) -> Option<(DynamicImage,
         };
         let mut png_bytes = Vec::new();
         scaled
-            .write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)
+            .write_to(
+                &mut std::io::Cursor::new(&mut png_bytes),
+                image::ImageFormat::Png,
+            )
             .ok()?;
         let _ = std::fs::write(&cache_path, &png_bytes);
         Some((scaled, png_bytes))

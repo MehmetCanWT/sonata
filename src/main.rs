@@ -13,9 +13,7 @@ mod ui;
 use anyhow::Result;
 use app::{App, AppEvent};
 use config::AppConfig;
-use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind,
-};
+use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -31,7 +29,9 @@ use tokio::sync::mpsc;
 fn detect_picker() -> Picker {
     let mut picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
     if picker.protocol_type() == ProtocolType::Halfblocks {
-        let term = std::env::var("TERM").unwrap_or_default().to_ascii_lowercase();
+        let term = std::env::var("TERM")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
         let prog = std::env::var("TERM_PROGRAM")
             .unwrap_or_default()
             .to_ascii_lowercase();

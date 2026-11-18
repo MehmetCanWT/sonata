@@ -155,7 +155,14 @@ fn save_lrc(path: &PathBuf, lines: &[LyricLine]) {
 fn cache_paths(artist: &str, title: &str) -> (PathBuf, PathBuf) {
     let mut hasher = Sha1::new();
     hasher.update(format!("{artist}::{title}").to_lowercase().as_bytes());
-    let hex: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    let hex: String = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     let dir = AppConfig::lyrics_cache_dir();
-    (dir.join(format!("{hex}.lrc")), dir.join(format!("{hex}.txt")))
+    (
+        dir.join(format!("{hex}.lrc")),
+        dir.join(format!("{hex}.txt")),
+    )
 }

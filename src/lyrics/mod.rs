@@ -23,7 +23,8 @@ pub enum LyricsState {
 pub fn parse_lrc(raw: &str) -> Vec<LyricLine> {
     static RE_LINE: OnceLock<Regex> = OnceLock::new();
     static RE_WORD_TAG: OnceLock<Regex> = OnceLock::new();
-    let re_line = RE_LINE.get_or_init(|| Regex::new(r"\[(\d{1,3}):(\d{2})(?:\.(\d{1,3}))?\]").unwrap());
+    let re_line =
+        RE_LINE.get_or_init(|| Regex::new(r"\[(\d{1,3}):(\d{2})(?:\.(\d{1,3}))?\]").unwrap());
     let re_word = RE_WORD_TAG.get_or_init(|| Regex::new(r"<\d{1,3}:\d{2}(?:\.\d{1,3})?>").unwrap());
 
     let mut lines = Vec::new();
@@ -86,7 +87,8 @@ pub fn sanitize_title(title: &str) -> String {
     let re_brackets = RE_BRACKETS.get_or_init(|| {
         Regex::new(r"(?i)\s*[\(\[](official|lyric|music|audio|video|hd|hq|4k|visualizer|remaster|explicit|clean)[^\)\]]*[\)\]]").unwrap()
     });
-    let re_feat = RE_FEAT.get_or_init(|| Regex::new(r"(?i)\s*[\(\[]?(feat\.|ft\.)[^\)\]]*[\)\]]?").unwrap());
+    let re_feat =
+        RE_FEAT.get_or_init(|| Regex::new(r"(?i)\s*[\(\[]?(feat\.|ft\.)[^\)\]]*[\)\]]?").unwrap());
     let step1 = re_brackets.replace_all(title, "");
     let step2 = re_feat.replace_all(&step1, "");
     step2.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -98,7 +100,8 @@ mod tests {
 
     #[test]
     fn parses_standard_and_enhanced_lrc() {
-        let sample = "[ar:Artist]\n[00:12.50] First line\n[00:25.100] <00:25.10> Hello <00:25.60> world\n";
+        let sample =
+            "[ar:Artist]\n[00:12.50] First line\n[00:25.100] <00:25.10> Hello <00:25.60> world\n";
         let parsed = parse_lrc(sample);
         assert_eq!(parsed.len(), 2);
         assert!((parsed[0].time_secs - 12.5).abs() < 0.001);
@@ -110,9 +113,18 @@ mod tests {
     #[test]
     fn finds_active_line_by_timestamp() {
         let lines = vec![
-            LyricLine { time_secs: 10.0, text: "A".into() },
-            LyricLine { time_secs: 20.0, text: "B".into() },
-            LyricLine { time_secs: 30.0, text: "C".into() },
+            LyricLine {
+                time_secs: 10.0,
+                text: "A".into(),
+            },
+            LyricLine {
+                time_secs: 20.0,
+                text: "B".into(),
+            },
+            LyricLine {
+                time_secs: 30.0,
+                text: "C".into(),
+            },
         ];
         assert_eq!(active_line_index(&lines, 5.0), None);
         assert_eq!(active_line_index(&lines, 12.0), Some(0));

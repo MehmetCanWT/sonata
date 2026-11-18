@@ -274,6 +274,11 @@ fn try_chromium_via_ytdlp(browser: &str) -> Option<ExtractedCookies> {
     }
 
     let content = fs::read_to_string(&cache_file).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&cache_file, fs::Permissions::from_mode(0o600));
+    }
     let rows = parse_netscape_cookies(&content);
     let mut out = build_from_rows(browser, &rows, true);
     if out.has_ytm_auth() {
@@ -321,6 +326,11 @@ fn build_from_rows(
         let _ = fs::create_dir_all(AppConfig::cache_dir());
         let path = AppConfig::cache_dir().join("yt_cookies.txt");
         if fs::write(&path, format!("{}\n", yt_netscape_lines.join("\n"))).is_ok() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+            }
             Some(path)
         } else {
             None

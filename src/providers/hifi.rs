@@ -16,6 +16,34 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 
 const SAAVN_API: &str = "https://www.jiosaavn.com/api.php";
+const MAX_MEM_CACHE_ENTRIES: usize = 256;
+const MEM_CACHE_TTL: Duration = Duration::from_secs(20 * 60);
+
+struct TempFileGuard(std::path::PathBuf);
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn insert_bounded_cache(
+    map: &mut HashMap<String, (Instant, ResolvedStream)>,
+    key: String,
+    stream: ResolvedStream,
+) {
+    map.retain(|_, (at, _)| at.elapsed() < MEM_CACHE_TTL);
+    if map.len() >= MAX_MEM_CACHE_ENTRIES {
+        if let Some(oldest) = map
+            .iter()
+            .min_by_key(|(_, (at, _))| *at)
+            .map(|(k, _)| k.clone())
+        {
+            map.remove(&oldest);
+        }
+    }
+    map.insert(key, (Instant::now(), stream));
+}
 
 #[derive(Debug, Clone)]
 pub struct ResolvedStream {
@@ -49,7 +77,11 @@ impl StreamResolver {
     }
 
     /// Stage 1: Instant playback path — returns cached Hi-Fi/YT stream or resolves YouTube immediately.
-    pub async fn resolve_fast(&self, track: &Track, prefer_hifi_cache: bool) -> Result<ResolvedStream> {
+    pub async fn resolve_fast(
+        &self,
+        track: &Track,
+        prefer_hifi_cache: bool,
+    ) -> Result<ResolvedStream> {
         let hifi_key = format!("hifi:{}", track.id);
         if prefer_hifi_cache {
             {
@@ -96,7 +128,7 @@ impl StreamResolver {
             db.put_stream(&yt_key, &res.url, &res.badge);
         }
         let mut guard = self.cache.lock().await;
-        guard.insert(yt_key, (Instant::now(), res.clone()));
+        insert_bounded_cache(&mut guard, yt_key, res.clone());
         Ok(res)
     }
 
@@ -141,7 +173,7 @@ impl StreamResolver {
             db.put_stream(&hifi_key, &saavn.url, &saavn.badge);
         }
         let mut guard = self.cache.lock().await;
-        guard.insert(hifi_key, (Instant::now(), saavn.clone()));
+        insert_bounded_cache(&mut guard, hifi_key, saavn.clone());
         Some(saavn)
     }
 
@@ -182,7 +214,11 @@ impl StreamResolver {
                 .get("explicit_content")
                 .and_then(|v| v.as_str())
                 .unwrap_or("0");
-            if exp == "1" { 0 } else { 1 }
+            if exp == "1" {
+                0
+            } else {
+                1
+            }
         });
 
         for item in candidates {
@@ -253,11 +289,8 @@ impl StreamResolver {
         }
 
         let mut cmd = Command::new("yt-dlp");
-        cmd.args([
-            "--no-playlist",
-            "--no-warnings",
-            "--quiet",
-        ]);
+        cmd.kill_on_drop(true);
+        cmd.args(["--no-playlist", "--no-warnings", "--quiet"]);
         if let Some(rt) = detect_js_runtime() {
             cmd.arg("--js-runtimes").arg(rt);
         }
@@ -267,7 +300,7 @@ impl StreamResolver {
             "--print",
             "%(acodec)s|%(abr)s|%(url)s",
         ]);
-        let mut temp_cookie_copy: Option<std::path::PathBuf> = None;
+        let mut _temp_cookie_guard: Option<TempFileGuard> = None;
         if let Some(cookie_file) = &self.cookies.netscape_file {
             if cookie_file.exists() {
                 let unique = std::time::SystemTime::now()
@@ -276,17 +309,22 @@ impl StreamResolver {
                     .unwrap_or(0);
                 let run_copy = cookie_file.with_file_name(format!("yt_cookies_run_{unique}.txt"));
                 if std::fs::copy(cookie_file, &run_copy).is_ok() {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = std::fs::set_permissions(
+                            &run_copy,
+                            std::fs::Permissions::from_mode(0o600),
+                        );
+                    }
                     cmd.arg("--cookies").arg(&run_copy);
-                    temp_cookie_copy = Some(run_copy);
+                    _temp_cookie_guard = Some(TempFileGuard(run_copy));
                 }
             }
         }
-        cmd.arg(&target_url);
+        cmd.arg("--").arg(&target_url);
 
         let output = cmd.output().await?;
-        if let Some(tmp) = temp_cookie_copy {
-            let _ = std::fs::remove_file(tmp);
-        }
         if !output.status.success() {
             let err = String::from_utf8_lossy(&output.stderr);
             return Err(anyhow!("yt-dlp failed: {}", err.trim()));
@@ -303,7 +341,11 @@ impl StreamResolver {
         }
 
         let codec = parts[0].trim();
-        let abr_num = parts[1].trim().parse::<f64>().ok().map(|v| v.round() as u32);
+        let abr_num = parts[1]
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .map(|v| v.round() as u32);
         let stream_url = parts[2].trim().to_string();
 
         let badge = match (codec, abr_num) {
@@ -426,7 +468,10 @@ pub fn decrypt_jiosaavn_url(encrypted_b64: &str) -> Option<String> {
     if pad == 0 || pad > 8 || pad > bytes.len() {
         return None;
     }
-    if bytes[bytes.len() - pad..].iter().any(|&b| b as usize != pad) {
+    if bytes[bytes.len() - pad..]
+        .iter()
+        .any(|&b| b as usize != pad)
+    {
         return None;
     }
     bytes.truncate(bytes.len() - pad);
@@ -441,9 +486,7 @@ pub fn select_best_saavn_stream(
         return None;
     }
     static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        Regex::new(r"(?i)_(48|96|160|320)\.(mp4|aac|mp3)([?#]|$)").unwrap()
-    });
+    let re = RE.get_or_init(|| Regex::new(r"(?i)_(48|96|160|320)\.(mp4|aac|mp3)([?#]|$)").unwrap());
     let Some(caps) = re.captures(decrypted_url) else {
         return Some((decrypted_url.to_string(), None));
     };
@@ -482,5 +525,21 @@ mod tests {
         let (best, kbps) = select_best_saavn_stream(&decrypted, true).unwrap();
         assert_eq!(kbps, Some(320));
         assert_eq!(best, "https://aac.saavncdn.com/123/song_320.mp4");
+    }
+
+    #[test]
+    fn bounds_in_memory_stream_cache() {
+        let mut map = HashMap::new();
+        for i in 0..(MAX_MEM_CACHE_ENTRIES + 10) {
+            insert_bounded_cache(
+                &mut map,
+                format!("yt:{i}"),
+                ResolvedStream {
+                    url: format!("https://example.com/{i}"),
+                    badge: "OPUS".to_string(),
+                },
+            );
+        }
+        assert_eq!(map.len(), MAX_MEM_CACHE_ENTRIES);
     }
 }

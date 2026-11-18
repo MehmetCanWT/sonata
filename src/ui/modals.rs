@@ -3,7 +3,9 @@ use crate::config::AppConfig;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
+};
 use ratatui::Frame;
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -137,17 +139,15 @@ fn render_spotify_import(frame: &mut Frame<'_>, area: Rect, app: &App, input: &s
     let text = format!(
         "Paste a Spotify playlist URL or ID (no API key required):\n\n> {input}▏\n\nEnter: Import   Esc: Cancel"
     );
-    let p = Paragraph::new(text)
-        .wrap(Wrap { trim: false })
-        .block(
-            Block::default()
-                .title(" Import Spotify Playlist ")
-                .title_alignment(Alignment::Center)
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(app.theme.success))
-                .style(Style::default().bg(app.theme.surface).fg(app.theme.fg)),
-        );
+    let p = Paragraph::new(text).wrap(Wrap { trim: false }).block(
+        Block::default()
+            .title(" Import Spotify Playlist ")
+            .title_alignment(Alignment::Center)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(app.theme.success))
+            .style(Style::default().bg(app.theme.surface).fg(app.theme.fg)),
+    );
     frame.render_widget(p, popup);
 }
 
@@ -192,9 +192,8 @@ fn render_create_playlist(frame: &mut Frame<'_>, area: Rect, app: &App, input: &
     let popup = centered_rect(54, 8, area);
     frame.render_widget(Clear, popup);
 
-    let text = format!(
-        "New YouTube Music playlist title:\n\n> {input}▏\n\nEnter: Create   Esc: Cancel"
-    );
+    let text =
+        format!("New YouTube Music playlist title:\n\n> {input}▏\n\nEnter: Create   Esc: Cancel");
     let p = Paragraph::new(text).wrap(Wrap { trim: false }).block(
         Block::default()
             .title(" Create YouTube Music Playlist ")
@@ -219,11 +218,17 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
     let opacity_label = if crate::hyprland::is_hyprland() {
         format!("{:.0}%", app.effective_hyprland_opacity() * 100.0)
     } else {
-        format!("{:.0}% (Hyprland only)", app.effective_hyprland_opacity() * 100.0)
+        format!(
+            "{:.0}% (Hyprland only)",
+            app.effective_hyprland_opacity() * 100.0
+        )
     };
 
     let rows = [
-        ("Music Providers", app.config.provider_mode.label().to_string()),
+        (
+            "Music Providers",
+            app.config.provider_mode.label().to_string(),
+        ),
         (
             "Hi-Fi 320kbps Mode",
             if app.config.hifi_substitution {
@@ -232,7 +237,10 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
                 "Disabled".to_string()
             },
         ),
-        ("Audio Enhancer DSP", app.playback.enhancer.label().to_string()),
+        (
+            "Audio Enhancer DSP",
+            app.playback.enhancer.label().to_string(),
+        ),
         ("Transparent TUI Bg", transparent_label.to_string()),
         ("Hyprland Opacity", opacity_label),
         ("Color Theme", app.base_theme.name.clone()),

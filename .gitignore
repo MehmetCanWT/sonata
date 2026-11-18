@@ -15,6 +15,9 @@
 *.db-shm
 *.log
 
+# Local agent skills (keep repo clean)
+/.agents/
+
 # Editor & OS files
 .vscode/
 .idea/

@@ -145,7 +145,10 @@ mod tests {
     fn extracts_youtube_expire_param() {
         let url = "https://rr4.googlevideo.com/videoplayback?expire=1795030319&itag=774";
         assert_eq!(extract_url_expire(url), Some(1795030319));
-        assert_eq!(extract_url_expire("https://aac.saavncdn.com/test.mp4"), None);
+        assert_eq!(
+            extract_url_expire("https://aac.saavncdn.com/test.mp4"),
+            None
+        );
     }
 
     #[test]

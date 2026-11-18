@@ -49,14 +49,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 
     app.ui_rects.sidebar_inner = block.inner(area);
 
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(
-            Style::default()
-                .bg(app.theme.highlight_bg)
-                .fg(app.theme.highlight_fg)
-                .add_modifier(Modifier::BOLD),
-        );
+    let list = List::new(items).block(block).highlight_style(
+        Style::default()
+            .bg(app.theme.highlight_bg)
+            .fg(app.theme.highlight_fg)
+            .add_modifier(Modifier::BOLD),
+    );
 
     app.sidebar_state.select(Some(app.sidebar_idx));
     frame.render_stateful_widget(list, area, &mut app.sidebar_state);
