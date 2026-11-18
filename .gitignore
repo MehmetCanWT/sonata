@@ -1,0 +1,25 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Arch Linux makepkg artifacts
+/pkg/
+*.tar.gz
+*.tar.xz
+*.pkg.tar.zst
+*.pkg.tar.xz
+
+# Local runtime / cache / database files
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# Editor & OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.env

@@ -1,0 +1,163 @@
+mod app;
+mod auth;
+mod cache;
+mod config;
+mod hyprland;
+mod input;
+mod lyrics;
+mod player;
+mod providers;
+mod theme;
+mod ui;
+
+use anyhow::Result;
+use app::{App, AppEvent};
+use config::AppConfig;
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind,
+};
+use crossterm::execute;
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
+use player::MpvController;
+use ratatui::backend::CrosstermBackend;
+use ratatui::Terminal;
+use ratatui_image::picker::{Picker, ProtocolType};
+use std::io;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+
+fn detect_picker() -> Picker {
+    let mut picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
+    if picker.protocol_type() == ProtocolType::Halfblocks {
+        let term = std::env::var("TERM").unwrap_or_default().to_ascii_lowercase();
+        let prog = std::env::var("TERM_PROGRAM")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if term.contains("ghostty")
+            || prog.contains("ghostty")
+            || term.contains("kitty")
+            || std::env::var_os("KITTY_WINDOW_ID").is_some()
+        {
+            picker.set_protocol_type(ProtocolType::Kitty);
+        }
+    }
+    picker
+}
+
+fn print_help() {
+    println!(
+        "sonata {}\n\
+         Fast, modular terminal music player for YouTube Music and Spotify.\n\n\
+         USAGE:\n    sonata [OPTIONS]\n\n\
+         OPTIONS:\n    -h, --help       Print help information\n    -v, --version    Print version information\n\n\
+         CONFIG:\n    Config file:     {}\n    Custom themes:   {}/*.toml",
+        env!("CARGO_PKG_VERSION"),
+        AppConfig::config_path().display(),
+        AppConfig::themes_dir().display()
+    );
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "-v" || a == "--version") {
+        println!("sonata {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        print_help();
+        return Ok(());
+    }
+
+    let config = AppConfig::load();
+    // Query terminal graphics protocol and font metrics before entering alternate screen
+    let picker = detect_picker();
+
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+    terminal.clear()?;
+
+    let (app_tx, mut app_rx) = mpsc::unbounded_channel::<AppEvent>();
+    let (mpv_tx, mut mpv_rx) = mpsc::unbounded_channel();
+
+    let mut app = App::new(config.clone(), picker, app_tx.clone());
+
+    match MpvController::spawn(config.volume, config.enhancer_mode, mpv_tx).await {
+        Ok(ctrl) => app.mpv = Some(Arc::new(ctrl)),
+        Err(e) => app.status_line = format!("Warning: {e}"),
+    }
+
+    let fwd_tx = app_tx.clone();
+    tokio::spawn(async move {
+        while let Some(ev) = mpv_rx.recv().await {
+            let _ = fwd_tx.send(AppEvent::Mpv(ev));
+        }
+    });
+
+    app.start_background_init();
+
+    let (term_tx, mut term_rx) = mpsc::unbounded_channel::<Event>();
+    std::thread::spawn(move || {
+        while let Ok(ev) = event::read() {
+            if term_tx.send(ev).is_err() {
+                break;
+            }
+        }
+    });
+
+    // Event-driven UI loop: redraws only when state or input changes
+    terminal.draw(|f| ui::render(f, &mut app))?;
+
+    while !app.should_quit {
+        tokio::select! {
+            Some(ev) = term_rx.recv() => {
+                match ev {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        input::handle_key(&mut app, key);
+                    }
+                    Event::Mouse(mouse) => {
+                        input::handle_mouse(&mut app, mouse);
+                    }
+                    Event::Resize(_, _) => {
+                        app.clear_kitty_images();
+                    }
+                    _ => continue,
+                }
+                terminal.draw(|f| ui::render(f, &mut app))?;
+                app.sync_kitty_artwork();
+            }
+            Some(aev) = app_rx.recv() => {
+                app.handle_app_event(aev);
+                // Drain queued mpv/app updates before redrawing to avoid redundant frames
+                while let Ok(more) = app_rx.try_recv() {
+                    app.handle_app_event(more);
+                }
+                terminal.draw(|f| ui::render(f, &mut app))?;
+                app.sync_kitty_artwork();
+            }
+            else => break,
+        }
+    }
+
+    app.clear_kitty_images();
+    app.restore_hyprland_opacity();
+    if let Some(mpv) = app.mpv.take() {
+        mpv.shutdown().await;
+    }
+
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
+    terminal.show_cursor()?;
+
+    Ok(())
+}
