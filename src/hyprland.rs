@@ -84,10 +84,10 @@ fn lua_set_opacity_script(addr: &str, opacity: f32) -> Option<String> {
     if !is_valid_hex_addr(addr) {
         return None;
     }
-    let clamped = opacity.clamp(0.30, 1.00);
+    let clamped = opacity.clamp(0.00, 1.00);
     Some(format!(
-        "hl.dsp.window.set_prop({{ window = 'address:{addr}', prop = 'alpha', value = {clamped:.2} }}); \
-         hl.dsp.window.set_prop({{ window = 'address:{addr}', prop = 'alphainactive', value = {clamped:.2} }})"
+        "hl.dispatch(hl.dsp.window.set_prop({{ window = 'address:{addr}', prop = 'opacity', value = {clamped:.2} }})); \
+         hl.dispatch(hl.dsp.window.set_prop({{ window = 'address:{addr}', prop = 'opacity_inactive', value = {clamped:.2} }}))"
     ))
 }
 

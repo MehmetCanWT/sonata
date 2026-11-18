@@ -117,7 +117,7 @@ impl Default for AppConfig {
             enhancer_mode: EnhancerMode::HiResCrystal,
             hifi_substitution: true,
             transparent_bg: true,
-            hyprland_opacity: 0.88,
+            hyprland_opacity: 0.90,
             suppress_image_warning: false,
             preferred_browser: None,
             spotify_playlists: Vec::new(),
