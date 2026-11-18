@@ -24,7 +24,7 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     } else {
         let root = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(10), Constraint::Length(5)])
+            .constraints([Constraint::Min(10), Constraint::Length(6)])
             .split(area);
 
         // Mirrored layout: Now Playing + Lyrics (left) | Tracks (center) | Library (right)
@@ -188,12 +188,12 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
+            Constraint::Length(1),
         ])
         .split(inner);
 
     app.ui_rects.player_top = rows[0];
     app.ui_rects.progress_bar = rows[1];
-    app.ui_rects.volume_bar = Rect::default();
 
     let (title, artist) = match app.playback.current_track() {
         Some(t) => (t.title.as_str(), t.artist.as_str()),
@@ -203,50 +203,98 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let play_icon = if app.playback.loading_track {
         "◌"
     } else if app.playback.paused {
-        "⏸"
-    } else {
         "▶"
+    } else {
+        "⏸"
     };
 
-    let top_line = Line::from(vec![
+    let top_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(14),
+            Constraint::Min(16),
+            Constraint::Length(36),
+        ])
+        .split(rows[0]);
+
+    let ctrl_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(4),
+            Constraint::Length(6),
+            Constraint::Length(4),
+        ])
+        .split(top_cols[0]);
+    app.ui_rects.ctrl_prev = ctrl_cols[0];
+    app.ui_rects.ctrl_play = ctrl_cols[1];
+    app.ui_rects.ctrl_next = ctrl_cols[2];
+
+    frame.render_widget(
+        Paragraph::new(" ⏮ ")
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(app.theme.muted)),
+        ctrl_cols[0],
+    );
+    frame.render_widget(
+        Paragraph::new(format!(" {play_icon} "))
+            .alignment(Alignment::Center)
+            .style(
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ctrl_cols[1],
+    );
+    frame.render_widget(
+        Paragraph::new(" ⏭ ")
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(app.theme.muted)),
+        ctrl_cols[2],
+    );
+
+    let title_line = Line::from(vec![
         Span::styled(
-            format!(" {play_icon} {title} "),
+            format!(" {title} "),
             Style::default()
-                .fg(app.theme.accent)
+                .fg(app.theme.fg)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            format!("— {artist}   "),
-            Style::default().fg(app.theme.muted),
-        ),
+        Span::styled(format!("— {artist}"), Style::default().fg(app.theme.muted)),
+    ]);
+    frame.render_widget(
+        Paragraph::new(title_line).alignment(Alignment::Center),
+        top_cols[1],
+    );
+
+    let badges = Line::from(vec![
         Span::styled(
             format!("[{}]", app.playback.stream_badge),
             Style::default().fg(app.theme.success),
         ),
         Span::raw(" "),
         Span::styled(
-            format!("[DSP: {} (e)]", app.playback.enhancer.label()),
+            format!("[{}] ", app.playback.enhancer.label()),
             Style::default().fg(app.theme.warning),
         ),
     ]);
     frame.render_widget(
-        Paragraph::new(top_line).alignment(Alignment::Center),
-        rows[0],
+        Paragraph::new(badges).alignment(Alignment::Right),
+        top_cols[2],
     );
 
     render_progress_row(frame, rows[1], app);
 
     let bottom_cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(22), Constraint::Min(10)])
-        .split(rows[2]);
+        .constraints([Constraint::Length(24), Constraint::Min(10)])
+        .split(rows[3]);
 
     let vol_cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Length(5),
-            Constraint::Length(10),
-            Constraint::Length(6),
+            Constraint::Length(12),
+            Constraint::Length(7),
         ])
         .split(bottom_cols[0]);
     app.ui_rects.volume_bar = vol_cols[1];
@@ -256,13 +304,13 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         vol_cols[0],
     );
     let vol_ratio = (app.playback.volume as f64 / 100.0).clamp(0.0, 1.0);
-    let vol_bar = smooth_bar(vol_ratio, vol_cols[1].width as usize);
     frame.render_widget(
-        Paragraph::new(Span::styled(
-            vol_bar,
-            Style::default()
-                .fg(app.theme.accent)
-                .bg(app.theme.highlight_bg),
+        Paragraph::new(volume_line(
+            vol_ratio,
+            vol_cols[1].width as usize,
+            app.theme.accent,
+            app.theme.fg,
+            app.theme.border,
         )),
         vol_cols[1],
     );
@@ -292,6 +340,37 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         Paragraph::new(bottom_line).alignment(Alignment::Left),
         bottom_cols[1],
     );
+}
+
+fn volume_line(
+    ratio: f64,
+    width: usize,
+    fill_fg: ratatui::style::Color,
+    thumb_fg: ratatui::style::Color,
+    empty_fg: ratatui::style::Color,
+) -> Line<'static> {
+    if width == 0 {
+        return Line::default();
+    }
+    let filled = ((ratio.clamp(0.0, 1.0) * width as f64).round() as usize).min(width);
+    let mut spans = Vec::with_capacity(3);
+    if filled > 1 {
+        spans.push(Span::styled(
+            "━".repeat(filled - 1),
+            Style::default().fg(fill_fg),
+        ));
+    }
+    if filled > 0 {
+        spans.push(Span::styled("●", Style::default().fg(thumb_fg)));
+    }
+    let rest = width.saturating_sub(filled);
+    if rest > 0 {
+        spans.push(Span::styled(
+            "─".repeat(rest),
+            Style::default().fg(empty_fg),
+        ));
+    }
+    Line::from(spans)
 }
 
 fn render_progress_row(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
