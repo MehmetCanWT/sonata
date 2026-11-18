@@ -150,6 +150,10 @@ impl AppConfig {
         Self::cache_dir().join("art")
     }
 
+    pub fn audio_cache_dir() -> PathBuf {
+        Self::cache_dir().join("audio")
+    }
+
     pub fn config_path() -> PathBuf {
         Self::config_dir().join("config.toml")
     }

@@ -1,5 +1,5 @@
 use crate::config::AppConfig;
-use crate::providers::Track;
+use crate::providers::{Playlist, Track};
 use rusqlite::{params, Connection};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -34,6 +34,11 @@ impl CacheDb {
                  playlist_key TEXT PRIMARY KEY,
                  name TEXT NOT NULL,
                  tracks_json TEXT NOT NULL,
+                 updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS library_cache (
+                 library_key TEXT PRIMARY KEY,
+                 playlists_json TEXT NOT NULL,
                  updated_at INTEGER NOT NULL
              );",
         );
@@ -118,6 +123,31 @@ impl CacheDb {
                     let _ = guard.execute("DELETE FROM playlist_cache", []);
                 }
             }
+        }
+    }
+
+    pub fn get_library(&self, key: &str) -> Option<Vec<Playlist>> {
+        let guard = self.conn.lock().ok()?;
+        let json: String = guard
+            .query_row(
+                "SELECT playlists_json FROM library_cache WHERE library_key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .ok()?;
+        serde_json::from_str(&json).ok()
+    }
+
+    pub fn put_library(&self, key: &str, playlists: &[Playlist]) {
+        let Ok(json) = serde_json::to_string(playlists) else {
+            return;
+        };
+        let now = now_secs() as i64;
+        if let Ok(guard) = self.conn.lock() {
+            let _ = guard.execute(
+                "INSERT OR REPLACE INTO library_cache (library_key, playlists_json, updated_at) VALUES (?1, ?2, ?3)",
+                params![key, json, now],
+            );
         }
     }
 }

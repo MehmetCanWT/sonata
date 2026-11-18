@@ -1,5 +1,6 @@
 use crate::auth::ExtractedCookies;
 use crate::cache::CacheDb;
+use crate::config::AppConfig;
 use crate::providers::ytmusic::YtMusicClient;
 use crate::providers::{ProviderSource, Track};
 use anyhow::{anyhow, Result};
@@ -18,6 +19,81 @@ use tokio::sync::Mutex;
 const SAAVN_API: &str = "https://www.jiosaavn.com/api.php";
 const MAX_MEM_CACHE_ENTRIES: usize = 256;
 const MEM_CACHE_TTL: Duration = Duration::from_secs(20 * 60);
+const MAX_AUDIO_CACHE_FILES: usize = 20;
+const MAX_AUDIO_DOWNLOAD_BYTES: usize = 80 * 1024 * 1024;
+
+fn sanitize_track_id(id: &str) -> String {
+    let cleaned: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if cleaned.is_empty() {
+        "track".to_string()
+    } else {
+        cleaned
+    }
+}
+
+fn audio_file_paths(track_id: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let safe = sanitize_track_id(track_id);
+    let dir = AppConfig::audio_cache_dir();
+    (
+        dir.join(format!("{safe}.audio")),
+        dir.join(format!("{safe}.badge")),
+    )
+}
+
+fn cached_audio_stream(track_id: &str) -> Option<ResolvedStream> {
+    let (audio_path, badge_path) = audio_file_paths(track_id);
+    let meta = std::fs::metadata(&audio_path).ok()?;
+    if meta.len() < 8192 {
+        return None;
+    }
+    let badge = std::fs::read_to_string(&badge_path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Hi-Fi · Cached".to_string());
+    Some(ResolvedStream {
+        url: audio_path.to_string_lossy().into_owned(),
+        badge: if badge.contains("Cached") {
+            badge
+        } else {
+            format!("{badge} · Cached")
+        },
+    })
+}
+
+fn prune_audio_cache() {
+    let dir = AppConfig::audio_cache_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    let mut files: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("audio"))
+        .filter_map(|p| {
+            let mtime = std::fs::metadata(&p).ok()?.modified().ok()?;
+            Some((mtime, p))
+        })
+        .collect();
+    if files.len() <= MAX_AUDIO_CACHE_FILES {
+        return;
+    }
+    files.sort_by_key(|(t, _)| *t);
+    let remove_count = files.len() - MAX_AUDIO_CACHE_FILES;
+    for (_, path) in files.into_iter().take(remove_count) {
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("badge"));
+    }
+}
 
 struct TempFileGuard(std::path::PathBuf);
 
@@ -76,12 +152,15 @@ impl StreamResolver {
         }
     }
 
-    /// Stage 1: Instant playback path — returns cached Hi-Fi/YT stream or resolves YouTube immediately.
+    /// Stage 1: Instant playback path — returns local cached audio, cached Hi-Fi/YT stream, or resolves YouTube immediately.
     pub async fn resolve_fast(
         &self,
         track: &Track,
         prefer_hifi_cache: bool,
     ) -> Result<ResolvedStream> {
+        if let Some(local) = cached_audio_stream(&track.id) {
+            return Ok(local);
+        }
         let hifi_key = format!("hifi:{}", track.id);
         if prefer_hifi_cache {
             {
@@ -175,6 +254,58 @@ impl StreamResolver {
         let mut guard = self.cache.lock().await;
         insert_bounded_cache(&mut guard, hifi_key, saavn.clone());
         Some(saavn)
+    }
+
+    pub async fn prefetch_hifi_audio(&self, track: &Track, allow_hifi: bool) {
+        if cached_audio_stream(&track.id).is_some() {
+            return;
+        }
+        let Ok(fast) = self.resolve_fast(track, allow_hifi).await else {
+            return;
+        };
+        let best = if allow_hifi {
+            self.resolve_hifi_upgrade(track, &fast.badge)
+                .await
+                .unwrap_or(fast)
+        } else {
+            fast
+        };
+        if !best.url.starts_with("http") {
+            return;
+        }
+        let Ok(resp) = self.http.get(&best.url).send().await else {
+            return;
+        };
+        if !resp.status().is_success() {
+            return;
+        }
+        if resp
+            .content_length()
+            .is_some_and(|len| len as usize > MAX_AUDIO_DOWNLOAD_BYTES)
+        {
+            return;
+        }
+        let Ok(bytes) = resp.bytes().await else {
+            return;
+        };
+        if bytes.len() < 8192 || bytes.len() > MAX_AUDIO_DOWNLOAD_BYTES {
+            return;
+        }
+        let (audio_path, badge_path) = audio_file_paths(&track.id);
+        let badge = best.badge;
+        let _ = tokio::task::spawn_blocking(move || {
+            let _ = std::fs::create_dir_all(AppConfig::audio_cache_dir());
+            let part_path = audio_path.with_extension("part");
+            if std::fs::write(&part_path, &bytes).is_ok()
+                && std::fs::rename(&part_path, &audio_path).is_ok()
+            {
+                let _ = std::fs::write(&badge_path, badge);
+                prune_audio_cache();
+            } else {
+                let _ = std::fs::remove_file(&part_path);
+            }
+        })
+        .await;
     }
 
     async fn try_jiosaavn(&self, track: &Track) -> Option<ResolvedStream> {
@@ -541,5 +672,11 @@ mod tests {
             );
         }
         assert_eq!(map.len(), MAX_MEM_CACHE_ENTRIES);
+    }
+
+    #[test]
+    fn sanitizes_track_id_for_audio_cache() {
+        assert_eq!(sanitize_track_id("../evil/id?x=1"), "___evil_id_x_1");
+        assert_eq!(sanitize_track_id("dQw4w9WgXcQ"), "dQw4w9WgXcQ");
     }
 }

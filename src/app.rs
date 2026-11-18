@@ -195,6 +195,19 @@ impl App {
         let mut track_table_state = TableState::default();
         track_table_state.select(Some(0));
 
+        let ytm_playlists = cache_db
+            .as_ref()
+            .and_then(|db| db.get_library("ytm"))
+            .unwrap_or_default();
+        let spotify_playlists = cache_db
+            .as_ref()
+            .and_then(|db| db.get_library("spf"))
+            .unwrap_or_default();
+        let imported_playlists = cache_db
+            .as_ref()
+            .and_then(|db| db.get_library("imported"))
+            .unwrap_or_default();
+
         let mut app = Self {
             config,
             themes,
@@ -214,9 +227,9 @@ impl App {
             sidebar_items,
             sidebar_idx: 0,
             sidebar_state,
-            ytm_playlists: Vec::new(),
-            spotify_playlists: Vec::new(),
-            imported_playlists: Vec::new(),
+            ytm_playlists,
+            spotify_playlists,
+            imported_playlists,
             visible_tracks: Vec::new(),
             current_playlist_id: None,
             tracks_heading: "Search (press /)".to_string(),
@@ -239,6 +252,7 @@ impl App {
             tx,
             last_exported_state: None,
         };
+        app.rebuild_sidebar();
         app.sync_appearance();
         app
     }
@@ -309,6 +323,11 @@ impl App {
                     self.cache_db.clone(),
                 );
 
+                if let Some(db) = &self.cache_db {
+                    db.put_library("ytm", &ytm_playlists);
+                    db.put_library("spf", &spotify_playlists);
+                    db.put_library("imported", &imported_playlists);
+                }
                 self.ytm_playlists = ytm_playlists;
                 self.spotify_playlists = spotify_playlists;
                 self.imported_playlists = imported_playlists;
@@ -347,6 +366,7 @@ impl App {
                     self.playback.loading_track = false;
                     self.playback.paused = false;
                     self.playback.stream_badge = stream.badge.clone();
+                    let is_remote = stream.url.starts_with("http");
                     if let Some(mpv) = &self.mpv {
                         let mpv = Arc::clone(mpv);
                         let url = stream.url;
@@ -357,7 +377,7 @@ impl App {
                             }
                         });
                     }
-                    if self.config.hifi_substitution {
+                    if self.config.hifi_substitution && is_remote {
                         let resolver = self.resolver.clone();
                         let tx = self.tx.clone();
                         let badge = stream.badge;
@@ -824,13 +844,7 @@ impl App {
         let http = self.http.clone();
         let art_url = next_track.thumbnail_url.clone();
         tokio::spawn(async move {
-            if let Ok(fast) = resolver.resolve_fast(&next_track, hifi).await {
-                if hifi {
-                    let _ = resolver
-                        .resolve_hifi_upgrade(&next_track, &fast.badge)
-                        .await;
-                }
-            }
+            resolver.prefetch_hifi_audio(&next_track, hifi).await;
         });
         if let Some(url) = art_url {
             tokio::spawn(async move {
