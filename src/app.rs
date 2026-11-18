@@ -159,6 +159,7 @@ pub struct App {
     pub cache_db: Option<CacheDb>,
     pub mpv: Option<Arc<MpvController>>,
     pub tx: mpsc::UnboundedSender<AppEvent>,
+    pub pos_anchor: Option<(f64, Instant)>,
     pub last_exported_state: Option<ExportFingerprint>,
 }
 
@@ -187,7 +188,9 @@ impl App {
         let spotify = SpotifyClient::new(http.clone(), None);
         let resolver =
             StreamResolver::new(http.clone(), ytm.clone(), cookies.clone(), cache_db.clone());
-        let playback = PlaybackState::new(config.volume, config.enhancer_mode);
+        let mut playback = PlaybackState::new(config.volume, config.enhancer_mode);
+        playback.shuffle = config.shuffle;
+        playback.repeat = config.repeat_mode;
 
         let sidebar_items = vec![SidebarEntry::Search, SidebarEntry::Queue];
         let mut sidebar_state = ListState::default();
@@ -250,6 +253,7 @@ impl App {
             cache_db,
             mpv: None,
             tx,
+            pos_anchor: None,
             last_exported_state: None,
         };
         app.rebuild_sidebar();
@@ -365,6 +369,8 @@ impl App {
                 if let Some(track) = current_track.filter(|t| t.id == track_id) {
                     self.playback.loading_track = false;
                     self.playback.paused = false;
+                    self.playback.position_secs = 0.0;
+                    self.pos_anchor = Some((0.0, Instant::now()));
                     self.playback.stream_badge = stream.badge.clone();
                     let is_remote = stream.url.starts_with("http");
                     if let Some(mpv) = &self.mpv {
@@ -452,7 +458,15 @@ impl App {
             AppEvent::Mpv(mev) => match mev {
                 MpvEvent::Position(pos) => {
                     if !self.playback.loading_track {
-                        self.playback.position_secs = pos;
+                        let cur = self.interpolated_position();
+                        if self.pos_anchor.is_none() || (pos - cur).abs() > 0.45 {
+                            self.pos_anchor = Some((pos, Instant::now()));
+                            self.playback.position_secs = pos;
+                        } else if !self.playback.paused {
+                            let blended = (cur + (pos - cur) * 0.25).max(cur);
+                            self.pos_anchor = Some((blended, Instant::now()));
+                            self.playback.position_secs = blended;
+                        }
                     }
                 }
                 MpvEvent::Duration(dur) => {
@@ -462,6 +476,12 @@ impl App {
                 }
                 MpvEvent::Paused(p) => {
                     if !self.playback.loading_track {
+                        if p {
+                            self.playback.position_secs = self.interpolated_position();
+                            self.pos_anchor = None;
+                        } else {
+                            self.pos_anchor = Some((self.playback.position_secs, Instant::now()));
+                        }
                         self.playback.paused = p;
                     }
                 }
@@ -1042,23 +1062,54 @@ impl App {
         self.set_volume(next);
     }
 
-    pub fn tick_playback(&mut self, dt_secs: f64) -> bool {
+    pub fn interpolated_position(&self) -> f64 {
+        let raw = match self.pos_anchor {
+            Some((base, at)) if !self.playback.paused && !self.playback.loading_track => {
+                base + at.elapsed().as_secs_f64()
+            }
+            _ => self.playback.position_secs,
+        };
+        if self.playback.duration_secs > 0.0 {
+            raw.clamp(0.0, self.playback.duration_secs)
+        } else {
+            raw.max(0.0)
+        }
+    }
+
+    pub fn tick_playback(&mut self) -> bool {
         if self.playback.paused
             || self.playback.loading_track
             || self.playback.current_track().is_none()
         {
             return false;
         }
-        let dur = self.playback.duration_secs;
-        if dur > 0.0 {
-            self.playback.position_secs = (self.playback.position_secs + dt_secs).min(dur);
-        } else {
-            self.playback.position_secs += dt_secs;
-        }
+        self.playback.position_secs = self.interpolated_position();
         true
     }
 
-    pub fn seek(&self, secs: f64) {
+    pub fn toggle_shuffle(&mut self) {
+        self.playback.shuffle = !self.playback.shuffle;
+        self.config.shuffle = self.playback.shuffle;
+        let _ = self.config.save();
+        self.status_line = format!(
+            "Shuffle: {}",
+            if self.playback.shuffle { "On" } else { "Off" }
+        );
+    }
+
+    pub fn cycle_repeat(&mut self) {
+        self.playback.repeat = self.playback.repeat.next();
+        self.config.repeat_mode = self.playback.repeat;
+        let _ = self.config.save();
+        self.status_line = format!("Repeat: {}", self.playback.repeat.label());
+    }
+
+    pub fn seek(&mut self, secs: f64) {
+        let target = (self.interpolated_position() + secs).max(0.0);
+        self.playback.position_secs = target;
+        if !self.playback.paused {
+            self.pos_anchor = Some((target, Instant::now()));
+        }
         if let Some(mpv) = &self.mpv {
             let mpv = Arc::clone(mpv);
             tokio::spawn(async move {
@@ -1067,11 +1118,16 @@ impl App {
         }
     }
 
-    pub fn seek_to(&self, secs: f64) {
+    pub fn seek_to(&mut self, secs: f64) {
+        let target = secs.max(0.0);
+        self.playback.position_secs = target;
+        if !self.playback.paused {
+            self.pos_anchor = Some((target, Instant::now()));
+        }
         if let Some(mpv) = &self.mpv {
             let mpv = Arc::clone(mpv);
             tokio::spawn(async move {
-                let _ = mpv.seek_absolute(secs).await;
+                let _ = mpv.seek_absolute(target).await;
             });
         }
     }

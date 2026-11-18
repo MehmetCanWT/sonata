@@ -8,7 +8,7 @@ use crate::providers::format_duration;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Gauge, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui::Frame;
 
 pub fn render(frame: &mut Frame<'_>, app: &mut App) {
@@ -123,24 +123,7 @@ fn render_mini_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         rows[0],
     );
 
-    let pos = app.playback.position_secs.max(0.0);
-    let dur = app.playback.duration_secs.max(1.0);
-    let ratio = (pos / dur).clamp(0.0, 1.0);
-    let time_label = format!(
-        "{} / {}",
-        format_duration(Some(pos as u64)),
-        format_duration(Some(app.playback.duration_secs as u64))
-    );
-    let gauge = Gauge::default()
-        .use_unicode(true)
-        .gauge_style(
-            Style::default()
-                .fg(app.theme.accent)
-                .bg(app.theme.highlight_bg),
-        )
-        .ratio(ratio)
-        .label(time_label);
-    frame.render_widget(gauge, rows[1]);
+    render_progress_row(frame, rows[1], app);
 
     let play_label = if app.playback.paused {
         " ▶ Play "
@@ -251,25 +234,7 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         rows[0],
     );
 
-    let pos = app.playback.position_secs.max(0.0);
-    let dur = app.playback.duration_secs.max(1.0);
-    let ratio = (pos / dur).clamp(0.0, 1.0);
-    let time_label = format!(
-        "{} / {}",
-        format_duration(Some(pos as u64)),
-        format_duration(Some(app.playback.duration_secs as u64))
-    );
-
-    let gauge = Gauge::default()
-        .use_unicode(true)
-        .gauge_style(
-            Style::default()
-                .fg(app.theme.accent)
-                .bg(app.theme.highlight_bg),
-        )
-        .ratio(ratio)
-        .label(time_label);
-    frame.render_widget(gauge, rows[1]);
+    render_progress_row(frame, rows[1], app);
 
     let bottom_cols = Layout::default()
         .direction(Direction::Horizontal)
@@ -326,6 +291,50 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     frame.render_widget(
         Paragraph::new(bottom_line).alignment(Alignment::Left),
         bottom_cols[1],
+    );
+}
+
+fn render_progress_row(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
+    let pos = app.interpolated_position();
+    let dur = app.playback.duration_secs.max(1.0);
+    let ratio = (pos / dur).clamp(0.0, 1.0);
+    let left_label = format!(" {:>5} ", format_duration(Some(pos as u64)));
+    let right_label = format!(
+        " {:<5} ",
+        format_duration(Some(app.playback.duration_secs as u64))
+    );
+
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(left_label.len() as u16),
+            Constraint::Min(8),
+            Constraint::Length(right_label.len() as u16),
+        ])
+        .split(area);
+
+    app.ui_rects.progress_bar = cols[1];
+
+    frame.render_widget(
+        Paragraph::new(Span::styled(left_label, Style::default().fg(app.theme.fg))),
+        cols[0],
+    );
+    let bar = smooth_bar(ratio, cols[1].width as usize);
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            bar,
+            Style::default()
+                .fg(app.theme.accent)
+                .bg(app.theme.highlight_bg),
+        )),
+        cols[1],
+    );
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            right_label,
+            Style::default().fg(app.theme.muted),
+        )),
+        cols[2],
     );
 }
 

@@ -3,9 +3,12 @@ pub mod mpv;
 use crate::config::EnhancerMode;
 use crate::providers::Track;
 pub use mpv::{MpvController, MpvEvent};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum RepeatMode {
+    #[default]
     Off,
     All,
     One,

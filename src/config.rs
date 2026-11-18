@@ -1,3 +1,4 @@
+use crate::player::RepeatMode;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -98,6 +99,8 @@ impl ProviderMode {
 pub struct AppConfig {
     pub theme: String,
     pub volume: u8,
+    pub shuffle: bool,
+    pub repeat_mode: RepeatMode,
     pub provider_mode: ProviderMode,
     pub enhancer_mode: EnhancerMode,
     pub hifi_substitution: bool,
@@ -113,6 +116,8 @@ impl Default for AppConfig {
         Self {
             theme: "Catppuccin Mocha".to_string(),
             volume: 85,
+            shuffle: false,
+            repeat_mode: RepeatMode::Off,
             provider_mode: ProviderMode::Both,
             enhancer_mode: EnhancerMode::HiResCrystal,
             hifi_substitution: true,

@@ -111,7 +111,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    let mut smooth_tick = tokio::time::interval(std::time::Duration::from_millis(80));
+    let mut smooth_tick = tokio::time::interval(std::time::Duration::from_millis(33));
     smooth_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     terminal.draw(|f| ui::render(f, &mut app))?;
@@ -119,7 +119,7 @@ async fn main() -> Result<()> {
     while !app.should_quit {
         tokio::select! {
             _ = smooth_tick.tick(), if !app.playback.paused && !app.playback.loading_track && app.playback.current_track().is_some() => {
-                if app.tick_playback(0.08) {
+                if app.tick_playback() {
                     terminal.draw(|f| ui::render(f, &mut app))?;
                     app.export_now_playing();
                 }
@@ -158,6 +158,7 @@ async fn main() -> Result<()> {
     app.clear_kitty_images();
     app.clear_now_playing();
     app.restore_hyprland_opacity();
+    let _ = app.config.save();
     if let Some(mpv) = app.mpv.take() {
         mpv.shutdown().await;
     }

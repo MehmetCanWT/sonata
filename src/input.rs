@@ -217,17 +217,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('+') | KeyCode::Char('=') => app.adjust_volume(5),
         KeyCode::Char('-') | KeyCode::Char('_') => app.adjust_volume(-5),
         KeyCode::Char('e') => app.cycle_enhancer(),
-        KeyCode::Char('s') => {
-            app.playback.shuffle = !app.playback.shuffle;
-            app.status_line = format!(
-                "Shuffle: {}",
-                if app.playback.shuffle { "On" } else { "Off" }
-            );
-        }
-        KeyCode::Char('r') => {
-            app.playback.repeat = app.playback.repeat.next();
-            app.status_line = format!("Repeat: {}", app.playback.repeat.label());
-        }
+        KeyCode::Char('s') => app.toggle_shuffle(),
+        KeyCode::Char('r') => app.cycle_repeat(),
         KeyCode::Char('t') => {
             let cur_idx = app
                 .themes
