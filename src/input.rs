@@ -204,16 +204,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             FocusPane::SearchInput => {}
         },
         KeyCode::Char(' ') => app.toggle_pause(),
-        KeyCode::Char('n') => {
-            if let Some(next) = app.playback.next_index() {
-                app.play_queue_index(next);
-            }
-        }
-        KeyCode::Char('p') => {
-            if let Some(prev) = app.playback.prev_index() {
-                app.play_queue_index(prev);
-            }
-        }
+        KeyCode::Char('n') => app.play_next_track(),
+        KeyCode::Char('p') => app.play_prev_track(),
         KeyCode::Char('>') | KeyCode::Char('.') => app.seek(5.0),
         KeyCode::Char('<') | KeyCode::Char(',') => app.seek(-5.0),
         KeyCode::Char('+') | KeyCode::Char('=') => app.adjust_volume(5),
@@ -243,6 +235,27 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
 
 pub fn handle_mouse(app: &mut App, mouse: MouseEvent) {
     if app.modal != ActiveModal::None {
+        let delta: isize = match mouse.kind {
+            MouseEventKind::ScrollUp => -1,
+            MouseEventKind::ScrollDown => 1,
+            _ => return,
+        };
+        let theme_count = app.themes.len();
+        let writable_count = app.writable_ytm_playlists().len();
+        match &mut app.modal {
+            ActiveModal::ThemePicker(sel, _) if theme_count > 0 => {
+                let next = ((*sel as isize + delta).rem_euclid(theme_count as isize)) as usize;
+                *sel = next;
+                app.apply_theme_by_index(next);
+            }
+            ActiveModal::Settings(sel) => {
+                *sel = ((*sel as isize + delta).rem_euclid(6)) as usize;
+            }
+            ActiveModal::AddToPlaylist(sel) if writable_count > 0 => {
+                *sel = ((*sel as isize + delta).rem_euclid(writable_count as isize)) as usize;
+            }
+            _ => {}
+        }
         return;
     }
 
@@ -277,9 +290,9 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) {
             if let Some(target) = app.dragging_split {
                 resize_split(app, target, x, y);
             } else if contains(rects.volume_bar, x, y) && rects.volume_bar.width > 0 {
-                let rel = (x.saturating_sub(rects.volume_bar.x) + 1) as f64
-                    / rects.volume_bar.width as f64;
-                app.set_volume((rel.clamp(0.0, 1.0) * 100.0).round() as u8);
+                let denom = rects.volume_bar.width.saturating_sub(1).max(1) as f64;
+                let rel = x.saturating_sub(rects.volume_bar.x) as f64 / denom;
+                app.set_volume((rel.clamp(0.0, 1.0) * 100.0).round() as u8, false);
             } else if contains(rects.progress_bar, x, y)
                 && app.playback.duration_secs > 1.0
                 && rects.progress_bar.width > 0
@@ -293,6 +306,7 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) {
             if app.dragging_split.take().is_some() {
                 let _ = app.config.save();
             }
+            app.flush_config();
         }
         MouseEventKind::Down(MouseButton::Left) => {
             if rects.main_area.width > 0
@@ -327,15 +341,11 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) {
                     app.last_art_click = Some(now);
                 }
             } else if contains(rects.ctrl_prev, x, y) {
-                if let Some(prev) = app.playback.prev_index() {
-                    app.play_queue_index(prev);
-                }
+                app.play_prev_track();
             } else if contains(rects.ctrl_play, x, y) {
                 app.toggle_pause();
             } else if contains(rects.ctrl_next, x, y) {
-                if let Some(next) = app.playback.next_index() {
-                    app.play_queue_index(next);
-                }
+                app.play_next_track();
             } else if contains(rects.search_bar, x, y) {
                 app.focus = FocusPane::SearchInput;
             } else if contains(rects.sidebar_inner, x, y) {
@@ -362,9 +372,9 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) {
                     }
                 }
             } else if contains(rects.volume_bar, x, y) && rects.volume_bar.width > 0 {
-                let rel = (x.saturating_sub(rects.volume_bar.x) + 1) as f64
-                    / rects.volume_bar.width as f64;
-                app.set_volume((rel.clamp(0.0, 1.0) * 100.0).round() as u8);
+                let denom = rects.volume_bar.width.saturating_sub(1).max(1) as f64;
+                let rel = x.saturating_sub(rects.volume_bar.x) as f64 / denom;
+                app.set_volume((rel.clamp(0.0, 1.0) * 100.0).round() as u8, true);
             } else if contains(rects.progress_bar, x, y) {
                 if app.playback.duration_secs > 1.0 && rects.progress_bar.width > 0 {
                     let rel = (x.saturating_sub(rects.progress_bar.x)) as f64

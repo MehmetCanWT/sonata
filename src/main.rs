@@ -75,6 +75,18 @@ async fn main() -> Result<()> {
     // Query terminal graphics protocol and font metrics before entering alternate screen
     let picker = detect_picker();
 
+    let orig_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(
+            io::stdout(),
+            LeaveAlternateScreen,
+            DisableMouseCapture,
+            crossterm::cursor::Show
+        );
+        orig_hook(info);
+    }));
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -114,10 +126,29 @@ async fn main() -> Result<()> {
     let mut smooth_tick = tokio::time::interval(std::time::Duration::from_millis(33));
     smooth_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    #[cfg(unix)]
+    let (mut sigterm, mut sighup) = (
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?,
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?,
+    );
+
     terminal.draw(|f| ui::render(f, &mut app))?;
 
     while !app.should_quit {
+        #[cfg(unix)]
+        let term_sig = async {
+            tokio::select! {
+                _ = sigterm.recv() => {}
+                _ = sighup.recv() => {}
+            }
+        };
+        #[cfg(not(unix))]
+        let term_sig = std::future::pending::<()>();
+
         tokio::select! {
+            _ = term_sig => {
+                app.should_quit = true;
+            }
             _ = smooth_tick.tick(), if !app.playback.paused && !app.playback.loading_track && app.playback.current_track().is_some() => {
                 if app.tick_playback() {
                     terminal.draw(|f| ui::render(f, &mut app))?;

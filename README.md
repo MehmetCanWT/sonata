@@ -18,19 +18,20 @@ A fast, modular Rust terminal music player for **YouTube Music** and **Spotify**
   - Keyless Spotify library loading (`sp_dc`) and instant public Spotify playlist URL import (`i`).
   - Switch active providers anytime in Settings (`S`): **Both (YTM + Spotify)**, **YouTube Music Only**, or **Spotify Only**.
 - **Instant Playback + Background Hi-Fi Upgrade**:
-  - Starts streaming immediately via YouTube Music (`yt-dlp`), then upgrades seamlessly in the background to 320kbps AAC (JioSaavn bit-exact match) from the current playback timestamp without interrupting listening.
-  - Live-switchable `mpv` audio DSP presets (`e`): `Hi-Res Crystal` (SoXR 96kHz + Crystalizer + Stereo + Limiter), `Spatial Wide`, `Warm Bass`, and `Bit-Perfect`.
-- **Persistent SQLite Disk Cache**:
-  - Caches resolved stream URLs (respecting YouTube `expire=` timestamps) and playlist tracks in `~/.cache/sonata/sonata_cache.db` (WAL mode) for instant startup and playlist switching.
+  - Starts streaming immediately via YouTube Music (`yt-dlp`), then upgrades seamlessly via FIFO `mpv` IPC (`loadfile` native `start` timestamp resume) to 320kbps AAC (JioSaavn bit-exact match) without interrupting playback, with automatic retry on expired stream URLs.
+  - Consistent Shuffle lookahead & playback history (`n` / `p`), persisted Shuffle/Repeat/Volume settings, and live-switchable `mpv` audio DSP presets (`e`): `Hi-Res Crystal` (SoXR 96kHz + Crystalizer + Stereo + Limiter), `Spatial Wide`, `Warm Bass`, and `Bit-Perfect`.
+- **Persistent SQLite Disk Cache & Hi-Res Prefetch**:
+  - Caches library playlists, playlist tracks (instant startup with silent background refresh), and resolved stream URLs in `~/.cache/sonata/sonata_cache.db` (WAL mode).
+  - Pre-downloads upcoming tracks in Hi-Res under `~/.cache/sonata/audio/` (bounded to the 20 most recent tracks) for zero-wait playback.
 - **Pixel-Perfect HD Album Art**:
-  - Direct chunked Kitty Graphics Protocol rendering (optimized for Ghostty, Kitty, WezTerm, Foot), with Sixel/iTerm2/Halfblock support.
+  - Direct chunked Kitty Graphics Protocol rendering (optimized for Ghostty, Kitty, WezTerm, Foot) with 1:1 aspect-matched artwork framing and Sixel/iTerm2/Halfblock support.
 - **Real-Time Synced Lyrics**:
-  - Multi-source fetcher (LRCLIB, KuGou, YouTube Music native, Genius) with local caching and high-contrast pure-white active line highlighting.
+  - Multi-source fetcher (LRCLIB, KuGou, YouTube Music native, Genius) with strict title/artist/duration match validation, wrapped-line centering, local caching, and high-contrast pure-white active line highlighting.
 - **Hyprland Glass Transparency & Custom Themes**:
-  - Transparent TUI background (`Color::Reset`) plus automatic Hyprland active & inactive window opacity (`50%`–`100%` in `10%` steps via `hl.dispatch(hl.dsp.window.set_prop(...))`, restored to `1.0` on exit).
+  - Transparent TUI background (`Color::Reset`) plus automatic Hyprland active & inactive window opacity (`50%`–`100%` in `10%` steps via `hl.dispatch(hl.dsp.window.set_prop(...))`, restored cleanly on exit or `SIGTERM`/`SIGHUP`).
   - Ships with `Catppuccin Mocha`, `Ghostty Dark`, `Tokyo Night`, `Gruvbox Dark`, `Rosé Pine`, and `Nord`, plus custom `.toml` themes in `~/.config/sonata/themes/*.toml`.
-- **Full Mouse Support & 3-Tier Responsive Mini Mode**:
-  - Click tracks/playlists/buttons, scroll lists and volume, seek on the progress bar, and double-click Album Art (or press `m`) to toggle Mini Mode.
+- **Full Mouse Support, Resizable Panes & 3-Tier Mini Mode**:
+  - Smooth 30 FPS sub-block progress bar, interactive `0–100%` line volume slider, mouse-drag and keyboard (`H`/`L`) pane resizing, modal scroll navigation, and double-click Album Art (or press `m`) to toggle Mini Mode.
 
 ## Keybindings & Mouse
 
@@ -38,10 +39,11 @@ A fast, modular Rust terminal music player for **YouTube Music** and **Spotify**
 |---|---|
 | `Tab` / `h` / `l` | Switch between Sidebar and Track List |
 | `↑` / `↓` / `j` / `g` / `G` | Navigate lists |
+| `H` / `L` | Resize focused pane width |
 | `/` | Search YouTube Music & Spotify |
 | `Enter` | Open playlist / Play selected track |
 | `Space` | Play / Pause |
-| `n` / `p` | Next / Previous track |
+| `n` / `p` | Next / Previous track (follows Shuffle history) |
 | `<` / `>` | Seek -5s / +5s |
 | `-` / `+` | Volume down / up |
 | `e` | Cycle Audio Enhancer DSP preset |
@@ -56,7 +58,7 @@ A fast, modular Rust terminal music player for **YouTube Music** and **Spotify**
 | `k` / `?` | Open / Close Keybindings menu |
 | `q` / `Ctrl+C` | Quit |
 
-**Mouse**: Left-click to select/play tracks or control mini-player buttons, click the progress bar to seek, scroll over lists to navigate, and scroll over the player bar to adjust volume.
+**Mouse**: Drag panel borders or the Album Art/Lyrics divider to resize; click or drag the `0–100%` volume slider and progress bar; click tracks/playlists/controls; double-click Album Art for Mini Mode; scroll lists, player bar volume, and inside Theme/Settings/Playlist modals.
 
 ## Custom Themes & Transparency Config
 

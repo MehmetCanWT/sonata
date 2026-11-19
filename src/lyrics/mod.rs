@@ -94,6 +94,50 @@ pub fn sanitize_title(title: &str) -> String {
     step2.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn norm_words(s: &str) -> String {
+    s.to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub fn lyrics_candidate_matches(
+    req_title: &str,
+    req_artist: &str,
+    req_dur_secs: Option<u64>,
+    cand_title: &str,
+    cand_artist: &str,
+    cand_dur_secs: Option<u64>,
+) -> bool {
+    if let (Some(a), Some(b)) = (req_dur_secs, cand_dur_secs) {
+        if b > 0 && a.abs_diff(b) > 12 {
+            return false;
+        }
+    }
+    let rt = norm_words(req_title);
+    let ct = norm_words(cand_title);
+    if rt.is_empty() || ct.is_empty() {
+        return false;
+    }
+    if rt != ct && !ct.contains(&rt) && !rt.contains(&ct) {
+        return false;
+    }
+    let ra = norm_words(req_artist);
+    let ca = norm_words(cand_artist);
+    if ra.is_empty() || ra == "unknown artist" || ca.is_empty() {
+        return true;
+    }
+    ra == ca
+        || ca.contains(&ra)
+        || ra.contains(&ca)
+        || ra
+            .split_whitespace()
+            .any(|w| w.chars().count() >= 3 && ca.contains(w))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

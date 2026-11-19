@@ -4,6 +4,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Padding};
 use ratatui::Frame;
+use std::borrow::Cow;
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let is_focused = app.focus == FocusPane::Sidebar;
@@ -25,10 +26,10 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                     crate::providers::ProviderSource::Spotify => (" ● ", app.theme.success),
                 },
             };
-            let label = match entry {
-                SidebarEntry::Search => "Search".to_string(),
-                SidebarEntry::Queue => format!("Queue ({})", app.playback.queue.len()),
-                SidebarEntry::Playlist(p) => p.name.clone(),
+            let label: Cow<'_, str> = match entry {
+                SidebarEntry::Search => Cow::Borrowed("Search"),
+                SidebarEntry::Queue => Cow::Owned(format!("Queue ({})", app.playback.queue.len())),
+                SidebarEntry::Playlist(p) => Cow::Borrowed(p.name.as_str()),
             };
             ListItem::new(Line::from(vec![
                 Span::styled(prefix, Style::default().fg(color)),

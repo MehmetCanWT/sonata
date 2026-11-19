@@ -5,6 +5,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, BorderType, Borders, Cell, Padding, Paragraph, Row, Table};
 use ratatui::Frame;
+use std::borrow::Cow;
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let chunks = Layout::default()
@@ -86,10 +87,10 @@ fn render_tracks_table(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         .enumerate()
         .map(|(idx, track)| {
             let is_playing = current_id == Some(track.id.as_str());
-            let num = if is_playing {
-                "▶".to_string()
+            let num: Cow<'static, str> = if is_playing {
+                Cow::Borrowed("▶")
             } else {
-                format!("{}", idx + 1)
+                Cow::Owned(format!("{}", idx + 1))
             };
             let row_style = if is_playing {
                 Style::default()
@@ -99,16 +100,16 @@ fn render_tracks_table(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                 Style::default().fg(app.theme.fg)
             };
 
-            let title_cell = if track.liked {
-                format!("♥ {}", track.title)
+            let title_cell: Cow<'_, str> = if track.liked {
+                Cow::Owned(format!("♥ {}", track.title))
             } else {
-                track.title.clone()
+                Cow::Borrowed(track.title.as_str())
             };
 
             Row::new([
                 Cell::from(Line::from(num).centered()),
                 Cell::from(title_cell),
-                Cell::from(track.artist.clone()).style(Style::default().fg(app.theme.muted)),
+                Cell::from(track.artist.as_str()).style(Style::default().fg(app.theme.muted)),
                 Cell::from(Line::from(format_duration(track.duration_secs)).centered()),
                 Cell::from(Line::from(track.source.short_tag()).centered()),
             ])

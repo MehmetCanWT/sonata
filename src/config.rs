@@ -219,7 +219,10 @@ error = "#f38ba8"
     pub fn save(&self) -> Result<()> {
         Self::ensure_dirs()?;
         let body = toml::to_string_pretty(self)?;
-        fs::write(Self::config_path(), body)?;
+        let path = Self::config_path();
+        let tmp = path.with_extension("toml.tmp");
+        fs::write(&tmp, body)?;
+        fs::rename(&tmp, &path)?;
         Ok(())
     }
 }

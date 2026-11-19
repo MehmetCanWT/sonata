@@ -1,4 +1,4 @@
-use crate::lyrics::{parse_lrc, LyricLine};
+use crate::lyrics::{lyrics_candidate_matches, parse_lrc, LyricLine};
 use base64::Engine as _;
 use regex::Regex;
 use reqwest::Client;
@@ -58,13 +58,16 @@ pub async fn fetch_kugou_synced(
 
     let mut cand_opt: Option<(String, String)> = None;
     for (_, hash) in hashes.into_iter().take(3) {
-        if let Some(c) = search_kugou_candidate(http, Some(&hash), None, duration_secs).await {
+        if let Some(c) =
+            search_kugou_candidate(http, Some(&hash), None, title, artist, duration_secs).await
+        {
             cand_opt = Some(c);
             break;
         }
     }
     if cand_opt.is_none() {
-        cand_opt = search_kugou_candidate(http, None, Some(&keyword), duration_secs).await;
+        cand_opt =
+            search_kugou_candidate(http, None, Some(&keyword), title, artist, duration_secs).await;
     }
 
     let (id, accesskey) = cand_opt?;
@@ -103,6 +106,8 @@ async fn search_kugou_candidate(
     http: &Client,
     hash: Option<&str>,
     keyword: Option<&str>,
+    req_title: &str,
+    req_artist: &str,
     duration_secs: Option<u64>,
 ) -> Option<(String, String)> {
     let mut req = http.get("https://lyrics.kugou.com/search").query(&[
@@ -126,10 +131,43 @@ async fn search_kugou_candidate(
         .json()
         .await
         .ok()?;
-    let first = val.get("candidates")?.as_array()?.first()?;
-    let id = first.get("id").and_then(|v| v.as_str())?.to_string();
-    let key = first.get("accesskey").and_then(|v| v.as_str())?.to_string();
-    Some((id, key))
+    let candidates = val.get("candidates")?.as_array()?;
+    pick_matching_kugou_candidate(candidates, req_title, req_artist, duration_secs)
+}
+
+fn pick_matching_kugou_candidate(
+    candidates: &[Value],
+    req_title: &str,
+    req_artist: &str,
+    duration_secs: Option<u64>,
+) -> Option<(String, String)> {
+    for item in candidates {
+        let song = item.get("song").and_then(|v| v.as_str()).unwrap_or("");
+        let singer = item.get("singer").and_then(|v| v.as_str()).unwrap_or("");
+        let cand_dur_secs = item
+            .get("duration")
+            .and_then(|v| v.as_u64())
+            .map(|ms| ms / 1000)
+            .filter(|&s| s > 0);
+        if !lyrics_candidate_matches(
+            req_title,
+            req_artist,
+            duration_secs,
+            song,
+            singer,
+            cand_dur_secs,
+        ) {
+            continue;
+        }
+        let Some(id) = item.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(key) = item.get("accesskey").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        return Some((id.to_string(), key.to_string()));
+    }
+    None
 }
 
 /// Scrapes plain lyrics from Genius using BitChord's plain User-Agent pattern.
@@ -160,37 +198,21 @@ pub async fn fetch_genius_lyrics(http: &Client, title: &str, artist: &str) -> Op
             continue;
         }
         if let Some(hits) = sec.get("hits").and_then(|v| v.as_array()) {
-            let norm_title = title.to_ascii_lowercase();
             for hit in hits {
                 let Some(res) = hit.get("result") else {
                     continue;
                 };
-                let hit_title = res
-                    .get("title")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_ascii_lowercase();
+                let hit_title = res.get("title").and_then(|v| v.as_str()).unwrap_or("");
                 let hit_artist = res
                     .get("artist_names")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_ascii_lowercase();
-                if hit_title.contains(&norm_title)
-                    || norm_title.contains(&hit_title)
-                    || (!artist.is_empty() && hit_artist.contains(&artist.to_ascii_lowercase()))
-                {
+                    .unwrap_or("");
+                if lyrics_candidate_matches(title, artist, None, hit_title, hit_artist, None) {
                     song_url = res.get("url").and_then(|v| v.as_str()).map(str::to_string);
                     if song_url.is_some() {
                         break;
                     }
                 }
-            }
-            if song_url.is_none() {
-                song_url = hits
-                    .first()
-                    .and_then(|h| h.pointer("/result/url"))
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string);
             }
         }
     }
@@ -343,6 +365,35 @@ mod tests {
                 "[Chorus]",
                 "Chorus line",
             ]
+        );
+    }
+
+    #[test]
+    fn rejects_mismatched_kugou_candidates() {
+        use serde_json::json;
+        let candidates = vec![
+            json!({
+                "id": "1",
+                "accesskey": "k1",
+                "song": "Totally Different Song",
+                "singer": "Someone Else",
+                "duration": 166000
+            }),
+            json!({
+                "id": "2",
+                "accesskey": "k2",
+                "song": "Black",
+                "singer": "GAZIROVKA",
+                "duration": 166000
+            }),
+        ];
+        assert_eq!(
+            pick_matching_kugou_candidate(&candidates, "Black", "GAZIROVKA", Some(166)),
+            Some(("2".to_string(), "k2".to_string()))
+        );
+        assert_eq!(
+            pick_matching_kugou_candidate(&candidates[..1], "Black", "GAZIROVKA", Some(166)),
+            None
         );
     }
 }

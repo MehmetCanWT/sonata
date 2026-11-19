@@ -56,6 +56,11 @@ fn render_mini_layout(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     app.ui_rects.search_bar = Rect::default();
     app.ui_rects.tracks_rows = Rect::default();
     app.ui_rects.sidebar_inner = Rect::default();
+    app.ui_rects.main_area = Rect::default();
+    app.ui_rects.left_col_area = Rect::default();
+    app.ui_rects.split_left_x = 0;
+    app.ui_rects.split_right_x = 0;
+    app.ui_rects.split_art_y = 0;
     // Tier 3: Very small -> Ultra-compact mini player only (track name + timebar + controls)
     if area.width < 36 || area.height < 10 {
         app.ui_rects.album_art_box = Rect::default();
@@ -338,21 +343,57 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         vol_cols[2],
     );
 
-    let bottom_line = Line::from(vec![
+    let footer_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(38), Constraint::Fill(1)])
+        .split(bottom_cols[1]);
+
+    let shuffle_style = if app.playback.shuffle {
+        Style::default()
+            .fg(app.theme.accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(app.theme.muted)
+    };
+    let repeat_style = if app.playback.repeat != crate::player::RepeatMode::Off {
+        Style::default()
+            .fg(app.theme.accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(app.theme.muted)
+    };
+
+    let controls_line = Line::from(vec![
+        Span::styled("│ ", Style::default().fg(app.theme.border)),
         Span::styled(
-            format!(
-                "│ Shuffle: {} | Repeat: {} | Theme: {} (t) | Settings (S) | Keybinds (k)   ",
-                if app.playback.shuffle { "On" } else { "Off" },
-                app.playback.repeat.label(),
-                app.theme.name
-            ),
+            if app.playback.shuffle {
+                "Shuffle:On"
+            } else {
+                "Shuffle:Off"
+            },
+            shuffle_style,
+        ),
+        Span::styled("  ", Style::default().fg(app.theme.muted)),
+        Span::styled(
+            format!("Repeat:{}", app.playback.repeat.label()),
+            repeat_style,
+        ),
+        Span::styled(
+            format!("  {} (t)  Settings (S)  Keys (k)", app.theme.name),
             Style::default().fg(app.theme.muted),
         ),
-        Span::styled(app.status_line.as_str(), Style::default().fg(app.theme.fg)),
     ]);
     frame.render_widget(
-        Paragraph::new(bottom_line).alignment(Alignment::Left),
-        bottom_cols[1],
+        Paragraph::new(controls_line).alignment(Alignment::Left),
+        footer_cols[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            format!("{} ", app.status_line),
+            Style::default().fg(app.theme.fg),
+        ))
+        .alignment(Alignment::Right),
+        footer_cols[1],
     );
 }
 

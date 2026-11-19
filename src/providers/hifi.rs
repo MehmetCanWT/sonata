@@ -10,7 +10,7 @@ use des::Des;
 use regex::Regex;
 use reqwest::Client;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::process::Command;
@@ -127,6 +127,19 @@ pub struct ResolvedStream {
     pub badge: String,
 }
 
+struct PrefetchGuard {
+    id: String,
+    set: Arc<Mutex<HashSet<String>>>,
+}
+
+impl Drop for PrefetchGuard {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.set.try_lock() {
+            guard.remove(&self.id);
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct StreamResolver {
     http: Client,
@@ -134,6 +147,7 @@ pub struct StreamResolver {
     cookies: ExtractedCookies,
     cache: Arc<Mutex<HashMap<String, (Instant, ResolvedStream)>>>,
     cache_db: Option<CacheDb>,
+    in_flight_prefetch: Arc<Mutex<HashSet<String>>>,
 }
 
 impl StreamResolver {
@@ -149,7 +163,22 @@ impl StreamResolver {
             cookies,
             cache: Arc::new(Mutex::new(HashMap::new())),
             cache_db,
+            in_flight_prefetch: Arc::new(Mutex::new(HashSet::new())),
         }
+    }
+
+    pub async fn invalidate_stream(&self, track_id: &str) {
+        {
+            let mut guard = self.cache.lock().await;
+            guard.remove(&format!("yt:{track_id}"));
+            guard.remove(&format!("hifi:{track_id}"));
+        }
+        if let Some(db) = &self.cache_db {
+            db.invalidate_stream(track_id);
+        }
+        let (audio_path, badge_path) = audio_file_paths(track_id);
+        let _ = tokio::fs::remove_file(audio_path).await;
+        let _ = tokio::fs::remove_file(badge_path).await;
     }
 
     /// Stage 1: Instant playback path — returns local cached audio, cached Hi-Fi/YT stream, or resolves YouTube immediately.
@@ -174,10 +203,8 @@ impl StreamResolver {
             if let Some(db) = &self.cache_db {
                 if let Some((url, badge)) = db.get_stream(&hifi_key) {
                     let stream = ResolvedStream { url, badge };
-                    self.cache
-                        .lock()
-                        .await
-                        .insert(hifi_key, (Instant::now(), stream.clone()));
+                    let mut guard = self.cache.lock().await;
+                    insert_bounded_cache(&mut guard, hifi_key, stream.clone());
                     return Ok(stream);
                 }
             }
@@ -194,10 +221,8 @@ impl StreamResolver {
         if let Some(db) = &self.cache_db {
             if let Some((url, badge)) = db.get_stream(&yt_key) {
                 let stream = ResolvedStream { url, badge };
-                self.cache
-                    .lock()
-                    .await
-                    .insert(yt_key, (Instant::now(), stream.clone()));
+                let mut guard = self.cache.lock().await;
+                insert_bounded_cache(&mut guard, yt_key, stream.clone());
                 return Ok(stream);
             }
         }
@@ -239,10 +264,8 @@ impl StreamResolver {
         if let Some(db) = &self.cache_db {
             if let Some((url, badge)) = db.get_stream(&hifi_key) {
                 let stream = ResolvedStream { url, badge };
-                self.cache
-                    .lock()
-                    .await
-                    .insert(hifi_key, (Instant::now(), stream.clone()));
+                let mut guard = self.cache.lock().await;
+                insert_bounded_cache(&mut guard, hifi_key, stream.clone());
                 return Some(stream);
             }
         }
@@ -260,6 +283,17 @@ impl StreamResolver {
         if cached_audio_stream(&track.id).is_some() {
             return;
         }
+        {
+            let mut active = self.in_flight_prefetch.lock().await;
+            if !active.insert(track.id.clone()) {
+                return;
+            }
+        }
+        let _prefetch_guard = PrefetchGuard {
+            id: track.id.clone(),
+            set: Arc::clone(&self.in_flight_prefetch),
+        };
+
         let Ok(fast) = self.resolve_fast(track, allow_hifi).await else {
             return;
         };
@@ -273,10 +307,24 @@ impl StreamResolver {
         if !best.url.starts_with("http") {
             return;
         }
-        let Ok(resp) = self.http.get(&best.url).send().await else {
+        let Ok(resp) = self
+            .http
+            .get(&best.url)
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await
+        else {
             return;
         };
         if !resp.status().is_success() {
+            return;
+        }
+        let is_text = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|ct| ct.to_ascii_lowercase().starts_with("text/"));
+        if is_text {
             return;
         }
         if resp
@@ -295,7 +343,12 @@ impl StreamResolver {
         let badge = best.badge;
         let _ = tokio::task::spawn_blocking(move || {
             let _ = std::fs::create_dir_all(AppConfig::audio_cache_dir());
-            let part_path = audio_path.with_extension("part");
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let pid = std::process::id();
+            let part_path = audio_path.with_extension(format!("{pid}.{unique}.part"));
             if std::fs::write(&part_path, &bytes).is_ok()
                 && std::fs::rename(&part_path, &audio_path).is_ok()
             {

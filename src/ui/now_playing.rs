@@ -146,19 +146,42 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &App) {
         }
         LyricsState::Synced(lines) => {
             let active = active_line_index(lines, app.playback.position_secs);
-            let anchor_row = (visible_rows / 3).max(2);
+            let above_budget = (visible_rows / 3).max(2);
             let focus_idx = active.unwrap_or(0);
-            let start = focus_idx.saturating_sub(anchor_row);
-            let top_pad = usize::from(visible_rows > 3 && start == 0);
-            let end = (start + visible_rows.saturating_sub(top_pad)).min(lines.len());
-
-            let mut rendered: Vec<Line> = vec![Line::raw(""); top_pad];
-            for (i, item) in lines.iter().enumerate().take(end).skip(start) {
-                let text = if item.text.is_empty() {
-                    "♪".to_string()
+            let line_rows = |idx: usize| -> usize {
+                let txt = if lines[idx].text.is_empty() {
+                    "♪"
                 } else {
-                    item.text.clone()
+                    lines[idx].text.as_str()
                 };
+                wrapped_rows(txt, inner.width)
+            };
+
+            let mut start = focus_idx;
+            let mut used_above = 0usize;
+            while start > 0 {
+                let r = line_rows(start - 1);
+                if used_above + r > above_budget {
+                    break;
+                }
+                used_above += r;
+                start -= 1;
+            }
+
+            let top_pad = usize::from(visible_rows > 3 && start == 0 && used_above < above_budget);
+            let mut used = top_pad;
+            let mut rendered: Vec<Line> = vec![Line::raw(""); top_pad];
+            for (i, item) in lines.iter().enumerate().skip(start) {
+                let text: &str = if item.text.is_empty() {
+                    "♪"
+                } else {
+                    item.text.as_str()
+                };
+                let r = wrapped_rows(text, inner.width);
+                if rendered.len() > top_pad && used + r > visible_rows {
+                    break;
+                }
+                used += r;
                 let dist = active.map_or(3, |a| a.abs_diff(i));
                 let style = match dist {
                     0 => Style::default()
@@ -169,6 +192,9 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     _ => Style::default().fg(Color::Rgb(74, 79, 92)),
                 };
                 rendered.push(Line::from(Span::styled(text, style)));
+                if used >= visible_rows {
+                    break;
+                }
             }
 
             let p = Paragraph::new(rendered)
@@ -177,6 +203,11 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &App) {
             frame.render_widget(p, inner);
         }
     }
+}
+
+fn wrapped_rows(text: &str, width: u16) -> usize {
+    let w = width.max(1) as usize;
+    text.chars().count().div_ceil(w).max(1)
 }
 
 fn render_centered_message(frame: &mut Frame<'_>, inner: Rect, msg: &str, app: &App) {

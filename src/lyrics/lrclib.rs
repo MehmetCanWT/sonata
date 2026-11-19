@@ -1,26 +1,29 @@
 use crate::config::AppConfig;
-use crate::lyrics::{parse_lrc, providers, sanitize_title, LyricLine, LyricsState};
+use crate::lyrics::{
+    lyrics_candidate_matches, parse_lrc, providers, sanitize_title, LyricLine, LyricsState,
+};
 use crate::providers::ytmusic::YtMusicClient;
 use crate::providers::{ProviderSource, Track};
 use reqwest::Client;
 use serde_json::Value;
 use sha1::{Digest, Sha1};
-use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+type LrclibParsed = (Option<Vec<LyricLine>>, Option<Vec<String>>);
 
 pub async fn fetch_lyrics(http: &Client, ytm: &YtMusicClient, track: &Track) -> LyricsState {
     let clean_title = sanitize_title(&track.title);
     let artist = track.artist.trim();
     let (lrc_path, txt_path) = cache_paths(artist, &clean_title);
 
-    if let Ok(cached) = fs::read_to_string(&lrc_path) {
+    if let Ok(cached) = tokio::fs::read_to_string(&lrc_path).await {
         let parsed = parse_lrc(&cached);
         if !parsed.is_empty() {
             return LyricsState::Synced(parsed);
         }
     }
-    if let Ok(cached_txt) = fs::read_to_string(&txt_path) {
+    if let Ok(cached_txt) = tokio::fs::read_to_string(&txt_path).await {
         let plain: Vec<String> = cached_txt.lines().map(str::to_string).collect();
         if !plain.is_empty() {
             return LyricsState::Plain(plain);
@@ -31,7 +34,7 @@ pub async fn fetch_lyrics(http: &Client, ytm: &YtMusicClient, track: &Track) -> 
     let mut plain_fallback: Option<Vec<String>> = None;
     if let Some((synced, plain)) = query_lrclib(http, artist, &clean_title, track).await {
         if let Some(lines) = synced {
-            save_lrc(&lrc_path, &lines);
+            save_lrc(&lrc_path, &lines).await;
             return LyricsState::Synced(lines);
         }
         plain_fallback = plain;
@@ -41,13 +44,13 @@ pub async fn fetch_lyrics(http: &Client, ytm: &YtMusicClient, track: &Track) -> 
     if let Some(lines) =
         providers::fetch_kugou_synced(http, &clean_title, artist, track.duration_secs).await
     {
-        save_lrc(&lrc_path, &lines);
+        save_lrc(&lrc_path, &lines).await;
         return LyricsState::Synced(lines);
     }
 
     // 3. LRCLIB plain lyrics if available
     if let Some(plain) = plain_fallback {
-        let _ = fs::write(&txt_path, plain.join("\n"));
+        let _ = tokio::fs::write(&txt_path, plain.join("\n")).await;
         return LyricsState::Plain(plain);
     }
 
@@ -56,7 +59,7 @@ pub async fn fetch_lyrics(http: &Client, ytm: &YtMusicClient, track: &Track) -> 
         if let Some(raw_text) = ytm.fetch_native_lyrics(&track.id).await {
             let lines: Vec<String> = raw_text.lines().map(|l| l.trim().to_string()).collect();
             if !lines.is_empty() {
-                let _ = fs::write(&txt_path, lines.join("\n"));
+                let _ = tokio::fs::write(&txt_path, lines.join("\n")).await;
                 return LyricsState::Plain(lines);
             }
         }
@@ -64,7 +67,7 @@ pub async fn fetch_lyrics(http: &Client, ytm: &YtMusicClient, track: &Track) -> 
 
     // 5. Genius web scraper last resort
     if let Some(lines) = providers::fetch_genius_lyrics(http, &clean_title, artist).await {
-        let _ = fs::write(&txt_path, lines.join("\n"));
+        let _ = tokio::fs::write(&txt_path, lines.join("\n")).await;
         return LyricsState::Plain(lines);
     }
 
@@ -76,7 +79,7 @@ async fn query_lrclib(
     artist: &str,
     clean_title: &str,
     track: &Track,
-) -> Option<(Option<Vec<LyricLine>>, Option<Vec<String>>)> {
+) -> Option<LrclibParsed> {
     if !artist.is_empty() && !clean_title.is_empty() {
         let mut req = http
             .get("https://lrclib.net/api/get")
@@ -116,16 +119,57 @@ async fn query_lrclib(
         return None;
     }
     let arr = resp.json::<Vec<Value>>().await.ok()?;
-    for item in &arr {
-        let (synced, _) = parse_lrclib_item(item);
-        if synced.is_some() {
-            return Some((synced, None));
-        }
-    }
-    arr.first().map(parse_lrclib_item)
+    pick_best_lrclib_result(&arr, clean_title, artist, track.duration_secs)
 }
 
-fn parse_lrclib_item(item: &Value) -> (Option<Vec<LyricLine>>, Option<Vec<String>>) {
+fn lrclib_item_matches(
+    item: &Value,
+    req_title: &str,
+    req_artist: &str,
+    req_dur: Option<u64>,
+) -> bool {
+    let cand_title = item.get("trackName").and_then(|v| v.as_str()).unwrap_or("");
+    let cand_artist = item
+        .get("artistName")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let cand_dur = item
+        .get("duration")
+        .and_then(|v| v.as_f64())
+        .map(|d| d.round() as u64);
+    lyrics_candidate_matches(
+        req_title,
+        req_artist,
+        req_dur,
+        cand_title,
+        cand_artist,
+        cand_dur,
+    )
+}
+
+fn pick_best_lrclib_result(
+    arr: &[Value],
+    req_title: &str,
+    req_artist: &str,
+    req_dur: Option<u64>,
+) -> Option<LrclibParsed> {
+    let mut plain_match: Option<LrclibParsed> = None;
+    for item in arr {
+        if !lrclib_item_matches(item, req_title, req_artist, req_dur) {
+            continue;
+        }
+        let parsed = parse_lrclib_item(item);
+        if parsed.0.is_some() {
+            return Some(parsed);
+        }
+        if plain_match.is_none() && parsed.1.is_some() {
+            plain_match = Some(parsed);
+        }
+    }
+    plain_match
+}
+
+fn parse_lrclib_item(item: &Value) -> LrclibParsed {
     let synced = item
         .get("syncedLyrics")
         .and_then(|v| v.as_str())
@@ -140,7 +184,10 @@ fn parse_lrclib_item(item: &Value) -> (Option<Vec<LyricLine>>, Option<Vec<String
     (synced, plain)
 }
 
-fn save_lrc(path: &PathBuf, lines: &[LyricLine]) {
+async fn save_lrc(path: &Path, lines: &[LyricLine]) {
+    if let Some(parent) = path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
     let body: String = lines
         .iter()
         .map(|l| {
@@ -149,7 +196,7 @@ fn save_lrc(path: &PathBuf, lines: &[LyricLine]) {
             format!("[{mins:02}:{secs:05.2}] {}\n", l.text)
         })
         .collect();
-    let _ = fs::write(path, body);
+    let _ = tokio::fs::write(path, body).await;
 }
 
 fn cache_paths(artist: &str, title: &str) -> (PathBuf, PathBuf) {
@@ -165,4 +212,35 @@ fn cache_paths(artist: &str, title: &str) -> (PathBuf, PathBuf) {
         dir.join(format!("{hex}.lrc")),
         dir.join(format!("{hex}.txt")),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn rejects_unrelated_lrclib_candidates() {
+        let arr = vec![
+            json!({
+                "trackName": "Ikraar Karoon",
+                "artistName": "Other Singer",
+                "duration": 210.0,
+                "syncedLyrics": "[00:01.00] Hindi lyrics"
+            }),
+            json!({
+                "trackName": "Black",
+                "artistName": "GAZIROVKA",
+                "duration": 166.0,
+                "syncedLyrics": "[00:05.00] Мои глаза голодные"
+            }),
+        ];
+        let picked = pick_best_lrclib_result(&arr, "Black", "GAZIROVKA", Some(166))
+            .expect("matching track selected");
+        let lines = picked.0.expect("synced lyrics");
+        assert_eq!(lines[0].text, "Мои глаза голодные");
+
+        let none = pick_best_lrclib_result(&arr[..1], "Black", "GAZIROVKA", Some(166));
+        assert!(none.is_none());
+    }
 }

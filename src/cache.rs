@@ -22,7 +22,8 @@ impl CacheDb {
         }
         let conn = Connection::open(path).ok()?;
         let _ = conn.execute_batch(
-            "PRAGMA journal_mode = WAL;
+            "PRAGMA busy_timeout = 2000;
+             PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
              CREATE TABLE IF NOT EXISTS stream_cache (
                  cache_key TEXT PRIMARY KEY,
@@ -42,9 +43,23 @@ impl CacheDb {
                  updated_at INTEGER NOT NULL
              );",
         );
+        let now = now_secs() as i64;
+        let _ = conn.execute(
+            "DELETE FROM stream_cache WHERE expires_at <= ?1",
+            params![now],
+        );
         Some(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
+    }
+
+    pub fn invalidate_stream(&self, track_id: &str) {
+        if let Ok(guard) = self.conn.lock() {
+            let _ = guard.execute(
+                "DELETE FROM stream_cache WHERE cache_key IN (?1, ?2)",
+                params![format!("yt:{track_id}"), format!("hifi:{track_id}")],
+            );
+        }
     }
 
     pub fn get_stream(&self, key: &str) -> Option<(String, String)> {

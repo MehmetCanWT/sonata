@@ -84,31 +84,39 @@ pub enum AppEvent {
         imported_playlists: Vec<Playlist>,
     },
     TracksLoaded {
+        req_id: u64,
         playlist_id: Option<String>,
         heading: String,
         tracks: Vec<Track>,
+        silent_replace: bool,
     },
     TracksAppended {
+        req_id: u64,
         heading: String,
         tracks: Vec<Track>,
     },
     StreamReady {
+        play_seq: u64,
         track_id: String,
         stream: ResolvedStream,
     },
     StreamUpgrade {
+        play_seq: u64,
         track_id: String,
         stream: ResolvedStream,
     },
     StreamError {
+        play_seq: u64,
         track_id: String,
         error: String,
     },
     LyricsReady {
+        play_seq: u64,
         track_id: String,
         lyrics: LyricsState,
     },
     ArtworkReady {
+        play_seq: u64,
         track_id: String,
         image: DynamicImage,
         png_bytes: Vec<u8>,
@@ -173,6 +181,10 @@ pub struct App {
     pub mpv: Option<Arc<MpvController>>,
     pub tx: mpsc::UnboundedSender<AppEvent>,
     pub pos_anchor: Option<(f64, Instant)>,
+    pub tracks_req_id: u64,
+    pub play_seq: u64,
+    pub retried_play_seq: u64,
+    pub config_dirty: bool,
     pub last_exported_state: Option<ExportFingerprint>,
 }
 
@@ -268,6 +280,10 @@ impl App {
             mpv: None,
             tx,
             pos_anchor: None,
+            tracks_req_id: 0,
+            play_seq: 0,
+            retried_play_seq: 0,
+            config_dirty: false,
             last_exported_state: None,
         };
         app.rebuild_sidebar();
@@ -357,28 +373,47 @@ impl App {
                 );
             }
             AppEvent::TracksLoaded {
+                req_id,
                 playlist_id,
                 heading,
                 tracks,
+                silent_replace,
             } => {
+                if req_id != self.tracks_req_id {
+                    return;
+                }
+                let prev_sel = self.track_table_state.selected();
                 self.current_playlist_id = playlist_id;
                 self.tracks_heading = heading;
                 self.visible_tracks = tracks;
-                self.track_table_state
-                    .select(if self.visible_tracks.is_empty() {
-                        None
-                    } else {
-                        Some(0)
-                    });
+                if self.visible_tracks.is_empty() {
+                    self.track_table_state.select(None);
+                } else if silent_replace {
+                    let next_sel = prev_sel.map_or(0, |s| s.min(self.visible_tracks.len() - 1));
+                    self.track_table_state.select(Some(next_sel));
+                } else {
+                    self.track_table_state.select(Some(0));
+                }
                 self.status_line = format!("Loaded {} tracks", self.visible_tracks.len());
             }
-            AppEvent::TracksAppended { heading, tracks } => {
-                if self.tracks_heading == heading {
+            AppEvent::TracksAppended {
+                req_id,
+                heading,
+                tracks,
+            } => {
+                if req_id == self.tracks_req_id && self.tracks_heading == heading {
                     self.visible_tracks.extend(tracks);
                     self.status_line = format!("Loaded {} tracks", self.visible_tracks.len());
                 }
             }
-            AppEvent::StreamReady { track_id, stream } => {
+            AppEvent::StreamReady {
+                play_seq,
+                track_id,
+                stream,
+            } => {
+                if play_seq != self.play_seq {
+                    return;
+                }
                 let current_track = self.playback.current_track().cloned();
                 if let Some(track) = current_track.filter(|t| t.id == track_id) {
                     self.playback.loading_track = false;
@@ -386,16 +421,10 @@ impl App {
                     self.playback.position_secs = 0.0;
                     self.pos_anchor = Some((0.0, Instant::now()));
                     self.playback.stream_badge = stream.badge.clone();
+                    self.status_line.clear();
                     let is_remote = stream.url.starts_with("http");
                     if let Some(mpv) = &self.mpv {
-                        let mpv = Arc::clone(mpv);
-                        let url = stream.url;
-                        let tx = self.tx.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = mpv.load_url(&url).await {
-                                let _ = tx.send(AppEvent::StatusMessage(format!("mpv error: {e}")));
-                            }
-                        });
+                        mpv.load_url(&stream.url);
                     }
                     if self.config.hifi_substitution && is_remote {
                         let resolver = self.resolver.clone();
@@ -406,6 +435,7 @@ impl App {
                                 resolver.resolve_hifi_upgrade(&track, &badge).await
                             {
                                 let _ = tx.send(AppEvent::StreamUpgrade {
+                                    play_seq,
                                     track_id: track.id,
                                     stream: upgraded,
                                 });
@@ -415,25 +445,37 @@ impl App {
                     self.prefetch_next();
                 }
             }
-            AppEvent::StreamUpgrade { track_id, stream } => {
+            AppEvent::StreamUpgrade {
+                play_seq,
+                track_id,
+                stream,
+            } => {
+                if play_seq != self.play_seq {
+                    return;
+                }
                 let is_current = self
                     .playback
                     .current_track()
                     .is_some_and(|t| t.id == track_id);
                 if is_current {
-                    let pos = self.playback.position_secs.max(0.0);
+                    let pos = self.interpolated_position();
+                    self.pos_anchor = Some((pos, Instant::now()));
+                    self.playback.position_secs = pos;
                     self.playback.stream_badge = stream.badge.clone();
                     self.status_line = format!("Upgraded stream to {}", stream.badge);
                     if let Some(mpv) = &self.mpv {
-                        let mpv = Arc::clone(mpv);
-                        let url = stream.url;
-                        tokio::spawn(async move {
-                            let _ = mpv.load_url_at(&url, pos).await;
-                        });
+                        mpv.load_url_at(&stream.url, pos);
                     }
                 }
             }
-            AppEvent::StreamError { track_id, error } => {
+            AppEvent::StreamError {
+                play_seq,
+                track_id,
+                error,
+            } => {
+                if play_seq != self.play_seq {
+                    return;
+                }
                 if self
                     .playback
                     .current_track()
@@ -444,7 +486,14 @@ impl App {
                     self.status_line = format!("Failed to resolve stream: {error}");
                 }
             }
-            AppEvent::LyricsReady { track_id, lyrics } => {
+            AppEvent::LyricsReady {
+                play_seq,
+                track_id,
+                lyrics,
+            } => {
+                if play_seq != self.play_seq {
+                    return;
+                }
                 if self
                     .playback
                     .current_track()
@@ -454,10 +503,14 @@ impl App {
                 }
             }
             AppEvent::ArtworkReady {
+                play_seq,
                 track_id,
                 image,
                 png_bytes,
             } => {
+                if play_seq != self.play_seq {
+                    return;
+                }
                 if self
                     .playback
                     .current_track()
@@ -501,17 +554,58 @@ impl App {
                 }
                 MpvEvent::TrackEnded => {
                     if !self.playback.loading_track {
-                        if let Some(next_idx) = self.playback.next_index() {
-                            self.play_queue_index(next_idx);
-                        } else {
-                            self.playback.paused = true;
+                        self.play_next_track();
+                    }
+                }
+                MpvEvent::PlaybackError(err) => {
+                    if !self.playback.loading_track {
+                        if self.retried_play_seq != self.play_seq {
+                            if let Some(track) = self.playback.current_track().cloned() {
+                                self.retried_play_seq = self.play_seq;
+                                let play_seq = self.play_seq;
+                                self.playback.loading_track = true;
+                                self.playback.paused = true;
+                                self.pos_anchor = None;
+                                self.playback.stream_badge = "Retrying...".to_string();
+                                self.status_line = "Stream expired, retrying...".to_string();
+                                let resolver = self.resolver.clone();
+                                let hifi = self.config.hifi_substitution;
+                                let tx = self.tx.clone();
+                                tokio::spawn(async move {
+                                    resolver.invalidate_stream(&track.id).await;
+                                    match resolver.resolve_fast(&track, hifi).await {
+                                        Ok(stream) => {
+                                            let _ = tx.send(AppEvent::StreamReady {
+                                                play_seq,
+                                                track_id: track.id,
+                                                stream,
+                                            });
+                                        }
+                                        Err(e) => {
+                                            let _ = tx.send(AppEvent::StreamError {
+                                                play_seq,
+                                                track_id: track.id,
+                                                error: e.to_string(),
+                                            });
+                                        }
+                                    }
+                                });
+                                return;
+                            }
                         }
+                        self.playback.loading_track = false;
+                        self.playback.paused = true;
+                        self.pos_anchor = None;
+                        self.status_line = format!("Playback error: {err}");
                     }
                 }
             },
             AppEvent::PlaylistCreated(pl) => {
                 self.status_line = format!("Created YouTube Music playlist: {}", pl.name);
                 self.ytm_playlists.push(pl);
+                if let Some(db) = &self.cache_db {
+                    db.put_library("ytm", &self.ytm_playlists);
+                }
                 self.rebuild_sidebar();
             }
             AppEvent::StatusMessage(msg) => {
@@ -576,6 +670,8 @@ impl App {
         if q.is_empty() {
             return;
         }
+        self.tracks_req_id = self.tracks_req_id.wrapping_add(1);
+        let req_id = self.tracks_req_id;
         self.status_line = format!("Searching for \"{q}\"...");
         let ytm = self.ytm.clone();
         let spotify = self.spotify.clone();
@@ -598,9 +694,11 @@ impl App {
                 }
             }
             let _ = tx.send(AppEvent::TracksLoaded {
+                req_id,
                 playlist_id: None,
                 heading: format!("Search: {q}"),
                 tracks: combined,
+                silent_replace: false,
             });
         });
     }
@@ -614,6 +712,7 @@ impl App {
                 self.focus = FocusPane::SearchInput;
             }
             SidebarEntry::Queue => {
+                self.tracks_req_id = self.tracks_req_id.wrapping_add(1);
                 self.current_playlist_id = None;
                 self.tracks_heading = "Playback Queue".to_string();
                 self.visible_tracks = self.playback.queue.clone();
@@ -622,6 +721,8 @@ impl App {
                 self.focus = FocusPane::Tracks;
             }
             SidebarEntry::Playlist(pl) => {
+                self.tracks_req_id = self.tracks_req_id.wrapping_add(1);
+                let req_id = self.tracks_req_id;
                 self.status_line = format!("Loading {}...", pl.name);
                 let ytm = self.ytm.clone();
                 let spotify = self.spotify.clone();
@@ -634,13 +735,17 @@ impl App {
                         None
                     };
                     let db_key = format!("{}:{}", pl.source.short_tag(), pl.id);
+                    let mut had_cached = false;
                     if let Some((cached_name, cached_tracks, is_fresh)) =
                         cache_db.as_ref().and_then(|db| db.get_playlist(&db_key))
                     {
+                        had_cached = !cached_tracks.is_empty();
                         let _ = tx.send(AppEvent::TracksLoaded {
+                            req_id,
                             playlist_id: ytm_pid.clone(),
                             heading: format!("[{}] {}", pl.source.short_tag(), cached_name),
                             tracks: cached_tracks,
+                            silent_replace: false,
                         });
                         if is_fresh {
                             return;
@@ -649,22 +754,28 @@ impl App {
 
                     let heading = format!("[{}] {}", pl.source.short_tag(), pl.name);
                     let mut cached_name = pl.name.clone();
+                    let mut resolved_heading = heading.clone();
                     let mut all_tracks: Vec<Track> = Vec::new();
                     let res = match pl.source {
                         ProviderSource::YouTubeMusic => {
                             ytm.fetch_playlist_tracks_progressive(&pl.id, |batch, is_first| {
                                 all_tracks.extend(batch.iter().cloned());
-                                if is_first {
-                                    let _ = tx.send(AppEvent::TracksLoaded {
-                                        playlist_id: ytm_pid.clone(),
-                                        heading: heading.clone(),
-                                        tracks: batch,
-                                    });
-                                } else {
-                                    let _ = tx.send(AppEvent::TracksAppended {
-                                        heading: heading.clone(),
-                                        tracks: batch,
-                                    });
+                                if !had_cached {
+                                    if is_first {
+                                        let _ = tx.send(AppEvent::TracksLoaded {
+                                            req_id,
+                                            playlist_id: ytm_pid.clone(),
+                                            heading: heading.clone(),
+                                            tracks: batch,
+                                            silent_replace: false,
+                                        });
+                                    } else {
+                                        let _ = tx.send(AppEvent::TracksAppended {
+                                            req_id,
+                                            heading: heading.clone(),
+                                            tracks: batch,
+                                        });
+                                    }
                                 }
                             })
                             .await
@@ -675,19 +786,24 @@ impl App {
                                     &pl.id,
                                     |name, batch, is_first| {
                                         cached_name = name.to_string();
+                                        resolved_heading = format!("[SPF] {name}");
                                         all_tracks.extend(batch.iter().cloned());
-                                        let resolved_heading = format!("[SPF] {name}");
-                                        if is_first {
-                                            let _ = tx.send(AppEvent::TracksLoaded {
-                                                playlist_id: None,
-                                                heading: resolved_heading,
-                                                tracks: batch,
-                                            });
-                                        } else {
-                                            let _ = tx.send(AppEvent::TracksAppended {
-                                                heading: resolved_heading,
-                                                tracks: batch,
-                                            });
+                                        if !had_cached {
+                                            if is_first {
+                                                let _ = tx.send(AppEvent::TracksLoaded {
+                                                    req_id,
+                                                    playlist_id: None,
+                                                    heading: resolved_heading.clone(),
+                                                    tracks: batch,
+                                                    silent_replace: false,
+                                                });
+                                            } else {
+                                                let _ = tx.send(AppEvent::TracksAppended {
+                                                    req_id,
+                                                    heading: resolved_heading.clone(),
+                                                    tracks: batch,
+                                                });
+                                            }
                                         }
                                     },
                                 )
@@ -698,6 +814,15 @@ impl App {
                         Ok(()) => {
                             if let Some(db) = &cache_db {
                                 db.put_playlist(&db_key, &cached_name, &all_tracks);
+                            }
+                            if had_cached && !all_tracks.is_empty() {
+                                let _ = tx.send(AppEvent::TracksLoaded {
+                                    req_id,
+                                    playlist_id: ytm_pid,
+                                    heading: resolved_heading,
+                                    tracks: all_tracks,
+                                    silent_replace: true,
+                                });
                             }
                         }
                         Err(e) => {
@@ -720,7 +845,9 @@ impl App {
             return;
         }
         self.playback.queue = self.visible_tracks.clone();
-        self.play_queue_index(selected);
+        self.playback.history.clear();
+        self.playback.clear_upcoming();
+        self.play_queue_index_inner(selected, false);
     }
 
     pub fn toggle_mini_mode(&mut self) {
@@ -793,18 +920,33 @@ impl App {
         self.kitty_drawn_track = Some(target);
     }
 
-    pub fn play_queue_index(&mut self, index: usize) {
+    pub fn play_next_track(&mut self) {
+        if let Some(next_idx) = self.playback.peek_next_index() {
+            self.play_queue_index_inner(next_idx, true);
+        } else {
+            self.playback.paused = true;
+            self.pos_anchor = None;
+        }
+    }
+
+    pub fn play_prev_track(&mut self) {
+        if let Some(prev_idx) = self.playback.pop_prev_index() {
+            self.play_queue_index_inner(prev_idx, false);
+        }
+    }
+
+    fn play_queue_index_inner(&mut self, index: usize, push_history: bool) {
         let Some(track) = self.playback.queue.get(index).cloned() else {
             return;
         };
         self.clear_kitty_images();
         if let Some(mpv) = &self.mpv {
-            let mpv = Arc::clone(mpv);
-            tokio::spawn(async move {
-                let _ = mpv.stop().await;
-            });
+            mpv.stop();
         }
-        self.playback.current_index = Some(index);
+        self.play_seq = self.play_seq.wrapping_add(1);
+        let play_seq = self.play_seq;
+        self.pos_anchor = None;
+        self.playback.commit_play(index, push_history);
         self.playback.position_secs = 0.0;
         self.playback.duration_secs = track.duration_secs.unwrap_or(0) as f64;
         self.playback.loading_track = true;
@@ -826,12 +968,14 @@ impl App {
             match resolver.resolve_fast(&track_clone, hifi).await {
                 Ok(stream) => {
                     let _ = tx.send(AppEvent::StreamReady {
+                        play_seq,
                         track_id: track_clone.id.clone(),
                         stream,
                     });
                 }
                 Err(e) => {
                     let _ = tx.send(AppEvent::StreamError {
+                        play_seq,
                         track_id: track_clone.id.clone(),
                         error: e.to_string(),
                     });
@@ -846,6 +990,7 @@ impl App {
         tokio::spawn(async move {
             let lyrics = lrclib::fetch_lyrics(&lyrics_http, &lyrics_ytm, &lyrics_track).await;
             let _ = lyrics_tx.send(AppEvent::LyricsReady {
+                play_seq,
                 track_id: lyrics_track.id,
                 lyrics,
             });
@@ -857,6 +1002,7 @@ impl App {
             tokio::spawn(async move {
                 if let Some((img, png_bytes)) = fetch_and_decode_art(&http, &url).await {
                     let _ = art_tx.send(AppEvent::ArtworkReady {
+                        play_seq,
                         track_id,
                         image: img,
                         png_bytes,
@@ -866,8 +1012,8 @@ impl App {
         }
     }
 
-    fn prefetch_next(&self) {
-        let Some(next_idx) = self.playback.next_index() else {
+    fn prefetch_next(&mut self) {
+        let Some(next_idx) = self.playback.peek_next_index() else {
             return;
         };
         let Some(next_track) = self.playback.queue.get(next_idx).cloned() else {
@@ -896,6 +1042,8 @@ impl App {
             self.config.spotify_playlists.push(id.clone());
             let _ = self.config.save();
         }
+        self.tracks_req_id = self.tracks_req_id.wrapping_add(1);
+        let req_id = self.tracks_req_id;
         let spotify = self.spotify.clone();
         let tx = self.tx.clone();
         self.status_line = "Importing Spotify playlist...".to_string();
@@ -905,12 +1053,15 @@ impl App {
                     let heading = format!("[SPF] {name}");
                     if is_first {
                         let _ = tx.send(AppEvent::TracksLoaded {
+                            req_id,
                             playlist_id: None,
                             heading,
                             tracks: batch,
+                            silent_replace: false,
                         });
                     } else {
                         let _ = tx.send(AppEvent::TracksAppended {
+                            req_id,
                             heading,
                             tracks: batch,
                         });
@@ -964,6 +1115,7 @@ impl App {
 
     pub fn toggle_transparent_bg(&mut self) {
         self.config.transparent_bg = !self.config.transparent_bg;
+        self.base_theme.transparent_bg = None;
         let _ = self.config.save();
         self.sync_appearance();
         self.status_line = format!(
@@ -995,6 +1147,7 @@ impl App {
             (idx + STEPS.len() - 1) % STEPS.len()
         };
         self.config.hyprland_opacity = STEPS[next];
+        self.base_theme.hyprland_opacity = None;
         let _ = self.config.save();
         self.sync_appearance();
         self.status_line = format!(
@@ -1037,43 +1190,52 @@ impl App {
         let _ = self.config.save();
         self.status_line = format!("Audio Enhancer: {}", next.label());
         if let Some(mpv) = &self.mpv {
-            let mpv = Arc::clone(mpv);
-            tokio::spawn(async move {
-                let _ = mpv.set_enhancer(next).await;
-            });
+            mpv.set_enhancer(next);
         }
     }
 
     pub fn toggle_pause(&mut self) {
         let new_paused = !self.playback.paused;
+        if new_paused {
+            self.playback.position_secs = self.interpolated_position();
+            self.pos_anchor = None;
+        } else if !self.playback.loading_track {
+            self.pos_anchor = Some((self.playback.position_secs, Instant::now()));
+        }
         self.playback.paused = new_paused;
         if let Some(mpv) = &self.mpv {
-            let mpv = Arc::clone(mpv);
-            tokio::spawn(async move {
-                let _ = mpv.set_paused(new_paused).await;
-            });
+            mpv.set_paused(new_paused);
         }
     }
 
-    pub fn set_volume(&mut self, vol: u8) {
+    pub fn set_volume(&mut self, vol: u8, save_now: bool) {
         let next = vol.min(100);
         if self.playback.volume == next {
             return;
         }
         self.playback.volume = next;
         self.config.volume = next;
-        let _ = self.config.save();
+        if save_now {
+            self.config_dirty = false;
+            let _ = self.config.save();
+        } else {
+            self.config_dirty = true;
+        }
         if let Some(mpv) = &self.mpv {
-            let mpv = Arc::clone(mpv);
-            tokio::spawn(async move {
-                let _ = mpv.set_volume(next).await;
-            });
+            mpv.set_volume(next);
+        }
+    }
+
+    pub fn flush_config(&mut self) {
+        if self.config_dirty {
+            self.config_dirty = false;
+            let _ = self.config.save();
         }
     }
 
     pub fn adjust_volume(&mut self, delta: i8) {
         let next = (self.playback.volume as i16 + delta as i16).clamp(0, 100) as u8;
-        self.set_volume(next);
+        self.set_volume(next, true);
     }
 
     pub fn interpolated_position(&self) -> f64 {
@@ -1105,6 +1267,10 @@ impl App {
         self.playback.shuffle = !self.playback.shuffle;
         self.config.shuffle = self.playback.shuffle;
         let _ = self.config.save();
+        self.playback.clear_upcoming();
+        if self.playback.current_track().is_some() {
+            self.prefetch_next();
+        }
         self.status_line = format!(
             "Shuffle: {}",
             if self.playback.shuffle { "On" } else { "Off" }
@@ -1134,6 +1300,10 @@ impl App {
         self.playback.repeat = self.playback.repeat.next();
         self.config.repeat_mode = self.playback.repeat;
         let _ = self.config.save();
+        self.playback.clear_upcoming();
+        if self.playback.current_track().is_some() {
+            self.prefetch_next();
+        }
         self.status_line = format!("Repeat: {}", self.playback.repeat.label());
     }
 
@@ -1144,10 +1314,7 @@ impl App {
             self.pos_anchor = Some((target, Instant::now()));
         }
         if let Some(mpv) = &self.mpv {
-            let mpv = Arc::clone(mpv);
-            tokio::spawn(async move {
-                let _ = mpv.seek_relative(secs).await;
-            });
+            mpv.seek_relative(secs);
         }
     }
 
@@ -1158,10 +1325,7 @@ impl App {
             self.pos_anchor = Some((target, Instant::now()));
         }
         if let Some(mpv) = &self.mpv {
-            let mpv = Arc::clone(mpv);
-            tokio::spawn(async move {
-                let _ = mpv.seek_absolute(target).await;
-            });
+            mpv.seek_absolute(target);
         }
     }
 
@@ -1211,6 +1375,7 @@ impl App {
         }
 
         let ytm = self.ytm.clone();
+        let cache_db = self.cache_db.clone();
         let tx = self.tx.clone();
         let title = track.title.clone();
         self.status_line = format!(
@@ -1239,6 +1404,9 @@ impl App {
             };
             match ytm.set_like_status(&vid, new_liked).await {
                 Ok(()) => {
+                    if let Some(db) = &cache_db {
+                        db.invalidate_playlist(Some("YTM:VLLM"));
+                    }
                     let msg = if new_liked {
                         format!("Saved \"{title}\" to YouTube Music Liked Songs")
                     } else {
