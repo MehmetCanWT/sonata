@@ -4,6 +4,76 @@ A fast, modular Rust music player workspace (**TUI + native Wayland/Hyprland GPU
 
 ![Sonata Main Player](assets/main-player.png)
 
+## One-Command TUI Install
+
+Paste this complete script into a terminal. It installs TUI runtime dependencies, Rust, Sonata, and the `sonata` command. It does not build the desktop client.
+
+```bash
+set -euo pipefail
+
+repo_url="https://github.com/MehmetCanWT/sonata.git"
+source_dir="${SONATA_SOURCE_DIR:-${HOME}/.local/src/sonata}"
+
+run_as_root() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+
+if command -v pacman >/dev/null 2>&1; then
+    run_as_root pacman -S --needed --noconfirm base-devel ca-certificates curl git mpv nodejs yt-dlp
+elif command -v apt-get >/dev/null 2>&1; then
+    run_as_root apt-get update
+    run_as_root apt-get install -y build-essential ca-certificates curl git mpv nodejs yt-dlp
+elif command -v dnf >/dev/null 2>&1; then
+    run_as_root dnf install -y gcc gcc-c++ make ca-certificates curl git mpv nodejs yt-dlp
+elif command -v brew >/dev/null 2>&1; then
+    brew install mpv node yt-dlp git
+else
+    echo "Unsupported package manager. Install mpv, yt-dlp, nodejs, git, curl, and a C compiler first." >&2
+    exit 1
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+fi
+
+if [ -f "${HOME}/.cargo/env" ]; then
+    . "${HOME}/.cargo/env"
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "Cargo is unavailable after Rust installation." >&2
+    exit 1
+fi
+
+if [ -d "${source_dir}/.git" ]; then
+    git -C "${source_dir}" pull --ff-only
+elif [ -e "${source_dir}" ]; then
+    echo "Install path exists and is not a Git checkout: ${source_dir}" >&2
+    exit 1
+else
+    mkdir -p "$(dirname "${source_dir}")"
+    git clone --depth=1 "${repo_url}" "${source_dir}"
+fi
+
+cd "${source_dir}"
+export PATH="${HOME}/.local/bin:${HOME}/.cargo/bin:${PATH}"
+cargo install --locked --path crates/sonata-tui --root "${HOME}/.local" --force
+
+profile_file="${HOME}/.profile"
+path_line='export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"'
+if ! grep -Fqx "${path_line}" "${profile_file}" 2>/dev/null; then
+    printf '\n%s\n' "${path_line}" >> "${profile_file}"
+fi
+
+echo
+echo "Sonata TUI installed: ${HOME}/.local/bin/sonata"
+echo "Run it with: sonata"
+```
+
 ## Workspace Architecture
 
 Sonata is organized as a unified Cargo workspace so both terminal and desktop clients share the exact same streaming, caching, auth, lyrics, and audio core:
@@ -153,6 +223,47 @@ Both `sonata` and `sonata-desktop` atomically export live playback state to `$XD
 - Wayland + Vulkan/OpenGL drivers for `sonata-desktop`
 
 ## Installation
+
+### TUI Only
+
+Install the terminal client without building the desktop application:
+
+Requirements:
+
+- Rust stable and Cargo
+- `mpv` for audio playback
+- `yt-dlp` for stream resolution
+- `nodejs` optional, for enhanced YouTube extraction support
+- Kitty, Ghostty, or WezTerm optional, for full-color album artwork
+
+From a source checkout:
+
+```bash
+git clone https://github.com/MehmetCanWT/sonata.git
+cd sonata
+cargo build --locked --release -p sonata-tui
+install -Dm755 target/release/sonata ~/.local/bin/sonata
+```
+
+One-line install from the repository root:
+
+```bash
+cargo install --locked --path crates/sonata-tui
+```
+
+Start Sonata:
+
+```bash
+sonata
+```
+
+For local development without installing the binary:
+
+```bash
+cargo run --locked -p sonata-tui
+```
+
+The TUI reads browser cookies from supported browsers for YouTube Music sign-in. Shared settings, artwork, audio, lyrics, and SQLite data are stored under `~/.config/sonata/` and `~/.cache/sonata/`.
 
 ### Build One Client
 

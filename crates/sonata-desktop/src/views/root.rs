@@ -20,11 +20,11 @@ use std::sync::Arc;
 pub fn render_full_workspace(
     view: &mut SonataDesktopView,
     p: &GlassPalette,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut Context<SonataDesktopView>,
 ) -> AnyElement {
     if view.center_mode == CenterMode::Fullscreen {
-        return fullscreen::render_fullscreen_workspace(view, p, cx);
+        return fullscreen::render_fullscreen_workspace(view, p, window, cx);
     }
 
     div()

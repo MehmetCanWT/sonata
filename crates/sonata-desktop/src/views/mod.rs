@@ -18,6 +18,7 @@ use gpui_kit::{
     SharedString, StatefulInteractiveElement, Styled, StyledImage, Subscription, Svg,
     UniformListScrollHandle, Window,
 };
+use sonata_core::lyrics::LyricsState;
 use sonata_core::media::{art_cache_path, format_mm_ss};
 use sonata_core::providers::{format_duration, Track};
 use std::cell::Cell;
@@ -120,8 +121,21 @@ impl SonataDesktopView {
                         if active != view.last_synced_lyric_idx {
                             view.last_synced_lyric_idx = active;
                             if let Some(idx) = active {
-                                view.lyrics_scroll
-                                    .scroll_to_item(idx, ScrollStrategy::Center);
+                                let target =
+                                    if let (CenterMode::Fullscreen, LyricsState::Synced(lines)) =
+                                        (view.center_mode, &view.snapshot.lyrics)
+                                    {
+                                        fullscreen::fullscreen_lyric_target(lines, idx)
+                                    } else {
+                                        idx
+                                    };
+                                if view.center_mode == CenterMode::Fullscreen {
+                                    view.lyrics_scroll
+                                        .scroll_to_item_strict(target, ScrollStrategy::Center);
+                                } else {
+                                    view.lyrics_scroll
+                                        .scroll_to_item(target, ScrollStrategy::Center);
+                                }
                             }
                         }
                     }
@@ -203,12 +217,27 @@ impl SonataDesktopView {
     pub fn toggle_fullscreen_view(&mut self, cx: &mut Context<Self>) {
         self.account_menu_open = false;
         self.show_queue = false;
-        self.center_mode = if self.center_mode == CenterMode::Fullscreen {
+        let entering = self.center_mode != CenterMode::Fullscreen;
+        self.center_mode = if !entering {
             CenterMode::Page
         } else {
             self.fullscreen_last_activity = Instant::now();
             CenterMode::Fullscreen
         };
+        if entering {
+            if let LyricsState::Synced(lines) = &self.snapshot.lyrics {
+                let idx = self
+                    .snapshot
+                    .active_lyric_index()
+                    .or_else(|| (!lines.is_empty()).then_some(0));
+                if let Some(idx) = idx {
+                    self.lyrics_scroll.scroll_to_item_strict(
+                        fullscreen::fullscreen_lyric_target(lines, idx),
+                        ScrollStrategy::Center,
+                    );
+                }
+            }
+        }
         cx.notify();
     }
 
