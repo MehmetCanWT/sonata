@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=Sonata
+GenericName=Music Player
+Comment=Native Wayland music player for YouTube Music and Spotify with Modern Glass UI, synced lyrics, and Hi-Fi audio
+Exec=sonata-desktop
+Icon=sonata-desktop
+Terminal=false
+Type=Application
+Categories=AudioVideo;Audio;Player;
+Keywords=music;player;youtube;spotify;lyrics;flac;hifi;
+StartupNotify=true
+StartupWMClass=sonata-desktop

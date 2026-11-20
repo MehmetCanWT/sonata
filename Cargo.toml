@@ -1,19 +1,30 @@
-[package]
-name = "sonata"
+[workspace]
+resolver = "2"
+members = [
+    "crates/sonata-core",
+    "crates/sonata-tui",
+    "crates/sonata-desktop",
+    "crates/sonata-android",
+]
+default-members = ["crates/sonata-tui", "crates/sonata-desktop"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
-description = "Fast, modular terminal music player for YouTube Music and Spotify with HD album art, synced lyrics, Hi-Fi audio enhancer, and color-only themes"
 license = "MIT"
+repository = "https://github.com/MehmetCanWT/sonata"
 
-[dependencies]
+[workspace.dependencies]
 anyhow = "1"
 base64 = "0.22"
-cipher = { version = "0.4", features = ["block-padding"] }
 crossterm = "0.29"
-des = "0.8"
 dirs = "6"
+gpui-kit = "0.10.0"
 hmac = "0.12"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+ksni = "0.3.7"
+libc = "0.2"
+mpris-server = { version = "0.11.0", features = ["tokio"] }
 ratatui = "0.30"
 ratatui-image = { version = "10.0", default-features = false, features = ["crossterm", "image-defaults"] }
 regex = "1"
@@ -27,7 +38,7 @@ toml = "0.8"
 urlencoding = "2"
 
 [profile.release]
-lto = true
-codegen-units = 1
+lto = "thin"
+codegen-units = 8
 strip = true
 opt-level = 3

@@ -1,0 +1,6 @@
+[alias]
+check-tui = "check --package sonata-tui --message-format=short"
+build-tui = "build --package sonata-tui"
+check-desktop = "check --package sonata-desktop --message-format=short"
+build-desktop = "build --package sonata-desktop"
+check-android = "check --package sonata-android --message-format=short"

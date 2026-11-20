@@ -1,0 +1,9 @@
+[package]
+name = "sonata-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Reserved package for the future Sonata Android client"
+
+[lib]
+path = "src/lib.rs"

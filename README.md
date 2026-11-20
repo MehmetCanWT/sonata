@@ -1,39 +1,84 @@
 # Sonata
 
-A fast, modular Rust terminal music player for **YouTube Music** and **Spotify** with automatic browser cookie extraction, instant playback with background Hi-Fi upgrades, direct Kitty HD album artwork, synced lyrics, persistent SQLite caching, and Hyprland-ready glass transparency — **no `systemd` services or background daemons required**.
+A fast, modular Rust music player workspace (**TUI + native Wayland/Hyprland GPUI Desktop**) for **YouTube Music** and **Spotify** with browser cookie authentication, fast playback with background Hi-Fi upgrades, HD album artwork, synced lyrics, a shared bounded cache, MPRIS2, and system tray background playback.
 
 ![Sonata Main Player](assets/main-player.png)
 
-## Screenshots
+## Workspace Architecture
+
+Sonata is organized as a unified Cargo workspace so both terminal and desktop clients share the exact same streaming, caching, auth, lyrics, and audio core:
+
+- `crates/sonata-core` — Shared Rust engine for auth, providers, playback, lyrics, themes, database, and media cache.
+- `crates/sonata-tui` — **`sonata`** Ratatui terminal client with Kitty/Sixel/Halfblock album art and mouse-resizable panes.
+- `crates/sonata-desktop` — **`sonata-desktop`** GPU-accelerated native Wayland GUI built with **GPUI** (`gpui-kit`).
+- `crates/sonata-android` — Android client placeholder. Android implementation starts after TUI and desktop are stable.
+
+Each client builds independently with its shared core dependency. Use `cargo build-tui` or `cargo build-desktop` while working on one client; changes in the other client will not be compiled. Both clients read the same settings, SQLite database, artwork, audio, and lyrics cache paths.
+
+## Screenshots (TUI)
 
 | Hyprland Glass Transparency | Mini Mode (Art + Lyrics) | Compact Mini Player |
 |---|---|---|
 | ![Hyprland Glass](assets/hyprland-glass.png) | ![Mini Mode](assets/mini-lyrics.png) | ![Mini Player](assets/mini-player.png) |
 
-## Features
+## Desktop GUI (`sonata-desktop`)
+
+- **YouTube Music Home & Public Feed**: Launches directly into a music discovery home with Trending tracks, New Albums & Singles, and Community Playlists even before signing in; signing in unlocks personalized mixes, Liked Music, and library playlists.
+- **Explicit Browser Sign-In & Profile Menu**: Click **Sign In** (top-right) to choose which installed browser (Zen, Firefox, Brave, Chrome, etc.) Sonata reads YouTube Music cookies from; once signed in, the top-right shows your YouTube Music avatar, display name, and account menu (`Account & Settings`, `Switch Browser`, `Refresh Library`, `Sign Out`).
+- **Dedicated Search, Playlist & Settings Views**: Dedicated YouTube Music search page with genre quick pills, virtualized track tables with 40×40 cover thumbnails, two-way YTM playlist management, and a full **Settings** page (including a `Link Spotify` preview placeholder).
+- **Modern Glass & Dynamic Ambient Glow**: Translucent Wayland surfaces tinted in real time from the active track's album cover (`WindowBackgroundAppearance::Blurred`) with synchronized Hyprland opacity controls (`50%`–`100%`) and shared color themes (`Catppuccin Mocha`, `Ghostty Dark`, `Tokyo Night`, `Gruvbox Dark`, `Rosé Pine`, `Nord`, plus `~/.config/sonata/themes/*.toml`).
+- **Focused Apple Music-Style Lyrics View**: Click the Lyrics icon (`Ctrl+L`) or player bar album cover for large rounded artwork, glowing auto-scrolled synced lyrics, and **click-to-seek** on any timestamped lyric line.
+- **Compact Mini Player (`Ctrl+M`)**: Resizes cleanly into a draggable floating glass Mini Player card with optional live synced lyric line.
+- **MPRIS2 (`org.mpris.MediaPlayer2.sonata`)**: Native media controls, metadata, artwork URI, seek, volume, shuffle, and repeat for Waybar, Hyprlock, `playerctl`, and hardware media keys.
+- **System Tray & Background Playback**: Built-in StatusNotifierItem tray menu (`Show / Hide Window`, `Play / Pause`, `Next Track`, `Previous Track`, `Quit`). Closing the window hides it to the tray while audio continues playing; `Quit` cleanly stops `mpv`, removes `now_playing.json`, restores Hyprland opacity, and saves `config.toml`.
+
+### Desktop Shortcuts
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl+F` | Focus search bar |
+| `Space` | Play / Pause (when search/modals are unfocused) |
+| `Left` / `Right` | Seek -5s / +5s |
+| `Ctrl+L` | Switch between Library and Lyrics views |
+| `Ctrl+M` | Toggle compact Mini Player mode |
+| `Ctrl+,` | Open Settings & Theme selector |
+| `Esc` | Close modal / Queue drawer / exit Mini Player |
+| `Ctrl+Q` | Quit application cleanly (terminates background audio) |
+
+### Optional Hyprland Blur Rule
+
+GPUI renders translucent RGBA surfaces natively over Wayland; enabling blur on Hyprland gives the frosted glass look behind `sonata-desktop`:
+
+```ini
+windowrule = match:class ^(sonata-desktop)$, blur on
+windowrule = match:class ^(sonata-desktop)$, ignore_alpha 0.25
+```
+
+Or if using `hyprland.lua`:
+
+```lua
+hl.window_rule({ match = { class = "^(sonata-desktop)$" }, blur = true, ignore_alpha = 0.25 })
+```
+
+## Shared Engine Highlights
 
 - **Zero-Config Browser Auth**: Automatically extracts session cookies from Zen Browser, Firefox, LibreWolf, Floorp, Chrome, Chromium, Brave, Vivaldi, and Edge.
 - **YouTube Music & Spotify (No API Keys)**:
-  - Two-way YouTube Music library sync: browse playlists and Liked Music, like/unlike tracks (`y`), add/remove tracks (`a` / `x`), and create playlists (`c`).
-  - Keyless Spotify library loading (`sp_dc`) and instant public Spotify playlist URL import (`i`).
-  - Switch active providers anytime in Settings (`S`): **Both (YTM + Spotify)**, **YouTube Music Only**, or **Spotify Only**.
+  - Two-way YouTube Music library sync: browse playlists and Liked Music, like/unlike tracks, add/remove tracks, and create playlists.
+  - Keyless Spotify library loading (`sp_dc`) and instant public Spotify playlist URL import.
+  - Switch active providers anytime in Settings: **Both (YTM + Spotify)**, **YouTube Music Only**, or **Spotify Only**.
 - **Instant Playback + Background Hi-Fi Upgrade**:
   - Starts streaming immediately via YouTube Music (`yt-dlp`), then upgrades seamlessly via FIFO `mpv` IPC (`loadfile` native `start` timestamp resume) to 320kbps AAC (JioSaavn bit-exact match) without interrupting playback, with automatic retry on expired stream URLs.
-  - Consistent Shuffle lookahead & playback history (`n` / `p`), persisted Shuffle/Repeat/Volume settings, and live-switchable `mpv` audio DSP presets (`e`): `Hi-Res Crystal` (SoXR 96kHz + Crystalizer + Stereo + Limiter), `Spatial Wide`, `Warm Bass`, and `Bit-Perfect`.
-- **Persistent SQLite Disk Cache & Hi-Res Prefetch**:
-  - Caches library playlists, playlist tracks (instant startup with silent background refresh), and resolved stream URLs in `~/.cache/sonata/sonata_cache.db` (WAL mode).
-  - Pre-downloads upcoming tracks in Hi-Res under `~/.cache/sonata/audio/` (bounded to the 20 most recent tracks) for zero-wait playback.
-- **Pixel-Perfect HD Album Art**:
-  - Direct chunked Kitty Graphics Protocol rendering (optimized for Ghostty, Kitty, WezTerm, Foot) with 1:1 aspect-matched artwork framing and Sixel/iTerm2/Halfblock support.
+  - Consistent Shuffle lookahead & playback history, persisted Shuffle/Repeat/Volume settings, and live-switchable `mpv` audio DSP presets: `Hi-Res Crystal` (SoXR 96kHz + Crystalizer + Stereo + Limiter), `Spatial Wide`, `Warm Bass`, and `Bit-Perfect`.
+- **Shared Cache & Hi-Res Prefetch**:
+  - The TUI and desktop share artwork, audio, lyrics, and SQLite cache under `~/.cache/sonata/`.
+  - Media cache defaults to 1 GB and can be set from Off to 10 GB in either client's Settings. Off clears saved cache data and disables cache-dependent Hi-Fi staging; it is not recommended.
+  - SQLite uses WAL, schema versioning, expired-stream cleanup, and a bounded database size. Playlist and stream cache entries have count and size limits.
+  - Upcoming audio is downloaded atomically and evicted by least-recent access when the configured media cache limit is exceeded.
 - **Real-Time Synced Lyrics**:
-  - Multi-source fetcher (LRCLIB, KuGou, YouTube Music native, Genius) with strict title/artist/duration match validation, wrapped-line centering, local caching, and high-contrast pure-white active line highlighting.
-- **Hyprland Glass Transparency & Custom Themes**:
-  - Transparent TUI background (`Color::Reset`) plus automatic Hyprland active & inactive window opacity (`50%`–`100%` in `10%` steps via `hl.dispatch(hl.dsp.window.set_prop(...))`, restored cleanly on exit or `SIGTERM`/`SIGHUP`).
-  - Ships with `Catppuccin Mocha`, `Ghostty Dark`, `Tokyo Night`, `Gruvbox Dark`, `Rosé Pine`, and `Nord`, plus custom `.toml` themes in `~/.config/sonata/themes/*.toml`.
-- **Full Mouse Support, Resizable Panes & 3-Tier Mini Mode**:
-  - Smooth 30 FPS sub-block progress bar, interactive `0–100%` line volume slider, mouse-drag and keyboard (`H`/`L`) pane resizing, modal scroll navigation, and double-click Album Art (or press `m`) to toggle Mini Mode.
+  - Multi-source fetcher (LRCLIB, KuGou, YouTube Music native, Genius) with strict title/artist/duration match validation, local caching, and synced active-line tracking.
 
-## Keybindings & Mouse
+## TUI Keybindings & Mouse (`sonata`)
 
 | Key / Input | Action |
 |---|---|
@@ -60,9 +105,9 @@ A fast, modular Rust terminal music player for **YouTube Music** and **Spotify**
 
 **Mouse**: Drag panel borders or the Album Art/Lyrics divider to resize; click or drag the `0–100%` volume slider and progress bar; click tracks/playlists/controls; double-click Album Art for Mini Mode; scroll lists, player bar volume, and inside Theme/Settings/Playlist modals.
 
-## Custom Themes & Transparency Config
+## Custom Themes & Shared Config
 
-Create a `.toml` file under `~/.config/sonata/themes/my-theme.toml`:
+Create a `.toml` file under `~/.config/sonata/themes/my-theme.toml` (shared by both TUI and Desktop):
 
 ```toml
 transparent_bg = true
@@ -84,27 +129,53 @@ warning = "#e3b341"
 error = "#f85149"
 ```
 
-Global settings are stored in `~/.config/sonata/config.toml` and can also be adjusted live in the Settings modal (`S`).
+Global settings are stored in `~/.config/sonata/config.toml` and can also be edited live inside Settings in either client. The media cache limit applies to both clients.
 
 ## External Integrations (`now_playing.json`)
 
-Sonata atomically exports live playback state to `$XDG_RUNTIME_DIR/sonata/now_playing.json` (fallback: `~/.cache/sonata/now_playing.json`) for Waybar, Hyprlock, Eww, or custom scripts (`status`, `title`, `artist`, `album`, `source`, `quality`, `position_secs`, `duration_secs`, `position`, `duration`, `lyric`, `art_path`, `art_url`, `updated_at`), and removes the file on exit.
+Both `sonata` and `sonata-desktop` atomically export live playback state to `$XDG_RUNTIME_DIR/sonata/now_playing.json` (fallback: `~/.cache/sonata/now_playing.json`) for Waybar, Hyprlock, Eww, or custom scripts (`status`, `title`, `artist`, `album`, `source`, `quality`, `position_secs`, `duration_secs`, `position`, `duration`, `lyric`, `art_path`, `art_url`, `updated_at`), and remove the file on clean exit. `sonata-desktop` additionally exposes full MPRIS2 control over D-Bus.
 
 ## Requirements
 
 - `mpv` (audio playback & DSP filters)
 - `yt-dlp` and `nodejs` (stream resolution)
-- A terminal with Kitty Graphics Protocol support (such as **Ghostty**, **Kitty**, or **WezTerm**) for HD album art
+- A terminal with Kitty Graphics Protocol support (such as **Ghostty**, **Kitty**, or **WezTerm**) for HD album art in `sonata`
+- Wayland + Vulkan/OpenGL drivers for `sonata-desktop`
 
 ## Installation
 
-### From Source
+### Build One Client
+
 ```bash
-cargo build --release
-install -Dm755 target/release/sonata ~/.local/bin/sonata
+cargo check-tui
+cargo build-tui
+
+cargo check-desktop
+cargo build-desktop
 ```
 
-### Arch / CachyOS (`PKGBUILD`)
+Each target shares the incremental `sonata-core` build while leaving the other client out of the build.
+
+### Install from Source
+
+```bash
+cargo build --release -p sonata-tui
+cargo build --release -p sonata-desktop
+install -Dm755 target/release/sonata ~/.local/bin/sonata
+install -Dm755 target/release/sonata-desktop ~/.local/bin/sonata-desktop
+install -Dm644 assets/sonata-desktop.desktop ~/.local/share/applications/sonata-desktop.desktop
+```
+
+### Arch / CachyOS
+
+Build and install only the terminal client:
+
 ```bash
 makepkg -si
+```
+
+Build and install only the desktop client:
+
+```bash
+makepkg -p PKGBUILD.desktop -si
 ```

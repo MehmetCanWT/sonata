@@ -1,0 +1,43 @@
+# Maintainer: MehmetCanWT
+pkgname=sonata-desktop
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Native Wayland desktop music player for YouTube Music"
+arch=('x86_64' 'aarch64')
+url="https://github.com/MehmetCanWT/sonata"
+license=('MIT')
+depends=('mpv' 'yt-dlp' 'wayland' 'vulkan-icd-loader' 'libxkbcommon' 'fontconfig')
+makedepends=('cargo')
+optdepends=(
+    'nodejs: enhanced YouTube extractor support for yt-dlp'
+    'hyprland: dynamic window opacity and compositor blur'
+)
+source=("sonata-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+    cd "sonata-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd "sonata-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    cargo build --frozen --release -p sonata-desktop
+}
+
+check() {
+    cd "sonata-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo test --frozen -p sonata-core -p sonata-desktop
+}
+
+package() {
+    cd "sonata-$pkgver"
+    install -Dm0755 "target/release/sonata-desktop" "$pkgdir/usr/bin/sonata-desktop"
+    install -Dm0644 "assets/sonata-desktop.desktop" "$pkgdir/usr/share/applications/sonata-desktop.desktop"
+    install -Dm0644 "assets/sonata-desktop.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/sonata-desktop.svg"
+    install -Dm0644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

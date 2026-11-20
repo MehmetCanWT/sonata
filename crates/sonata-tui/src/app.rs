@@ -1,0 +1,1993 @@
+use crate::theme_tui::TuiTheme;
+use base64::Engine as _;
+use image::DynamicImage;
+use ratatui::layout::Rect;
+use ratatui::style::Color;
+use ratatui::widgets::{ListState, TableState};
+use ratatui_image::picker::{Picker, ProtocolType};
+use ratatui_image::protocol::StatefulProtocol;
+use reqwest::Client;
+use sonata_core::auth::{extract_browser_cookies, ExtractedCookies};
+use sonata_core::cache::{
+    enforce_active_media_cache_limit_async, start_media_cache_maintenance, CacheDb,
+};
+use sonata_core::config::{AppConfig, ProviderMode};
+use sonata_core::hyprland;
+use sonata_core::lyrics::{active_line_index, lrclib, LyricsState};
+use sonata_core::media;
+use sonata_core::player::{MpvController, MpvEvent, PlaybackState};
+use sonata_core::providers::hifi::{ResolvedStream, StreamResolver};
+use sonata_core::providers::spotify::{extract_playlist_id, SpotifyClient};
+use sonata_core::providers::ytmusic::YtMusicClient;
+use sonata_core::providers::{build_http_client, Playlist, ProviderSource, Track};
+use sonata_core::theme::Theme;
+use std::io::Write;
+use std::sync::Arc;
+use std::time::Instant;
+use tokio::sync::mpsc;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitTarget {
+    LeftCol,
+    RightCol,
+    ArtLyrics,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct UiRects {
+    pub search_bar: Rect,
+    pub tracks_rows: Rect,
+    pub sidebar_inner: Rect,
+    pub album_art_box: Rect,
+    pub main_area: Rect,
+    pub left_col_area: Rect,
+    pub split_left_x: u16,
+    pub split_right_x: u16,
+    pub split_art_y: u16,
+    pub player_bar: Rect,
+    pub player_top: Rect,
+    pub progress_bar: Rect,
+    pub volume_bar: Rect,
+    pub ctrl_prev: Rect,
+    pub ctrl_play: Rect,
+    pub ctrl_next: Rect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusPane {
+    Sidebar,
+    Tracks,
+    SearchInput,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SidebarEntry {
+    Search,
+    Queue,
+    Playlist(Playlist),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActiveModal {
+    None,
+    ImageWarning(usize),
+    ThemePicker(usize, String),
+    SpotifyImport(String),
+    AddToPlaylist(usize),
+    CreatePlaylist(String),
+    Settings(usize),
+    Help,
+}
+
+pub enum AppEvent {
+    AuthReady {
+        cookies: ExtractedCookies,
+        ytm_playlists: Vec<Playlist>,
+        spotify_playlists: Vec<Playlist>,
+        imported_playlists: Vec<Playlist>,
+    },
+    TracksLoaded {
+        req_id: u64,
+        playlist_id: Option<String>,
+        heading: String,
+        tracks: Vec<Track>,
+        silent_replace: bool,
+    },
+    TracksAppended {
+        req_id: u64,
+        heading: String,
+        tracks: Vec<Track>,
+    },
+    StreamReady {
+        play_seq: u64,
+        track_id: String,
+        stream: ResolvedStream,
+    },
+    StreamUpgrade {
+        play_seq: u64,
+        track_id: String,
+        stream: ResolvedStream,
+    },
+    StreamError {
+        play_seq: u64,
+        track_id: String,
+        error: String,
+    },
+    NextTrackPrepared {
+        play_seq: u64,
+        index: usize,
+        track_id: String,
+        result: Result<ResolvedStream, String>,
+    },
+    LyricsReady {
+        play_seq: u64,
+        track_id: String,
+        lyrics: LyricsState,
+    },
+    ArtworkReady {
+        play_seq: u64,
+        track_id: String,
+        url: String,
+        image: DynamicImage,
+        png_bytes: Vec<u8>,
+    },
+    ArtworkEnhanced {
+        play_seq: u64,
+        track_id: String,
+        url: String,
+        image: DynamicImage,
+        png_bytes: Vec<u8>,
+    },
+    Mpv(MpvEvent),
+    PlaylistCreated(Playlist),
+    StatusMessage(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportFingerprint {
+    track_id: String,
+    status: String,
+    lyric: Option<String>,
+    art_path: Option<String>,
+    pos_secs: u64,
+    dur_secs: u64,
+}
+
+pub struct App {
+    pub config: AppConfig,
+    pub themes: Vec<Theme>,
+    pub base_theme: Theme,
+    pub theme: TuiTheme,
+    pub hyprland_window: Option<String>,
+    pub picker: Picker,
+    pub album_art: Option<StatefulProtocol>,
+    pub album_art_track_id: Option<String>,
+    pub kitty_art_png: Option<Vec<u8>>,
+    pub last_art_rect: Option<Rect>,
+    pub kitty_drawn_track: Option<(String, Rect)>,
+    pub lyrics: LyricsState,
+    pub playback: PlaybackState,
+    pub focus: FocusPane,
+    pub modal: ActiveModal,
+    pub sidebar_items: Vec<SidebarEntry>,
+    pub sidebar_idx: usize,
+    pub sidebar_state: ListState,
+    pub ytm_playlists: Vec<Playlist>,
+    pub spotify_playlists: Vec<Playlist>,
+    pub imported_playlists: Vec<Playlist>,
+    pub visible_tracks: Vec<Track>,
+    pub current_playlist_id: Option<String>,
+    pub tracks_heading: String,
+    pub track_table_state: TableState,
+    pub ui_rects: UiRects,
+    pub dragging_split: Option<SplitTarget>,
+    pub last_track_click: Option<(Instant, usize)>,
+    pub last_art_click: Option<Instant>,
+    pub mini_mode: bool,
+    pub search_query: String,
+    pub status_line: String,
+    pub browser_label: String,
+    pub should_quit: bool,
+
+    pub http: Client,
+    pub cookies: ExtractedCookies,
+    pub ytm: YtMusicClient,
+    pub spotify: SpotifyClient,
+    pub resolver: StreamResolver,
+    pub cache_db: Option<CacheDb>,
+    pub mpv: Option<Arc<MpvController>>,
+    pub tx: mpsc::UnboundedSender<AppEvent>,
+    pub pos_anchor: Option<(f64, Instant)>,
+    pub tracks_req_id: u64,
+    pub play_seq: u64,
+    pub retried_play_seq: u64,
+    pub active_stream_task: Option<tokio::task::AbortHandle>,
+    pub active_upgrade_task: Option<tokio::task::AbortHandle>,
+    pub next_prefetch_task: Option<(String, tokio::task::JoinHandle<Option<ResolvedStream>>)>,
+    pub pending_auto_advance: Option<(u64, String)>,
+    pub awaiting_playback_start: bool,
+    pub upgrade_started_play_seq: Option<u64>,
+    pub cover_started_play_seq: Option<u64>,
+    pub config_dirty: bool,
+    pub last_exported_state: Option<ExportFingerprint>,
+}
+
+impl App {
+    pub fn new(config: AppConfig, picker: Picker, tx: mpsc::UnboundedSender<AppEvent>) -> Self {
+        let themes = Theme::load_all(&AppConfig::themes_dir());
+        let base_theme = themes
+            .iter()
+            .find(|t| t.name.eq_ignore_ascii_case(&config.theme))
+            .cloned()
+            .unwrap_or_default();
+        let hyprland_window = hyprland::find_terminal_window_address();
+
+        let show_warning =
+            picker.protocol_type() == ProtocolType::Halfblocks && !config.suppress_image_warning;
+        let modal = if show_warning {
+            ActiveModal::ImageWarning(0)
+        } else {
+            ActiveModal::None
+        };
+
+        let http = build_http_client();
+        let cookies = ExtractedCookies::default();
+        let cache_db = CacheDb::open_default();
+        let ytm = YtMusicClient::new(http.clone(), cookies.clone());
+        let spotify = SpotifyClient::new(http.clone(), None);
+        let resolver =
+            StreamResolver::new(http.clone(), ytm.clone(), cookies.clone(), cache_db.clone());
+        let mut playback = PlaybackState::new(config.volume, config.enhancer_mode);
+        playback.shuffle = config.shuffle;
+        playback.repeat = config.repeat_mode;
+
+        let sidebar_items = vec![SidebarEntry::Search, SidebarEntry::Queue];
+        let mut sidebar_state = ListState::default();
+        sidebar_state.select(Some(0));
+        let mut track_table_state = TableState::default();
+        track_table_state.select(Some(0));
+
+        let ytm_playlists = cache_db
+            .as_ref()
+            .and_then(|db| db.get_library("ytm"))
+            .unwrap_or_default();
+        let spotify_playlists = cache_db
+            .as_ref()
+            .and_then(|db| db.get_library("spf"))
+            .unwrap_or_default();
+        let imported_playlists = cache_db
+            .as_ref()
+            .and_then(|db| db.get_library("imported"))
+            .unwrap_or_default();
+
+        let mut app = Self {
+            config,
+            themes,
+            theme: TuiTheme::from_core(&base_theme),
+            base_theme,
+            hyprland_window,
+            picker,
+            album_art: None,
+            album_art_track_id: None,
+            kitty_art_png: None,
+            last_art_rect: None,
+            kitty_drawn_track: None,
+            lyrics: LyricsState::Idle,
+            playback,
+            focus: FocusPane::Sidebar,
+            modal,
+            sidebar_items,
+            sidebar_idx: 0,
+            sidebar_state,
+            ytm_playlists,
+            spotify_playlists,
+            imported_playlists,
+            visible_tracks: Vec::new(),
+            current_playlist_id: None,
+            tracks_heading: "Search (press /)".to_string(),
+            track_table_state,
+            ui_rects: UiRects::default(),
+            dragging_split: None,
+            last_track_click: None,
+            last_art_click: None,
+            mini_mode: false,
+            search_query: String::new(),
+            status_line: "Scanning browser cookies...".to_string(),
+            browser_label: "Scanning...".to_string(),
+            should_quit: false,
+            http,
+            cookies,
+            ytm,
+            spotify,
+            resolver,
+            cache_db,
+            mpv: None,
+            tx,
+            pos_anchor: None,
+            tracks_req_id: 0,
+            play_seq: 0,
+            retried_play_seq: 0,
+            active_stream_task: None,
+            active_upgrade_task: None,
+            next_prefetch_task: None,
+            pending_auto_advance: None,
+            awaiting_playback_start: false,
+            upgrade_started_play_seq: None,
+            cover_started_play_seq: None,
+            config_dirty: false,
+            last_exported_state: None,
+        };
+        app.rebuild_sidebar();
+        app.sync_appearance();
+        app
+    }
+
+    pub fn start_background_init(&self) {
+        start_media_cache_maintenance();
+        tokio::spawn(async move {
+            enforce_active_media_cache_limit_async().await;
+        });
+
+        let resolver = self.resolver.clone();
+        tokio::spawn(async move {
+            resolver.warm().await;
+        });
+
+        let tx = self.tx.clone();
+        let pref_browser = self.config.preferred_browser.clone();
+        let saved_spotify_ids = self.config.spotify_playlists.clone();
+        let http = self.http.clone();
+
+        tokio::spawn(async move {
+            let cookies = tokio::task::spawn_blocking(move || {
+                extract_browser_cookies(pref_browser.as_deref())
+            })
+            .await
+            .unwrap_or_default();
+
+            let ytm = YtMusicClient::new(http.clone(), cookies.clone());
+            let spotify = SpotifyClient::new(http, cookies.spotify_sp_dc.clone());
+
+            let (ytm_res, spot_res) = tokio::join!(
+                ytm.fetch_library_playlists(),
+                spotify.fetch_library_playlists()
+            );
+
+            let mut imported_playlists = Vec::new();
+            for pid in saved_spotify_ids {
+                if let Ok((name, tracks)) = spotify.fetch_embed_playlist(&pid).await {
+                    imported_playlists.push(Playlist {
+                        id: pid,
+                        name,
+                        source: ProviderSource::Spotify,
+                        track_count: Some(tracks.len()),
+                        thumbnail_url: None,
+                    });
+                }
+            }
+
+            let _ = tx.send(AppEvent::AuthReady {
+                cookies,
+                ytm_playlists: ytm_res.unwrap_or_default(),
+                spotify_playlists: spot_res.unwrap_or_default(),
+                imported_playlists,
+            });
+        });
+    }
+
+    pub fn handle_app_event(&mut self, ev: AppEvent) {
+        match ev {
+            AppEvent::AuthReady {
+                cookies,
+                ytm_playlists,
+                spotify_playlists,
+                imported_playlists,
+            } => {
+                self.browser_label = cookies
+                    .browser_name
+                    .clone()
+                    .unwrap_or_else(|| "Guest (No Browser Login)".to_string());
+                self.cookies = cookies;
+                self.ytm = YtMusicClient::new(self.http.clone(), self.cookies.clone());
+                self.spotify =
+                    SpotifyClient::new(self.http.clone(), self.cookies.spotify_sp_dc.clone());
+                self.resolver = StreamResolver::new(
+                    self.http.clone(),
+                    self.ytm.clone(),
+                    self.cookies.clone(),
+                    self.cache_db.clone(),
+                );
+
+                if let Some(db) = &self.cache_db {
+                    db.put_library("ytm", &ytm_playlists);
+                    db.put_library("spf", &spotify_playlists);
+                    db.put_library("imported", &imported_playlists);
+                }
+                self.ytm_playlists = ytm_playlists;
+                self.spotify_playlists = spotify_playlists;
+                self.imported_playlists = imported_playlists;
+                self.rebuild_sidebar();
+                self.status_line = format!(
+                    "Ready ({}) — [Mode: {}]",
+                    self.browser_label,
+                    self.config.provider_mode.label()
+                );
+            }
+            AppEvent::TracksLoaded {
+                req_id,
+                playlist_id,
+                heading,
+                tracks,
+                silent_replace,
+            } => {
+                if req_id != self.tracks_req_id {
+                    return;
+                }
+                let prev_sel = self.track_table_state.selected();
+                self.current_playlist_id = playlist_id;
+                self.tracks_heading = heading;
+                self.visible_tracks = tracks;
+                if self.visible_tracks.is_empty() {
+                    self.track_table_state.select(None);
+                } else if silent_replace {
+                    let next_sel = prev_sel.map_or(0, |s| s.min(self.visible_tracks.len() - 1));
+                    self.track_table_state.select(Some(next_sel));
+                } else {
+                    self.track_table_state.select(Some(0));
+                }
+                self.status_line = format!("Loaded {} tracks", self.visible_tracks.len());
+            }
+            AppEvent::TracksAppended {
+                req_id,
+                heading,
+                tracks,
+            } => {
+                if req_id == self.tracks_req_id && self.tracks_heading == heading {
+                    self.visible_tracks.extend(tracks);
+                    self.status_line = format!("Loaded {} tracks", self.visible_tracks.len());
+                }
+            }
+            AppEvent::StreamReady {
+                play_seq,
+                track_id,
+                stream,
+            } => {
+                if play_seq != self.play_seq {
+                    return;
+                }
+                let current_track = self.playback.current_track().cloned();
+                if let Some(track) = current_track.filter(|t| t.id == track_id) {
+                    self.active_stream_task = None;
+                    self.playback.loading_track = false;
+                    self.playback.paused = true;
+                    self.awaiting_playback_start = true;
+                    let resume_at = if self.retried_play_seq == play_seq {
+                        self.playback.position_secs
+                    } else {
+                        0.0
+                    };
+                    self.playback.position_secs = resume_at;
+                    self.pos_anchor = None;
+                    self.playback.set_active_stream(stream.clone());
+                    self.playback.stream_badge = stream.badge.clone();
+                    self.status_line = format!("Starting: {} — {}", track.title, track.artist);
+                    if let Some(mpv) = &self.mpv {
+                        if resume_at >= 0.35 {
+                            mpv.load_stream_at(&stream, resume_at);
+                        } else {
+                            mpv.load_stream(&stream);
+                        }
+                    }
+                    self.prefetch_next();
+                }
+            }
+            AppEvent::StreamUpgrade {
+                play_seq,
+                track_id,
+                stream,
+            } => {
+                if play_seq != self.play_seq {
+                    return;
+                }
+                let is_current = self
+                    .playback
+                    .current_track()
+                    .is_some_and(|t| t.id == track_id);
+                if is_current {
+                    if !self.playback.set_upgraded_stream(stream.clone()) {
+                        return;
+                    }
+                    self.active_upgrade_task = None;
+                    let was_paused = self.playback.paused;
+                    let pos = self.interpolated_position();
+                    self.pos_anchor = Some((pos, Instant::now()));
+                    self.playback.position_secs = pos;
+                    self.playback.stream_badge = stream.badge.clone();
+                    self.status_line = format!("Upgraded audio quality: {}", stream.badge);
+                    if let Some(mpv) = &self.mpv {
+                        mpv.load_stream_at(&stream, pos);
+                        mpv.set_paused(was_paused);
+                    }
+                }
+            }
+            AppEvent::StreamError {
+                play_seq,
+                track_id,
+                error,
+            } => {
+                if play_seq != self.play_seq {
+                    return;
+                }
+                if self
+                    .playback
+                    .current_track()
+                    .is_some_and(|t| t.id == track_id)
+                {
+                    self.playback.paused = true;
+                    self.pos_anchor = None;
+                    self.playback.loading_track = false;
+                    self.awaiting_playback_start = false;
+                    self.playback.stream_badge = "Stream Error".to_string();
+                    self.status_line = format!("Failed to resolve stream: {error}");
+                }
+            }
+            AppEvent::NextTrackPrepared {
+                play_seq,
+                index,
+                track_id,
+                result,
+            } => {
+                if play_seq != self.play_seq
+                    || self.pending_auto_advance.as_ref() != Some(&(play_seq, track_id.clone()))
+                {
+                    return;
+                }
+                self.pending_auto_advance = None;
+                if !self
+                    .playback
+                    .queue
+                    .get(index)
+                    .is_some_and(|track| track.id == track_id)
+                {
+                    self.playback.loading_track = false;
+                    return;
+                }
+                match result {
+                    Ok(stream) => {
+                        self.play_queue_index_with_stream(index, true, Some(stream));
+                    }
+                    Err(error) => {
+                        self.playback.loading_track = false;
+                        self.playback.paused = true;
+                        self.status_line = format!("Could not prepare next track: {error}");
+                    }
+                }
+            }
+            AppEvent::LyricsReady {
+                play_seq,
+                track_id,
+                lyrics,
+            } => {
+                if play_seq != self.play_seq {
+                    return;
+                }
+                if self
+                    .playback
+                    .current_track()
+                    .is_some_and(|t| t.id == track_id)
+                {
+                    self.lyrics = lyrics;
+                }
+            }
+            AppEvent::ArtworkReady {
+                play_seq,
+                track_id,
+                url,
+                image,
+                png_bytes,
+            } => {
+                if play_seq != self.play_seq {
+                    return;
+                }
+                if self.playback.current_track().is_some_and(|track| {
+                    track.id == track_id && track.thumbnail_url.as_deref() == Some(url.as_str())
+                }) {
+                    self.album_art = Some(self.picker.new_resize_protocol(image));
+                    self.kitty_art_png = Some(png_bytes);
+                    self.kitty_drawn_track = None;
+                    self.album_art_track_id = Some(track_id);
+                }
+            }
+            AppEvent::ArtworkEnhanced {
+                play_seq,
+                track_id,
+                url,
+                image,
+                png_bytes,
+            } => {
+                if play_seq != self.play_seq {
+                    return;
+                }
+                if let Some(track) = self
+                    .playback
+                    .queue
+                    .iter_mut()
+                    .find(|track| track.id == track_id)
+                {
+                    track.thumbnail_url = Some(url);
+                }
+                if self
+                    .playback
+                    .current_track()
+                    .is_some_and(|track| track.id == track_id)
+                {
+                    self.album_art = Some(self.picker.new_resize_protocol(image));
+                    self.kitty_art_png = Some(png_bytes);
+                    self.kitty_drawn_track = None;
+                    self.album_art_track_id = Some(track_id);
+                }
+            }
+            AppEvent::Mpv(mev) => match mev {
+                MpvEvent::Position(pos) => {
+                    if !self.playback.loading_track && !self.awaiting_playback_start {
+                        let cur = self.interpolated_position();
+                        if self.pos_anchor.is_none() || (pos - cur).abs() > 0.45 {
+                            self.pos_anchor = Some((pos, Instant::now()));
+                            self.playback.position_secs = pos;
+                        } else if !self.playback.paused {
+                            let blended = (cur + (pos - cur) * 0.25).max(cur);
+                            self.pos_anchor = Some((blended, Instant::now()));
+                            self.playback.position_secs = blended;
+                        }
+                    }
+                }
+                MpvEvent::Duration(dur) => {
+                    if !self.playback.loading_track {
+                        self.playback.duration_secs = dur;
+                    }
+                }
+                MpvEvent::Paused(p) => {
+                    if self.awaiting_playback_start {
+                        if p {
+                            self.playback.paused = true;
+                        }
+                        return;
+                    }
+                    if !self.playback.loading_track {
+                        if p {
+                            self.playback.position_secs = self.interpolated_position();
+                            self.pos_anchor = None;
+                        } else {
+                            self.pos_anchor = Some((self.playback.position_secs, Instant::now()));
+                        }
+                        self.playback.paused = p;
+                    }
+                }
+                MpvEvent::PlaybackStarted => {
+                    let was_starting = self.awaiting_playback_start;
+                    self.awaiting_playback_start = false;
+                    self.playback.paused = false;
+                    self.pos_anchor = Some((self.playback.position_secs, Instant::now()));
+                    if was_starting {
+                        if let Some(track) = self.playback.current_track() {
+                            self.status_line =
+                                format!("Playing: {} — {}", track.title, track.artist);
+                        }
+                    }
+                    self.start_hifi_upgrade();
+                    self.start_cover_enrichment();
+                }
+                MpvEvent::TrackEnded => {
+                    if !self.playback.loading_track {
+                        if let Some(next_idx) = self.playback.peek_next_index() {
+                            self.prepare_next_before_advance(next_idx);
+                        } else {
+                            self.playback.paused = true;
+                            self.pos_anchor = None;
+                        }
+                    }
+                }
+                MpvEvent::PlaybackError { error: err, file } => {
+                    if let (Some(file), Some(active)) =
+                        (file.as_deref(), self.playback.active_stream.as_ref())
+                    {
+                        if active.url != file {
+                            eprintln!("[sonata:retry] ignoring stale mpv error for another file");
+                            return;
+                        }
+                    }
+                    if !self.playback.loading_track {
+                        if let Some(stream) = self.playback.restore_base_stream() {
+                            let resume_at = self.interpolated_position();
+                            self.playback.position_secs = resume_at;
+                            self.playback.paused = true;
+                            self.awaiting_playback_start = true;
+                            self.pos_anchor = None;
+                            self.playback.stream_badge = stream.badge.clone();
+                            self.status_line =
+                                "Quality upgrade failed; continuing original stream".to_string();
+                            if let Some(mpv) = &self.mpv {
+                                mpv.load_stream_at(&stream, resume_at);
+                            }
+                            return;
+                        }
+                        if self.retried_play_seq != self.play_seq {
+                            if let Some(track) = self.playback.current_track().cloned() {
+                                if let Some(handle) = self.active_upgrade_task.take() {
+                                    handle.abort();
+                                }
+                                self.retried_play_seq = self.play_seq;
+                                let play_seq = self.play_seq;
+                                self.playback.loading_track = true;
+                                self.awaiting_playback_start = false;
+                                self.playback.paused = true;
+                                self.pos_anchor = None;
+                                self.upgrade_started_play_seq = None;
+                                self.playback.stream_badge = "Retrying...".to_string();
+                                self.status_line = "Stream expired, retrying...".to_string();
+                                let resolver = self.resolver.clone();
+                                let tx = self.tx.clone();
+                                tokio::spawn(async move {
+                                    match resolver.resolve_recovery(&track).await {
+                                        Ok(stream) => {
+                                            let _ = tx.send(AppEvent::StreamReady {
+                                                play_seq,
+                                                track_id: track.id,
+                                                stream,
+                                            });
+                                        }
+                                        Err(e) => {
+                                            let _ = tx.send(AppEvent::StreamError {
+                                                play_seq,
+                                                track_id: track.id,
+                                                error: e.to_string(),
+                                            });
+                                        }
+                                    }
+                                });
+                                return;
+                            }
+                        }
+                        self.playback.loading_track = false;
+                        self.playback.paused = true;
+                        self.pos_anchor = None;
+                        self.status_line = format!("Playback error: {err}");
+                    }
+                }
+            },
+            AppEvent::PlaylistCreated(pl) => {
+                self.status_line = format!("Created YouTube Music playlist: {}", pl.name);
+                self.ytm_playlists.push(pl);
+                if let Some(db) = &self.cache_db {
+                    db.put_library("ytm", &self.ytm_playlists);
+                }
+                self.rebuild_sidebar();
+            }
+            AppEvent::StatusMessage(msg) => {
+                self.status_line = msg;
+            }
+        }
+    }
+
+    pub fn rebuild_sidebar(&mut self) {
+        let mut items = vec![SidebarEntry::Search, SidebarEntry::Queue];
+        if self.config.provider_mode.uses_ytm() {
+            for p in &self.ytm_playlists {
+                items.push(SidebarEntry::Playlist(p.clone()));
+            }
+        }
+        if self.config.provider_mode.uses_spotify() {
+            for p in &self.spotify_playlists {
+                items.push(SidebarEntry::Playlist(p.clone()));
+            }
+            for p in &self.imported_playlists {
+                if !items.iter().any(|existing| match existing {
+                    SidebarEntry::Playlist(ep) => ep.id == p.id,
+                    _ => false,
+                }) {
+                    items.push(SidebarEntry::Playlist(p.clone()));
+                }
+            }
+        }
+        self.sidebar_items = items;
+        if self.sidebar_idx >= self.sidebar_items.len() {
+            self.sidebar_idx = 0;
+        }
+    }
+
+    pub fn cycle_provider_mode(&mut self, forward: bool) {
+        let next = if forward {
+            self.config.provider_mode.next()
+        } else {
+            self.config.provider_mode.prev()
+        };
+        self.config.provider_mode = next;
+        let _ = self.config.save();
+        self.rebuild_sidebar();
+        self.status_line = format!("Music Providers: {}", next.label());
+    }
+
+    pub fn toggle_hifi_substitution(&mut self) {
+        self.config.hifi_substitution = !self.config.hifi_substitution;
+        let _ = self.config.save();
+        if self.config.hifi_substitution {
+            self.start_hifi_upgrade();
+        }
+        self.status_line = format!(
+            "YouTube Music Quality Upgrade: {}",
+            if self.config.hifi_substitution {
+                "Enabled"
+            } else {
+                "Disabled"
+            }
+        );
+    }
+
+    fn start_hifi_upgrade(&mut self) {
+        if self.playback.paused
+            || self.playback.loading_track
+            || self.upgrade_started_play_seq == Some(self.play_seq)
+        {
+            return;
+        }
+        let (Some(track), Some(stream)) = (
+            self.playback.current_track().cloned(),
+            self.playback.active_stream.clone(),
+        ) else {
+            return;
+        };
+        if track.source == ProviderSource::Spotify
+            && (!self.config.hifi_substitution
+                || !StreamResolver::needs_hifi_upgrade(&stream.badge, &stream.url))
+        {
+            return;
+        }
+
+        let play_seq = self.play_seq;
+        self.upgrade_started_play_seq = Some(play_seq);
+        let resolver = self.resolver.clone();
+        let tx = self.tx.clone();
+        let allow_hifi = self.config.hifi_substitution;
+        let join = tokio::spawn(async move {
+            if let Some(upgraded) = resolver
+                .resolve_hifi_upgrade(&track, &stream, allow_hifi)
+                .await
+            {
+                let _ = tx.send(AppEvent::StreamUpgrade {
+                    play_seq,
+                    track_id: track.id,
+                    stream: upgraded,
+                });
+            }
+        });
+        self.active_upgrade_task = Some(join.abort_handle());
+    }
+
+    fn start_cover_enrichment(&mut self) {
+        if self.cover_started_play_seq == Some(self.play_seq) {
+            return;
+        }
+        let Some(track) = self.playback.current_track().cloned() else {
+            return;
+        };
+        if track.source != ProviderSource::YouTubeMusic {
+            return;
+        }
+
+        let play_seq = self.play_seq;
+        self.cover_started_play_seq = Some(play_seq);
+        let http = self.http.clone();
+        let cache_db = self.cache_db.clone();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+            let Some((url, _source)) =
+                media::resolve_track_cover(&http, cache_db.as_ref(), &track).await
+            else {
+                return;
+            };
+            let Some((image, png_bytes)) = media::fetch_and_decode_art(&http, &url).await else {
+                return;
+            };
+            let _ = tx.send(AppEvent::ArtworkEnhanced {
+                play_seq,
+                track_id: track.id,
+                url,
+                image,
+                png_bytes,
+            });
+        });
+    }
+
+    pub fn step_cache_limit(&mut self, forward: bool) {
+        self.config.cache_limit_gb =
+            AppConfig::step_cache_limit_gb(self.config.cache_limit_gb, forward);
+        let _ = self.config.save();
+        if let Some(cache) = &self.cache_db {
+            cache.set_enabled(self.config.cache_limit_gb > 0);
+        }
+        tokio::spawn(async move {
+            enforce_active_media_cache_limit_async().await;
+        });
+        self.status_line = if self.config.cache_limit_gb == 0 {
+            "Cache disabled; media cleanup started".to_string()
+        } else {
+            format!(
+                "Cache limit: {}",
+                AppConfig::cache_limit_label(self.config.cache_limit_gb)
+            )
+        };
+    }
+
+    pub fn trigger_search(&mut self) {
+        let q = self.search_query.trim().to_string();
+        if q.is_empty() {
+            return;
+        }
+        self.tracks_req_id = self.tracks_req_id.wrapping_add(1);
+        let req_id = self.tracks_req_id;
+        self.status_line = format!("Searching for \"{q}\"...");
+        let ytm = self.ytm.clone();
+        let spotify = self.spotify.clone();
+        let mode = self.config.provider_mode;
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let mut combined = Vec::new();
+            match mode {
+                ProviderMode::Both => {
+                    let (ytm_tracks, spot_tracks) =
+                        tokio::join!(ytm.search_songs(&q), spotify.search_tracks(&q));
+                    combined.extend(ytm_tracks.unwrap_or_default());
+                    combined.extend(spot_tracks.unwrap_or_default());
+                }
+                ProviderMode::YouTubeMusic => {
+                    combined.extend(ytm.search_songs(&q).await.unwrap_or_default());
+                }
+                ProviderMode::Spotify => {
+                    combined.extend(spotify.search_tracks(&q).await.unwrap_or_default());
+                }
+            }
+            let _ = tx.send(AppEvent::TracksLoaded {
+                req_id,
+                playlist_id: None,
+                heading: format!("Search: {q}"),
+                tracks: combined,
+                silent_replace: false,
+            });
+        });
+    }
+
+    pub fn activate_sidebar_selection(&mut self) {
+        let Some(entry) = self.sidebar_items.get(self.sidebar_idx).cloned() else {
+            return;
+        };
+        match entry {
+            SidebarEntry::Search => {
+                self.focus = FocusPane::SearchInput;
+            }
+            SidebarEntry::Queue => {
+                self.tracks_req_id = self.tracks_req_id.wrapping_add(1);
+                self.current_playlist_id = None;
+                self.tracks_heading = "Playback Queue".to_string();
+                self.visible_tracks = self.playback.queue.clone();
+                self.track_table_state
+                    .select(self.playback.current_index.or(Some(0)));
+                self.focus = FocusPane::Tracks;
+            }
+            SidebarEntry::Playlist(pl) => {
+                self.tracks_req_id = self.tracks_req_id.wrapping_add(1);
+                let req_id = self.tracks_req_id;
+                self.status_line = format!("Loading {}...", pl.name);
+                let ytm = self.ytm.clone();
+                let spotify = self.spotify.clone();
+                let cache_db = self.cache_db.clone();
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let ytm_pid = if pl.source == ProviderSource::YouTubeMusic {
+                        Some(pl.id.clone())
+                    } else {
+                        None
+                    };
+                    let db_key = format!("{}:{}", pl.source.short_tag(), pl.id);
+                    let mut had_cached = false;
+                    if let Some((cached_name, cached_tracks, is_fresh)) =
+                        cache_db.as_ref().and_then(|db| db.get_playlist(&db_key))
+                    {
+                        had_cached = !cached_tracks.is_empty();
+                        let _ = tx.send(AppEvent::TracksLoaded {
+                            req_id,
+                            playlist_id: ytm_pid.clone(),
+                            heading: format!("[{}] {}", pl.source.short_tag(), cached_name),
+                            tracks: cached_tracks,
+                            silent_replace: false,
+                        });
+                        if is_fresh {
+                            return;
+                        }
+                    }
+
+                    let heading = format!("[{}] {}", pl.source.short_tag(), pl.name);
+                    let mut cached_name = pl.name.clone();
+                    let mut resolved_heading = heading.clone();
+                    let mut all_tracks: Vec<Track> = Vec::new();
+                    let res = match pl.source {
+                        ProviderSource::YouTubeMusic => {
+                            ytm.fetch_playlist_tracks_progressive(&pl.id, |batch, is_first| {
+                                all_tracks.extend(batch.iter().cloned());
+                                if !had_cached {
+                                    if is_first {
+                                        let _ = tx.send(AppEvent::TracksLoaded {
+                                            req_id,
+                                            playlist_id: ytm_pid.clone(),
+                                            heading: heading.clone(),
+                                            tracks: batch,
+                                            silent_replace: false,
+                                        });
+                                    } else {
+                                        let _ = tx.send(AppEvent::TracksAppended {
+                                            req_id,
+                                            heading: heading.clone(),
+                                            tracks: batch,
+                                        });
+                                    }
+                                }
+                            })
+                            .await
+                        }
+                        ProviderSource::Spotify => {
+                            spotify
+                                .fetch_playlist_tracks_progressive(
+                                    &pl.id,
+                                    |name, batch, is_first| {
+                                        cached_name = name.to_string();
+                                        resolved_heading = format!("[SPF] {name}");
+                                        all_tracks.extend(batch.iter().cloned());
+                                        if !had_cached {
+                                            if is_first {
+                                                let _ = tx.send(AppEvent::TracksLoaded {
+                                                    req_id,
+                                                    playlist_id: None,
+                                                    heading: resolved_heading.clone(),
+                                                    tracks: batch,
+                                                    silent_replace: false,
+                                                });
+                                            } else {
+                                                let _ = tx.send(AppEvent::TracksAppended {
+                                                    req_id,
+                                                    heading: resolved_heading.clone(),
+                                                    tracks: batch,
+                                                });
+                                            }
+                                        }
+                                    },
+                                )
+                                .await
+                        }
+                    };
+                    match res {
+                        Ok(()) => {
+                            if let Some(db) = &cache_db {
+                                db.put_playlist(&db_key, &cached_name, &all_tracks);
+                            }
+                            if had_cached && !all_tracks.is_empty() {
+                                let _ = tx.send(AppEvent::TracksLoaded {
+                                    req_id,
+                                    playlist_id: ytm_pid,
+                                    heading: resolved_heading,
+                                    tracks: all_tracks,
+                                    silent_replace: true,
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx.send(AppEvent::StatusMessage(format!(
+                                "Failed to load playlist: {e}"
+                            )));
+                        }
+                    }
+                });
+                self.focus = FocusPane::Tracks;
+            }
+        }
+    }
+
+    pub fn play_selected_track(&mut self) {
+        let Some(selected) = self.track_table_state.selected() else {
+            return;
+        };
+        if self.visible_tracks.is_empty() || selected >= self.visible_tracks.len() {
+            return;
+        }
+        self.playback.queue = self.visible_tracks.clone();
+        self.playback.history.clear();
+        self.playback.clear_upcoming();
+        self.play_queue_index_inner(selected, false);
+    }
+
+    pub fn toggle_mini_mode(&mut self) {
+        self.mini_mode = !self.mini_mode;
+        self.clear_kitty_images();
+        self.status_line = if self.mini_mode {
+            "Mini Mode (double-click Album Art or press m to restore)".to_string()
+        } else {
+            "Full Mode".to_string()
+        };
+    }
+
+    pub fn clear_kitty_images(&mut self) {
+        if self.picker.protocol_type() == ProtocolType::Kitty {
+            let mut out = std::io::stdout();
+            let _ = out.write_all(b"\x1b_Ga=d,d=i,i=1,q=2\x1b\\");
+            let _ = out.flush();
+            self.kitty_drawn_track = None;
+        }
+    }
+
+    pub fn sync_kitty_artwork(&mut self) {
+        if self.picker.protocol_type() != ProtocolType::Kitty {
+            return;
+        }
+        if self.modal != ActiveModal::None {
+            if self.kitty_drawn_track.is_some() {
+                self.clear_kitty_images();
+            }
+            return;
+        }
+        let (Some(track_id), Some(rect), Some(png)) = (
+            self.album_art_track_id.clone(),
+            self.last_art_rect,
+            self.kitty_art_png.as_ref(),
+        ) else {
+            return;
+        };
+        if rect.width == 0 || rect.height == 0 {
+            return;
+        }
+        let target = (track_id, rect);
+        if self.kitty_drawn_track.as_ref() == Some(&target) {
+            return;
+        }
+
+        let b64 = base64::engine::general_purpose::STANDARD.encode(png);
+        let bytes = b64.as_bytes();
+        let mut out = std::io::stdout();
+        let _ = out.write_all(b"\x1b_Ga=d,d=i,i=1,q=2\x1b\\");
+        let _ = write!(out, "\x1b[s\x1b[{};{}H", rect.y + 1, rect.x + 1);
+
+        let chunks: Vec<&[u8]> = bytes.chunks(4096).collect();
+        for (idx, chunk) in chunks.iter().enumerate() {
+            let more = usize::from(idx + 1 < chunks.len());
+            if idx == 0 {
+                let _ = write!(
+                    out,
+                    "\x1b_Ga=T,f=100,i=1,q=2,C=1,c={},r={},m={};",
+                    rect.width, rect.height, more
+                );
+            } else {
+                let _ = write!(out, "\x1b_Gm={more};");
+            }
+            let _ = out.write_all(chunk);
+            let _ = out.write_all(b"\x1b\\");
+        }
+        let _ = out.write_all(b"\x1b[u");
+        let _ = out.flush();
+        self.kitty_drawn_track = Some(target);
+    }
+
+    pub fn play_next_track(&mut self) {
+        if let Some(next_idx) = self.playback.peek_next_index() {
+            self.play_queue_index_inner(next_idx, true);
+        } else {
+            self.playback.paused = true;
+            self.pos_anchor = None;
+        }
+    }
+
+    pub fn play_prev_track(&mut self) {
+        if let Some(prev_idx) = self.playback.pop_prev_index() {
+            self.play_queue_index_inner(prev_idx, false);
+        }
+    }
+
+    fn play_queue_index_inner(&mut self, index: usize, push_history: bool) {
+        self.play_queue_index_with_stream(index, push_history, None);
+    }
+
+    fn play_queue_index_with_stream(
+        &mut self,
+        index: usize,
+        push_history: bool,
+        prepared_stream: Option<ResolvedStream>,
+    ) {
+        let Some(track) = self.playback.queue.get(index).cloned() else {
+            return;
+        };
+        if let Some(handle) = self.active_stream_task.take() {
+            handle.abort();
+        }
+        if let Some(handle) = self.active_upgrade_task.take() {
+            handle.abort();
+        }
+        self.clear_kitty_images();
+        if let Some(mpv) = &self.mpv {
+            mpv.stop();
+        }
+        self.play_seq = self.play_seq.wrapping_add(1);
+        let play_seq = self.play_seq;
+        self.awaiting_playback_start = false;
+        self.pending_auto_advance = None;
+        self.upgrade_started_play_seq = None;
+        self.cover_started_play_seq = None;
+        self.pos_anchor = None;
+        self.playback.commit_play(index, push_history);
+        self.playback.position_secs = 0.0;
+        self.playback.duration_secs = track.duration_secs.unwrap_or(0) as f64;
+        self.playback.loading_track = true;
+        self.playback.paused = true;
+        self.playback.stream_badge = "Loading YTM...".to_string();
+        self.lyrics = LyricsState::Loading;
+        self.album_art = None;
+        self.kitty_art_png = None;
+        self.album_art_track_id = Some(track.id.clone());
+        self.status_line = format!("Loading: {} — {}", track.title, track.artist);
+
+        let resolver = self.resolver.clone();
+        let http = self.http.clone();
+        let tx = self.tx.clone();
+        let track_clone = track.clone();
+
+        if let Some(stream) = prepared_stream {
+            let _ = tx.send(AppEvent::StreamReady {
+                play_seq,
+                track_id: track_clone.id.clone(),
+                stream,
+            });
+        } else {
+            let join = tokio::spawn(async move {
+                match resolver.resolve_fast(&track_clone).await {
+                    Ok(stream) => {
+                        let _ = tx.send(AppEvent::StreamReady {
+                            play_seq,
+                            track_id: track_clone.id.clone(),
+                            stream,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AppEvent::StreamError {
+                            play_seq,
+                            track_id: track_clone.id.clone(),
+                            error: e.to_string(),
+                        });
+                    }
+                }
+            });
+            self.active_stream_task = Some(join.abort_handle());
+        }
+
+        let lyrics_tx = self.tx.clone();
+        let lyrics_http = http.clone();
+        let lyrics_ytm = self.ytm.clone();
+        let lyrics_cache = self.cache_db.clone();
+        let lyrics_track = track.clone();
+        tokio::spawn(async move {
+            let lyrics = lrclib::fetch_lyrics(
+                &lyrics_http,
+                &lyrics_ytm,
+                &lyrics_track,
+                lyrics_cache.as_ref(),
+            )
+            .await;
+            let _ = lyrics_tx.send(AppEvent::LyricsReady {
+                play_seq,
+                track_id: lyrics_track.id,
+                lyrics,
+            });
+        });
+
+        if let Some(url) = track.thumbnail_url.clone() {
+            let art_tx = self.tx.clone();
+            let track_id = track.id.clone();
+            tokio::spawn(async move {
+                if let Some((img, png_bytes)) = media::fetch_and_decode_art(&http, &url).await {
+                    let _ = art_tx.send(AppEvent::ArtworkReady {
+                        play_seq,
+                        track_id,
+                        url: url.clone(),
+                        image: img,
+                        png_bytes,
+                    });
+                }
+            });
+        }
+    }
+
+    fn prefetch_next(&mut self) {
+        let Some(next_idx) = self.playback.peek_next_index() else {
+            return;
+        };
+        let Some(next_track) = self.playback.queue.get(next_idx).cloned() else {
+            return;
+        };
+        if self
+            .next_prefetch_task
+            .as_ref()
+            .is_some_and(|(track_id, _)| track_id == &next_track.id)
+        {
+            return;
+        }
+        if let Some((_, task)) = self.next_prefetch_task.take() {
+            task.abort();
+        }
+        let resolver = self.resolver.clone();
+        let hifi = self.config.hifi_substitution;
+        let http = self.http.clone();
+        let art_url = next_track.thumbnail_url.clone();
+        let track_id = next_track.id.clone();
+        let task =
+            tokio::spawn(async move { resolver.prefetch_hifi_audio(&next_track, hifi).await });
+        self.next_prefetch_task = Some((track_id, task));
+        if let Some(url) = art_url {
+            tokio::spawn(async move {
+                let _ = media::fetch_and_decode_art(&http, &url).await;
+            });
+        }
+    }
+
+    fn prepare_next_before_advance(&mut self, index: usize) {
+        // Natural EOF waits for this task so the next stream can use its completed cache file.
+        let Some(track) = self.playback.queue.get(index).cloned() else {
+            return;
+        };
+        if self
+            .pending_auto_advance
+            .as_ref()
+            .is_some_and(|(seq, id)| *seq == self.play_seq && id == &track.id)
+        {
+            return;
+        }
+        self.pending_auto_advance = Some((self.play_seq, track.id.clone()));
+        self.playback.loading_track = true;
+        self.playback.paused = true;
+        self.playback.stream_badge = "Preparing next track...".to_string();
+        self.pos_anchor = None;
+        self.status_line = format!("Caching next track: {}", track.title);
+
+        let matching_task = match self.next_prefetch_task.take() {
+            Some((track_id, task)) if track_id == track.id => Some(task),
+            Some((_, task)) => {
+                task.abort();
+                None
+            }
+            None => None,
+        };
+        let play_seq = self.play_seq;
+        let resolver = self.resolver.clone();
+        let allow_hifi = self.config.hifi_substitution;
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let cached = match matching_task {
+                Some(task) => task.await.ok().flatten(),
+                None => resolver.prefetch_hifi_audio(&track, allow_hifi).await,
+            };
+            let result = match cached {
+                Some(stream) => Ok(stream),
+                None => resolver
+                    .resolve_fast(&track)
+                    .await
+                    .map_err(|error| error.to_string()),
+            };
+            let _ = tx.send(AppEvent::NextTrackPrepared {
+                play_seq,
+                index,
+                track_id: track.id,
+                result,
+            });
+        });
+    }
+
+    pub fn import_spotify_playlist(&mut self, input: &str) {
+        let Some(id) = extract_playlist_id(input) else {
+            self.status_line = "Invalid Spotify playlist URL or ID".to_string();
+            return;
+        };
+        if !self.config.spotify_playlists.contains(&id) {
+            self.config.spotify_playlists.push(id.clone());
+            let _ = self.config.save();
+        }
+        self.tracks_req_id = self.tracks_req_id.wrapping_add(1);
+        let req_id = self.tracks_req_id;
+        let spotify = self.spotify.clone();
+        let tx = self.tx.clone();
+        self.status_line = "Importing Spotify playlist...".to_string();
+        tokio::spawn(async move {
+            let res = spotify
+                .fetch_playlist_tracks_progressive(&id, |name, batch, is_first| {
+                    let heading = format!("[SPF] {name}");
+                    if is_first {
+                        let _ = tx.send(AppEvent::TracksLoaded {
+                            req_id,
+                            playlist_id: None,
+                            heading,
+                            tracks: batch,
+                            silent_replace: false,
+                        });
+                    } else {
+                        let _ = tx.send(AppEvent::TracksAppended {
+                            req_id,
+                            heading,
+                            tracks: batch,
+                        });
+                    }
+                })
+                .await;
+            if let Err(e) = res {
+                let _ = tx.send(AppEvent::StatusMessage(format!(
+                    "Spotify import failed: {e}"
+                )));
+            }
+        });
+    }
+
+    pub fn effective_transparent_bg(&self) -> bool {
+        self.base_theme
+            .transparent_bg
+            .unwrap_or(self.config.transparent_bg)
+    }
+
+    pub fn effective_hyprland_opacity(&self) -> f32 {
+        self.base_theme
+            .hyprland_opacity
+            .unwrap_or(self.config.hyprland_opacity)
+            .clamp(0.50, 1.00)
+    }
+
+    pub fn sync_appearance(&mut self) {
+        let transparent = self.effective_transparent_bg();
+        self.theme = TuiTheme::from_core(&self.base_theme.with_transparency(transparent));
+        if let Color::Rgb(r, g, b) = self.theme.bg {
+            self.picker.set_background_color([r, g, b, 255]);
+        }
+        if let Some(addr) = self.hyprland_window.clone() {
+            let opacity = if transparent {
+                self.effective_hyprland_opacity()
+            } else {
+                1.0
+            };
+            tokio::spawn(async move {
+                hyprland::set_window_opacity(&addr, opacity).await;
+            });
+        }
+    }
+
+    pub fn restore_hyprland_opacity(&self) {
+        if let Some(addr) = &self.hyprland_window {
+            hyprland::set_window_opacity_sync(addr, 1.0);
+        }
+    }
+
+    pub fn toggle_transparent_bg(&mut self) {
+        self.config.transparent_bg = !self.config.transparent_bg;
+        self.base_theme.transparent_bg = None;
+        let _ = self.config.save();
+        self.sync_appearance();
+        self.status_line = format!(
+            "Transparent TUI Background: {}",
+            if self.config.transparent_bg {
+                "Enabled"
+            } else {
+                "Disabled"
+            }
+        );
+    }
+
+    pub fn cycle_hyprland_opacity(&mut self, forward: bool) {
+        const STEPS: &[f32] = &[0.50, 0.60, 0.70, 0.80, 0.90, 1.00];
+        let cur = self.config.hyprland_opacity;
+        let idx = STEPS
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                ((*a - cur).abs())
+                    .partial_cmp(&((*b - cur).abs()))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(i, _)| i)
+            .unwrap_or(4);
+        let next = if forward {
+            (idx + 1) % STEPS.len()
+        } else {
+            (idx + STEPS.len() - 1) % STEPS.len()
+        };
+        self.config.hyprland_opacity = STEPS[next];
+        self.base_theme.hyprland_opacity = None;
+        let _ = self.config.save();
+        self.sync_appearance();
+        self.status_line = format!(
+            "Hyprland Window Opacity: {:.0}%",
+            self.config.hyprland_opacity * 100.0
+        );
+    }
+
+    pub fn cycle_theme(&mut self, forward: bool) {
+        if self.themes.is_empty() {
+            return;
+        }
+        let cur = self
+            .themes
+            .iter()
+            .position(|t| t.name == self.base_theme.name)
+            .unwrap_or(0);
+        let next = if forward {
+            (cur + 1) % self.themes.len()
+        } else {
+            (cur + self.themes.len() - 1) % self.themes.len()
+        };
+        self.apply_theme_by_index(next);
+        self.config.theme = self.base_theme.name.clone();
+        let _ = self.config.save();
+        self.status_line = format!("Theme: {}", self.base_theme.name);
+    }
+
+    pub fn apply_theme_by_index(&mut self, idx: usize) {
+        if let Some(t) = self.themes.get(idx).cloned() {
+            self.base_theme = t;
+            self.sync_appearance();
+        }
+    }
+
+    pub fn cycle_enhancer(&mut self) {
+        let next = self.playback.enhancer.next();
+        self.playback.enhancer = next;
+        self.config.enhancer_mode = next;
+        let _ = self.config.save();
+        self.status_line = format!("Audio Enhancer: {}", next.label());
+        if let Some(mpv) = &self.mpv {
+            mpv.set_enhancer(next);
+        }
+    }
+
+    pub fn toggle_pause(&mut self) {
+        let new_paused = !self.playback.paused;
+        if new_paused {
+            self.playback.position_secs = self.interpolated_position();
+            self.pos_anchor = None;
+        } else if !self.playback.loading_track {
+            self.pos_anchor = Some((self.playback.position_secs, Instant::now()));
+        }
+        self.playback.paused = new_paused;
+        if let Some(mpv) = &self.mpv {
+            mpv.set_paused(new_paused);
+        }
+    }
+
+    pub fn set_volume(&mut self, vol: u8, save_now: bool) {
+        let next = vol.min(100);
+        if self.playback.volume == next {
+            return;
+        }
+        self.playback.volume = next;
+        self.config.volume = next;
+        if save_now {
+            self.config_dirty = false;
+            let _ = self.config.save();
+        } else {
+            self.config_dirty = true;
+        }
+        if let Some(mpv) = &self.mpv {
+            mpv.set_volume(next);
+        }
+    }
+
+    pub fn flush_config(&mut self) {
+        if self.config_dirty {
+            self.config_dirty = false;
+            let _ = self.config.save();
+        }
+    }
+
+    pub fn adjust_volume(&mut self, delta: i8) {
+        let next = (self.playback.volume as i16 + delta as i16).clamp(0, 100) as u8;
+        self.set_volume(next, true);
+    }
+
+    pub fn interpolated_position(&self) -> f64 {
+        let raw = match self.pos_anchor {
+            Some((base, at)) if !self.playback.paused && !self.playback.loading_track => {
+                base + at.elapsed().as_secs_f64()
+            }
+            _ => self.playback.position_secs,
+        };
+        if self.playback.duration_secs > 0.0 {
+            raw.clamp(0.0, self.playback.duration_secs)
+        } else {
+            raw.max(0.0)
+        }
+    }
+
+    pub fn tick_playback(&mut self) -> bool {
+        if self.playback.paused
+            || self.playback.loading_track
+            || self.playback.current_track().is_none()
+        {
+            return false;
+        }
+        self.playback.position_secs = self.interpolated_position();
+        true
+    }
+
+    pub fn toggle_shuffle(&mut self) {
+        self.playback.shuffle = !self.playback.shuffle;
+        self.config.shuffle = self.playback.shuffle;
+        let _ = self.config.save();
+        self.playback.clear_upcoming();
+        if self.playback.current_track().is_some() {
+            self.prefetch_next();
+        }
+        self.status_line = format!(
+            "Shuffle: {}",
+            if self.playback.shuffle { "On" } else { "Off" }
+        );
+    }
+
+    pub fn adjust_focused_pane_width(&mut self, delta_pct: i16) {
+        match self.focus {
+            FocusPane::Sidebar => {
+                let next = (self.config.right_pane_pct as i16 + delta_pct).clamp(14, 48) as u16;
+                if 100u16.saturating_sub(self.config.left_pane_pct + next) >= 20 {
+                    self.config.right_pane_pct = next;
+                    let _ = self.config.save();
+                }
+            }
+            FocusPane::Tracks | FocusPane::SearchInput => {
+                let next = (self.config.left_pane_pct as i16 + delta_pct).clamp(18, 52) as u16;
+                if 100u16.saturating_sub(next + self.config.right_pane_pct) >= 20 {
+                    self.config.left_pane_pct = next;
+                    let _ = self.config.save();
+                }
+            }
+        }
+    }
+
+    pub fn cycle_repeat(&mut self) {
+        self.playback.repeat = self.playback.repeat.next();
+        self.config.repeat_mode = self.playback.repeat;
+        let _ = self.config.save();
+        self.playback.clear_upcoming();
+        if self.playback.current_track().is_some() {
+            self.prefetch_next();
+        }
+        self.status_line = format!("Repeat: {}", self.playback.repeat.label());
+    }
+
+    pub fn seek(&mut self, secs: f64) {
+        let target = (self.interpolated_position() + secs).max(0.0);
+        self.playback.position_secs = target;
+        if !self.playback.paused {
+            self.pos_anchor = Some((target, Instant::now()));
+        }
+        if let Some(mpv) = &self.mpv {
+            mpv.seek_relative(secs);
+        }
+    }
+
+    pub fn seek_to(&mut self, secs: f64) {
+        let target = secs.max(0.0);
+        self.playback.position_secs = target;
+        if !self.playback.paused {
+            self.pos_anchor = Some((target, Instant::now()));
+        }
+        if let Some(mpv) = &self.mpv {
+            mpv.seek_absolute(target);
+        }
+    }
+
+    pub fn writable_ytm_playlists(&self) -> Vec<Playlist> {
+        self.sidebar_items
+            .iter()
+            .filter_map(|entry| match entry {
+                SidebarEntry::Playlist(p)
+                    if p.source == ProviderSource::YouTubeMusic && p.id != "VLLM" =>
+                {
+                    Some(p.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn selected_or_playing_track(&self) -> Option<Track> {
+        if self.focus == FocusPane::Tracks {
+            if let Some(idx) = self.track_table_state.selected() {
+                if let Some(t) = self.visible_tracks.get(idx) {
+                    return Some(t.clone());
+                }
+            }
+        }
+        self.playback.current_track().cloned()
+    }
+
+    pub fn toggle_like_selected(&mut self) {
+        if !self.ytm.is_authenticated() {
+            self.status_line = "Sign in to YouTube Music in your browser to sync likes".to_string();
+            return;
+        }
+        let Some(track) = self.selected_or_playing_track() else {
+            return;
+        };
+        let new_liked = !track.liked;
+        for t in &mut self.visible_tracks {
+            if t.id == track.id {
+                t.liked = new_liked;
+            }
+        }
+        for t in &mut self.playback.queue {
+            if t.id == track.id {
+                t.liked = new_liked;
+            }
+        }
+
+        let ytm = self.ytm.clone();
+        let cache_db = self.cache_db.clone();
+        let tx = self.tx.clone();
+        let title = track.title.clone();
+        self.status_line = format!(
+            "{} \"{}\" on YouTube Music...",
+            if new_liked { "Liking" } else { "Unliking" },
+            title
+        );
+
+        tokio::spawn(async move {
+            let video_id = match track.source {
+                ProviderSource::YouTubeMusic => Some(track.id),
+                ProviderSource::Spotify => {
+                    let q = format!("{} {}", track.artist, track.title);
+                    ytm.search_songs(&q)
+                        .await
+                        .ok()
+                        .and_then(|v| v.into_iter().next())
+                        .map(|t| t.id)
+                }
+            };
+            let Some(vid) = video_id else {
+                let _ = tx.send(AppEvent::StatusMessage(
+                    "Could not match track on YouTube Music".to_string(),
+                ));
+                return;
+            };
+            match ytm.set_like_status(&vid, new_liked).await {
+                Ok(()) => {
+                    if let Some(db) = &cache_db {
+                        db.invalidate_playlist(Some("YTM:VLLM"));
+                    }
+                    let msg = if new_liked {
+                        format!("Saved \"{title}\" to YouTube Music Liked Songs")
+                    } else {
+                        format!("Removed \"{title}\" from Liked Songs")
+                    };
+                    let _ = tx.send(AppEvent::StatusMessage(msg));
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::StatusMessage(format!("Like sync failed: {e}")));
+                }
+            }
+        });
+    }
+
+    pub fn open_add_to_playlist_modal(&mut self) {
+        if !self.ytm.is_authenticated() {
+            self.status_line = "Sign in to YouTube Music in your browser first".to_string();
+            return;
+        }
+        if self.selected_or_playing_track().is_none() {
+            self.status_line = "Select a track first".to_string();
+            return;
+        }
+        if self.writable_ytm_playlists().is_empty() {
+            self.status_line =
+                "No writable YouTube Music playlists found (press c to create)".to_string();
+            return;
+        }
+        self.modal = ActiveModal::AddToPlaylist(0);
+    }
+
+    pub fn confirm_add_to_playlist(&mut self, pl_idx: usize) {
+        let playlists = self.writable_ytm_playlists();
+        let Some(pl) = playlists.get(pl_idx).cloned() else {
+            return;
+        };
+        let Some(track) = self.selected_or_playing_track() else {
+            return;
+        };
+        let ytm = self.ytm.clone();
+        let cache_db = self.cache_db.clone();
+        let tx = self.tx.clone();
+        self.status_line = format!("Adding \"{}\" to {}...", track.title, pl.name);
+
+        tokio::spawn(async move {
+            let video_id = match track.source {
+                ProviderSource::YouTubeMusic => Some(track.id),
+                ProviderSource::Spotify => {
+                    let q = format!("{} {}", track.artist, track.title);
+                    ytm.search_songs(&q)
+                        .await
+                        .ok()
+                        .and_then(|v| v.into_iter().next())
+                        .map(|t| t.id)
+                }
+            };
+            let Some(vid) = video_id else {
+                let _ = tx.send(AppEvent::StatusMessage(
+                    "Could not match track on YouTube Music".to_string(),
+                ));
+                return;
+            };
+            match ytm.add_to_playlist(&pl.id, &vid).await {
+                Ok(()) => {
+                    if let Some(db) = &cache_db {
+                        db.invalidate_playlist(Some(&format!("YTM:{}", pl.id)));
+                    }
+                    let _ = tx.send(AppEvent::StatusMessage(format!(
+                        "Added \"{}\" to {}",
+                        track.title, pl.name
+                    )));
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::StatusMessage(format!("Add failed: {e}")));
+                }
+            }
+        });
+    }
+
+    pub fn remove_selected_from_playlist(&mut self) {
+        let Some(pl_id) = self.current_playlist_id.clone() else {
+            self.status_line = "Open a YouTube Music playlist to remove tracks".to_string();
+            return;
+        };
+        if pl_id == "VLLM" {
+            self.toggle_like_selected();
+            return;
+        }
+        let Some(idx) = self.track_table_state.selected() else {
+            return;
+        };
+        let Some(track) = self.visible_tracks.get(idx).cloned() else {
+            return;
+        };
+        let Some(set_vid) = track.set_video_id.clone() else {
+            self.status_line =
+                "Track missing playlistSetVideoId; press R to refresh playlist".to_string();
+            return;
+        };
+
+        self.visible_tracks.remove(idx);
+        if self.visible_tracks.is_empty() {
+            self.track_table_state.select(None);
+        } else {
+            self.track_table_state
+                .select(Some(idx.min(self.visible_tracks.len() - 1)));
+        }
+
+        let ytm = self.ytm.clone();
+        let cache_db = self.cache_db.clone();
+        let tx = self.tx.clone();
+        self.status_line = format!("Removing \"{}\" from playlist...", track.title);
+        tokio::spawn(async move {
+            match ytm.remove_from_playlist(&pl_id, &track.id, &set_vid).await {
+                Ok(()) => {
+                    if let Some(db) = &cache_db {
+                        db.invalidate_playlist(Some(&format!("YTM:{pl_id}")));
+                    }
+                    let _ = tx.send(AppEvent::StatusMessage(format!(
+                        "Removed \"{}\" from YouTube Music playlist",
+                        track.title
+                    )));
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::StatusMessage(format!("Remove failed: {e}")));
+                }
+            }
+        });
+    }
+
+    pub fn create_ytm_playlist(&mut self, title: &str) {
+        let trimmed = title.trim().to_string();
+        if trimmed.is_empty() {
+            return;
+        }
+        if !self.ytm.is_authenticated() {
+            self.status_line = "Sign in to YouTube Music in your browser first".to_string();
+            return;
+        }
+        let ytm = self.ytm.clone();
+        let tx = self.tx.clone();
+        self.status_line = format!("Creating playlist \"{trimmed}\"...");
+        tokio::spawn(async move {
+            match ytm.create_playlist(&trimmed).await {
+                Ok(pid) => {
+                    let pl = Playlist {
+                        id: format!("VL{pid}"),
+                        name: trimmed,
+                        source: ProviderSource::YouTubeMusic,
+                        track_count: Some(0),
+                        thumbnail_url: None,
+                    };
+                    let _ = tx.send(AppEvent::PlaylistCreated(pl));
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::StatusMessage(format!(
+                        "Create playlist failed: {e}"
+                    )));
+                }
+            }
+        });
+    }
+
+    pub fn refresh_account(&mut self) {
+        let ytm = self.ytm.clone();
+        if let Some(db) = &self.cache_db {
+            db.invalidate_playlist(None);
+        }
+        tokio::spawn(async move {
+            ytm.invalidate_cache(None).await;
+        });
+        self.status_line = "Refreshing browser session & playlists...".to_string();
+        self.start_background_init();
+    }
+
+    pub fn export_now_playing(&mut self) {
+        let track = self.playback.current_track();
+        let status = match track {
+            None => "Stopped",
+            Some(_) if self.playback.loading_track => "Loading",
+            Some(_) if self.playback.paused => "Paused",
+            Some(_) => "Playing",
+        };
+        let track_id = track.map(|t| t.id.clone()).unwrap_or_default();
+        let pos_secs = self.playback.position_secs.max(0.0).floor() as u64;
+        let dur_secs = self.playback.duration_secs.max(0.0).floor() as u64;
+
+        let active_lyric = match &self.lyrics {
+            LyricsState::Synced(lines) => active_line_index(lines, self.playback.position_secs)
+                .and_then(|idx| lines.get(idx))
+                .map(|l| l.text.clone())
+                .filter(|s| !s.is_empty()),
+            _ => None,
+        };
+
+        let art_url = track.and_then(|t| t.thumbnail_url.clone());
+        let art_path = art_url
+            .as_deref()
+            .map(media::art_cache_path)
+            .filter(|p| p.exists())
+            .map(|p| p.to_string_lossy().into_owned());
+
+        let fingerprint = ExportFingerprint {
+            track_id,
+            status: status.to_string(),
+            lyric: active_lyric.clone(),
+            art_path: art_path.clone(),
+            pos_secs,
+            dur_secs,
+        };
+        if self.last_exported_state.as_ref() == Some(&fingerprint) {
+            return;
+        }
+        self.last_exported_state = Some(fingerprint);
+
+        let payload = media::build_now_playing_json(
+            status,
+            track,
+            &self.playback.stream_badge,
+            pos_secs,
+            dur_secs,
+            active_lyric.as_deref(),
+            art_path.as_deref(),
+            art_url.as_deref(),
+        );
+        media::write_now_playing_json(&payload);
+    }
+
+    pub fn clear_now_playing(&self) {
+        media::clear_now_playing();
+    }
+}
