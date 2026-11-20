@@ -1,3 +1,8 @@
+//! Now Playing column combining HD terminal artwork and vertically centered synced lyrics.
+//!
+//! 1. **Artwork (`render_artwork`)**: Renders square-fitted album cover art via Kitty, Sixel, or Halfblock protocols.
+//! 2. **Centered Lyrics (`render_lyrics`)**: Anchors the active synced lyric line at vertical center (`visible_rows / 2`) with distance-graded brightness.
+
 use crate::app::App;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -146,7 +151,7 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &App) {
         }
         LyricsState::Synced(lines) => {
             let active = active_line_index(lines, app.playback.position_secs);
-            let above_budget = (visible_rows / 3).max(2);
+            let above_budget = visible_rows / 2;
             let focus_idx = active.unwrap_or(0);
             let line_rows = |idx: usize| -> usize {
                 let txt = if lines[idx].text.is_empty() {
@@ -168,7 +173,7 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 start -= 1;
             }
 
-            let top_pad = usize::from(visible_rows > 3 && start == 0 && used_above < above_budget);
+            let top_pad = above_budget.saturating_sub(used_above);
             let mut used = top_pad;
             let mut rendered: Vec<Line> = vec![Line::raw(""); top_pad];
             for (i, item) in lines.iter().enumerate().skip(start) {

@@ -1,3 +1,8 @@
+//! Root terminal layout and player bar rendering for `sonata` (TUI).
+//!
+//! 1. **Workspace Layout (`render`)**: Splits the terminal into Now Playing (artwork + lyrics), Track List, Library Sidebar, and the bottom player bar (or compact mini-player tiers).
+//! 2. **Balanced Player Bar (`render_player_bar`)**: Uses symmetric side columns so track metadata and Shuffle/Repeat controls stay dead-center horizontally, paired with a unified thin-track progress and volume bar.
+
 pub mod modals;
 pub mod now_playing;
 pub mod sidebar;
@@ -5,7 +10,7 @@ pub mod track_list;
 
 use crate::app::App;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui::Frame;
@@ -25,7 +30,7 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     } else {
         let root = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(10), Constraint::Length(6)])
+            .constraints([Constraint::Min(10), Constraint::Length(5)])
             .split(area);
 
         // Mirrored layout: Now Playing + Lyrics (left) | Tracks (center) | Library (right)
@@ -201,12 +206,35 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
-            Constraint::Length(1),
         ])
         .split(inner);
 
-    app.ui_rects.player_top = rows[0];
     app.ui_rects.progress_bar = rows[1];
+
+    // Symmetric side widths keep the center title and mode toggles dead-center in the terminal.
+    let badge_chars = app.playback.stream_badge.chars().count() as u16 + 3;
+    let desired_side = badge_chars.max(36);
+    let side_w = if inner.width >= 96 {
+        desired_side
+            .max(inner.width * 28 / 100)
+            .min(44)
+            .min(inner.width.saturating_sub(24) / 2)
+    } else {
+        (inner.width * 30 / 100)
+            .clamp(18, 42)
+            .min(inner.width.saturating_sub(12) / 2)
+    };
+
+    let top_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(side_w),
+            Constraint::Min(12),
+            Constraint::Length(side_w),
+        ])
+        .split(rows[0]);
+
+    app.ui_rects.player_top = top_cols[1];
 
     let (title, artist) = match app.playback.current_track() {
         Some(t) => (t.title.as_str(), t.artist.as_str()),
@@ -221,24 +249,13 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         "⏸"
     };
 
-    let badge_str = format!("[{}] ", app.playback.stream_badge);
-    let badge_w = (badge_str.chars().count() as u16).min(rows[0].width / 2);
-
-    let top_cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(14),
-            Constraint::Min(12),
-            Constraint::Length(badge_w),
-        ])
-        .split(rows[0]);
-
     let ctrl_cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(4),
-            Constraint::Length(6),
-            Constraint::Length(4),
+            Constraint::Length(5),
+            Constraint::Length(5),
+            Constraint::Length(5),
+            Constraint::Fill(1),
         ])
         .split(top_cols[0]);
     app.ui_rects.ctrl_prev = ctrl_cols[0];
@@ -270,12 +287,12 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 
     let title_line = Line::from(vec![
         Span::styled(
-            format!(" {title} "),
+            title,
             Style::default()
                 .fg(app.theme.fg)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!("— {artist}"), Style::default().fg(app.theme.muted)),
+        Span::styled(format!(" — {artist}"), Style::default().fg(app.theme.muted)),
     ]);
     frame.render_widget(
         Paragraph::new(title_line).alignment(Alignment::Center),
@@ -283,7 +300,7 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     );
 
     let badges = Line::from(vec![Span::styled(
-        format!("[{}]", app.playback.stream_badge),
+        format!("[{}] ", app.playback.stream_badge),
         Style::default().fg(app.theme.success),
     )]);
     frame.render_widget(
@@ -291,21 +308,26 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         top_cols[2],
     );
 
-    render_progress_row(frame, rows[2], app);
+    render_progress_row(frame, rows[1], app);
 
-    let bottom_cols = Layout::default()
+    let bot_cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(24), Constraint::Min(10)])
-        .split(rows[3]);
+        .constraints([
+            Constraint::Length(side_w),
+            Constraint::Min(12),
+            Constraint::Length(side_w),
+        ])
+        .split(rows[2]);
 
     let vol_cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Length(5),
             Constraint::Length(12),
-            Constraint::Length(7),
+            Constraint::Length(6),
+            Constraint::Fill(1),
         ])
-        .split(bottom_cols[0]);
+        .split(bot_cols[0]);
     app.ui_rects.volume_bar = vol_cols[1];
 
     frame.render_widget(
@@ -314,11 +336,11 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     );
     let vol_ratio = (app.playback.volume as f64 / 100.0).clamp(0.0, 1.0);
     frame.render_widget(
-        Paragraph::new(volume_line(
+        Paragraph::new(slider_line(
             vol_ratio,
             vol_cols[1].width as usize,
             app.theme.accent,
-            app.theme.fg,
+            app.theme.highlight_fg,
             app.theme.border,
         )),
         vol_cols[1],
@@ -332,11 +354,6 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         )),
         vol_cols[2],
     );
-
-    let footer_cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(38), Constraint::Fill(1)])
-        .split(bottom_cols[1]);
 
     let shuffle_style = if app.playback.shuffle {
         Style::default()
@@ -353,62 +370,91 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         Style::default().fg(app.theme.muted)
     };
 
-    let controls_line = Line::from(vec![
-        Span::styled("│ ", Style::default().fg(app.theme.border)),
-        Span::styled(
-            if app.playback.shuffle {
-                "Shuffle:On"
-            } else {
-                "Shuffle:Off"
-            },
-            shuffle_style,
-        ),
-        Span::styled("  ", Style::default().fg(app.theme.muted)),
-        Span::styled(
-            format!("Repeat:{}", app.playback.repeat.label()),
-            repeat_style,
-        ),
-        Span::styled(
-            format!("  {} (t)  Settings (S)  Keys (k)", app.theme.name),
-            Style::default().fg(app.theme.muted),
-        ),
-    ]);
+    let modes_line = if bot_cols[1].width >= 33 {
+        Line::from(vec![
+            Span::styled(
+                if app.playback.shuffle {
+                    "⇄ Shuffle: On"
+                } else {
+                    "⇄ Shuffle: Off"
+                },
+                shuffle_style,
+            ),
+            Span::styled("   ·   ", Style::default().fg(app.theme.border)),
+            Span::styled(
+                format!("↻ Repeat: {}", app.playback.repeat.label()),
+                repeat_style,
+            ),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(
+                if app.playback.shuffle {
+                    "⇄ On"
+                } else {
+                    "⇄ Off"
+                },
+                shuffle_style,
+            ),
+            Span::styled(" · ", Style::default().fg(app.theme.border)),
+            Span::styled(format!("↻ {}", app.playback.repeat.label()), repeat_style),
+        ])
+    };
     frame.render_widget(
-        Paragraph::new(controls_line).alignment(Alignment::Left),
-        footer_cols[0],
+        Paragraph::new(modes_line).alignment(Alignment::Center),
+        bot_cols[1],
     );
-    frame.render_widget(
-        Paragraph::new(Span::styled(
+
+    let right_footer = if !app.status_line.trim().is_empty() {
+        Line::from(Span::styled(
             format!("{} ", app.status_line),
             Style::default().fg(app.theme.fg),
         ))
-        .alignment(Alignment::Right),
-        footer_cols[1],
+    } else if bot_cols[2].width >= 36 {
+        Line::from(vec![
+            Span::styled("Theme ", Style::default().fg(app.theme.muted)),
+            Span::styled("(t)", Style::default().fg(app.theme.fg)),
+            Span::styled(" · Settings ", Style::default().fg(app.theme.muted)),
+            Span::styled("(S)", Style::default().fg(app.theme.fg)),
+            Span::styled(" · Keys ", Style::default().fg(app.theme.muted)),
+            Span::styled("(k) ", Style::default().fg(app.theme.fg)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("(t)", Style::default().fg(app.theme.fg)),
+            Span::styled(" · ", Style::default().fg(app.theme.muted)),
+            Span::styled("(S)", Style::default().fg(app.theme.fg)),
+            Span::styled(" · ", Style::default().fg(app.theme.muted)),
+            Span::styled("(k) ", Style::default().fg(app.theme.fg)),
+        ])
+    };
+    frame.render_widget(
+        Paragraph::new(right_footer).alignment(Alignment::Right),
+        bot_cols[2],
     );
 }
 
-fn volume_line(
+fn slider_line(
     ratio: f64,
     width: usize,
-    fill_fg: ratatui::style::Color,
-    thumb_fg: ratatui::style::Color,
-    empty_fg: ratatui::style::Color,
+    fill_fg: Color,
+    thumb_fg: Color,
+    empty_fg: Color,
 ) -> Line<'static> {
     if width == 0 {
         return Line::default();
     }
-    let filled = ((ratio.clamp(0.0, 1.0) * width as f64).round() as usize).min(width);
+    let thumb_idx = ((ratio.clamp(0.0, 1.0) * (width.saturating_sub(1)) as f64).round() as usize)
+        .min(width - 1);
     let mut spans = Vec::with_capacity(3);
-    if filled > 1 {
+    if thumb_idx > 0 {
         spans.push(Span::styled(
-            "━".repeat(filled - 1),
+            "━".repeat(thumb_idx),
             Style::default().fg(fill_fg),
         ));
     }
-    if filled > 0 {
-        spans.push(Span::styled("●", Style::default().fg(thumb_fg)));
-    }
-    let rest = width.saturating_sub(filled);
+    spans.push(Span::styled("●", Style::default().fg(thumb_fg)));
+    let rest = width.saturating_sub(thumb_idx + 1);
     if rest > 0 {
         spans.push(Span::styled(
             "─".repeat(rest),
@@ -431,9 +477,9 @@ fn render_progress_row(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(left_label.len() as u16),
+            Constraint::Length(left_label.chars().count() as u16),
             Constraint::Min(8),
-            Constraint::Length(right_label.len() as u16),
+            Constraint::Length(right_label.chars().count() as u16),
         ])
         .split(area);
 
@@ -443,13 +489,13 @@ fn render_progress_row(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         Paragraph::new(Span::styled(left_label, Style::default().fg(app.theme.fg))),
         cols[0],
     );
-    let bar = smooth_bar(ratio, cols[1].width as usize);
     frame.render_widget(
-        Paragraph::new(Span::styled(
-            bar,
-            Style::default()
-                .fg(app.theme.accent)
-                .bg(app.theme.highlight_bg),
+        Paragraph::new(slider_line(
+            ratio,
+            cols[1].width as usize,
+            app.theme.accent,
+            app.theme.highlight_fg,
+            app.theme.border,
         )),
         cols[1],
     );
@@ -462,24 +508,20 @@ fn render_progress_row(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     );
 }
 
-fn smooth_bar(ratio: f64, width: usize) -> String {
-    const EIGHTHS: [&str; 8] = [" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
-    if width == 0 {
-        return String::new();
+#[cfg(test)]
+mod tests {
+    use super::slider_line;
+    use ratatui::style::Color;
+
+    #[test]
+    fn slider_line_renders_thumb_at_exact_endpoints_and_midpoint() {
+        let start = slider_line(0.0, 10, Color::Red, Color::White, Color::Gray);
+        assert_eq!(start.to_string(), "●─────────");
+
+        let mid = slider_line(0.5, 11, Color::Red, Color::White, Color::Gray);
+        assert_eq!(mid.to_string(), "━━━━━●─────");
+
+        let end = slider_line(1.0, 10, Color::Red, Color::White, Color::Gray);
+        assert_eq!(end.to_string(), "━━━━━━━━━●");
     }
-    let total_eighths =
-        ((ratio.clamp(0.0, 1.0) * (width * 8) as f64).round() as usize).min(width * 8);
-    let full = total_eighths / 8;
-    let rem = total_eighths % 8;
-    let mut out = String::with_capacity(width * 3);
-    for _ in 0..full {
-        out.push('█');
-    }
-    if full < width {
-        out.push_str(EIGHTHS[rem]);
-        for _ in (full + 1)..width {
-            out.push(' ');
-        }
-    }
-    out
 }
