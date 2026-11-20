@@ -18,6 +18,9 @@
 # Local agent skills (keep repo clean)
 /.agents/
 
+# Local architecture notes and research
+/research/
+
 # Editor & OS files
 .vscode/
 .idea/
