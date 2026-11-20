@@ -1,11 +1,82 @@
+//! Browser cookie extraction and YouTube Music request signing for Sonata.
+//!
+//! 1. **Cookie Model**: `ExtractedCookies` holds YouTube Music cookies, the Spotify `sp_dc` token, and an
+//!    optional Netscape cookie file path for yt-dlp.
+//! 2. **Request Signing**: `compute_sapisidhash` builds the time-based `SAPISIDHASH` authorization header.
+//! 3. **Browser Discovery**: `list_supported_browsers` detects installed Gecko and Chromium-family browsers.
+//! 4. **Extraction**: Gecko profiles are read from a temporary copy of `cookies.sqlite`; Chromium-family
+//!    browsers are delegated to yt-dlp's `--cookies-from-browser`; Netscape-format files are parsed directly.
+//! 5. **Cache Files**: matching Google/YouTube cookies are written to the cache directory with `0600`
+//!    permissions on Unix for yt-dlp reuse.
+
 use crate::config::AppConfig;
 use rusqlite::Connection;
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write as _;
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+const YTDLP_COOKIE_TIMEOUT: Duration = Duration::from_secs(15);
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+struct TempDirGuard {
+    path: PathBuf,
+}
+
+impl TempDirGuard {
+    fn new(path: PathBuf) -> std::io::Result<Self> {
+        ensure_private_dir(&path)?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn ensure_private_dir(path: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(path)?;
+    #[cfg(unix)]
+    {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+fn create_private_file(path: &Path) -> std::io::Result<fs::File> {
+    if let Some(parent) = path.parent() {
+        ensure_private_dir(parent)?;
+    }
+    let mut opts = OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    opts.mode(0o600);
+    let file = opts.open(path)?;
+    #[cfg(unix)]
+    {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(file)
+}
+
+fn write_private_file(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    let mut file = create_private_file(path)?;
+    file.write_all(content)?;
+    file.sync_all()?;
+    Ok(())
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct ExtractedCookies {
@@ -318,9 +389,11 @@ fn try_gecko_dir(browser_name: &str, rel_dir: &str) -> Option<ExtractedCookies> 
 }
 
 fn read_gecko_sqlite(browser_name: &str, db_path: &Path) -> Option<ExtractedCookies> {
-    let tmp_dir = AppConfig::cache_dir().join("tmp_cookies");
-    let _ = fs::create_dir_all(&tmp_dir);
-    let tmp_db = tmp_dir.join("cookies.sqlite");
+    let seq = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp_dir =
+        AppConfig::cache_dir().join(format!("tmp_cookies_{}_{}", std::process::id(), seq));
+    let guard = TempDirGuard::new(tmp_dir).ok()?;
+    let tmp_db = guard.path().join("cookies.sqlite");
     fs::copy(db_path, &tmp_db).ok()?;
 
     // Copy WAL and SHM files if present so live browser sessions are captured cleanly.
@@ -334,42 +407,59 @@ fn read_gecko_sqlite(browser_name: &str, db_path: &Path) -> Option<ExtractedCook
         }
     }
 
-    let conn = Connection::open(&tmp_db).ok()?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT host, path, isSecure, expiry, name, value FROM moz_cookies \
-             WHERE host LIKE '%youtube.com%' OR host LIKE '%google.com%' OR host LIKE '%spotify.com%'",
-        )
-        .ok()?;
+    let collected_rows = {
+        let conn = Connection::open(&tmp_db).ok()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT host, path, isSecure, expiry, name, value FROM moz_cookies \
+                 WHERE host LIKE '%youtube.com%' OR host LIKE '%google.com%' OR host LIKE '%spotify.com%'",
+            )
+            .ok()?;
 
-    let rows = stmt
-        .query_map([], |row| {
-            let host: String = row.get(0)?;
-            Ok(CookieRow {
-                is_subdomain: host.starts_with('.'),
-                host,
-                path: row.get(1)?,
-                is_secure: row.get::<_, i64>(2)? != 0,
-                expiry: row.get(3)?,
-                name: row.get(4)?,
-                value: row.get(5)?,
+        let rows = stmt
+            .query_map([], |row| {
+                let host: String = row.get(0)?;
+                Ok(CookieRow {
+                    is_subdomain: host.starts_with('.'),
+                    host,
+                    path: row.get(1)?,
+                    is_secure: row.get::<_, i64>(2)? != 0,
+                    expiry: row.get(3)?,
+                    name: row.get(4)?,
+                    value: row.get(5)?,
+                })
             })
-        })
-        .ok()?;
+            .ok()?;
 
-    let mut collected_rows = Vec::new();
-    for r in rows.flatten() {
-        collected_rows.push(r);
-    }
+        rows.flatten().collect::<Vec<_>>()
+    };
 
     let out = build_from_rows(browser_name, &collected_rows, true);
-    let _ = fs::remove_dir_all(&tmp_dir);
     Some(out)
 }
 
+fn is_valid_ytdlp_browser(browser: &str) -> bool {
+    !browser.is_empty()
+        && SUPPORTED_BROWSERS
+            .iter()
+            .any(|spec| !spec.is_gecko && spec.ytdlp_name == browser)
+}
+
 fn try_chromium_via_ytdlp(browser: &str) -> Option<ExtractedCookies> {
-    let cache_file = AppConfig::cache_dir().join(format!("cookies_{browser}.txt"));
-    let status = Command::new("yt-dlp")
+    if !is_valid_ytdlp_browser(browser) {
+        tracing::warn!(
+            browser = browser,
+            "rejected unsupported yt-dlp cookie browser"
+        );
+        return None;
+    }
+
+    let cache_dir = AppConfig::cache_dir();
+    ensure_private_dir(&cache_dir).ok()?;
+    let cache_file = cache_dir.join(format!("cookies_{browser}.txt"));
+    let _ = create_private_file(&cache_file).ok()?;
+
+    let mut child = Command::new("yt-dlp")
         .args([
             "--cookies-from-browser",
             browser,
@@ -380,19 +470,39 @@ fn try_chromium_via_ytdlp(browser: &str) -> Option<ExtractedCookies> {
             "--quiet",
             "https://music.youtube.com/",
         ])
-        .status()
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
         .ok()?;
+
+    let deadline = Instant::now() + YTDLP_COOKIE_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    tracing::warn!(
+                        browser = browser,
+                        "yt-dlp --cookies-from-browser timed out after 15s"
+                    );
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => break None,
+        }
+    }?;
 
     if !status.success() && !cache_file.exists() {
         return None;
     }
 
-    let content = fs::read_to_string(&cache_file).ok()?;
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&cache_file, fs::Permissions::from_mode(0o600));
-    }
+    let _ = fs::set_permissions(&cache_file, fs::Permissions::from_mode(0o600));
+    let content = fs::read_to_string(&cache_file).ok()?;
     let rows = parse_netscape_cookies(&content);
     let mut out = build_from_rows(browser, &rows, true);
     if out.has_ytm_auth() {
@@ -437,15 +547,15 @@ fn build_from_rows(
     }
 
     let netscape_file = if write_netscape_cache && yt_netscape_lines.len() > 1 {
-        let _ = fs::create_dir_all(AppConfig::cache_dir());
-        let path = AppConfig::cache_dir().join("yt_cookies.txt");
-        if fs::write(&path, format!("{}\n", yt_netscape_lines.join("\n"))).is_ok() {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+        let cache_dir = AppConfig::cache_dir();
+        if ensure_private_dir(&cache_dir).is_ok() {
+            let path = cache_dir.join("yt_cookies.txt");
+            let payload = format!("{}\n", yt_netscape_lines.join("\n"));
+            if write_private_file(&path, payload.as_bytes()).is_ok() {
+                Some(path)
+            } else {
+                None
             }
-            Some(path)
         } else {
             None
         }
@@ -510,5 +620,38 @@ mod tests {
         let parts: Vec<_> = header.split('_').collect();
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[1].len(), 40);
+    }
+
+    #[test]
+    fn validates_ytdlp_browser_ids() {
+        assert!(is_valid_ytdlp_browser("chrome"));
+        assert!(is_valid_ytdlp_browser("brave"));
+        assert!(!is_valid_ytdlp_browser("firefox"));
+        assert!(!is_valid_ytdlp_browser("../evil"));
+        assert!(!is_valid_ytdlp_browser(""));
+    }
+
+    #[test]
+    fn cleans_up_temp_dir_on_drop_and_enforces_private_permissions() {
+        let seq = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "sonata_cookie_guard_{}_{}",
+            std::process::id(),
+            seq
+        ));
+        let file = dir.join("yt_cookies.txt");
+        {
+            let guard = TempDirGuard::new(dir.clone()).expect("create temp dir");
+            write_private_file(&file, b"secret=1\n").expect("write private cookie file");
+            assert!(guard.path().exists());
+            #[cfg(unix)]
+            {
+                let dir_mode = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+                let file_mode = fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+                assert_eq!(dir_mode, 0o700);
+                assert_eq!(file_mode, 0o600);
+            }
+        }
+        assert!(!dir.exists());
     }
 }

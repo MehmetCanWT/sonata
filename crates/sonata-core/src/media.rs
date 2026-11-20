@@ -1,3 +1,14 @@
+//! External now-playing telemetry, high-resolution artwork resolution, and ambient tinting for Sonata.
+//!
+//! 1. **Now Playing JSON**: serializes playback metadata, lyric line, and art path into
+//!    `$XDG_RUNTIME_DIR/sonata/now_playing.json`.
+//! 2. **Cover Resolution**: `resolve_track_cover` queries Deezer, iTunes, and upscaled provider
+//!    thumbnails (`upscale_artwork_url`) for both YouTube Music and Spotify tracks.
+//! 3. **Artwork Caching & Scaling**: `fetch_and_decode_art` caches 480px PNG artwork on disk and
+//!    prunes the media cache against the configured byte limit.
+//! 4. **Ambient Color Extraction**: `extract_ambient_rgb` computes a saturated midtone accent color
+//!    from album artwork.
+
 use crate::cache::{prune_media_cache, CacheDb};
 use crate::config::AppConfig;
 use crate::providers::{ProviderSource, Track};
@@ -85,37 +96,111 @@ pub async fn resolve_track_cover(
     cache_db: Option<&CacheDb>,
     track: &Track,
 ) -> Option<(String, String)> {
-    if track.source != ProviderSource::YouTubeMusic {
-        return None;
-    }
+    let fallback_source = match track.source {
+        ProviderSource::YouTubeMusic => "ytm",
+        ProviderSource::Spotify => "spotify",
+    };
     if let Some(metadata) = cache_db.and_then(|db| db.get_track_enrichment(&track.id)) {
-        if matches!(metadata.cover_source.as_str(), "apple" | "ytm") {
+        if matches!(
+            metadata.cover_source.as_str(),
+            "deezer" | "apple" | "ytm" | "spotify"
+        ) {
             if let Some(url) = metadata.cover_url.filter(|url| !is_legacy_cover(url)) {
-                return Some((url, metadata.cover_source));
+                return Some((upscale_artwork_url(&url), metadata.cover_source));
             }
         }
     }
 
-    let apple_cover = if track.artist.trim().is_empty() || track.title.trim().is_empty() {
-        None
-    } else {
-        fetch_itunes_cover(http, track).await
-    };
-    let (url, source) = match apple_cover {
-        Some(url) => (url, "apple"),
-        None => {
+    let has_meta = !track.artist.trim().is_empty() && !track.title.trim().is_empty();
+    let (url, source) = if has_meta {
+        if let Some(url) = fetch_deezer_cover(http, track).await {
+            (url, "deezer")
+        } else if let Some(url) = fetch_itunes_cover(http, track).await {
+            (url, "apple")
+        } else {
             let url = track
                 .thumbnail_url
                 .as_deref()
                 .filter(|url| !is_legacy_cover(url))
-                .map(upscale_ytm_thumbnail)?;
-            (url, "ytm")
+                .map(upscale_artwork_url)?;
+            (url, fallback_source)
         }
+    } else {
+        let url = track
+            .thumbnail_url
+            .as_deref()
+            .filter(|url| !is_legacy_cover(url))
+            .map(upscale_artwork_url)?;
+        (url, fallback_source)
     };
+
     if let Some(cache_db) = cache_db {
         cache_db.set_track_cover(&track.id, &url, source);
     }
     Some((url, source.to_string()))
+}
+
+async fn fetch_deezer_cover(http: &Client, track: &Track) -> Option<String> {
+    let clean_title = clean_cover_title(&track.title);
+    let query = format!("{} {clean_title}", track.artist.trim());
+    let response = http
+        .get("https://api.deezer.com/search/track")
+        .query(&[("q", query.as_str()), ("limit", "5")])
+        .timeout(std::time::Duration::from_secs(3))
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let payload: serde_json::Value = response.json().await.ok()?;
+    let results = payload.get("data")?.as_array()?;
+    results
+        .iter()
+        .filter(|candidate| deezer_candidate_matches(candidate, track))
+        .find_map(|candidate| {
+            let album = candidate.get("album")?;
+            album
+                .get("cover_xl")
+                .or_else(|| album.get("cover_big"))
+                .and_then(serde_json::Value::as_str)
+                .filter(|url| !url.trim().is_empty())
+                .map(str::to_string)
+        })
+}
+
+fn deezer_candidate_matches(candidate: &serde_json::Value, track: &Track) -> bool {
+    if let (Some(req_dur), Some(cand_dur)) = (
+        track.duration_secs,
+        candidate
+            .get("duration")
+            .and_then(serde_json::Value::as_u64),
+    ) {
+        if cand_dur > 0 && req_dur.abs_diff(cand_dur) > 6 {
+            return false;
+        }
+    }
+    let artist = candidate
+        .pointer("/artist/name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let title = candidate
+        .get("title")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if [artist, title].iter().any(|text| {
+        let lower = text.to_ascii_lowercase();
+        ["karaoke", "tribute", "ringtone", "made famous"]
+            .iter()
+            .any(|blocked| lower.contains(blocked))
+    }) {
+        return false;
+    }
+    if !modifier_versions_match(&track.title, title) {
+        return false;
+    }
+    similarity(&track.artist, artist) >= 0.75
+        && similarity(&clean_cover_title(&track.title), &clean_cover_title(title)) >= 0.80
 }
 
 async fn fetch_itunes_cover(http: &Client, track: &Track) -> Option<String> {
@@ -133,7 +218,7 @@ async fn fetch_itunes_cover(http: &Client, track: &Track) -> Option<String> {
     }
     let payload: serde_json::Value = response.json().await.ok()?;
     let results = payload.get("results")?.as_array()?;
-    let duration_ms = track.duration_secs?.saturating_mul(1000);
+    let duration_ms = track.duration_secs.map(|s| s.saturating_mul(1000));
     results
         .iter()
         .filter(|candidate| itunes_candidate_matches(candidate, track, duration_ms))
@@ -141,23 +226,25 @@ async fn fetch_itunes_cover(http: &Client, track: &Track) -> Option<String> {
             candidate
                 .get("artworkUrl100")
                 .and_then(serde_json::Value::as_str)
-                .map(upscale_itunes_artwork)
+                .map(upscale_artwork_url)
         })
 }
 
 fn itunes_candidate_matches(
     candidate: &serde_json::Value,
     track: &Track,
-    duration_ms: u64,
+    duration_ms: Option<u64>,
 ) -> bool {
-    let Some(candidate_duration) = candidate
-        .get("trackTimeMillis")
-        .and_then(serde_json::Value::as_u64)
-    else {
-        return false;
-    };
-    if candidate_duration.abs_diff(duration_ms) > 4000 {
-        return false;
+    if let Some(expected_ms) = duration_ms {
+        let Some(candidate_duration) = candidate
+            .get("trackTimeMillis")
+            .and_then(serde_json::Value::as_u64)
+        else {
+            return false;
+        };
+        if candidate_duration.abs_diff(expected_ms) > 4000 {
+            return false;
+        }
     }
     let artist = candidate
         .get("artistName")
@@ -248,21 +335,33 @@ fn normalize_for_match(text: &str) -> String {
         .join(" ")
 }
 
-fn upscale_itunes_artwork(url: &str) -> String {
-    let url = url.replace("100x100bb", "1200x1200bb");
-    if url.starts_with("http://") {
-        url.replacen("http://", "https://", 1)
-    } else {
-        url
+/// Upgrades provider thumbnail URLs (YouTube/Google, Spotify, iTunes) to high resolution.
+pub fn upscale_artwork_url(url: &str) -> String {
+    let lower = url.to_ascii_lowercase();
+    if lower.contains("googleusercontent.com") || lower.contains("ggpht.com") {
+        let base = if let Some(idx) = url.rfind("=w") {
+            &url[..idx]
+        } else if let Some(idx) = url.rfind("=s") {
+            &url[..idx]
+        } else {
+            url
+        };
+        return format!("{base}=w1200-h1200-l90-rj");
     }
-}
-
-fn upscale_ytm_thumbnail(url: &str) -> String {
-    if let Some((base, _)) = url.split_once("=w") {
-        format!("{base}=w1200-h1200-l90-rj")
-    } else {
-        format!("{url}=w1200-h1200-l90-rj")
+    if lower.contains("i.scdn.co/image/") {
+        return url
+            .replace("ab67616d00001e02", "ab67616d0000b273")
+            .replace("ab67616d00004851", "ab67616d0000b273");
     }
+    if url.contains("100x100bb") {
+        let upgraded = url.replace("100x100bb", "1200x1200bb");
+        return if upgraded.starts_with("http://") {
+            upgraded.replacen("http://", "https://", 1)
+        } else {
+            upgraded
+        };
+    }
+    url.to_string()
 }
 
 fn is_legacy_cover(url: &str) -> bool {
@@ -426,5 +525,33 @@ mod tests {
 
         let black = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(16, 16, Rgb([0, 0, 0])));
         assert_eq!(extract_ambient_rgb(&black), (110, 90, 170));
+    }
+
+    #[test]
+    fn upscales_google_spotify_and_itunes_artwork_urls() {
+        assert_eq!(
+            upscale_artwork_url("https://lh3.googleusercontent.com/abc=w120-h120-l90-rj"),
+            "https://lh3.googleusercontent.com/abc=w1200-h1200-l90-rj"
+        );
+        assert_eq!(
+            upscale_artwork_url("https://yt3.ggpht.com/xyz=s60-c-k-c0x00ffffff-no-rj"),
+            "https://yt3.ggpht.com/xyz=w1200-h1200-l90-rj"
+        );
+        assert_eq!(
+            upscale_artwork_url("https://i.scdn.co/image/ab67616d00001e02deadbeef12345678"),
+            "https://i.scdn.co/image/ab67616d0000b273deadbeef12345678"
+        );
+        assert_eq!(
+            upscale_artwork_url("https://i.scdn.co/image/ab67616d00004851deadbeef12345678"),
+            "https://i.scdn.co/image/ab67616d0000b273deadbeef12345678"
+        );
+        assert_eq!(
+            upscale_artwork_url("http://is1-ssl.mzstatic.com/image/thumb/Music/100x100bb.jpg"),
+            "https://is1-ssl.mzstatic.com/image/thumb/Music/1200x1200bb.jpg"
+        );
+        assert_eq!(
+            upscale_artwork_url("https://cdn-images.dzcdn.net/images/cover/abc/1000x1000.jpg"),
+            "https://cdn-images.dzcdn.net/images/cover/abc/1000x1000.jpg"
+        );
     }
 }

@@ -1,3 +1,11 @@
+//! Entry point of the Sonata native GPUI desktop client: CLI flags, window lifecycle, and shutdown.
+//!
+//! 1. **CLI**: `-h/--help` and `-v/--version` are handled before any runtime or window is created.
+//! 2. **Assets**: `SonataAssets` layers the app icon set (`icon_assets!`) over the `gpui_kit` defaults.
+//! 3. **Backend Bootstrap**: `spawn_backend` starts the playback/provider engine on its own thread and returns a `BackendHandle`.
+//! 4. **Window Lifecycle**: `open_main_window` builds the blurred or opaque main window and records its Hyprland address; a `UiWindowCmd` loop (fed by the tray, MPRIS, and signals) shows, hides, toggles, or quits.
+//! 5. **Signals**: a dedicated thread turns SIGINT/SIGTERM into `UiWindowCmd::QuitApp` for a clean backend shutdown.
+
 mod backend;
 mod integrations;
 mod theme_bridge;
@@ -60,6 +68,24 @@ icon_assets!(
 #[derive(Clone, Copy, Debug, Default)]
 struct SonataAssets;
 
+/// Embedded `Inter` font faces (SIL OFL 1.1), shared with `fullscreen_fx::BlurredLyricCache`.
+pub(crate) const INTER_FONTS: &[&[u8]] = &[
+    include_bytes!("../assets/fonts/Inter-Regular.ttf"),
+    include_bytes!("../assets/fonts/Inter-Medium.ttf"),
+    include_bytes!("../assets/fonts/Inter-SemiBold.ttf"),
+    include_bytes!("../assets/fonts/Inter-Bold.ttf"),
+];
+
+fn load_embedded_fonts(cx: &App) {
+    let fonts = INTER_FONTS
+        .iter()
+        .map(|bytes| Cow::Borrowed(*bytes))
+        .collect();
+    if let Err(err) = cx.text_system().add_fonts(fonts) {
+        tracing::warn!(?err, "failed to register embedded Inter fonts");
+    }
+}
+
 impl AssetSource for SonataAssets {
     fn load(&self, path: &str) -> gpui_kit::Result<Option<Cow<'static, [u8]>>> {
         if let Some(bytes) = SonataIcons.load(path)? {
@@ -90,33 +116,48 @@ fn print_help() {
 
 #[cfg(unix)]
 fn spawn_signal_watcher(win_tx: mpsc::UnboundedSender<UiWindowCmd>) {
-    let _ = std::thread::Builder::new()
+    if let Err(err) = std::thread::Builder::new()
         .name("sonata-signals".into())
         .spawn(move || {
-            let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+            let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-            else {
-                return;
+            {
+                Ok(rt) => rt,
+                Err(err) => {
+                    tracing::warn!(?err, "failed to build signal watcher tokio runtime");
+                    return;
+                }
             };
             rt.block_on(async move {
-                let Ok(mut sigterm) =
-                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                else {
-                    return;
-                };
-                let Ok(mut sigint) =
-                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
-                else {
-                    return;
-                };
+                let mut sigterm =
+                    match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    {
+                        Ok(sig) => sig,
+                        Err(err) => {
+                            tracing::warn!(?err, "failed to register SIGTERM handler");
+                            return;
+                        }
+                    };
+                let mut sigint =
+                    match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+                    {
+                        Ok(sig) => sig,
+                        Err(err) => {
+                            tracing::warn!(?err, "failed to register SIGINT handler");
+                            return;
+                        }
+                    };
                 tokio::select! {
                     _ = sigterm.recv() => {}
                     _ = sigint.recv() => {}
                 }
                 let _ = win_tx.send(UiWindowCmd::QuitApp);
             });
-        });
+        })
+    {
+        tracing::warn!(?err, "failed to spawn signal watcher thread");
+    }
 }
 
 fn open_main_window(
@@ -151,7 +192,7 @@ fn open_main_window(
     let backend_close = backend.clone();
     let backend_view = backend.clone();
     let slot_close = window_slot.clone();
-    if let Ok((handle, _view)) = gpui_kit::open_window(options, cx, move |window, cx| {
+    match gpui_kit::open_window(options, cx, move |window, cx| {
         window.on_window_should_close(cx, move |_window, _cx| {
             *slot_close.borrow_mut() = None;
             backend_close.send(BackendCmd::SetWindowAddress(None));
@@ -160,14 +201,19 @@ fn open_main_window(
         });
         cx.new(|cx| SonataDesktopView::new(backend_view, window, cx))
     }) {
-        *window_slot.borrow_mut() = Some(handle);
-        backend.send(BackendCmd::SetWindowVisible(true));
-        let backend_hypr = backend;
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(250));
-            let addr = hyprland::find_window_address_for_app("sonata-desktop");
-            backend_hypr.send(BackendCmd::SetWindowAddress(addr));
-        });
+        Ok((handle, _view)) => {
+            *window_slot.borrow_mut() = Some(handle);
+            backend.send(BackendCmd::SetWindowVisible(true));
+            let backend_hypr = backend;
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(250));
+                let addr = hyprland::find_window_address_for_app("sonata-desktop");
+                backend_hypr.send(BackendCmd::SetWindowAddress(addr));
+            });
+        }
+        Err(err) => {
+            tracing::warn!(?err, "failed to open main desktop window");
+        }
     }
 }
 
@@ -195,6 +241,7 @@ fn main() -> anyhow::Result<()> {
         .with_quit_mode(QuitMode::Explicit)
         .run(move |cx| {
             gpui_kit::init(cx);
+            load_embedded_fonts(cx);
             gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Dark, None, cx);
 
             let window_slot: Rc<RefCell<Option<AnyWindowHandle>>> = Rc::new(RefCell::new(None));

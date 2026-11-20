@@ -1,3 +1,14 @@
+//! Stream resolution for Sonata, including fast start and Hi-Fi quality upgrades.
+//!
+//! 1. **Submodules**: `innertube` (direct InnerTube audio formats), `ytdlp` (yt-dlp fallback), `matching`
+//!    (search-title cleanup and quality badges), and `cache` (on-disk audio cache).
+//! 2. **Fast Path**: `resolve_fast` prefers a local cached file, then a bounded fast-start URL.
+//! 3. **Quality Upgrade**: `needs_hifi_upgrade` and `resolve_hifi_upgrade` look for a higher-bitrate
+//!    stream in the background.
+//! 4. **Recovery**: `resolve_recovery` re-resolves when a stream URL fails or expires.
+//! 5. **Prefetch & Precache**: `precache_hifi_audio` and `prefetch_hifi_audio` download audio ahead of
+//!    time, with a guard preventing duplicate concurrent prefetches.
+
 mod cache;
 mod innertube;
 mod matching;

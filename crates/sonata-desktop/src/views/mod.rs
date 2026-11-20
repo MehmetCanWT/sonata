@@ -1,5 +1,14 @@
+//! Root GPUI view of the desktop client and the shared widgets used by the other view modules.
+//!
+//! 1. **View State**: `SonataDesktopView` holds the latest `DesktopSnapshot` plus UI-only state (`CenterMode`, `DesktopModal`, inputs, scroll handles, mini mode).
+//! 2. **Snapshot Sync**: a spawned task awaits the backend `watch` channel, swaps in each snapshot, keeps lyrics scrolled to the active line, and notifies GPUI.
+//! 3. **Rendering**: the `Render` impl picks the mini player or the full workspace and layers the account popover and modal overlay on top.
+//! 4. **Shared Widgets**: icons, cover art, avatars, buttons, track rows, and progress and volume sliders.
+//! 5. **Submodules**: `home`, `search`, `artist`, `settings`, `modals`, `mini_player`, `fullscreen`, `fullscreen_fx`, and `root`.
+
 pub mod artist;
 pub mod fullscreen;
+pub mod fullscreen_fx;
 pub mod home;
 pub mod mini_player;
 pub mod modals;
@@ -18,7 +27,6 @@ use gpui_kit::{
     SharedString, StatefulInteractiveElement, Styled, StyledImage, Subscription, Svg,
     UniformListScrollHandle, Window,
 };
-use sonata_core::lyrics::LyricsState;
 use sonata_core::media::{art_cache_path, format_mm_ss};
 use sonata_core::providers::{format_duration, Track};
 use std::cell::Cell;
@@ -65,6 +73,7 @@ pub struct SonataDesktopView {
     pub dragging_progress: bool,
     pub dragging_volume: bool,
     pub fullscreen_last_activity: Instant,
+    pub fullscreen: fullscreen::FullscreenState,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -113,29 +122,13 @@ impl SonataDesktopView {
                     if just_signed_in && matches!(view.modal, DesktopModal::SignInBrowser) {
                         view.modal = DesktopModal::None;
                     }
-                    if matches!(
-                        view.center_mode,
-                        CenterMode::Lyrics | CenterMode::Fullscreen
-                    ) {
+                    if view.center_mode == CenterMode::Lyrics {
                         let active = view.snapshot.active_lyric_index();
                         if active != view.last_synced_lyric_idx {
                             view.last_synced_lyric_idx = active;
                             if let Some(idx) = active {
-                                let target =
-                                    if let (CenterMode::Fullscreen, LyricsState::Synced(lines)) =
-                                        (view.center_mode, &view.snapshot.lyrics)
-                                    {
-                                        fullscreen::fullscreen_lyric_target(lines, idx)
-                                    } else {
-                                        idx
-                                    };
-                                if view.center_mode == CenterMode::Fullscreen {
-                                    view.lyrics_scroll
-                                        .scroll_to_item_strict(target, ScrollStrategy::Center);
-                                } else {
-                                    view.lyrics_scroll
-                                        .scroll_to_item(target, ScrollStrategy::Center);
-                                }
+                                view.lyrics_scroll
+                                    .scroll_to_item(idx, ScrollStrategy::Center);
                             }
                         }
                     }
@@ -171,6 +164,7 @@ impl SonataDesktopView {
             dragging_progress: false,
             dragging_volume: false,
             fullscreen_last_activity: Instant::now(),
+            fullscreen: fullscreen::FullscreenState::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -222,22 +216,9 @@ impl SonataDesktopView {
             CenterMode::Page
         } else {
             self.fullscreen_last_activity = Instant::now();
+            self.fullscreen.on_enter();
             CenterMode::Fullscreen
         };
-        if entering {
-            if let LyricsState::Synced(lines) = &self.snapshot.lyrics {
-                let idx = self
-                    .snapshot
-                    .active_lyric_index()
-                    .or_else(|| (!lines.is_empty()).then_some(0));
-                if let Some(idx) = idx {
-                    self.lyrics_scroll.scroll_to_item_strict(
-                        fullscreen::fullscreen_lyric_target(lines, idx),
-                        ScrollStrategy::Center,
-                    );
-                }
-            }
-        }
         cx.notify();
     }
 
@@ -451,6 +432,7 @@ impl Render for SonataDesktopView {
         div()
             .id("sonata-desktop-root")
             .size_full()
+            .font_family("Inter")
             .track_focus(&self.focus_handle)
             .text_color(palette.text)
             .on_key_down(cx.listener(Self::handle_key_down))
@@ -842,6 +824,7 @@ pub fn render_progress_slider(
             div()
                 .w(px(36.0))
                 .text_xs()
+                .font_weight(FontWeight::MEDIUM)
                 .text_color(p.muted)
                 .child(cur_str),
         )
@@ -897,6 +880,7 @@ pub fn render_progress_slider(
             div()
                 .w(px(36.0))
                 .text_xs()
+                .font_weight(FontWeight::MEDIUM)
                 .text_color(p.muted)
                 .flex()
                 .justify_end()

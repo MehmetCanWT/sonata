@@ -1,3 +1,9 @@
+//! Bridges a `sonata-core` `Theme` into the translucent "glass" color palette used by the GPUI views.
+//!
+//! 1. **GlassPalette**: the named `Hsla` colors (window, sidebar, panel, card, player bar, modal, text, accent, lyrics, and more) consumed by every view.
+//! 2. **Derivation**: `GlassPalette::from_theme` mixes the theme base colors with the cover-derived ambient color, using lower alphas when the window is transparent.
+//! 3. **Color Helpers**: RGB-to-`Hsla` conversion, RGB mixing, and a readable-foreground picker for text on accent surfaces.
+
 use gpui_kit::{rgba, Hsla};
 use sonata_core::theme::{RgbColor, Theme};
 

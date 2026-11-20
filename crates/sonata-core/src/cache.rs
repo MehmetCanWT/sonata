@@ -1,3 +1,14 @@
+//! SQLite-backed metadata cache for Sonata, shared by all front-ends.
+//!
+//! 1. **Connection & Schema**: `CacheDb` wraps one mutex-guarded `rusqlite` connection, applies schema
+//!    versioning, and bounds database size.
+//! 2. **Stream Cache**: resolved stream URLs with quality badges, validated against URL expiry
+//!    (`extract_url_expire`, `is_stream_url_fresh`).
+//! 3. **Playlist & Library Cache**: serialized playlists and library listings with staleness tracking.
+//! 4. **Track Enrichment**: per-track cover URLs, synced/plain lyrics, lyrics status, and average bitrate.
+//! 5. **Maintenance**: runtime enable/disable (clearing records when disabled) and re-exports of the
+//!    on-disk media cache pruning helpers from the `media` submodule.
+
 use crate::config::AppConfig;
 use crate::providers::{Playlist, Track};
 use rusqlite::{params, Connection};
@@ -175,11 +186,22 @@ impl CacheDb {
         }
     }
 
+    fn lock_mutex(conn: &Mutex<Connection>) -> std::sync::MutexGuard<'_, Connection> {
+        match conn.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                tracing::warn!("[sonata:cache] recovering from poisoned database mutex");
+                poisoned.into_inner()
+            }
+        }
+    }
+
+    fn lock_conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+        Self::lock_mutex(&self.conn)
+    }
+
     fn clear_cached_records(conn: &Mutex<Connection>) {
-        let Ok(conn) = conn.lock() else {
-            tracing::warn!("[sonata:cache] clear skipped reason=database-lock-poisoned");
-            return;
-        };
+        let conn = Self::lock_mutex(conn);
         if let Err(error) = conn.execute_batch(
             "BEGIN IMMEDIATE;
              DELETE FROM stream_cache;
@@ -195,13 +217,12 @@ impl CacheDb {
     }
 
     pub fn invalidate_stream(&self, track_id: &str) {
-        if let Ok(guard) = self.conn.lock() {
-            if let Err(error) = guard.execute(
-                "DELETE FROM stream_cache WHERE cache_key IN (?1, ?2)",
-                params![format!("yt:{track_id}"), format!("hifi:{track_id}")],
-            ) {
-                tracing::warn!("[sonata:cache] stream-invalidate failed error={error}");
-            }
+        let guard = self.lock_conn();
+        if let Err(error) = guard.execute(
+            "DELETE FROM stream_cache WHERE cache_key IN (?1, ?2)",
+            params![format!("yt:{track_id}"), format!("hifi:{track_id}")],
+        ) {
+            tracing::warn!("[sonata:cache] stream-invalidate failed error={error}");
         }
     }
 
@@ -209,7 +230,7 @@ impl CacheDb {
         if !self.enabled.load(Ordering::Relaxed) {
             return None;
         }
-        let guard = self.conn.lock().ok()?;
+        let guard = self.lock_conn();
         guard
             .query_row(
                 "SELECT cover_url, cover_source, synced_lyrics, plain_lyrics, lyrics_status, average_bitrate, updated_at
@@ -231,18 +252,19 @@ impl CacheDb {
     }
 
     pub fn set_track_cover(&self, track_id: &str, url: &str, source: &str) {
-        if !self.enabled.load(Ordering::Relaxed) || !matches!(source, "apple" | "ytm") {
+        if !self.enabled.load(Ordering::Relaxed)
+            || !matches!(source, "deezer" | "apple" | "ytm" | "spotify")
+        {
             return;
         }
-        if let Ok(conn) = self.conn.lock() {
-            if let Err(error) = conn.execute(
-                "INSERT INTO track_enrichment (track_id, cover_url, cover_source)
-                 VALUES (?1, ?2, ?3)
-                 ON CONFLICT(track_id) DO UPDATE SET cover_url = excluded.cover_url, cover_source = excluded.cover_source",
-                params![track_id, url, source],
-            ) {
-                tracing::warn!("[sonata:cache] cover-write failed track_id={track_id} error={error}");
-            }
+        let conn = self.lock_conn();
+        if let Err(error) = conn.execute(
+            "INSERT INTO track_enrichment (track_id, cover_url, cover_source)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(track_id) DO UPDATE SET cover_url = excluded.cover_url, cover_source = excluded.cover_source",
+            params![track_id, url, source],
+        ) {
+            tracing::warn!("[sonata:cache] cover-write failed track_id={track_id} error={error}");
         }
     }
 
@@ -257,17 +279,16 @@ impl CacheDb {
         if !self.enabled.load(Ordering::Relaxed) || !matches!(status, "FOUND" | "NOT_FOUND") {
             return;
         }
-        if let Ok(conn) = self.conn.lock() {
-            if let Err(error) = conn.execute(
-                "INSERT INTO track_enrichment (track_id, synced_lyrics, plain_lyrics, lyrics_status, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(track_id) DO UPDATE SET synced_lyrics = excluded.synced_lyrics,
-                     plain_lyrics = excluded.plain_lyrics, lyrics_status = excluded.lyrics_status,
-                     updated_at = excluded.updated_at",
-                params![track_id, synced, plain, status, updated_at],
-            ) {
-                tracing::warn!("[sonata:cache] lyrics-write failed track_id={track_id} error={error}");
-            }
+        let conn = self.lock_conn();
+        if let Err(error) = conn.execute(
+            "INSERT INTO track_enrichment (track_id, synced_lyrics, plain_lyrics, lyrics_status, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(track_id) DO UPDATE SET synced_lyrics = excluded.synced_lyrics,
+                 plain_lyrics = excluded.plain_lyrics, lyrics_status = excluded.lyrics_status,
+                 updated_at = excluded.updated_at",
+            params![track_id, synced, plain, status, updated_at],
+        ) {
+            tracing::warn!("[sonata:cache] lyrics-write failed track_id={track_id} error={error}");
         }
     }
 
@@ -275,17 +296,14 @@ impl CacheDb {
         if !self.enabled.load(Ordering::Relaxed) {
             return;
         }
-        if let Ok(conn) = self.conn.lock() {
-            if let Err(error) = conn.execute(
-                "INSERT INTO track_enrichment (track_id, average_bitrate)
-                 VALUES (?1, ?2)
-                 ON CONFLICT(track_id) DO UPDATE SET average_bitrate = excluded.average_bitrate",
-                params![track_id, bitrate],
-            ) {
-                tracing::warn!(
-                    "[sonata:cache] bitrate-write failed track_id={track_id} error={error}"
-                );
-            }
+        let conn = self.lock_conn();
+        if let Err(error) = conn.execute(
+            "INSERT INTO track_enrichment (track_id, average_bitrate)
+             VALUES (?1, ?2)
+             ON CONFLICT(track_id) DO UPDATE SET average_bitrate = excluded.average_bitrate",
+            params![track_id, bitrate],
+        ) {
+            tracing::warn!("[sonata:cache] bitrate-write failed track_id={track_id} error={error}");
         }
     }
 
@@ -294,7 +312,7 @@ impl CacheDb {
             return None;
         }
         let now = now_secs() as i64;
-        let guard = self.conn.lock().ok()?;
+        let guard = self.lock_conn();
         guard
             .query_row(
                 "SELECT url, badge, expires_at FROM stream_cache WHERE cache_key = ?1",
@@ -324,20 +342,19 @@ impl CacheDb {
         if expires_at <= now {
             return;
         }
-        if let Ok(guard) = self.conn.lock() {
-            if let Err(error) = guard.execute(
-                "INSERT INTO stream_cache (cache_key, url, badge, expires_at) VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(cache_key) DO UPDATE SET url = excluded.url, badge = excluded.badge, expires_at = excluded.expires_at",
-                params![key, url, badge, expires_at],
-            ) {
-                tracing::warn!("[sonata:cache] stream-write failed error={error}");
-            } else if let Err(error) = guard.execute(
-                "DELETE FROM stream_cache WHERE cache_key IN
-                 (SELECT cache_key FROM stream_cache ORDER BY expires_at DESC LIMIT -1 OFFSET ?1)",
-                params![MAX_CACHED_STREAMS],
-            ) {
-                tracing::warn!("[sonata:cache] stream-prune failed error={error}");
-            }
+        let guard = self.lock_conn();
+        if let Err(error) = guard.execute(
+            "INSERT INTO stream_cache (cache_key, url, badge, expires_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(cache_key) DO UPDATE SET url = excluded.url, badge = excluded.badge, expires_at = excluded.expires_at",
+            params![key, url, badge, expires_at],
+        ) {
+            tracing::warn!("[sonata:cache] stream-write failed error={error}");
+        } else if let Err(error) = guard.execute(
+            "DELETE FROM stream_cache WHERE cache_key IN
+             (SELECT cache_key FROM stream_cache ORDER BY expires_at DESC LIMIT -1 OFFSET ?1)",
+            params![MAX_CACHED_STREAMS],
+        ) {
+            tracing::warn!("[sonata:cache] stream-prune failed error={error}");
         }
     }
 
@@ -347,7 +364,7 @@ impl CacheDb {
             return None;
         }
         let now = now_secs() as i64;
-        let guard = self.conn.lock().ok()?;
+        let guard = self.lock_conn();
         let (name, json, updated_at): (String, String, i64) = guard
             .query_row(
                 "SELECT name, tracks_json, updated_at FROM playlist_cache WHERE playlist_key = ?1",
@@ -362,12 +379,11 @@ impl CacheDb {
                 tracing::warn!(
                     "[sonata:cache] playlist-discarded key={key} reason=invalid-json error={error}"
                 );
-                if let Ok(conn) = self.conn.lock() {
-                    let _ = conn.execute(
-                        "DELETE FROM playlist_cache WHERE playlist_key = ?1",
-                        params![key],
-                    );
-                }
+                let conn = self.lock_conn();
+                let _ = conn.execute(
+                    "DELETE FROM playlist_cache WHERE playlist_key = ?1",
+                    params![key],
+                );
                 return None;
             }
         };
@@ -387,35 +403,33 @@ impl CacheDb {
             return;
         }
         let now = now_secs() as i64;
-        if let Ok(guard) = self.conn.lock() {
-            if let Err(error) = guard.execute(
-                "INSERT INTO playlist_cache (playlist_key, name, tracks_json, updated_at) VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(playlist_key) DO UPDATE SET name = excluded.name, tracks_json = excluded.tracks_json, updated_at = excluded.updated_at",
-                params![key, name, json, now],
-            ) {
-                tracing::warn!("[sonata:cache] playlist-write failed key={key} error={error}");
-            } else if let Err(error) = guard.execute(
-                "DELETE FROM playlist_cache WHERE playlist_key IN
-                 (SELECT playlist_key FROM playlist_cache ORDER BY updated_at DESC LIMIT -1 OFFSET ?1)",
-                params![MAX_CACHED_PLAYLISTS],
-            ) {
-                tracing::warn!("[sonata:cache] playlist-prune failed error={error}");
-            }
+        let guard = self.lock_conn();
+        if let Err(error) = guard.execute(
+            "INSERT INTO playlist_cache (playlist_key, name, tracks_json, updated_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(playlist_key) DO UPDATE SET name = excluded.name, tracks_json = excluded.tracks_json, updated_at = excluded.updated_at",
+            params![key, name, json, now],
+        ) {
+            tracing::warn!("[sonata:cache] playlist-write failed key={key} error={error}");
+        } else if let Err(error) = guard.execute(
+            "DELETE FROM playlist_cache WHERE playlist_key IN
+             (SELECT playlist_key FROM playlist_cache ORDER BY updated_at DESC LIMIT -1 OFFSET ?1)",
+            params![MAX_CACHED_PLAYLISTS],
+        ) {
+            tracing::warn!("[sonata:cache] playlist-prune failed error={error}");
         }
     }
 
     pub fn invalidate_playlist(&self, key: Option<&str>) {
-        if let Ok(guard) = self.conn.lock() {
-            let result = match key {
-                Some(k) => guard.execute(
-                    "DELETE FROM playlist_cache WHERE playlist_key = ?1",
-                    params![k],
-                ),
-                None => guard.execute("DELETE FROM playlist_cache", []),
-            };
-            if let Err(error) = result {
-                tracing::warn!("[sonata:cache] playlist-invalidate failed error={error}");
-            }
+        let guard = self.lock_conn();
+        let result = match key {
+            Some(k) => guard.execute(
+                "DELETE FROM playlist_cache WHERE playlist_key = ?1",
+                params![k],
+            ),
+            None => guard.execute("DELETE FROM playlist_cache", []),
+        };
+        if let Err(error) = result {
+            tracing::warn!("[sonata:cache] playlist-invalidate failed error={error}");
         }
     }
 
@@ -423,7 +437,7 @@ impl CacheDb {
         if !self.enabled.load(Ordering::Relaxed) {
             return None;
         }
-        let guard = self.conn.lock().ok()?;
+        let guard = self.lock_conn();
         let json: String = guard
             .query_row(
                 "SELECT playlists_json FROM library_cache WHERE library_key = ?1",
@@ -458,14 +472,13 @@ impl CacheDb {
             return;
         }
         let now = now_secs() as i64;
-        if let Ok(guard) = self.conn.lock() {
-            if let Err(error) = guard.execute(
-                "INSERT INTO library_cache (library_key, playlists_json, updated_at) VALUES (?1, ?2, ?3)
-                 ON CONFLICT(library_key) DO UPDATE SET playlists_json = excluded.playlists_json, updated_at = excluded.updated_at",
-                params![key, json, now],
-            ) {
-                tracing::warn!("[sonata:cache] library-write failed key={key} error={error}");
-            }
+        let guard = self.lock_conn();
+        if let Err(error) = guard.execute(
+            "INSERT INTO library_cache (library_key, playlists_json, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(library_key) DO UPDATE SET playlists_json = excluded.playlists_json, updated_at = excluded.updated_at",
+            params![key, json, now],
+        ) {
+            tracing::warn!("[sonata:cache] library-write failed key={key} error={error}");
         }
     }
 }
@@ -582,6 +595,20 @@ pub fn is_stream_url_fresh(url: &str) -> bool {
 mod tests {
     use super::*;
     use crate::providers::ProviderSource;
+    use std::sync::atomic::AtomicU64;
+
+    static TEST_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn unique_test_db_path(prefix: &str) -> PathBuf {
+        let seq = TEST_DB_COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("sonata_{prefix}_{}_{}.db", std::process::id(), seq))
+    }
+
+    fn cleanup_test_db(path: &PathBuf) {
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
 
     #[test]
     fn extracts_youtube_expire_param() {
@@ -592,7 +619,7 @@ mod tests {
 
     #[test]
     fn persists_streams_and_playlists_in_sqlite() {
-        let tmp = std::env::temp_dir().join(format!("sonata_test_{}.db", std::process::id()));
+        let tmp = unique_test_db_path("test");
         let db = CacheDb::open_at(&tmp).expect("open sqlite cache");
         db.put_stream("yt:123", "https://example.com/audio.webm", "OPUS 321kbps");
         let got = db.get_stream("yt:123").expect("cached stream");
@@ -617,12 +644,12 @@ mod tests {
         assert_eq!(loaded.len(), 1);
         assert!(fresh);
 
-        let _ = std::fs::remove_file(&tmp);
+        cleanup_test_db(&tmp);
     }
 
     #[test]
     fn excludes_volatile_googlevideo_streams() {
-        let tmp = std::env::temp_dir().join(format!("sonata_volatile_{}.db", std::process::id()));
+        let tmp = unique_test_db_path("volatile");
         let db = CacheDb::open_at(&tmp).expect("open sqlite cache");
         db.put_stream(
             "yt:123",
@@ -630,6 +657,6 @@ mod tests {
             "OPUS 263kbps",
         );
         assert!(db.get_stream("yt:123").is_none());
-        let _ = std::fs::remove_file(&tmp);
+        cleanup_test_db(&tmp);
     }
 }

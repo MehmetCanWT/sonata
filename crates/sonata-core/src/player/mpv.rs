@@ -1,3 +1,14 @@
+//! mpv process management and IPC control for Sonata playback.
+//!
+//! 1. **Process Spawn**: starts a headless `mpv` (`--idle`, no video, gapless, `--ytdl=no`) with a
+//!    per-process JSON IPC socket in the runtime directory.
+//! 2. **Event Stream**: a reader task parses IPC messages into `MpvEvent`s sent to the front-end;
+//!    mpv's stderr is forwarded to tracing after redaction.
+//! 3. **Commands**: `MpvController` exposes load, stop, pause, seek, volume, and audio-enhancer changes.
+//! 4. **Stream Loading**: `load_stream_at` applies resolved URLs and any required HTTP headers, with
+//!    sensitive values redacted from logs.
+//! 5. **Lifecycle**: `shutdown` and `Drop` terminate the child process and clean up the socket.
+
 use crate::config::EnhancerMode;
 use crate::providers::hifi::ResolvedStream;
 use crate::redaction::{

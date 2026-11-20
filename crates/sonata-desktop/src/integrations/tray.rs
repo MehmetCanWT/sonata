@@ -1,3 +1,9 @@
+//! StatusNotifierItem (`ksni`) system tray integration for Sonata Desktop.
+//!
+//! 1. **TrayState & TrayHandle**: mirrors track metadata, pause status, and window visibility to the tray menu.
+//! 2. **Icon Rendering**: `SONATA_TRAY_ICON` rasterizes a 32x32 ARGB32 circular badge on first use.
+//! 3. **Menu Actions**: toggles window visibility, playback, track navigation, and clean shutdown via `BackendCmd` / `UiWindowCmd`.
+
 use crate::backend::{BackendCmd, UiWindowCmd};
 use ksni::TrayMethods;
 use std::sync::LazyLock;
@@ -31,17 +37,26 @@ pub struct TrayHandle {
 
 impl TrayHandle {
     pub async fn update(&self, state: TrayState) {
-        let _ = self
+        if self
             .inner
             .update(move |tray| {
                 tray.state = state;
             })
-            .await;
+            .await
+            .is_none()
+        {
+            tracing::warn!("system tray handle unavailable during state update");
+        }
     }
 
     pub async fn shutdown(&self) {
         let awaiter = self.inner.shutdown();
-        let _ = tokio::time::timeout(Duration::from_millis(500), awaiter).await;
+        if tokio::time::timeout(Duration::from_millis(500), awaiter)
+            .await
+            .is_err()
+        {
+            tracing::warn!("timed out waiting for system tray shutdown");
+        }
     }
 }
 
@@ -218,5 +233,11 @@ pub async fn spawn_tray(
         cmd_tx,
         win_tx,
     };
-    tray.spawn().await.ok().map(|inner| TrayHandle { inner })
+    match tray.spawn().await {
+        Ok(inner) => Some(TrayHandle { inner }),
+        Err(err) => {
+            tracing::warn!(?err, "failed to spawn system tray");
+            None
+        }
+    }
 }

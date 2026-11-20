@@ -2,11 +2,11 @@
 pkgname=sonata-desktop
 pkgver=0.1.0
 pkgrel=1
-pkgdesc="Native Wayland desktop music player for YouTube Music"
+pkgdesc="Native Wayland desktop music player for YouTube Music and Spotify (experimental / under development)"
 arch=('x86_64' 'aarch64')
 url="https://github.com/MehmetCanWT/sonata"
 license=('MIT')
-depends=('mpv' 'yt-dlp' 'wayland' 'vulkan-icd-loader' 'libxkbcommon' 'fontconfig')
+depends=('mpv' 'yt-dlp' 'wayland' 'vulkan-icd-loader' 'libxkbcommon' 'fontconfig' 'alsa-lib' 'dbus')
 makedepends=('cargo')
 optdepends=(
     'nodejs: enhanced YouTube extractor support for yt-dlp'
@@ -39,5 +39,6 @@ package() {
     install -Dm0755 "target/release/sonata-desktop" "$pkgdir/usr/bin/sonata-desktop"
     install -Dm0644 "assets/sonata-desktop.desktop" "$pkgdir/usr/share/applications/sonata-desktop.desktop"
     install -Dm0644 "assets/sonata-desktop.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/sonata-desktop.svg"
+    install -Dm0644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
     install -Dm0644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
 }

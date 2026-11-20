@@ -1,3 +1,11 @@
+//! Pure command-to-transition logic for Sonata playback.
+//!
+//! 1. **Commands**: `PlaybackCommand` describes user intent (play, pause, seek, next, previous, queue change).
+//! 2. **Transitions**: `PlaybackTransition` describes the side effect the caller must perform, such as
+//!    loading a track into mpv.
+//! 3. **Application**: `PlaybackCoordinator::apply` mutates `PlaybackState` and returns the transition, or
+//!    `None` when the command has no effect. It performs no I/O, so front-ends share identical queue behavior.
+
 use super::PlaybackState;
 use crate::providers::Track;
 

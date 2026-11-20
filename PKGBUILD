@@ -37,5 +37,6 @@ check() {
 package() {
     cd "$pkgname-$pkgver"
     install -Dm0755 "target/release/sonata" "$pkgdir/usr/bin/sonata"
+    install -Dm0644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
     install -Dm0644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
 }

@@ -1,17 +1,73 @@
+//! Lyrics lookup orchestration for Sonata, centered on word-synced TTML/KRC/YRC and LRCLIB.
+//!
+//! 1. **Lookup Chain**: `fetch_lyrics` checks SQLite enrichment and on-disk `.lrc`/`.txt` caches,
+//!    upgrading legacy line-only `.lrc` entries once when word-level or dual-voice lyrics exist.
+//! 2. **Concurrent Queries**: queries TTML (`lyrics-api.binimum.org`) and LRCLIB concurrently,
+//!    preferring word-timed or dual-voice (`Lead`/`Counter`) sheets, then falling back to KuGou
+//!    KRC and NetEase YRC before line-only or plain lyrics.
+//! 3. **Candidate Selection**: `pick_best_lrclib_result` accepts only results whose artist and title
+//!    match the track, preferring synced lyrics.
+//! 4. **Quality Filtering**: credit and metadata lines are stripped from lyrics, and unusable results
+//!    are rejected.
+//! 5. **Persistence**: found lyrics are saved to the cache directory as Enhanced LRC (`v2:` +
+//!    `<mm:ss.xxx>`) and to the enrichment table, with the media cache pruned afterwards.
+
 use crate::cache::{prune_active_media_cache_async, CacheDb};
 use crate::config::AppConfig;
 use crate::lyrics::{
-    lyrics_candidate_matches, parse_lrc, providers, sanitize_title, LyricLine, LyricsState,
+    format_lrc, lyrics_candidate_matches, parse_lrc, providers, sanitize_title, LyricLine,
+    LyricVoice, LyricsState,
 };
 use crate::providers::ytmusic::YtMusicClient;
 use crate::providers::{ProviderSource, Track};
 use reqwest::Client;
 use serde_json::Value;
 use sha1::{Digest, Sha1};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 type LrclibParsed = (Option<Vec<LyricLine>>, Option<Vec<String>>);
+
+fn has_rich_timing(lines: &[LyricLine]) -> bool {
+    lines
+        .iter()
+        .any(|l| !l.words.is_empty() || l.voice == LyricVoice::Counter)
+}
+
+fn word_upgrade_checked(cache_key: &str, check_path: &Path) -> bool {
+    static SESSION_CHECKED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let set = SESSION_CHECKED.get_or_init(|| Mutex::new(HashSet::new()));
+    if let Ok(guard) = set.lock() {
+        if guard.contains(cache_key) {
+            return true;
+        }
+    }
+    if let Ok(raw) = std::fs::read_to_string(check_path) {
+        if let Ok(ts) = raw.trim().parse::<u64>() {
+            let now = now_secs();
+            if now >= ts && now - ts < 7 * 24 * 60 * 60 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+async fn mark_word_upgrade_checked(cache_key: &str, check_path: &Path) {
+    static SESSION_CHECKED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let set = SESSION_CHECKED.get_or_init(|| Mutex::new(HashSet::new()));
+    if let Ok(mut guard) = set.lock() {
+        guard.insert(cache_key.to_string());
+    }
+    if AppConfig::active_cache_limit_bytes() > 0 {
+        if let Some(parent) = check_path.parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
+        let _ = tokio::fs::write(check_path, now_secs().to_string()).await;
+    }
+}
 
 pub async fn fetch_lyrics(
     http: &Client,
@@ -21,22 +77,31 @@ pub async fn fetch_lyrics(
 ) -> LyricsState {
     let clean_title = sanitize_title(&track.title);
     let artist = track.artist.trim();
-    let (lrc_path, txt_path) = cache_paths(artist, &clean_title);
+    let (lrc_path, txt_path, check_path) = cache_paths(artist, &clean_title);
+    let cache_key = format!("{}::{}", artist.to_lowercase(), clean_title.to_lowercase());
     let is_ytm = track.source == ProviderSource::YouTubeMusic;
+
+    let mut cached_synced_fallback: Option<Vec<LyricLine>> = None;
+    let mut cached_plain_fallback: Option<Vec<String>> = None;
 
     if is_ytm {
         if let Some(metadata) = cache_db.and_then(|db| db.get_track_enrichment(&track.id)) {
             if metadata.lyrics_status == "FOUND" {
                 if let Some(synced) = metadata.synced_lyrics.as_deref() {
-                    let parsed = parse_lrc(synced);
-                    if !parsed.is_empty() {
-                        return LyricsState::Synced(parsed);
+                    if let Some(parsed) = usable_synced_lyrics(parse_lrc(synced), track) {
+                        if has_rich_timing(&parsed) {
+                            return LyricsState::Synced(parsed);
+                        }
+                        cached_synced_fallback = Some(parsed);
                     }
                 }
-                if let Some(plain) = metadata.plain_lyrics.as_deref() {
-                    let lines: Vec<String> = plain.lines().map(str::to_string).collect();
-                    if !lines.is_empty() {
-                        return LyricsState::Plain(lines);
+                if cached_synced_fallback.is_none() {
+                    if let Some(plain) = metadata.plain_lyrics.as_deref() {
+                        if let Some(lines) =
+                            usable_plain_lyrics(plain.lines().map(str::to_string), track)
+                        {
+                            cached_plain_fallback = Some(lines);
+                        }
                     }
                 }
             }
@@ -53,58 +118,125 @@ pub async fn fetch_lyrics(
 
     if AppConfig::active_cache_limit_bytes() > 0 {
         if let Ok(cached) = tokio::fs::read_to_string(&lrc_path).await {
-            let parsed = parse_lrc(&cached);
-            if !parsed.is_empty() {
-                persist_lyrics(cache_db, track, Some(&parsed), None, "FOUND");
-                return LyricsState::Synced(parsed);
+            if let Some(parsed) = usable_synced_lyrics(parse_lrc(&cached), track) {
+                if has_rich_timing(&parsed) {
+                    persist_lyrics(cache_db, track, Some(&parsed), None, "FOUND");
+                    return LyricsState::Synced(parsed);
+                }
+                if cached_synced_fallback.is_none() {
+                    cached_synced_fallback = Some(parsed);
+                }
             }
         }
-        if let Ok(cached_txt) = tokio::fs::read_to_string(&txt_path).await {
-            let plain: Vec<String> = cached_txt.lines().map(str::to_string).collect();
-            if !plain.is_empty() {
-                persist_lyrics(cache_db, track, None, Some(&plain), "FOUND");
-                return LyricsState::Plain(plain);
+        if cached_synced_fallback.is_none() && cached_plain_fallback.is_none() {
+            if let Ok(cached_txt) = tokio::fs::read_to_string(&txt_path).await {
+                if let Some(plain) =
+                    usable_plain_lyrics(cached_txt.lines().map(str::to_string), track)
+                {
+                    cached_plain_fallback = Some(plain);
+                }
             }
         }
     }
 
-    // 1. LRCLIB synced first; keep plain lyrics only as a backup parachute
-    let mut plain_fallback: Option<Vec<String>> = None;
-    if let Some((synced, plain)) = query_lrclib(http, artist, &clean_title, track).await {
-        if let Some(lines) = synced {
-            save_lrc(&lrc_path, &lines).await;
-            persist_lyrics(cache_db, track, Some(&lines), None, "FOUND");
-            return LyricsState::Synced(lines);
+    // If we already have line-only synced lyrics and already tried upgrading once, return them.
+    if let Some(ref lines) = cached_synced_fallback {
+        if word_upgrade_checked(&cache_key, &check_path) {
+            return LyricsState::Synced(lines.clone());
         }
-        plain_fallback = plain;
+    } else if let Some(ref plain) = cached_plain_fallback {
+        return LyricsState::Plain(plain.clone());
+    }
+
+    // Query TTML (word-timed & dual-voice) and LRCLIB concurrently.
+    let (ttml_raw, lrclib_raw) = tokio::join!(
+        providers::fetch_ttml_synced(
+            http,
+            &clean_title,
+            artist,
+            &track.album,
+            track.duration_secs
+        ),
+        query_lrclib(http, artist, &clean_title, track),
+    );
+
+    let ttml_synced = ttml_raw.and_then(|lines| usable_synced_lyrics(lines, track));
+    let (lrc_synced, lrc_plain) = match lrclib_raw {
+        Some((synced, plain)) => (
+            synced.and_then(|lines| usable_synced_lyrics(lines, track)),
+            plain.and_then(|lines| usable_plain_lyrics(lines, track)),
+        ),
+        None => (None, None),
+    };
+
+    if let Some(lines) = ttml_synced.as_ref().filter(|l| has_rich_timing(l)) {
+        save_lrc(&lrc_path, lines).await;
+        persist_lyrics(cache_db, track, Some(lines), None, "FOUND");
+        return LyricsState::Synced(lines.clone());
+    }
+    if let Some(lines) = lrc_synced.as_ref().filter(|l| has_rich_timing(l)) {
+        save_lrc(&lrc_path, lines).await;
+        persist_lyrics(cache_db, track, Some(lines), None, "FOUND");
+        return LyricsState::Synced(lines.clone());
+    }
+
+    // Neither TTML nor LRCLIB returned word-level timings: try KuGou KRC & NetEase YRC.
+    let (kugou_raw, netease_raw) = tokio::join!(
+        providers::fetch_kugou_synced(http, &clean_title, artist, track.duration_secs),
+        providers::fetch_netease_synced(http, &clean_title, artist, track.duration_secs),
+    );
+    let kugou_synced = kugou_raw.and_then(|lines| usable_synced_lyrics(lines, track));
+    let netease_synced = netease_raw.and_then(|lines| usable_synced_lyrics(lines, track));
+
+    if let Some(lines) = kugou_synced.as_ref().filter(|l| has_rich_timing(l)) {
+        save_lrc(&lrc_path, lines).await;
+        persist_lyrics(cache_db, track, Some(lines), None, "FOUND");
+        return LyricsState::Synced(lines.clone());
+    }
+    if let Some(lines) = netease_synced.as_ref().filter(|l| has_rich_timing(l)) {
+        save_lrc(&lrc_path, lines).await;
+        persist_lyrics(cache_db, track, Some(lines), None, "FOUND");
+        return LyricsState::Synced(lines.clone());
+    }
+
+    if let Some(lines) = cached_synced_fallback {
+        mark_word_upgrade_checked(&cache_key, &check_path).await;
+        persist_lyrics(cache_db, track, Some(&lines), None, "FOUND");
+        return LyricsState::Synced(lines);
+    }
+
+    if let Some(lines) = ttml_synced
+        .or(lrc_synced)
+        .or(kugou_synced)
+        .or(netease_synced)
+    {
+        mark_word_upgrade_checked(&cache_key, &check_path).await;
+        save_lrc(&lrc_path, &lines).await;
+        persist_lyrics(cache_db, track, Some(&lines), None, "FOUND");
+        return LyricsState::Synced(lines);
     }
 
     // LRCLIB plain lyrics remain useful when no synchronized version exists.
-    if let Some(plain) = plain_fallback {
+    if let Some(plain) = lrc_plain {
         save_text(&txt_path, &plain.join("\n")).await;
         persist_lyrics(cache_db, track, None, Some(&plain), "FOUND");
         return LyricsState::Plain(plain);
     }
 
-    // YTM's native lyrics are the only network fallback for YTM tracks.
+    // YTM native or Genius plain fallback.
     if is_ytm {
         if let Some(raw_text) = ytm.fetch_native_lyrics(&track.id).await {
-            let lines: Vec<String> = raw_text.lines().map(|l| l.trim().to_string()).collect();
-            if !lines.is_empty() {
+            if let Some(lines) =
+                usable_plain_lyrics(raw_text.lines().map(|line| line.trim().to_string()), track)
+            {
                 save_text(&txt_path, &lines.join("\n")).await;
                 persist_lyrics(cache_db, track, None, Some(&lines), "FOUND");
                 return LyricsState::Plain(lines);
             }
         }
         persist_lyrics(cache_db, track, None, None, "NOT_FOUND");
-    } else {
-        if let Some(lines) =
-            providers::fetch_kugou_synced(http, &clean_title, artist, track.duration_secs).await
-        {
-            save_lrc(&lrc_path, &lines).await;
-            return LyricsState::Synced(lines);
-        }
-        if let Some(lines) = providers::fetch_genius_lyrics(http, &clean_title, artist).await {
+    } else if let Some(lines) = providers::fetch_genius_lyrics(http, &clean_title, artist).await {
+        if let Some(lines) = usable_plain_lyrics(lines, track) {
             save_text(&txt_path, &lines.join("\n")).await;
             return LyricsState::Plain(lines);
         }
@@ -197,18 +329,6 @@ fn persist_lyrics(
     );
 }
 
-fn format_lrc(lines: &[LyricLine]) -> String {
-    lines
-        .iter()
-        .map(|line| {
-            let mins = (line.time_secs / 60.0).floor() as u64;
-            let secs = line.time_secs - mins as f64 * 60.0;
-            format!("[{mins:02}:{secs:05.2}] {}", line.text)
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -278,6 +398,69 @@ fn parse_lrclib_item(item: &Value) -> LrclibParsed {
     (synced, plain)
 }
 
+fn usable_synced_lyrics(lines: Vec<LyricLine>, track: &Track) -> Option<Vec<LyricLine>> {
+    let lines: Vec<_> = lines
+        .into_iter()
+        .filter(|line| !is_metadata_line(&line.text, track))
+        .collect();
+    (lines.len() >= 2).then_some(lines)
+}
+
+fn usable_plain_lyrics(
+    lines: impl IntoIterator<Item = String>,
+    track: &Track,
+) -> Option<Vec<String>> {
+    let lines: Vec<_> = lines
+        .into_iter()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty() && !is_metadata_line(line, track))
+        .collect();
+    (lines.len() >= 2).then_some(lines)
+}
+
+fn is_metadata_line(line: &str, track: &Track) -> bool {
+    let normalized = normalize_lyric_text(line);
+    if normalized.is_empty() {
+        return true;
+    }
+    let title = normalize_lyric_text(&sanitize_title(&track.title));
+    let artist = normalize_lyric_text(&track.artist);
+    if normalized == title || normalized == artist {
+        return true;
+    }
+    [
+        "lyrics by",
+        "written by",
+        "produced by",
+        "composed by",
+        "music by",
+        "artist",
+        "title",
+        "album",
+        "paroles",
+        "letra",
+    ]
+    .iter()
+    .any(|prefix| normalized.starts_with(prefix))
+}
+
+fn normalize_lyric_text(value: &str) -> String {
+    value
+        .to_lowercase()
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() {
+                character
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 async fn save_lrc(path: &Path, lines: &[LyricLine]) {
     if AppConfig::active_cache_limit_bytes() == 0 {
         return;
@@ -307,7 +490,7 @@ async fn save_text(path: &Path, text: &str) {
     }
 }
 
-fn cache_paths(artist: &str, title: &str) -> (PathBuf, PathBuf) {
+fn cache_paths(artist: &str, title: &str) -> (PathBuf, PathBuf, PathBuf) {
     let mut hasher = Sha1::new();
     hasher.update(format!("{artist}::{title}").to_lowercase().as_bytes());
     let hex: String = hasher
@@ -319,6 +502,7 @@ fn cache_paths(artist: &str, title: &str) -> (PathBuf, PathBuf) {
     (
         dir.join(format!("{hex}.lrc")),
         dir.join(format!("{hex}.txt")),
+        dir.join(format!("{hex}.wordcheck")),
     )
 }
 
@@ -350,5 +534,25 @@ mod tests {
 
         let none = pick_best_lrclib_result(&arr[..1], "Black", "GAZIROVKA", Some(166));
         assert!(none.is_none());
+    }
+
+    #[test]
+    fn rejects_credit_and_track_metadata_from_synced_lyrics() {
+        let track = Track {
+            id: "track".into(),
+            title: "The Emptiness Machine".into(),
+            artist: "Linkin Park".into(),
+            album: String::new(),
+            duration_secs: None,
+            thumbnail_url: None,
+            source: ProviderSource::YouTubeMusic,
+            audio_badge: None,
+            set_video_id: None,
+            liked: false,
+        };
+        let lyrics = parse_lrc(
+            "[00:01.00] Lyrics by: Someone\n[00:03.00] Linkin Park\n[00:05.00] The Emptiness Machine\n[00:07.00] Real line",
+        );
+        assert!(usable_synced_lyrics(lyrics, &track).is_none());
     }
 }

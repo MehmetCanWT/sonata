@@ -1,3 +1,9 @@
+//! MPRIS2 D-Bus media player integration for Sonata Desktop.
+//!
+//! 1. **MprisUpdate Channel**: accepts snapshot syncs and explicit seek events from the backend engine.
+//! 2. **Dedicated Thread**: runs `mpris_server::Player` inside a `LocalSet` on its own Tokio current-thread runtime.
+//! 3. **Bidirectional Control**: forwards D-Bus transport/seek/volume/shuffle/repeat/raise/quit signals to `BackendCmd` and `UiWindowCmd`.
+
 use crate::backend::{BackendCmd, DesktopSnapshot, UiWindowCmd};
 use mpris_server::{LoopStatus, Metadata, PlaybackStatus, Player, Time, TrackId};
 use sonata_core::player::RepeatMode;
@@ -63,18 +69,22 @@ pub fn spawn_mpris(
 ) -> UnboundedSender<MprisUpdate> {
     let (tx, mut rx) = mpsc::unbounded_channel::<MprisUpdate>();
 
-    let _ = std::thread::Builder::new()
+    if let Err(err) = std::thread::Builder::new()
         .name("sonata-mpris".into())
         .spawn(move || {
-            let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+            let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-            else {
-                return;
+            {
+                Ok(rt) => rt,
+                Err(err) => {
+                    tracing::warn!(?err, "failed to build MPRIS tokio runtime");
+                    return;
+                }
             };
             let local = tokio::task::LocalSet::new();
             local.block_on(&rt, async move {
-                let Ok(player) = Player::builder("sonata")
+                let player = match Player::builder("sonata")
                     .identity("Sonata")
                     .desktop_entry("sonata-desktop")
                     .can_quit(true)
@@ -87,10 +97,13 @@ pub fn spawn_mpris(
                     .can_seek(true)
                     .build()
                     .await
-                else {
-                    // Drain cleanly if D-Bus session is unavailable.
-                    while rx.recv().await.is_some() {}
-                    return;
+                {
+                    Ok(player) => player,
+                    Err(err) => {
+                        tracing::warn!(?err, "MPRIS D-Bus unavailable; draining updates");
+                        while rx.recv().await.is_some() {}
+                        return;
+                    }
                 };
 
                 {
@@ -284,7 +297,10 @@ pub fn spawn_mpris(
 
                 run_task.abort();
             });
-        });
+        })
+    {
+        tracing::warn!(?err, "failed to spawn MPRIS thread");
+    }
 
     tx
 }

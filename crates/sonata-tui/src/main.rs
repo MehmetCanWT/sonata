@@ -1,3 +1,13 @@
+//! Entry point for the Sonata terminal UI.
+//!
+//! 1. **CLI**: handles `--version` and `--help` before touching the terminal.
+//! 2. **Diagnostics**: redirects stderr and initializes persistent telemetry so logs never corrupt the screen.
+//! 3. **Terminal Setup**: detects the graphics protocol, enters raw mode and the alternate screen with
+//!    mouse capture, and installs a panic hook that restores the terminal.
+//! 4. **Runtime Wiring**: creates the `App`, spawns the mpv controller, and connects app and mpv event channels.
+//! 5. **Event Loop**: multiplexes input, app events, mpv events, and timer ticks, then shuts down
+//!    playback tasks and restores the terminal on exit.
+
 mod app;
 mod input;
 mod theme_tui;

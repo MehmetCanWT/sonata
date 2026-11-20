@@ -1,3 +1,13 @@
+//! Playback state for Sonata: queue, history, shuffle, and repeat, independent of any audio backend.
+//!
+//! 1. **Submodules**: `coordinator` (command-to-transition logic), `mpv` (IPC controller), `precache`
+//!    (next-track prefetch state), and `tasks` (background playback task tracking).
+//! 2. **Repeat Mode**: `RepeatMode` cycles off/all/one and provides display labels.
+//! 3. **PlaybackState**: queue, current index, volume, enhancer mode, and the active and upgraded Hi-Fi streams.
+//! 4. **Navigation**: `commit_play`, `next_index`, `prev_index`, and `peek_next_index` (with a cached
+//!    shuffle choice) plus `pop_prev_index` for history-based Previous.
+//! 5. **Stream Swapping**: base and upgraded streams are tracked so a Hi-Fi upgrade can be applied or reverted.
+
 pub mod coordinator;
 pub mod mpv;
 pub mod precache;
