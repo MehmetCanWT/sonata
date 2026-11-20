@@ -22,20 +22,61 @@ impl App {
         match mev {
             MpvEvent::Position(pos) => {
                 if !self.playback.loading_track && !self.awaiting_playback_start {
-                    let cur = self.interpolated_position();
-                    if self.pos_anchor.is_none() || (pos - cur).abs() > 0.45 {
+                    self.playback.position_secs = pos;
+                    if !self.playback.paused {
                         self.pos_anchor = Some((pos, Instant::now()));
-                        self.playback.position_secs = pos;
-                    } else if !self.playback.paused {
-                        let blended = (cur + (pos - cur) * 0.25).max(cur);
-                        self.pos_anchor = Some((blended, Instant::now()));
-                        self.playback.position_secs = blended;
                     }
                 }
             }
             MpvEvent::Duration(dur) => {
-                if !self.playback.loading_track {
+                if !self.playback.loading_track && dur > 1.0 {
                     self.playback.duration_secs = dur;
+                    let dur_u64 = dur.round() as u64;
+                    let mut track_to_refetch = None;
+                    if let Some(track) = self
+                        .playback
+                        .current_index
+                        .and_then(|idx| self.playback.queue.get_mut(idx))
+                    {
+                        if track
+                            .duration_secs
+                            .is_none_or(|prev| prev.abs_diff(dur_u64) > 3)
+                        {
+                            track.duration_secs = Some(dur_u64);
+                            track_to_refetch = Some(track.clone());
+                        }
+                    }
+                    if let Some(lyrics_track) = track_to_refetch {
+                        let lyrics_valid = matches!(
+                            &self.lyrics,
+                            LyricsState::Synced(lines)
+                                if sonata_core::lyrics::synced_lyrics_match_duration(
+                                    lines,
+                                    Some(dur_u64),
+                                )
+                        );
+                        if !lyrics_valid {
+                            let play_seq = self.play_seq;
+                            let lyrics_tx = self.tx.clone();
+                            let lyrics_http = self.http.clone();
+                            let lyrics_ytm = self.ytm.clone();
+                            let lyrics_cache = self.cache_db.clone();
+                            self.playback_tasks.spawn(async move {
+                                let lyrics = lrclib::fetch_lyrics(
+                                    &lyrics_http,
+                                    &lyrics_ytm,
+                                    &lyrics_track,
+                                    lyrics_cache.as_ref(),
+                                )
+                                .await;
+                                let _ = lyrics_tx.send(AppEvent::LyricsReady {
+                                    play_seq,
+                                    track_id: lyrics_track.id,
+                                    lyrics,
+                                });
+                            });
+                        }
+                    }
                 }
             }
             MpvEvent::Paused(p) => {
@@ -292,7 +333,7 @@ impl App {
         let Some(track) = self.playback.current_track().cloned() else {
             return;
         };
-        if track.source != ProviderSource::YouTubeMusic {
+        if track.source != ProviderSource::YouTubeMusic && track.source != ProviderSource::Spotify {
             return;
         }
 
@@ -302,7 +343,6 @@ impl App {
         let cache_db = self.cache_db.clone();
         let tx = self.tx.clone();
         self.playback_tasks.spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
             let Some((url, _source)) =
                 media::resolve_track_cover(&http, cache_db.as_ref(), &track).await
             else {
@@ -372,7 +412,9 @@ impl App {
         let b64 = base64::engine::general_purpose::STANDARD.encode(png);
         let bytes = b64.as_bytes();
         let mut out = std::io::stdout();
-        let _ = out.write_all(b"\x1b_Ga=d,d=i,i=1,q=2\x1b\\");
+        if self.anim_art_frames.is_empty() || self.config.reduce_motion {
+            let _ = out.write_all(b"\x1b_Ga=d,d=i,i=1,q=2\x1b\\");
+        }
         let _ = write!(out, "\x1b[s\x1b[{};{}H", rect.y + 1, rect.x + 1);
 
         let chunks: Vec<&[u8]> = bytes.chunks(4096).collect();
@@ -487,6 +529,9 @@ impl App {
         self.lyrics = LyricsState::Loading;
         self.album_art = None;
         self.kitty_art_png = None;
+        self.anim_art_frames.clear();
+        self.anim_art_idx = 0;
+        self.last_anim_step = Instant::now();
         self.album_art_track_id = Some(track.id.clone());
         self.status_line = format!("Loading: {} — {}", track.title, track.artist);
 
@@ -543,16 +588,54 @@ impl App {
         });
 
         if let Some(url) = track.thumbnail_url.clone() {
+            let url = media::upscale_artwork_url(&url);
             let art_tx = self.tx.clone();
+            let art_http = http.clone();
             let track_id = track.id.clone();
             self.playback_tasks.spawn(async move {
-                if let Some((img, png_bytes)) = media::fetch_and_decode_art(&http, &url).await {
+                if let Some((img, png_bytes)) = media::fetch_and_decode_art(&art_http, &url).await {
                     let _ = art_tx.send(AppEvent::ArtworkReady {
                         play_seq,
                         track_id,
-                        url: url.clone(),
+                        url,
                         image: img,
                         png_bytes,
+                    });
+                }
+            });
+        }
+
+        if !self.config.reduce_motion {
+            let anim_tx = self.tx.clone();
+            let anim_http = http.clone();
+            let anim_track = track.clone();
+            let picker = self.picker.clone();
+            self.playback_tasks.spawn(async move {
+                let Some(paths) =
+                    media::resolve_animated_cover_frames(&anim_http, &anim_track).await
+                else {
+                    return;
+                };
+                let frames = tokio::task::spawn_blocking(move || {
+                    let mut decoded = Vec::with_capacity(paths.len());
+                    for path in paths {
+                        let Ok(png_bytes) = std::fs::read(&path) else {
+                            continue;
+                        };
+                        let Ok(img) = image::load_from_memory(&png_bytes) else {
+                            continue;
+                        };
+                        decoded.push((picker.new_resize_protocol(img), png_bytes));
+                    }
+                    decoded
+                })
+                .await
+                .unwrap_or_default();
+                if !frames.is_empty() {
+                    let _ = anim_tx.send(AppEvent::AnimatedArtworkReady {
+                        play_seq,
+                        track_id: anim_track.id,
+                        frames,
                     });
                 }
             });
@@ -825,11 +908,12 @@ impl App {
             Some(_) => "Playing",
         };
         let track_id = track.map(|t| t.id.clone()).unwrap_or_default();
-        let pos_secs = self.playback.position_secs.max(0.0).floor() as u64;
+        let cur_pos = self.interpolated_position();
+        let pos_secs = cur_pos.max(0.0).floor() as u64;
         let dur_secs = self.playback.duration_secs.max(0.0).floor() as u64;
 
         let active_lyric = match &self.lyrics {
-            LyricsState::Synced(lines) => active_line_index(lines, self.playback.position_secs)
+            LyricsState::Synced(lines) => active_line_index(lines, cur_pos)
                 .and_then(|idx| lines.get(idx))
                 .map(|l| l.text.clone())
                 .filter(|s| !s.is_empty()),

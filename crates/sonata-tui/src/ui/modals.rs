@@ -1,3 +1,8 @@
+//! Modal dialogs and popups for the Sonata terminal UI.
+//!
+//! 1. **Settings Modal (`render_settings`)**: Displays aligned, non-truncated preference rows with keyboard/mouse selectors and a compact footer hint.
+//! 2. **Library & Theme Modals**: Renders theme picker, Spotify playlist import, playlist creation/addition, image protocol warning, and keybindings help.
+
 use crate::app::{ActiveModal, App};
 use crate::theme_tui::to_ratatui_color;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -23,28 +28,31 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
     }
 }
 
-fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
-    let vert = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Fill(1),
-            Constraint::Length(height.min(area.height)),
-            Constraint::Fill(1),
-        ])
-        .split(area);
+pub fn sized_popup(min_w: u16, max_w: u16, target_h: u16, area: Rect) -> Rect {
+    let avail_w = area.width.saturating_sub(2).max(1);
+    let clamped_max = max_w.min(avail_w).max(1);
+    let clamped_min = min_w.min(clamped_max);
+    let width = area.width.saturating_sub(4).clamp(clamped_min, clamped_max);
+    let height = target_h.min(area.height).max(1.min(area.height));
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
+}
 
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(vert[1])[1]
+pub fn settings_popup_rect(area: Rect, row_count: usize) -> Rect {
+    let target_h = (row_count as u16 + 5).min(area.height);
+    sized_popup(40, 84, target_h, area)
+}
+
+pub fn settings_label_width(row_width: u16) -> u16 {
+    32.min(row_width.saturating_sub(16))
 }
 
 fn render_image_warning(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize) {
-    let popup = centered_rect(64, 13, area);
+    let popup = sized_popup(42, 74, 13, area);
     frame.render_widget(Clear, popup);
 
     let block = Block::default()
@@ -57,9 +65,13 @@ fn render_image_warning(frame: &mut Frame<'_>, area: Rect, app: &App, selected: 
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
+    if inner.height < 3 || inner.width < 10 {
+        return;
+    }
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(4), Constraint::Length(3)])
+        .constraints([Constraint::Min(2), Constraint::Length(2)])
         .split(inner);
 
     let body = Paragraph::new(
@@ -72,7 +84,11 @@ fn render_image_warning(frame: &mut Frame<'_>, area: Rect, app: &App, selected: 
     .style(Style::default().fg(app.theme.fg));
     frame.render_widget(body, chunks[0]);
 
-    let labels = [" Okay (o) ", " Don't Show Again (d) ", " Exit (q) "];
+    let labels = if inner.width >= 56 {
+        [" Okay (o) ", " Don't Show Again (d) ", " Exit (q) "]
+    } else {
+        [" Okay (o) ", " Hide (d) ", " Quit (q) "]
+    };
     let spans: Vec<Span> = labels
         .iter()
         .enumerate()
@@ -88,16 +104,19 @@ fn render_image_warning(frame: &mut Frame<'_>, area: Rect, app: &App, selected: 
             } else {
                 Style::default().bg(app.theme.highlight_bg).fg(app.theme.fg)
             };
-            vec![Span::styled(*label, style), Span::raw("   ")]
+            vec![Span::styled(*label, style), Span::raw("  ")]
         })
         .collect();
 
-    let btns = Paragraph::new(Line::from(spans)).alignment(Alignment::Center);
+    let btns = Paragraph::new(Line::from(spans))
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true });
     frame.render_widget(btns, chunks[1]);
 }
 
 fn render_theme_picker(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize) {
-    let popup = centered_rect(48, 16, area);
+    let target_h = (app.themes.len() as u16 + 4).clamp(8, 18);
+    let popup = sized_popup(36, 72, target_h, area);
     frame.render_widget(Clear, popup);
 
     let items: Vec<ListItem> = app
@@ -111,7 +130,11 @@ fn render_theme_picker(frame: &mut Frame<'_>, area: Rect, app: &App, selected: u
         })
         .collect();
 
-    let title = format!(" Themes (custom: {}) ", AppConfig::themes_dir().display());
+    let title = if popup.width >= 52 {
+        format!(" Themes (custom: {}) ", AppConfig::themes_dir().display())
+    } else {
+        " Color Themes ".to_string()
+    };
     let list = List::new(items)
         .block(
             Block::default()
@@ -135,7 +158,7 @@ fn render_theme_picker(frame: &mut Frame<'_>, area: Rect, app: &App, selected: u
 }
 
 fn render_spotify_import(frame: &mut Frame<'_>, area: Rect, app: &App, input: &str) {
-    let popup = centered_rect(60, 8, area);
+    let popup = sized_popup(40, 68, 8, area);
     frame.render_widget(Clear, popup);
 
     let text = format!(
@@ -154,10 +177,11 @@ fn render_spotify_import(frame: &mut Frame<'_>, area: Rect, app: &App, input: &s
 }
 
 fn render_add_to_playlist(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize) {
-    let popup = centered_rect(50, 14, area);
+    let playlists = app.writable_ytm_playlists();
+    let target_h = (playlists.len() as u16 + 4).clamp(8, 16);
+    let popup = sized_popup(38, 62, target_h, area);
     frame.render_widget(Clear, popup);
 
-    let playlists = app.writable_ytm_playlists();
     let items: Vec<ListItem> = playlists
         .iter()
         .map(|p| {
@@ -191,7 +215,7 @@ fn render_add_to_playlist(frame: &mut Frame<'_>, area: Rect, app: &App, selected
 }
 
 fn render_create_playlist(frame: &mut Frame<'_>, area: Rect, app: &App, input: &str) {
-    let popup = centered_rect(54, 8, area);
+    let popup = sized_popup(38, 60, 8, area);
     frame.render_widget(Clear, popup);
 
     let text =
@@ -209,27 +233,16 @@ fn render_create_playlist(frame: &mut Frame<'_>, area: Rect, app: &App, input: &
 }
 
 fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize) {
-    let max_width = area.width.saturating_sub(4).clamp(1, 78);
-    let popup = Rect {
-        x: area.x + area.width.saturating_sub(max_width) / 2,
-        y: area.y + area.height.saturating_sub(15.min(area.height)) / 2,
-        width: max_width,
-        height: 15.min(area.height),
-    };
-    frame.render_widget(Clear, popup);
-
     let transparent_label = if app.effective_transparent_bg() {
         "Enabled (Glass)"
     } else {
         "Disabled (Solid)"
     };
-    let opacity_label = if hyprland::is_hyprland() {
+    let on_hyprland = hyprland::is_hyprland();
+    let opacity_label = if on_hyprland {
         format!("{:.0}%", app.effective_hyprland_opacity() * 100.0)
     } else {
-        format!(
-            "{:.0}% (Hyprland only)",
-            app.effective_hyprland_opacity() * 100.0
-        )
+        "Solid (100% · Locked)".to_string()
     };
 
     let rows = [
@@ -253,7 +266,7 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
             true,
         ),
         ("Transparent TUI Bg", transparent_label.to_string(), true),
-        ("Hyprland Opacity", opacity_label, true),
+        ("Hyprland Opacity", opacity_label, on_hyprland),
         (
             "Media Cache Limit",
             AppConfig::cache_limit_label(app.config.cache_limit_gb),
@@ -262,8 +275,12 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
         ("Color Theme", app.base_theme.name.clone(), true),
         ("Browser Session", app.browser_label.clone(), false),
     ];
+
+    let popup = settings_popup_rect(area, rows.len());
+    frame.render_widget(Clear, popup);
+
     let block = Block::default()
-        .title(" Settings (←/→: Change · Esc: Close) ")
+        .title(" Settings ")
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -272,64 +289,122 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
-    let row_constraints = vec![Constraint::Length(1); rows.len()];
-    let row_areas = Layout::default()
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    let mut constraints = Vec::with_capacity(rows.len() + 3);
+    constraints.push(Constraint::Length(1));
+    for _ in &rows {
+        constraints.push(Constraint::Length(1));
+    }
+    constraints.push(Constraint::Length(1));
+    constraints.push(Constraint::Length(1));
+
+    let layout_areas = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(row_constraints)
+        .constraints(constraints)
         .split(inner);
-    for (index, ((label, value, adjustable), row)) in rows.iter().zip(row_areas.iter()).enumerate()
-    {
-        let selected_style = if index == selected {
+
+    for (index, (label, value, adjustable)) in rows.iter().enumerate() {
+        let Some(row) = layout_areas.get(index + 1) else {
+            break;
+        };
+        if row.height == 0 || row.width < 8 {
+            continue;
+        }
+        let is_selected = index == selected;
+        let row_style = if is_selected {
             Style::default().bg(app.theme.highlight_bg)
         } else {
             Style::default().bg(app.theme.surface)
         };
+        frame.render_widget(Block::default().style(row_style), *row);
+
+        let label_w = settings_label_width(row.width);
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Length(3),
-                Constraint::Length(25.min(row.width.saturating_sub(12))),
-                Constraint::Length(3),
-                Constraint::Min(6),
-                Constraint::Length(3),
+                Constraint::Length(1),
+                Constraint::Length(2),
+                Constraint::Length(label_w),
+                Constraint::Min(10),
+                Constraint::Length(1),
             ])
             .split(*row);
-        let marker = if index == selected { "▶" } else { " " };
+
+        let marker = if is_selected { "▶ " } else { "  " };
         frame.render_widget(
-            Paragraph::new(marker).style(selected_style.fg(app.theme.accent)),
-            cols[0],
-        );
-        frame.render_widget(
-            Paragraph::new(*label).style(selected_style.fg(app.theme.fg)),
+            Paragraph::new(Span::styled(
+                marker,
+                row_style.fg(app.theme.accent).add_modifier(Modifier::BOLD),
+            )),
             cols[1],
         );
+
+        let label_style = if is_selected {
+            row_style
+                .fg(app.theme.highlight_fg)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            row_style.fg(app.theme.fg)
+        };
+        frame.render_widget(Paragraph::new(Span::styled(*label, label_style)), cols[2]);
+
+        let value_line = if *adjustable {
+            let arrow_style = if is_selected {
+                row_style.fg(app.theme.accent).add_modifier(Modifier::BOLD)
+            } else {
+                row_style.fg(app.theme.muted)
+            };
+            let val_style = if is_selected {
+                row_style.fg(app.theme.accent).add_modifier(Modifier::BOLD)
+            } else {
+                row_style.fg(app.theme.accent)
+            };
+            Line::from(vec![
+                Span::styled("◀  ", arrow_style),
+                Span::styled(value.as_str(), val_style),
+                Span::styled("  ▶", arrow_style),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled(value.as_str(), row_style.fg(app.theme.muted)),
+                Span::raw("   "),
+            ])
+        };
         frame.render_widget(
-            Paragraph::new(if *adjustable { "◀" } else { " " })
-                .style(selected_style.fg(app.theme.accent)),
-            cols[2],
-        );
-        frame.render_widget(
-            Paragraph::new(value.as_str())
-                .style(selected_style.fg(if *adjustable {
-                    app.theme.accent
-                } else {
-                    app.theme.muted
-                }))
-                .wrap(Wrap { trim: true }),
+            Paragraph::new(value_line).alignment(Alignment::Right),
             cols[3],
         );
+    }
+
+    if let Some(divider_area) = layout_areas.get(rows.len() + 1) {
+        if divider_area.width > 2 {
+            let rule = "─".repeat(divider_area.width.saturating_sub(2) as usize);
+            frame.render_widget(
+                Paragraph::new(Span::styled(rule, Style::default().fg(app.theme.border)))
+                    .alignment(Alignment::Center),
+                *divider_area,
+            );
+        }
+    }
+
+    if let Some(hint_area) = layout_areas.get(rows.len() + 2) {
+        let hint = if hint_area.width >= 50 {
+            "↑/↓: Navigate   ←/→/Enter: Change   Esc/S: Close"
+        } else {
+            "↑/↓ Nav  ←/→ Change  Esc Close"
+        };
         frame.render_widget(
-            Paragraph::new(if *adjustable { "▶" } else { " " })
-                .style(selected_style.fg(app.theme.accent)),
-            cols[4],
+            Paragraph::new(Span::styled(hint, Style::default().fg(app.theme.muted)))
+                .alignment(Alignment::Center),
+            *hint_area,
         );
     }
 }
 
 fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let popup = centered_rect(68, 22, area);
-    frame.render_widget(Clear, popup);
-
     let lines = vec![
         "Navigation:  Tab / h / l   Switch pane  |  ↑/↓ / j   Move up/down",
         "Resize:      H / L         Resize pane  |  Mouse Drag Drag pane borders",
@@ -350,6 +425,15 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
         "Quit:        q / Ctrl+C    Exit Sonata cleanly",
     ];
 
+    let max_line_w = lines
+        .iter()
+        .map(|l| l.chars().count() as u16)
+        .max()
+        .unwrap_or(60);
+    let target_w = (max_line_w + 4).min(96);
+    let popup = sized_popup(44, target_w, lines.len() as u16 + 2, area);
+    frame.render_widget(Clear, popup);
+
     let p = Paragraph::new(lines.join("\n"))
         .wrap(Wrap { trim: false })
         .block(
@@ -362,4 +446,44 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 .style(Style::default().bg(app.theme.surface).fg(app.theme.fg)),
         );
     frame.render_widget(p, popup);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{settings_label_width, settings_popup_rect, sized_popup};
+    use ratatui::layout::Rect;
+
+    #[test]
+    fn settings_modal_is_widened_and_sized_tightly_to_rows() {
+        let screen = Rect::new(0, 0, 120, 40);
+        let popup = settings_popup_rect(screen, 8);
+        assert_eq!(popup.width, 84);
+        assert_eq!(popup.height, 13);
+
+        let inner_w = popup.width - 2;
+        assert_eq!(settings_label_width(inner_w), 32);
+        assert!(settings_label_width(inner_w) >= "YouTube Music Quality Upgrade".len() as u16);
+
+        let medium = Rect::new(0, 0, 80, 24);
+        let med_popup = settings_popup_rect(medium, 8);
+        assert_eq!(med_popup.width, 76);
+        assert_eq!(med_popup.height, 13);
+        assert!(
+            settings_label_width(med_popup.width - 2)
+                >= "YouTube Music Quality Upgrade".len() as u16
+        );
+    }
+
+    #[test]
+    fn modals_clamp_safely_inside_small_terminals() {
+        let tiny = Rect::new(0, 0, 30, 10);
+        let settings = settings_popup_rect(tiny, 8);
+        assert!(settings.width <= tiny.width);
+        assert!(settings.height <= tiny.height);
+        assert_eq!(settings_label_width(settings.width.saturating_sub(2)), 10);
+
+        let help = sized_popup(44, 96, 19, tiny);
+        assert!(help.width <= tiny.width);
+        assert!(help.height <= tiny.height);
+    }
 }

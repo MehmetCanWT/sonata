@@ -281,7 +281,7 @@ impl MpvController {
             "loading media into mpv"
         );
         let mut options = serde_json::Map::new();
-        if start_secs >= 0.35 {
+        if start_secs >= 0.05 {
             options.insert("start".to_string(), json!(format!("{start_secs:.2}")));
         }
         if !headers.is_empty() {

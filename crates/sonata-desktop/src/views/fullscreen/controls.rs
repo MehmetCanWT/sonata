@@ -163,6 +163,7 @@ fn render_left_controls(
 pub(super) fn render_cover_column(
     view: &SonataDesktopView,
     art_path: Option<&std::path::PathBuf>,
+    has_motion: bool,
     cover_size: f32,
     cover_radius: f32,
     title: &str,
@@ -203,7 +204,11 @@ pub(super) fn render_cover_column(
         .gap(px(18.0))
         .child(
             div()
+                .relative()
                 .rounded(px(cover_radius))
+                .when(has_motion, |el| {
+                    el.border_1().border_color(rgb_hsla((255, 255, 255), 0.20))
+                })
                 .shadow(vec![
                     BoxShadow {
                         color: rgb_hsla((0, 0, 0), 0.44),
@@ -220,7 +225,25 @@ pub(super) fn render_cover_column(
                         inset: false,
                     },
                 ])
-                .child(render_cover_art(art_path, cover_size, cover_radius, p)),
+                .child(render_cover_art(art_path, cover_size, cover_radius, p))
+                .when(has_motion, |el| {
+                    el.child(
+                        div()
+                            .absolute()
+                            .top(px(10.0))
+                            .left(px(10.0))
+                            .px(px(7.0))
+                            .py(px(2.0))
+                            .rounded_full()
+                            .bg(rgb_hsla((12, 10, 18), 0.62))
+                            .border_1()
+                            .border_color(rgb_hsla((255, 255, 255), 0.18))
+                            .text_size(px(9.5))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(rgb_hsla((255, 255, 255), 0.88))
+                            .child("MOTION"),
+                    )
+                }),
         )
         .child(
             div()

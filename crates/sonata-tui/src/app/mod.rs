@@ -45,6 +45,9 @@ pub struct App {
     pub album_art: Option<StatefulProtocol>,
     pub album_art_track_id: Option<String>,
     pub kitty_art_png: Option<Vec<u8>>,
+    pub anim_art_frames: Vec<(StatefulProtocol, Vec<u8>)>,
+    pub anim_art_idx: usize,
+    pub last_anim_step: Instant,
     pub last_art_rect: Option<Rect>,
     pub kitty_drawn_track: Option<(String, Rect)>,
     pub lyrics: LyricsState,
@@ -154,6 +157,9 @@ impl App {
             album_art: None,
             album_art_track_id: None,
             kitty_art_png: None,
+            anim_art_frames: Vec::new(),
+            anim_art_idx: 0,
+            last_anim_step: Instant::now(),
             last_art_rect: None,
             kitty_drawn_track: None,
             lyrics: LyricsState::Idle,
@@ -371,7 +377,7 @@ impl App {
                     self.playback.stream_badge = stream.badge.clone();
                     self.status_line = format!("Starting: {} — {}", track.title, track.artist);
                     if let Some(mpv) = &self.mpv {
-                        if resume_at >= 0.35 {
+                        if resume_at >= 0.05 {
                             mpv.load_stream_at(&stream, resume_at);
                         } else {
                             mpv.load_stream(&stream);
@@ -487,11 +493,15 @@ impl App {
                 if play_seq != self.play_seq {
                     return;
                 }
-                if self
-                    .playback
-                    .current_track()
-                    .is_some_and(|t| t.id == track_id)
-                {
+                if let Some(track) = self.playback.current_track().filter(|t| t.id == track_id) {
+                    if let LyricsState::Synced(ref lines) = lyrics {
+                        if !sonata_core::lyrics::synced_lyrics_match_duration(
+                            lines,
+                            track.duration_secs,
+                        ) {
+                            return;
+                        }
+                    }
                     self.lyrics = lyrics;
                 }
             }
@@ -506,7 +516,10 @@ impl App {
                     return;
                 }
                 if self.playback.current_track().is_some_and(|track| {
-                    track.id == track_id && track.thumbnail_url.as_deref() == Some(url.as_str())
+                    track.id == track_id
+                        && track.thumbnail_url.as_deref().is_some_and(|orig| {
+                            orig == url || sonata_core::media::upscale_artwork_url(orig) == url
+                        })
                 }) {
                     self.album_art = Some(self.picker.new_resize_protocol(image));
                     self.kitty_art_png = Some(png_bytes);
@@ -543,6 +556,30 @@ impl App {
                     self.album_art_track_id = Some(track_id);
                 }
             }
+            AppEvent::AnimatedArtworkReady {
+                play_seq,
+                track_id,
+                frames,
+            } => {
+                if play_seq != self.play_seq {
+                    return;
+                }
+                if self
+                    .playback
+                    .current_track()
+                    .is_some_and(|track| track.id == track_id)
+                    && !frames.is_empty()
+                {
+                    self.anim_art_frames = frames;
+                    self.anim_art_idx = 0;
+                    self.last_anim_step = Instant::now();
+                    if let Some((_, png_bytes)) = self.anim_art_frames.first() {
+                        self.kitty_art_png = Some(png_bytes.clone());
+                        self.kitty_drawn_track = None;
+                    }
+                    self.album_art_track_id = Some(track_id);
+                }
+            }
             AppEvent::Mpv(mev) => {
                 self.handle_mpv_event(mev);
             }
@@ -568,6 +605,17 @@ impl App {
             return false;
         }
         self.playback.position_secs = self.interpolated_position();
+        if !self.anim_art_frames.is_empty()
+            && !self.config.reduce_motion
+            && self.last_anim_step.elapsed() >= std::time::Duration::from_millis(125)
+        {
+            self.anim_art_idx = (self.anim_art_idx + 1) % self.anim_art_frames.len();
+            self.last_anim_step = Instant::now();
+            if let Some((_, png_bytes)) = self.anim_art_frames.get(self.anim_art_idx) {
+                self.kitty_art_png = Some(png_bytes.clone());
+                self.kitty_drawn_track = None;
+            }
+        }
         self.poll_adopted_precache();
         self.maybe_precache_next();
         true

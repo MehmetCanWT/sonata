@@ -4,8 +4,8 @@
 //!    dual-voice (`Lead`/`Counter`) TTML sheets.
 //! 2. **KuGou KRC & LRC**: `fetch_kugou_synced` tries XOR+zlib encrypted `fmt=krc` word-timed lyrics
 //!    first and falls back to plain `fmt=lrc`.
-//! 3. **NetEase Cloud Music**: `fetch_netease_synced` queries `api/song/lyric/v1` for word-timed YRC
-//!    lines and falls back to LRC.
+//! 3. **NetEase & QQ Music**: `fetch_netease_synced` queries `api/song/lyric/v1` for word-timed
+//!    YRC (or LRC fallback), and `fetch_qqmusic_synced` queries QQ Music base64 LRC sheets.
 //! 4. **Genius Scraper**: `fetch_genius_lyrics` extracts plain lyrics from Genius HTML containers.
 
 use crate::lyrics::{lyrics_candidate_matches, parse_lrc, ttml, LyricLine, LyricVoice, LyricWord};
@@ -62,8 +62,15 @@ pub async fn fetch_ttml_synced(
         return None;
     }
 
-    results
-        .sort_by_key(|cand| u8::from(cand.timing_type != "word" && cand.timing_type != "syllable"));
+    results.sort_by_key(|cand| {
+        let timing_rank = u8::from(cand.timing_type != "word" && cand.timing_type != "syllable");
+        let dur_diff = match (duration_secs, (cand.duration > 0).then_some(cand.duration)) {
+            (Some(target), Some(cd)) => target.abs_diff(cd),
+            (Some(_), None) => 50,
+            _ => 0,
+        };
+        (timing_rank, dur_diff)
+    });
 
     for cand in results {
         let cand_dur = (cand.duration > 0).then_some(cand.duration);
@@ -611,6 +618,120 @@ pub fn parse_netease_yrc(yrc: &str) -> Vec<LyricLine> {
     lines
 }
 
+/// Fetches synced LRC lyrics from QQ Music's public search and lyric endpoints.
+pub async fn fetch_qqmusic_synced(
+    http: &Client,
+    title: &str,
+    artist: &str,
+    duration_secs: Option<u64>,
+) -> Option<Vec<LyricLine>> {
+    let query = if artist.trim().is_empty() || artist == "Unknown Artist" {
+        title.trim().to_string()
+    } else {
+        format!("{} {}", title.trim(), artist.trim())
+    };
+    if query.is_empty() {
+        return None;
+    }
+
+    let search: Value = http
+        .get("https://c.y.qq.com/soso/fcgi-bin/client_search_cp")
+        .query(&[("w", query.as_str()), ("format", "json"), ("n", "5")])
+        .header("User-Agent", SONATA_LYRICS_UA)
+        .header("Referer", "https://y.qq.com/")
+        .timeout(Duration::from_secs(4))
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+
+    let list = search.pointer("/data/song/list")?.as_array()?;
+    let mut mids: Vec<(u64, String)> = list
+        .iter()
+        .filter_map(|song| {
+            let songmid = song.get("songmid")?.as_str()?.trim();
+            if songmid.is_empty() {
+                return None;
+            }
+            let cand_title = song.get("songname").and_then(|v| v.as_str()).unwrap_or("");
+            let cand_artist = song
+                .get("singer")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|s| s.get("name").and_then(|n| n.as_str()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            let cand_dur = song
+                .get("interval")
+                .and_then(|v| v.as_u64())
+                .filter(|&d| d > 0);
+            if !lyrics_candidate_matches(
+                title,
+                artist,
+                duration_secs,
+                cand_title,
+                &cand_artist,
+                cand_dur,
+            ) {
+                return None;
+            }
+            let diff = match (duration_secs, cand_dur) {
+                (Some(a), Some(b)) => a.abs_diff(b),
+                _ => 0,
+            };
+            Some((diff, songmid.to_string()))
+        })
+        .collect();
+    mids.sort_by_key(|(diff, _)| *diff);
+
+    for (_, songmid) in mids.into_iter().take(3) {
+        let Ok(resp) = http
+            .get("https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg")
+            .query(&[
+                ("songmid", songmid.as_str()),
+                ("format", "json"),
+                ("nobase64", "0"),
+            ])
+            .header("User-Agent", SONATA_LYRICS_UA)
+            .header("Referer", "https://y.qq.com/")
+            .timeout(Duration::from_secs(4))
+            .send()
+            .await
+        else {
+            continue;
+        };
+        if !resp.status().is_success() {
+            continue;
+        }
+        let Ok(payload) = resp.json::<Value>().await else {
+            continue;
+        };
+        if let Some(b64) = payload.get("lyric").and_then(|v| v.as_str()) {
+            let parsed = decode_qqmusic_lyric(b64);
+            if !parsed.is_empty() {
+                return Some(parsed);
+            }
+        }
+    }
+    None
+}
+
+/// Decodes a base64-encoded QQ Music LRC payload into `LyricLine`s.
+pub fn decode_qqmusic_lyric(b64: &str) -> Vec<LyricLine> {
+    let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64.trim()) else {
+        return Vec::new();
+    };
+    let Ok(text) = String::from_utf8(bytes) else {
+        return Vec::new();
+    };
+    parse_lrc(&text)
+}
+
 async fn search_kugou_candidate(
     http: &Client,
     hash: Option<&str>,
@@ -650,6 +771,7 @@ fn pick_matching_kugou_candidate(
     req_artist: &str,
     duration_secs: Option<u64>,
 ) -> Option<(String, String)> {
+    let mut best: Option<(u64, String, String)> = None;
     for item in candidates {
         let song = item.get("song").and_then(|v| v.as_str()).unwrap_or("");
         let singer = item.get("singer").and_then(|v| v.as_str()).unwrap_or("");
@@ -674,9 +796,19 @@ fn pick_matching_kugou_candidate(
         let Some(key) = item.get("accesskey").and_then(|v| v.as_str()) else {
             continue;
         };
-        return Some((id.to_string(), key.to_string()));
+        let diff = match (duration_secs, cand_dur_secs) {
+            (Some(t), Some(c)) => t.abs_diff(c),
+            (Some(_), None) => 50,
+            _ => 0,
+        };
+        if best
+            .as_ref()
+            .is_none_or(|(best_diff, _, _)| diff < *best_diff)
+        {
+            best = Some((diff, id.to_string(), key.to_string()));
+        }
     }
-    None
+    best.map(|(_, id, key)| (id, key))
 }
 
 /// Scrape plain lyrics from Genius after validating title and artist matches.
@@ -964,5 +1096,15 @@ mod tests {
         assert_eq!(lines[0].words[2].text, "stop");
         assert!((lines[0].words[2].start_secs - 13.2).abs() < 0.001);
         assert!((lines[0].words[2].end_secs.unwrap() - 14.1).abs() < 0.001);
+    }
+
+    #[test]
+    fn decodes_base64_qqmusic_lrc_payload() {
+        let lrc = "[00:05.00]First QQ line\n[00:10.50]Second QQ line\n";
+        let encoded = base64::engine::general_purpose::STANDARD.encode(lrc.as_bytes());
+        let parsed = decode_qqmusic_lyric(&encoded);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].text, "First QQ line");
+        assert!((parsed[1].time_secs - 10.5).abs() < 0.001);
     }
 }

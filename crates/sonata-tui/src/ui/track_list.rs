@@ -41,12 +41,21 @@ fn render_search_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Style::default().fg(app.theme.fg)
     };
 
+    let title_style = Style::default()
+        .fg(if is_search {
+            app.theme.accent
+        } else {
+            app.theme.fg
+        })
+        .add_modifier(Modifier::BOLD);
+
     let search = Paragraph::new(text)
         .alignment(Alignment::Center)
         .style(style)
         .block(
             Block::default()
                 .title(" Search ")
+                .title_style(title_style)
                 .title_alignment(Alignment::Center)
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
@@ -118,8 +127,16 @@ fn render_tracks_table(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         .collect();
 
     let title = format!(" {} ({}) ", app.tracks_heading, app.visible_tracks.len());
+    let title_style = Style::default()
+        .fg(if is_focused {
+            app.theme.accent
+        } else {
+            app.theme.fg
+        })
+        .add_modifier(Modifier::BOLD);
     let table_block = Block::default()
         .title(title)
+        .title_style(title_style)
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)

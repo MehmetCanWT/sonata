@@ -17,11 +17,11 @@ Install **`sonata` (TUI)** without manually cloning the repository:
 curl -fsSL https://raw.githubusercontent.com/MehmetCanWT/sonata/main/install.sh | sh
 ```
 
-The [`install.sh`](install.sh) script installs system runtime dependencies (`mpv`, `yt-dlp`, `nodejs`, `curl`, `git`, C toolchain) via `pacman`, `apt-get`, `dnf`, or `brew`, installs Rust via `rustup` if missing, builds `sonata-tui` cleanly without leaving a persistent repository checkout behind, and ensures `~/.local/bin` and `~/.cargo/bin` are in `~/.profile`.
+The [`install.sh`](install.sh) script automatically installs all required runtime tools (`mpv`, `yt-dlp`, `ffmpeg`, `nodejs`, plus `curl`, `git`, and a C toolchain) via `pacman`, `apt-get` (with standalone `yt-dlp` fallback), `dnf`, `zypper`, or `brew`, installs Rust via `rustup` if missing, builds `sonata-tui` cleanly without leaving a persistent repository checkout behind, and ensures `~/.local/bin` and `~/.cargo/bin` are in `~/.profile`.
 
 ### Direct Cargo Git Install
 
-If you already have Rust, `mpv`, `yt-dlp`, and `nodejs` installed:
+If you already have Rust, `mpv`, `yt-dlp`, `ffmpeg`, and `nodejs` installed:
 
 ```sh
 cargo install --git https://github.com/MehmetCanWT/sonata.git --locked sonata-tui
@@ -63,9 +63,9 @@ Sonata is organized as a 4-crate Cargo workspace so clients share the same strea
 
 ## Screenshots (TUI)
 
-| Hyprland Glass Transparency | Mini Mode (Art + Lyrics) | Compact Mini Player |
+| Hyprland Glass Transparency | Hyprland Glass Desktop | Mini Mode (Art + Lyrics) | Compact Mini Player |
 |---|---|---|
-| ![Hyprland Glass](assets/hyprland-glass.png) | ![Mini Mode](assets/mini-lyrics.png) | ![Mini Player](assets/mini-player.png) |
+| ![Hyprland Glass](assets/hyprland-glass.png) | ![Hyprland Glass Desktop(assets/hyprland-glass-desktop.png)] | ![Mini Mode](assets/mini-lyrics.png) | ![Mini Player](assets/mini-player.png) |
 
 ## Shared Engine Highlights
 
@@ -182,10 +182,13 @@ Both `sonata` and `sonata-desktop` atomically export live playback state to `$XD
 
 ## Requirements
 
+All required runtime tools (`mpv`, `yt-dlp`, `ffmpeg`, and `nodejs`) are installed automatically by [`install.sh`](install.sh), [`PKGBUILD`](PKGBUILD), and [`PKGBUILD.desktop`](PKGBUILD.desktop). If building manually from source, ensure you have:
+
 - `mpv` (audio playback & DSP filters)
 - `yt-dlp` and `nodejs` (stream resolution)
-- A terminal with Kitty Graphics Protocol support (such as **Ghostty**, **Kitty**, or **WezTerm**) for HD album art in `sonata`
-- Wayland + Vulkan/OpenGL drivers (plus ALSA and D-Bus) for experimental `sonata-desktop`
+- `ffmpeg` (animated Apple Music motion cover frame extraction)
+- A terminal with Kitty Graphics Protocol support (such as **Ghostty**, **Kitty**, or **WezTerm**) for HD and animated album art in `sonata`
+- Wayland + Vulkan/OpenGL drivers (`libxkbcommon`, `libxkbcommon-x11`, `libxcb`, `fontconfig`, `alsa-lib`, `dbus`) for experimental `sonata-desktop`
 
 ## Building from Source
 

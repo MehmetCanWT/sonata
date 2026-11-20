@@ -38,9 +38,9 @@ flowchart TD
 | `player/coordinator.rs`, `tasks.rs`, `precache.rs` | Playback command/transition rules, abortable task sets, next-track precache state machine |
 | `cache.rs`, `cache/media.rs` | SQLite record cache with poison recovery; byte-budget pruning of art/audio/lyrics files |
 | `lyrics/{mod,lrclib,providers,ttml}.rs` | LRC/TTML/KRC/YRC parsing and multi-source lyric fetching |
-| `media.rs` | `now_playing.json` export, `upscale_artwork_url`, Deezer/iTunes cover resolution |
+| `media.rs` | Enriched `now_playing.json` export, `upscale_artwork_url`, Deezer/iTunes cover resolution, Apple Music animated motion cover extraction (`ffmpeg`) |
 | `config.rs`, `theme.rs` | TOML config, built-in and user themes |
-| `hyprland.rs` | `hyprctl` helpers (window opacity, address lookup) |
+| `hyprland.rs` | `hyprctl --batch` opacity IPC, ancestor-PID / focused-terminal & desktop window discovery |
 | `redaction.rs`, `telemetry.rs` | Log scrubbing (cookies, auth headers, signed URLs) and tracing setup |
 
 ## 2. Runtime process and threading model
@@ -49,8 +49,9 @@ flowchart TD
 flowchart LR
     UI[UI thread] <-->|commands / watch snapshot| BE[Backend Tokio runtime]
     BE <-->|JSON IPC over unix socket| MPV[mpv subprocess]
-    BE --> NET[HTTP: YTM, Spotify, Binimum, LRCLIB, KuGou, NetEase, Deezer, iTunes]
+    BE --> NET[HTTP: YTM, Spotify, Binimum, LRCLIB, KuGou, NetEase, QQMusic, Deezer, iTunes]
     BE --> YTDLP[yt-dlp subprocess]
+    BE --> FFMPEG[ffmpeg subprocess, motion covers]
     MPRISTH[MPRIS thread, own runtime] <--> DBUS[(D-Bus)]
     TRAY[ksni tray] <--> DBUS
     MPRISTH <--> BE

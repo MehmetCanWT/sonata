@@ -285,11 +285,18 @@ fn parse_paragraph(
             .join(" ")
     };
 
+    let mut lead_time_secs = None;
+    let mut lead_end_secs = None;
     if !text.is_empty() {
         let time_secs = parse_attr_stamp(p, "begin")
             .or_else(|| words.first().map(|w| w.start_secs))
             .unwrap_or(0.0);
         if parse_attr_stamp(p, "begin").is_some() || !words.is_empty() {
+            lead_time_secs = Some(time_secs);
+            lead_end_secs = words
+                .last()
+                .and_then(|w| w.end_secs.or(Some(w.start_secs + 0.4)))
+                .or_else(|| parse_attr_stamp(p, "end"));
             out.push(LyricLine {
                 time_secs,
                 text,
@@ -299,6 +306,13 @@ fn parse_paragraph(
         }
     }
 
+    if let (Some(lead_start), Some(lead_end)) = (lead_time_secs, lead_end_secs) {
+        for bg in &mut bg_lines {
+            if bg.time_secs < lead_end && bg.time_secs < lead_start + 0.05 {
+                bg.time_secs = (lead_start + 0.05).min(lead_end);
+            }
+        }
+    }
     out.extend(bg_lines);
 }
 

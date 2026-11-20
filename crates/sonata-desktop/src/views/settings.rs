@@ -298,43 +298,69 @@ pub fn render_settings_page(
     ));
 
     // 3. Appearance & Hyprland Glass Section
-    let opacity_ctrl = div()
-        .flex()
-        .items_center()
-        .gap_2()
-        .child(render_pill_button(
-            "set-op-dec",
-            "-".to_string(),
-            false,
-            p,
-            |this, _, _| this.backend.send(BackendCmd::StepHyprlandOpacity(false)),
-            cx,
-        ))
-        .child(
-            div()
-                .w(px(44.0))
-                .text_xs()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(if is_hypr { p.text } else { p.muted })
-                .flex()
-                .justify_center()
-                .child(format!("{opacity_pct}%")),
-        )
-        .child(render_pill_button(
-            "set-op-inc",
-            "+".to_string(),
-            false,
-            p,
-            |this, _, _| this.backend.send(BackendCmd::StepHyprlandOpacity(true)),
-            cx,
-        ))
-        .into_any_element();
+    let opacity_ctrl = if is_hypr {
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(render_pill_button(
+                "set-op-dec",
+                "-".to_string(),
+                false,
+                p,
+                |this, window, _| {
+                    if this.snapshot.effective_transparent() {
+                        window.set_background_appearance(WindowBackgroundAppearance::Blurred);
+                    }
+                    this.backend.send(BackendCmd::StepHyprlandOpacity(false));
+                },
+                cx,
+            ))
+            .child(
+                div()
+                    .w(px(44.0))
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(p.text)
+                    .flex()
+                    .justify_center()
+                    .child(format!("{opacity_pct}%")),
+            )
+            .child(render_pill_button(
+                "set-op-inc",
+                "+".to_string(),
+                false,
+                p,
+                |this, window, _| {
+                    if this.snapshot.effective_transparent() {
+                        window.set_background_appearance(WindowBackgroundAppearance::Blurred);
+                    }
+                    this.backend.send(BackendCmd::StepHyprlandOpacity(true));
+                },
+                cx,
+            ))
+            .into_any_element()
+    } else {
+        div()
+            .px_3()
+            .py(px(6.0))
+            .rounded_lg()
+            .bg(p.pill_bg)
+            .border_1()
+            .border_color(p.border_subtle)
+            .text_xs()
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(p.muted)
+            .child("Solid (100% · Locked)")
+            .into_any_element()
+    };
 
     let mut theme_chips = div().w_full().flex().flex_wrap().gap_2();
     for (idx, t) in snap.themes.iter().enumerate() {
         let selected = t.name.eq_ignore_ascii_case(&snap.base_theme.name);
         let swatch = rgb_hsla(t.accent.to_rgb((0xcb, 0xa6, 0xf7)), 1.0);
         let t_name = t.name.clone();
+        let t_transparent = t.transparent_bg;
         theme_chips = theme_chips.child(
             div()
                 .id(SharedString::from(format!("set-theme-{idx}")))
@@ -349,7 +375,14 @@ pub fn render_settings_page(
                 .flex()
                 .items_center()
                 .gap_2()
-                .on_click(cx.listener(move |this, _, _, _| {
+                .on_click(cx.listener(move |this, _, window, _| {
+                    let next_transparent =
+                        t_transparent.unwrap_or(this.snapshot.config.transparent_bg);
+                    window.set_background_appearance(if next_transparent {
+                        WindowBackgroundAppearance::Blurred
+                    } else {
+                        WindowBackgroundAppearance::Opaque
+                    });
                     this.backend.send(BackendCmd::SelectTheme(t_name.clone()));
                 }))
                 .child(div().size(px(10.0)).rounded_full().bg(swatch))

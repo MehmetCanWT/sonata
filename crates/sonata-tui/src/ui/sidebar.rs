@@ -39,8 +39,16 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         })
         .collect();
 
+    let title_style = Style::default()
+        .fg(if is_focused {
+            app.theme.accent
+        } else {
+            app.theme.fg
+        })
+        .add_modifier(Modifier::BOLD);
     let block = Block::default()
         .title(" Library ")
+        .title_style(title_style)
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)

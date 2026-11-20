@@ -197,6 +197,7 @@ async fn main() -> Result<()> {
             _ = smooth_tick.tick(), if !app.playback.paused && !app.playback.loading_track && app.playback.current_track().is_some() => {
                 if app.tick_playback() {
                     terminal.draw(|f| ui::render(f, &mut app))?;
+                    app.sync_kitty_artwork();
                     app.export_now_playing();
                 }
             }
@@ -210,6 +211,8 @@ async fn main() -> Result<()> {
                     }
                     Event::Resize(_, _) => {
                         app.clear_kitty_images();
+                        let _ = terminal.clear();
+                        app.kitty_drawn_track = None;
                     }
                     _ => continue,
                 }

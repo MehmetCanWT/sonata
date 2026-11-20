@@ -13,6 +13,7 @@ use sonata_core::player::coordinator::{PlaybackCommand, PlaybackCoordinator, Pla
 use sonata_core::player::{MpvEvent, PlaybackTask};
 use sonata_core::providers::hifi::{ResolvedStream, StreamResolver};
 use sonata_core::providers::ProviderSource;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 impl BackendEngine {
@@ -106,6 +107,9 @@ impl BackendEngine {
         let http = self.http.clone();
         let cache_db = self.cache_db.clone();
         let int_tx = self.int_tx.clone();
+        let anim_http = self.http.clone();
+        let anim_tx = self.int_tx.clone();
+        let anim_track = track.clone();
         self.playback_tasks.spawn(async move {
             let Some((url, _source)) =
                 media::resolve_track_cover(&http, cache_db.as_ref(), &track).await
@@ -124,6 +128,17 @@ impl BackendEngine {
                 art_path: path.exists().then_some(path),
                 ambient_rgb,
             });
+        });
+        self.playback_tasks.spawn(async move {
+            if let Some(frames) =
+                media::resolve_animated_cover_frames(&anim_http, &anim_track).await
+            {
+                let _ = anim_tx.send(InternalEvent::AnimatedArtworkReady {
+                    play_seq,
+                    track_id: anim_track.id,
+                    frames,
+                });
+            }
         });
     }
 
@@ -212,6 +227,7 @@ impl BackendEngine {
         self.retried_play_seq = 0;
         self.upgrade_started_play_seq = None;
         self.lyrics = LyricsState::Loading;
+        self.animated_art_frames = Arc::new(Vec::new());
 
         if let Some(url) = track
             .thumbnail_url
@@ -516,8 +532,54 @@ impl BackendEngine {
                 }
             }
             MpvEvent::Duration(dur) => {
-                if dur > 0.0 {
+                if dur > 1.0 {
                     self.playback.duration_secs = dur;
+                    let dur_u64 = dur.round() as u64;
+                    let mut track_to_refetch = None;
+                    if let Some(track) = self
+                        .playback
+                        .current_index
+                        .and_then(|idx| self.playback.queue.get_mut(idx))
+                    {
+                        if track
+                            .duration_secs
+                            .is_none_or(|prev| prev.abs_diff(dur_u64) > 3)
+                        {
+                            track.duration_secs = Some(dur_u64);
+                            track_to_refetch = Some(track.clone());
+                        }
+                    }
+                    if let Some(lyrics_track) = track_to_refetch {
+                        let lyrics_valid = matches!(
+                            &self.lyrics,
+                            LyricsState::Synced(lines)
+                                if sonata_core::lyrics::synced_lyrics_match_duration(
+                                    lines,
+                                    Some(dur_u64),
+                                )
+                        );
+                        if !lyrics_valid {
+                            let play_seq = self.play_seq;
+                            let lyrics_tx = self.int_tx.clone();
+                            let lyrics_http = self.http.clone();
+                            let lyrics_ytm = self.ytm.clone();
+                            let lyrics_cache = self.cache_db.clone();
+                            self.playback_tasks.spawn(async move {
+                                let lyrics = lrclib::fetch_lyrics(
+                                    &lyrics_http,
+                                    &lyrics_ytm,
+                                    &lyrics_track,
+                                    lyrics_cache.as_ref(),
+                                )
+                                .await;
+                                let _ = lyrics_tx.send(InternalEvent::LyricsReady {
+                                    play_seq,
+                                    track_id: lyrics_track.id,
+                                    lyrics,
+                                });
+                            });
+                        }
+                    }
                 }
             }
             MpvEvent::Paused(paused) => {
@@ -734,11 +796,12 @@ impl BackendEngine {
             Some(_) => "Playing",
         };
         let track_id = track.map(|t| t.id.clone()).unwrap_or_default();
-        let pos_secs = self.playback.position_secs.max(0.0).floor() as u64;
+        let cur_pos = self.interpolated_position();
+        let pos_secs = cur_pos.max(0.0).floor() as u64;
         let dur_secs = self.playback.duration_secs.max(0.0).floor() as u64;
 
         let active_lyric = match &self.lyrics {
-            LyricsState::Synced(lines) => active_line_index(lines, self.playback.position_secs)
+            LyricsState::Synced(lines) => active_line_index(lines, cur_pos)
                 .and_then(|idx| lines.get(idx))
                 .map(|l| l.text.clone())
                 .filter(|s| !s.is_empty()),

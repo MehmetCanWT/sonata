@@ -16,7 +16,7 @@ use gpui_kit::{
     InteractiveElement, IntoElement, ParentElement, SharedString, StatefulInteractiveElement,
     Styled, Window,
 };
-use sonata_core::lyrics::LyricsState;
+use sonata_core::lyrics::{LyricVoice, LyricsState};
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -405,27 +405,61 @@ fn render_lyrics_stage(
                         .filter_map(|idx| {
                             let line = lines.get(idx)?;
                             let dist = active.map(|a| a.abs_diff(idx)).unwrap_or(10);
-                            let (color, size_px, weight, row_bg) = match dist {
-                                0 => (p.lyrics_active, 24.0, FontWeight::BOLD, p.ambient_glow),
-                                1 => (
-                                    p.lyrics_mid,
-                                    19.0,
-                                    FontWeight::SEMIBOLD,
-                                    gpui_kit::transparent_black(),
-                                ),
-                                _ => (
-                                    p.lyrics_inactive,
-                                    17.0,
-                                    FontWeight::MEDIUM,
-                                    gpui_kit::transparent_black(),
-                                ),
-                            };
-                            let text = if line.text.trim().is_empty() {
-                                "♪".to_string()
-                            } else {
-                                line.text.clone()
-                            };
                             let target_secs = line.time_secs;
+                            let next_start = lines.get(idx + 1).map(|next| next.time_secs);
+
+                            let (row_bg, row_opacity, row_content) = if dist == 0 {
+                                let end_secs = super::fullscreen::sheet::estimate_verse_end_secs(
+                                    line,
+                                    next_start,
+                                    this.snapshot.duration_secs,
+                                );
+                                let body = if line.text.trim().is_empty() {
+                                    div()
+                                        .text_size(px(24.0))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(p.lyrics_active)
+                                        .child("♪")
+                                        .into_any_element()
+                                } else {
+                                    super::fullscreen::sheet::render_active_karaoke_verse_styled(
+                                        line,
+                                        this.snapshot.position_secs,
+                                        end_secs,
+                                        super::fullscreen::sheet::KaraokePalette {
+                                            font_size: 24.0,
+                                            line_height: 30.0,
+                                            align_right: line.voice == LyricVoice::Counter,
+                                            is_background: false,
+                                            dim_color: p.lyrics_inactive,
+                                            lit_color: p.lyrics_active,
+                                            active_glow_color: p.accent,
+                                            sung_glow_color: p.lyrics_mid,
+                                        },
+                                    )
+                                };
+                                (p.ambient_glow, 1.0f32, body)
+                            } else {
+                                let (color, size_px, weight, opacity) = match dist {
+                                    1 => (p.lyrics_mid, 18.0, FontWeight::MEDIUM, 0.72),
+                                    _ => (p.lyrics_inactive, 16.0, FontWeight::NORMAL, 0.52),
+                                };
+                                let text = if line.text.trim().is_empty() {
+                                    "♪".to_string()
+                                } else {
+                                    line.text.clone()
+                                };
+                                (
+                                    gpui_kit::transparent_black(),
+                                    opacity,
+                                    div()
+                                        .text_size(px(size_px))
+                                        .font_weight(weight)
+                                        .text_color(color)
+                                        .child(text)
+                                        .into_any_element(),
+                                )
+                            };
 
                             Some(
                                 div()
@@ -436,20 +470,15 @@ fn render_lyrics_stage(
                                     .py_2()
                                     .rounded_xl()
                                     .bg(row_bg)
-                                    .hover(|s| s.bg(p.card_hover))
+                                    .opacity(row_opacity)
+                                    .hover(|s| s.bg(p.card_hover).opacity(1.0))
                                     .cursor_pointer()
                                     .flex()
                                     .items_center()
                                     .on_click(cx.listener(move |this, _, _, _| {
                                         this.backend.send(BackendCmd::SeekAbsolute(target_secs));
                                     }))
-                                    .child(
-                                        div()
-                                            .text_size(px(size_px))
-                                            .font_weight(weight)
-                                            .text_color(color)
-                                            .child(text),
-                                    ),
+                                    .child(row_content),
                             )
                         })
                         .collect()
@@ -481,7 +510,12 @@ fn render_lyrics_stage(
                 .items_center()
                 .justify_center()
                 .gap_4()
-                .child(render_cover_art(snap.art_path.as_ref(), 280.0, 20.0, p))
+                .child(render_cover_art(
+                    view.active_cover_art_path(),
+                    280.0,
+                    20.0,
+                    p,
+                ))
                 .child(
                     div()
                         .w_full()
@@ -504,19 +538,39 @@ fn render_lyrics_stage(
                         }),
                 )
                 .child(
-                    div().flex().flex_wrap().justify_center().gap_2().child(
-                        div()
-                            .px_3()
-                            .py(px(4.0))
-                            .rounded_full()
-                            .bg(p.pill_bg)
-                            .border_1()
-                            .border_color(p.border_subtle)
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(p.success)
-                            .child(snap.stream_badge.clone()),
-                    ),
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .justify_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .px_3()
+                                .py(px(4.0))
+                                .rounded_full()
+                                .bg(p.pill_bg)
+                                .border_1()
+                                .border_color(p.border_subtle)
+                                .text_xs()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(p.success)
+                                .child(snap.stream_badge.clone()),
+                        )
+                        .when(view.has_animated_cover(), |el| {
+                            el.child(
+                                div()
+                                    .px_2()
+                                    .py(px(4.0))
+                                    .rounded_full()
+                                    .bg(p.accent_soft)
+                                    .border_1()
+                                    .border_color(p.accent)
+                                    .text_xs()
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(p.accent)
+                                    .child("MOTION"),
+                            )
+                        }),
                 ),
         )
         .child(

@@ -73,8 +73,15 @@ pub struct SonataDesktopView {
     pub dragging_progress: bool,
     pub dragging_volume: bool,
     pub fullscreen_last_activity: Instant,
+    pub anim_epoch: Instant,
+    pub last_anim_track_id: Option<String>,
+    pub last_transparent: bool,
     pub fullscreen: fullscreen::FullscreenState,
     _subscriptions: Vec<Subscription>,
+}
+
+pub fn is_compact_viewport(width: f32, height: f32) -> bool {
+    width < 760.0 || height < 460.0
 }
 
 impl SonataDesktopView {
@@ -118,6 +125,14 @@ impl SonataDesktopView {
                 let next_snap = snap_rx.borrow_and_update().clone();
                 let updated = this.update(cx, |view, cx| {
                     let just_signed_in = !view.snapshot.is_signed_in() && next_snap.is_signed_in();
+                    let next_track_id = next_snap.current_track().map(|t| t.id.clone());
+                    if next_track_id != view.last_anim_track_id
+                        || (view.snapshot.animated_art_frames.is_empty()
+                            && !next_snap.animated_art_frames.is_empty())
+                    {
+                        view.last_anim_track_id = next_track_id;
+                        view.anim_epoch = Instant::now();
+                    }
                     view.snapshot = next_snap;
                     if just_signed_in && matches!(view.modal, DesktopModal::SignInBrowser) {
                         view.modal = DesktopModal::None;
@@ -141,6 +156,7 @@ impl SonataDesktopView {
         })
         .detach();
 
+        let initial_transparent = snapshot.effective_transparent();
         Self {
             backend,
             snapshot,
@@ -164,17 +180,22 @@ impl SonataDesktopView {
             dragging_progress: false,
             dragging_volume: false,
             fullscreen_last_activity: Instant::now(),
+            anim_epoch: Instant::now(),
+            last_anim_track_id: None,
+            last_transparent: initial_transparent,
             fullscreen: fullscreen::FullscreenState::default(),
             _subscriptions: subscriptions,
         }
     }
 
     pub fn palette(&self) -> GlassPalette {
+        let transparent = self.snapshot.effective_transparent();
         GlassPalette::from_theme(
             &self.snapshot.base_theme,
-            self.snapshot.effective_transparent(),
+            transparent,
             self.snapshot.ambient_rgb,
         )
+        .with_glass_opacity(transparent, self.snapshot.effective_hyprland_opacity())
     }
 
     pub fn navigate_to(&mut self, target: NavTarget, cx: &mut Context<Self>) {
@@ -208,17 +229,53 @@ impl SonataDesktopView {
         cx.notify();
     }
 
-    pub fn toggle_fullscreen_view(&mut self, cx: &mut Context<Self>) {
+    pub fn has_animated_cover(&self) -> bool {
+        !self.snapshot.animated_art_frames.is_empty() && !self.snapshot.config.reduce_motion
+    }
+
+    pub fn active_cover_art_path(&self) -> Option<&PathBuf> {
+        let frames = &self.snapshot.animated_art_frames;
+        if !frames.is_empty() && !self.snapshot.config.reduce_motion {
+            let frame_idx = ((Instant::now().duration_since(self.anim_epoch).as_millis() / 125)
+                as usize)
+                % frames.len();
+            if let Some(path) = frames.get(frame_idx) {
+                return Some(path);
+            }
+        }
+        self.snapshot.art_path.as_ref()
+    }
+
+    pub fn toggle_fullscreen_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.account_menu_open = false;
         self.show_queue = false;
         let entering = self.center_mode != CenterMode::Fullscreen;
-        self.center_mode = if !entering {
-            CenterMode::Page
+        if !entering {
+            self.center_mode = CenterMode::Page;
+            if window.is_fullscreen() {
+                window.toggle_fullscreen();
+            }
         } else {
+            self.mini_mode = false;
             self.fullscreen_last_activity = Instant::now();
             self.fullscreen.on_enter();
-            CenterMode::Fullscreen
-        };
+            self.center_mode = CenterMode::Fullscreen;
+            let vp = window.viewport_size();
+            if is_compact_viewport(vp.width.into(), vp.height.into()) {
+                window.resize(gpui_kit::size(px(1240.0), px(800.0)));
+            }
+        }
+        cx.notify();
+    }
+
+    pub fn exit_mini_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.mini_mode = false;
+        self.modal = DesktopModal::None;
+        self.account_menu_open = false;
+        let vp = window.viewport_size();
+        if is_compact_viewport(vp.width.into(), vp.height.into()) {
+            window.resize(gpui_kit::size(px(1240.0), px(800.0)));
+        }
         cx.notify();
     }
 
@@ -318,6 +375,9 @@ impl SonataDesktopView {
             }
             if self.center_mode == CenterMode::Fullscreen {
                 self.center_mode = CenterMode::Page;
+                if window.is_fullscreen() {
+                    window.toggle_fullscreen();
+                }
                 cx.notify();
                 return;
             }
@@ -377,7 +437,7 @@ impl SonataDesktopView {
         }
 
         match key {
-            "f" => self.toggle_fullscreen_view(cx),
+            "f" | "f11" => self.toggle_fullscreen_view(window, cx),
             "space" => self.backend.send(BackendCmd::TogglePause),
             "right" => self.backend.send(BackendCmd::SeekRelative(5.0)),
             "left" => self.backend.send(BackendCmd::SeekRelative(-5.0)),
@@ -422,8 +482,26 @@ impl Focusable for SonataDesktopView {
 
 impl Render for SonataDesktopView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let transparent = self.snapshot.effective_transparent();
+        if transparent != self.last_transparent {
+            self.last_transparent = transparent;
+            window.set_background_appearance(if transparent {
+                gpui_kit::WindowBackgroundAppearance::Blurred
+            } else {
+                gpui_kit::WindowBackgroundAppearance::Opaque
+            });
+        }
         let palette = self.palette();
-        let root_content = if self.mini_mode {
+        let viewport = window.viewport_size();
+        let vw: f32 = viewport.width.into();
+        let vh: f32 = viewport.height.into();
+        let compact_viewport = self.mini_mode || is_compact_viewport(vw, vh);
+
+        if self.has_animated_cover() {
+            window.request_animation_frame();
+        }
+
+        let root_content = if compact_viewport {
             mini_player::render_mini_player(self, &palette, window, cx)
         } else {
             root::render_full_workspace(self, &palette, window, cx)
@@ -432,6 +510,8 @@ impl Render for SonataDesktopView {
         div()
             .id("sonata-desktop-root")
             .size_full()
+            .top_0()
+            .left_0()
             .font_family("Inter")
             .track_focus(&self.focus_handle)
             .text_color(palette.text)
@@ -453,7 +533,7 @@ impl Render for SonataDesktopView {
                 }),
             )
             .child(root_content)
-            .when(self.account_menu_open && !self.mini_mode, |el| {
+            .when(self.account_menu_open && !compact_viewport, |el| {
                 el.child(root::render_account_popover(self, &palette, cx))
             })
             .when(!matches!(self.modal, DesktopModal::None), |el| {

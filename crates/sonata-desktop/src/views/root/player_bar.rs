@@ -70,10 +70,15 @@ pub(super) fn render_player_bar(
                             div()
                                 .id("pb-art-toggle")
                                 .cursor_pointer()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.toggle_fullscreen_view(cx);
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.toggle_fullscreen_view(window, cx);
                                 }))
-                                .child(render_cover_art(snap.art_path.as_ref(), 52.0, 10.0, p)),
+                                .child(render_cover_art(
+                                    view.active_cover_art_path(),
+                                    52.0,
+                                    10.0,
+                                    p,
+                                )),
                         )
                         .child(
                             div()

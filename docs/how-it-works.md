@@ -22,21 +22,21 @@ See [architecture.md](architecture.md) for the crate and process layout.
 3. **Lookahead precache**: `NextTrackPrecache` (`player/precache.rs`) schedules once the current track is within `NEXT_TRACK_PRECACHE_LEAD_SECS` (10 s) of its end. `precache_hifi_audio` downloads the next track (capped at 80 MiB) so the next track can start from a local file.
 4. **Recovery**: a playback error triggers at most one recovery attempt per play sequence (`resolve_recovery`, bypassing cached streams).
 5. **Cache bounds**: the in-memory stream cache holds at most 256 entries; on-disk files are tracked by last-use time and pruned oldest-first to the configured budget (`cache/media.rs`).
-6. **High-res artwork**: `sonata_core::media::upscale_artwork_url` upgrades initial provider thumbnails immediately (YouTube/Google `=w1200-h1200-l90-rj`, Spotify `ab67616d0000b273` 640px, iTunes `1200x1200bb` HTTPS), while `resolve_track_cover` enriches covers across **Deezer (`api.deezer.com/search/track`) → iTunes (`itunes.apple.com/search`) → upscaled provider thumbnail** for both YouTube Music and Spotify tracks.
+6. **High-res & animated artwork**: `sonata_core::media::upscale_artwork_url` upgrades initial provider thumbnails immediately (YouTube/Google `=w1200-h1200-l90-rj`, Spotify `ab67616d0000b273` 640px, iTunes `1200x1200bb` HTTPS), while `resolve_track_cover` enriches covers across **Deezer (`api.deezer.com/search/track`) → iTunes (`itunes.apple.com/search`) → upscaled provider thumbnail** for both YouTube Music and Spotify tracks. When an Apple Music `editorialVideo` stream is found on the matching album page (`resolve_animated_cover_frames`), `ffmpeg` extracts 20 square `320x320` PNG frames at `8 fps` into `~/.cache/sonata/art/motion_<hash>/` for loop playback in both TUI and desktop (`reduce_motion` disables animation).
 7. `PlaybackCoordinator` (`player/coordinator.rs`) holds the pure command → transition rules shared by frontends, and `PlaybackTaskSet` aborts stale async work.
 
 ## 3. Lyrics pipeline
 
-`lyrics/lrclib.rs::fetch_lyrics` resolves word-synced and dual-voice lyrics with line-level fallback:
+`lyrics/lrclib.rs::fetch_lyrics` resolves word-synced and dual-voice lyrics via concurrent multi-provider scoring:
 
 1. **Local cache**: checks `.lrc` and `.txt` files first. If a cached `.lrc` has no word-level timestamps and hasn't been checked online yet (`.wordcheck` marker), Sonata attempts a one-time word-synced upgrade.
-2. **Concurrent primary fetch (`tokio::join!`)**:
+2. **Concurrent fetch (`tokio::join!`)**: queries five synced sources in parallel:
    - **Apple Music TTML** (`lyrics/providers.rs::fetch_ttml_synced` + `lyrics/ttml.rs`): queries `https://lyrics-api.binimum.org/` (with albumless retry) and parses TTML via `roxmltree` for word/syllable `<span begin=.. end=..>` timings, `<ttm:agent type="person"/>` dual voices (`LyricVoice::Lead` vs `LyricVoice::Counter`), and `<span ttm:role="x-bg">` parenthetical background vocals (skipping translation/romanization spans).
-   - **LRCLIB** (`query_lrclib`): exact `/api/get` then `/api/search` with title/artist/duration validation.
-3. **Priority & word-level fallback**:
-   - Results with word-level timestamps or dual-voice (`Counter`) lines are preferred immediately.
-   - If neither TTML nor LRCLIB yields word timings, Sonata queries **KuGou KRC** (`fmt=krc`, decoded via 4-byte `krc1` header skip, 16-byte XOR cipher, and `flate2` zlib decompression, falling back to `fmt=lrc`) and **NetEase YRC** (`api/song/lyric/v1`, falling back to `lrc.lyric`) concurrently before accepting line-only LRCLIB.
-   - Plain fallbacks: LRCLIB plain → **YTM native lyrics** (for YTM tracks) → **Genius** HTML scrape.
+   - **LRCLIB** (`query_lrclib`): `/api/get` plus `/api/search` fallback when `/api/get` lacks word-timed lyrics, preferring Enhanced LRC candidates.
+   - **KuGou KRC** (`fetch_kugou_synced`): `fmt=krc` decoded via 4-byte `krc1` header skip, 16-byte XOR cipher, and `flate2` zlib decompression, falling back to `fmt=lrc`.
+   - **NetEase YRC** (`fetch_netease_synced`): `api/song/lyric/v1` `yrc.lyric` word timings, falling back to `lrc.lyric`.
+   - **QQ Music** (`fetch_qqmusic_synced`): `c.y.qq.com` search + base64-decoded LRC (`fcg_query_lyric_new.fcg`).
+3. **Deterministic candidate scoring (`score_synced_lyrics`)**: every `usable_synced_lyrics` hit is scored on word-timing density (`+300` when `>= 1/3` of lines have word spans), dual-voice presence (`+80` for `Counter`), duration-end coverage (`+120` within `[0.65*dur, dur+3s]`, `-150` if `< 0.45*dur`), line count sanity (`+50` for `8..=160` lines), and source bonus (`TTML: 40`, `LRCLIB: 35`, `KuGou: 30`, `NetEase: 28`, `QQMusic: 20`). The highest-scoring sheet wins; plain fallbacks remain LRCLIB plain → **YTM native lyrics** → **Genius** HTML scrape.
 4. **Lossless LRC round-trip**: `format_lrc` and `parse_lrc` (`lyrics/mod.rs`) preserve Enhanced LRC `<mm:ss.xxx>` word timestamps and `v2:` counter-voice prefixes across cache writes and reloads.
 
 ## 4. Fullscreen visual effects (desktop)

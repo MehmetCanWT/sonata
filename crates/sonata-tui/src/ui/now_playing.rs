@@ -11,7 +11,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 use ratatui_image::picker::ProtocolType;
 use ratatui_image::{FilterType, Resize, StatefulImage};
-use sonata_core::lyrics::{active_line_index, LyricsState};
+use sonata_core::lyrics::{active_line_index, LyricLine, LyricsState};
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     app.ui_rects.left_col_area = area;
@@ -50,12 +50,22 @@ fn center_square_area(inner: Rect, font_size: (u16, u16)) -> Rect {
 
 pub fn render_artwork(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     app.ui_rects.album_art_box = area;
-    let art_title = match app.picker.protocol_type() {
-        ratatui_image::picker::ProtocolType::Halfblocks => " Album Art (Fallback) ",
-        _ => " Album Art ",
+    let has_motion = !app.anim_art_frames.is_empty() && !app.config.reduce_motion;
+    let art_title = if has_motion {
+        " ✦ Motion Cover "
+    } else {
+        match app.picker.protocol_type() {
+            ratatui_image::picker::ProtocolType::Halfblocks => " Album Art (Fallback) ",
+            _ => " Album Art ",
+        }
     };
     let block = Block::default()
         .title(art_title)
+        .title_style(
+            Style::default()
+                .fg(app.theme.fg)
+                .add_modifier(Modifier::BOLD),
+        )
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -81,23 +91,37 @@ pub fn render_artwork(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             };
             render_centered_message(frame, inner, placeholder, app);
         }
-    } else if let Some(art_state) = &mut app.album_art {
-        let art_rect = center_square_area(inner, app.picker.font_size());
-        let widget = StatefulImage::default().resize(Resize::Fit(Some(FilterType::Lanczos3)));
-        frame.render_stateful_widget(widget, art_rect, art_state);
     } else {
-        let placeholder = if app.playback.current_track().is_some() {
-            "Loading HD cover art..."
+        let font_size = app.picker.font_size();
+        let art_state = if has_motion {
+            let idx = app.anim_art_idx % app.anim_art_frames.len();
+            app.anim_art_frames.get_mut(idx).map(|(proto, _)| proto)
         } else {
-            "No track playing"
+            app.album_art.as_mut()
         };
-        render_centered_message(frame, inner, placeholder, app);
+        if let Some(art_state) = art_state {
+            let art_rect = center_square_area(inner, font_size);
+            let widget = StatefulImage::default().resize(Resize::Fit(Some(FilterType::Lanczos3)));
+            frame.render_stateful_widget(widget, art_rect, art_state);
+        } else {
+            let placeholder = if app.playback.current_track().is_some() {
+                "Loading HD cover art..."
+            } else {
+                "No track playing"
+            };
+            render_centered_message(frame, inner, placeholder, app);
+        }
     }
 }
 
 pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let block = Block::default()
         .title(" Lyrics ")
+        .title_style(
+            Style::default()
+                .fg(app.theme.fg)
+                .add_modifier(Modifier::BOLD),
+        )
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -124,8 +148,9 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &App) {
             render_centered_message(frame, inner, "No lyrics found for this track", app);
         }
         LyricsState::Plain(lines) => {
+            let pos = app.interpolated_position();
             let progress = if app.playback.duration_secs > 1.0 {
-                (app.playback.position_secs / app.playback.duration_secs).clamp(0.0, 1.0)
+                (pos / app.playback.duration_secs).clamp(0.0, 1.0)
             } else {
                 0.0
             };
@@ -150,8 +175,10 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &App) {
             frame.render_widget(p, inner);
         }
         LyricsState::Synced(lines) => {
-            let active = active_line_index(lines, app.playback.position_secs);
-            let above_budget = visible_rows / 2;
+            let pos = app.interpolated_position();
+            let active = active_line_index(lines, pos);
+            let use_spacers = active.is_some() && visible_rows >= 9;
+            let above_budget = (visible_rows / 2).saturating_sub(usize::from(use_spacers));
             let focus_idx = active.unwrap_or(0);
             let line_rows = |idx: usize| -> usize {
                 let txt = if lines[idx].text.is_empty() {
@@ -159,7 +186,12 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 } else {
                     lines[idx].text.as_str()
                 };
-                wrapped_rows(txt, inner.width)
+                let w = if Some(idx) == active {
+                    inner.width.saturating_sub(4).max(1)
+                } else {
+                    inner.width
+                };
+                wrapped_rows(txt, w)
             };
 
             let mut start = focus_idx;
@@ -182,21 +214,40 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 } else {
                     item.text.as_str()
                 };
-                let r = wrapped_rows(text, inner.width);
+                let dist = active.map_or(3, |a| a.abs_diff(i));
+                if dist == 0 && use_spacers && used < visible_rows {
+                    rendered.push(Line::raw(""));
+                    used += 1;
+                }
+                let r = line_rows(i);
                 if rendered.len() > top_pad && used + r > visible_rows {
                     break;
                 }
                 used += r;
-                let dist = active.map_or(3, |a| a.abs_diff(i));
-                let style = match dist {
-                    0 => Style::default()
-                        .fg(Color::Rgb(255, 255, 255))
-                        .add_modifier(Modifier::BOLD),
-                    1 => Style::default().fg(Color::Rgb(185, 192, 206)),
-                    2 => Style::default().fg(Color::Rgb(120, 126, 140)),
-                    _ => Style::default().fg(Color::Rgb(74, 79, 92)),
-                };
-                rendered.push(Line::from(Span::styled(text, style)));
+                if dist == 0 {
+                    let next_time = lines.get(i + 1).map(|next| next.time_secs);
+                    rendered.push(render_active_tui_lyric_line(
+                        item,
+                        next_time,
+                        pos,
+                        app.theme.accent,
+                    ));
+                    if use_spacers && used + 1 < visible_rows {
+                        rendered.push(Line::raw(""));
+                        used += 1;
+                    }
+                } else {
+                    let style = match dist {
+                        1 => Style::default().fg(Color::Rgb(108, 116, 134)),
+                        2 => Style::default()
+                            .fg(Color::Rgb(72, 78, 92))
+                            .add_modifier(Modifier::DIM),
+                        _ => Style::default()
+                            .fg(Color::Rgb(48, 52, 64))
+                            .add_modifier(Modifier::DIM),
+                    };
+                    rendered.push(Line::from(Span::styled(text, style)));
+                }
                 if used >= visible_rows {
                     break;
                 }
@@ -210,6 +261,163 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &App) {
     }
 }
 
+pub fn active_karaoke_line(app: &App) -> Option<Line<'static>> {
+    let pos = app.interpolated_position();
+    match &app.lyrics {
+        LyricsState::Synced(lines) if !lines.is_empty() => {
+            let idx = active_line_index(lines, pos)?;
+            let item = &lines[idx];
+            let next_time = lines.get(idx + 1).map(|next| next.time_secs);
+            Some(render_active_tui_lyric_line(
+                item,
+                next_time,
+                pos,
+                app.theme.accent,
+            ))
+        }
+        LyricsState::Plain(lines) if !lines.is_empty() => {
+            let dur = app.playback.duration_secs.max(1.0);
+            let progress = (pos / dur).clamp(0.0, 1.0);
+            let idx = (((lines.len().saturating_sub(1)) as f64) * progress).round() as usize;
+            let text = lines.get(idx)?.trim();
+            if text.is_empty() {
+                return None;
+            }
+            Some(Line::from(Span::styled(
+                text.to_string(),
+                Style::default().fg(app.theme.muted),
+            )))
+        }
+        _ => None,
+    }
+}
+
+fn estimate_tui_sung_duration(text: &str) -> f64 {
+    let chars = text.chars().count().max(3) as f64;
+    (chars * 0.065).clamp(1.1, 3.6)
+}
+
+fn is_color_too_white(color: Color) -> bool {
+    match color {
+        Color::White => true,
+        Color::Rgb(r, g, b) => r > 220 && g > 220 && b > 220,
+        _ => false,
+    }
+}
+
+fn render_active_tui_lyric_line(
+    item: &LyricLine,
+    next_time_secs: Option<f64>,
+    position_secs: f64,
+    theme_accent: Color,
+) -> Line<'static> {
+    let accent = if is_color_too_white(theme_accent) {
+        Color::Rgb(120, 220, 255)
+    } else {
+        theme_accent
+    };
+    let marker_style = Style::default().fg(accent).add_modifier(Modifier::BOLD);
+
+    if item.text.trim().is_empty() {
+        return Line::from(vec![
+            Span::styled("✦ ", marker_style),
+            Span::styled(
+                "♪",
+                Style::default()
+                    .fg(Color::Rgb(255, 255, 255))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" ✦", marker_style),
+        ]);
+    }
+
+    let sweep_pos = position_secs + 0.24;
+    let sung_style = Style::default()
+        .fg(Color::Rgb(255, 255, 255))
+        .add_modifier(Modifier::BOLD);
+    let current_word_style = Style::default()
+        .fg(accent)
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+    let unsung_style = Style::default()
+        .fg(Color::Rgb(150, 160, 182))
+        .add_modifier(Modifier::BOLD);
+
+    let line_end_secs = next_time_secs
+        .map(|ns| {
+            let est = item.time_secs + estimate_tui_sung_duration(&item.text);
+            let gap_cap = item.time_secs + ((ns - item.time_secs) * 0.85).max(0.45);
+            est.min(gap_cap)
+        })
+        .unwrap_or_else(|| item.time_secs + estimate_tui_sung_duration(&item.text));
+
+    let word_shares: Vec<(String, f64)> = if !item.words.is_empty() {
+        item.words
+            .iter()
+            .enumerate()
+            .map(|(idx, w)| {
+                let raw_end = w
+                    .end_secs
+                    .or_else(|| item.words.get(idx + 1).map(|n| n.start_secs))
+                    .unwrap_or(line_end_secs)
+                    .max(w.start_secs + 0.14);
+                let max_word_span = (w.text.chars().count().max(2) as f64 * 0.11).clamp(0.28, 1.35);
+                let end = if w.end_secs.is_some() {
+                    raw_end
+                } else {
+                    raw_end.min(w.start_secs + max_word_span)
+                };
+                let share =
+                    ((sweep_pos - w.start_secs) / (end - w.start_secs).max(0.12)).clamp(0.0, 1.0);
+                (w.text.clone(), share)
+            })
+            .collect()
+    } else {
+        let words: Vec<&str> = item.text.split_whitespace().collect();
+        let total_chars: f64 = words.iter().map(|w| (w.chars().count() + 1) as f64).sum();
+        let span = (line_end_secs - item.time_secs).max(0.5);
+        let progress = ((sweep_pos - item.time_secs) / span).clamp(0.0, 1.0);
+        let mut cursor = 0.0;
+        words
+            .into_iter()
+            .map(|w| {
+                let weight = (w.chars().count() + 1) as f64 / total_chars.max(1.0);
+                let start = cursor;
+                let end = (cursor + weight).min(1.0);
+                cursor = end;
+                let share = if end > start {
+                    ((progress - start) / (end - start)).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+                (w.to_string(), share)
+            })
+            .collect()
+    };
+
+    let active_word_idx = word_shares
+        .iter()
+        .position(|(_, share)| *share > 0.0 && *share < 0.99);
+
+    let word_count = word_shares.len();
+    let mut spans = Vec::with_capacity(word_count * 2 + 2);
+    spans.push(Span::styled("✦ ", marker_style));
+    for (idx, (token, share)) in word_shares.into_iter().enumerate() {
+        let style = if Some(idx) == active_word_idx {
+            current_word_style
+        } else if share >= 0.99 {
+            sung_style
+        } else {
+            unsung_style
+        };
+        spans.push(Span::styled(token, style));
+        if idx + 1 < word_count {
+            spans.push(Span::raw(" "));
+        }
+    }
+    spans.push(Span::styled(" ✦", marker_style));
+    Line::from(spans)
+}
+
 fn wrapped_rows(text: &str, width: u16) -> usize {
     let w = width.max(1) as usize;
     text.chars().count().div_ceil(w).max(1)
@@ -221,4 +429,40 @@ fn render_centered_message(frame: &mut Frame<'_>, inner: Rect, msg: &str, app: &
         .alignment(Alignment::Center)
         .style(Style::default().fg(app.theme.muted));
     frame.render_widget(p, inner);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_active_tui_lyric_line;
+    use ratatui::style::{Color, Modifier};
+    use sonata_core::lyrics::{LyricLine, LyricVoice, LyricWord};
+
+    #[test]
+    fn active_lyric_underline_covers_only_the_word_not_trailing_space() {
+        let line = LyricLine {
+            time_secs: 10.0,
+            text: "around like no one knows".to_string(),
+            words: vec![
+                LyricWord {
+                    start_secs: 10.0,
+                    end_secs: Some(11.0),
+                    text: "around".to_string(),
+                },
+                LyricWord {
+                    start_secs: 11.0,
+                    end_secs: Some(12.0),
+                    text: "like".to_string(),
+                },
+            ],
+            voice: LyricVoice::Lead,
+        };
+        let rendered = render_active_tui_lyric_line(&line, Some(14.0), 10.2, Color::Cyan);
+        let underlined: Vec<&str> = rendered
+            .spans
+            .iter()
+            .filter(|s| s.style.add_modifier.contains(Modifier::UNDERLINED))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(underlined, vec!["around"]);
+    }
 }

@@ -5,10 +5,10 @@
 //! 3. **Synced Lyrics Sheet (`sheet`)**: `render_fullscreen_lyrics_column` centers the active karaoke verse at 50% viewport height, pre-warms the 3 Gaussian blur buckets, and styles counter/background vocals.
 
 mod controls;
-mod sheet;
+pub(in crate::views) mod sheet;
 
 use super::fullscreen_fx::{AmbientWavesState, BlurredLyricCache};
-use super::{render_icon_button, SonataDesktopView};
+use super::{render_icon_button, FluentDivExt, SonataDesktopView};
 use crate::theme_bridge::{rgb_hsla, GlassPalette};
 use gpui_kit::assets::IconName;
 use gpui_kit::{
@@ -182,9 +182,13 @@ pub fn render_fullscreen_workspace(
         cx,
     );
 
+    let cover_art_path = view.active_cover_art_path().cloned();
+    let has_motion = view.has_animated_cover();
+
     let left_column = controls::render_cover_column(
         view,
-        art_path.as_ref(),
+        cover_art_path.as_ref(),
+        has_motion,
         cover_size,
         cover_radius,
         &display_title,
@@ -249,13 +253,23 @@ pub fn render_fullscreen_workspace(
             )
     };
 
+    let transparent = snap.effective_transparent();
+    let glass_opacity = snap.effective_hyprland_opacity();
+    let root_bg = if transparent {
+        rgb_hsla((10, 6, 14), (glass_opacity * 0.45).clamp(0.18, 0.55))
+    } else {
+        rgb_hsla((10, 6, 14), 1.0)
+    };
+
     let mut root = div()
         .id("fullscreen-playback")
         .relative()
         .size_full()
+        .top_0()
+        .left_0()
         .overflow_hidden()
         .font_family("Inter")
-        .bg(rgb_hsla((10, 6, 14), 1.0))
+        .bg(root_bg)
         .on_mouse_move(cx.listener(|this, _, _, cx| this.note_fullscreen_activity(cx)))
         .on_click(|ev: &ClickEvent, window, _| {
             if ev.click_count() == 2 {
@@ -264,11 +278,12 @@ pub fn render_fullscreen_workspace(
         })
         // Full-bleed edge-to-edge flowing ambient waves image.
         .child(
-            img(waves_frame)
+            div()
                 .absolute()
                 .inset_0()
                 .size_full()
-                .object_fit(ObjectFit::Fill),
+                .when(transparent, |el| el.opacity(glass_opacity))
+                .child(img(waves_frame).size_full().object_fit(ObjectFit::Fill)),
         )
         .child(stage);
 
@@ -283,7 +298,7 @@ pub fn render_fullscreen_workspace(
                 rgb_hsla((255, 255, 255), 0.88),
                 rgb_hsla((16, 12, 22), 0.34),
                 rgb_hsla((255, 255, 255), 0.14),
-                |this, _, cx| this.toggle_fullscreen_view(cx),
+                |this, window, cx| this.toggle_fullscreen_view(window, cx),
                 cx,
             ),
         ));

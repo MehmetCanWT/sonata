@@ -137,6 +137,7 @@ pub struct DesktopSnapshot {
     pub stream_badge: String,
     pub lyrics: LyricsState,
     pub art_path: Option<PathBuf>,
+    pub animated_art_frames: Arc<Vec<PathBuf>>,
     pub ambient_rgb: (u8, u8, u8),
     pub spotify_notice: Option<String>,
 }
@@ -303,6 +304,11 @@ pub(super) enum InternalEvent {
         url: String,
         art_path: Option<PathBuf>,
         ambient_rgb: (u8, u8, u8),
+    },
+    AnimatedArtworkReady {
+        play_seq: u64,
+        track_id: String,
+        frames: Vec<PathBuf>,
     },
     ThumbnailsReady,
     PlaylistCreated(Playlist),

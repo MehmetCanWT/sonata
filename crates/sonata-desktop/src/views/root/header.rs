@@ -220,6 +220,25 @@ pub(super) fn render_top_header(
                     cx,
                 ))
                 .child(render_icon_button(
+                    "hdr-fullscreen",
+                    IconName::Maximize2,
+                    15.0,
+                    32.0,
+                    if view.center_mode == CenterMode::Fullscreen {
+                        p.accent
+                    } else {
+                        p.text
+                    },
+                    if view.center_mode == CenterMode::Fullscreen {
+                        p.accent_soft
+                    } else {
+                        p.panel_bg
+                    },
+                    p.card_hover,
+                    |this, window, cx| this.toggle_fullscreen_view(window, cx),
+                    cx,
+                ))
+                .child(render_icon_button(
                     "hdr-settings",
                     IconName::Settings,
                     15.0,

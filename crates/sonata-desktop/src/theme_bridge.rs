@@ -125,6 +125,20 @@ impl GlassPalette {
             error: core_hsla(base.error, 1.0, (0xf3, 0x8b, 0xa8)),
         }
     }
+
+    pub fn with_glass_opacity(mut self, transparent: bool, hyprland_opacity: f32) -> Self {
+        if !transparent {
+            return self;
+        }
+        let scale = (hyprland_opacity * 0.95).clamp(0.35, 1.0);
+        self.window_bg.a *= scale;
+        self.sidebar_bg.a *= scale;
+        self.panel_bg.a *= scale;
+        self.player_bar_bg.a *= scale;
+        self.card_bg.a *= scale;
+        self.ambient_top.a *= scale;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -138,5 +152,24 @@ mod tests {
         let opaque = GlassPalette::from_theme(&theme, false, (240, 80, 140));
         assert!(glass.window_bg.a < opaque.window_bg.a);
         assert!(glass.ambient_top.a > 0.2);
+    }
+
+    #[test]
+    fn glass_opacity_scales_translucent_surfaces_only_when_transparent() {
+        let theme = Theme::catppuccin_mocha();
+        let high =
+            GlassPalette::from_theme(&theme, true, (180, 90, 220)).with_glass_opacity(true, 1.0);
+        let low =
+            GlassPalette::from_theme(&theme, true, (180, 90, 220)).with_glass_opacity(true, 0.50);
+        assert!(low.window_bg.a < high.window_bg.a);
+        assert!(low.sidebar_bg.a < high.sidebar_bg.a);
+        assert!(low.panel_bg.a < high.panel_bg.a);
+        assert!(low.player_bar_bg.a < high.player_bar_bg.a);
+        assert!(low.card_bg.a < high.card_bg.a);
+        assert!(low.ambient_top.a < high.ambient_top.a);
+
+        let opaque = GlassPalette::from_theme(&theme, false, (180, 90, 220));
+        let opaque_unchanged = opaque.clone().with_glass_opacity(false, 0.50);
+        assert!((opaque.window_bg.a - opaque_unchanged.window_bg.a).abs() < f32::EPSILON);
     }
 }

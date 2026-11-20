@@ -426,7 +426,12 @@ impl BackendEngine {
         }
     }
 
-    pub(super) fn sync_hyprland_opacity(&self) {
+    pub(super) fn sync_hyprland_opacity(&mut self) {
+        if hyprland::is_hyprland() {
+            if let Some(fresh) = hyprland::find_window_address_for_app("sonata-desktop") {
+                self.hyprland_window = Some(fresh);
+            }
+        }
         let Some(addr) = self.hyprland_window.clone() else {
             return;
         };

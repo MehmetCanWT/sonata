@@ -1,15 +1,14 @@
 # Maintainer: MehmetCanWT
 pkgname=sonata-desktop
 pkgver=0.1.0
-pkgrel=1
+pkgrel=2
 pkgdesc="Native Wayland desktop music player for YouTube Music and Spotify (experimental / under development)"
 arch=('x86_64' 'aarch64')
 url="https://github.com/MehmetCanWT/sonata"
 license=('MIT')
-depends=('mpv' 'yt-dlp' 'wayland' 'vulkan-icd-loader' 'libxkbcommon' 'fontconfig' 'alsa-lib' 'dbus')
+depends=('mpv' 'yt-dlp' 'ffmpeg' 'nodejs' 'wayland' 'vulkan-icd-loader' 'libxkbcommon' 'libxkbcommon-x11' 'libxcb' 'fontconfig' 'alsa-lib' 'dbus')
 makedepends=('cargo')
 optdepends=(
-    'nodejs: enhanced YouTube extractor support for yt-dlp'
     'hyprland: dynamic window opacity and compositor blur'
 )
 source=("sonata-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")

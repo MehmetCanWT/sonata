@@ -16,7 +16,7 @@ use crate::views::SonataDesktopView;
 use gpui_kit::assets::{icon_assets, Assets};
 use gpui_kit::{
     px, size, AnyWindowHandle, App, AppContext, AssetSource, Bounds, QuitMode, SharedString,
-    TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowOptions,
+    WindowBackgroundAppearance, WindowBounds, WindowDecorations, WindowOptions,
 };
 use sonata_core::config::AppConfig;
 use sonata_core::hyprland;
@@ -179,13 +179,10 @@ fn open_main_window(
             size(px(1240.0), px(800.0)),
             cx,
         ))),
-        window_min_size: Some(size(px(380.0), px(150.0))),
+        window_min_size: Some(size(px(280.0), px(110.0))),
         window_background: background,
-        titlebar: Some(TitlebarOptions {
-            title: Some("Sonata".into()),
-            appears_transparent: true,
-            ..Default::default()
-        }),
+        window_decorations: Some(WindowDecorations::Server),
+        titlebar: None,
         ..Default::default()
     };
 
@@ -193,6 +190,7 @@ fn open_main_window(
     let backend_view = backend.clone();
     let slot_close = window_slot.clone();
     match gpui_kit::open_window(options, cx, move |window, cx| {
+        window.set_window_title("Sonata");
         window.on_window_should_close(cx, move |_window, _cx| {
             *slot_close.borrow_mut() = None;
             backend_close.send(BackendCmd::SetWindowAddress(None));
@@ -206,9 +204,13 @@ fn open_main_window(
             backend.send(BackendCmd::SetWindowVisible(true));
             let backend_hypr = backend;
             std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(250));
-                let addr = hyprland::find_window_address_for_app("sonata-desktop");
-                backend_hypr.send(BackendCmd::SetWindowAddress(addr));
+                for _ in 0..20 {
+                    std::thread::sleep(Duration::from_millis(150));
+                    if let Some(addr) = hyprland::find_window_address_for_app("sonata-desktop") {
+                        backend_hypr.send(BackendCmd::SetWindowAddress(Some(addr)));
+                        break;
+                    }
+                }
             });
         }
         Err(err) => {

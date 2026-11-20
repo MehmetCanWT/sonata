@@ -216,17 +216,65 @@ pub fn format_lrc(lines: &[LyricLine]) -> String {
         .join("\n")
 }
 
+fn is_bg_line(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed.starts_with('(') && trimmed.ends_with(')') && trimmed.len() > 2
+}
+
+fn line_end_estimate(line: &LyricLine) -> f64 {
+    line.words
+        .last()
+        .and_then(|w| w.end_secs.or(Some(w.start_secs + 0.4)))
+        .unwrap_or(line.time_secs + 0.8)
+}
+
 /// Returns the index of the active lyric line for `position_secs`.
 pub fn active_line_index(lines: &[LyricLine], position_secs: f64) -> Option<usize> {
+    const LOOKAHEAD_SECS: f64 = 0.24;
     if lines.is_empty() {
         return None;
     }
-    let idx = lines.partition_point(|l| l.time_secs <= position_secs + 0.15);
+    let lookahead = position_secs + LOOKAHEAD_SECS;
+    let idx = lines.partition_point(|l| l.time_secs <= lookahead);
     if idx == 0 {
-        None
-    } else {
-        Some(idx - 1)
+        return None;
     }
+    let mut cand = idx - 1;
+    // Keep an overlapping lead verse active until its sung words finish rather than jumping
+    // mid-sentence onto a nested parenthetical background vocal.
+    while cand > 0 && is_bg_line(&lines[cand].text) {
+        let prev = &lines[cand - 1];
+        if is_bg_line(&prev.text) {
+            break;
+        }
+        let prev_end = line_end_estimate(prev);
+        let cand_end = line_end_estimate(&lines[cand]);
+        if lookahead < prev_end || (lookahead > cand_end + 0.25 && lookahead <= prev_end + 0.25) {
+            cand -= 1;
+        } else {
+            break;
+        }
+    }
+    Some(cand)
+}
+
+/// Returns `true` when synced lyric timestamps fit comfortably within `duration_secs`.
+pub fn synced_lyrics_match_duration(lines: &[LyricLine], duration_secs: Option<u64>) -> bool {
+    let Some(dur) = duration_secs.filter(|&d| d > 0) else {
+        return true;
+    };
+    let max_ts = lines
+        .iter()
+        .map(|line| {
+            let words_max = line
+                .words
+                .iter()
+                .map(|w| w.end_secs.unwrap_or(w.start_secs))
+                .fold(line.time_secs, f64::max);
+            line.time_secs.max(words_max)
+        })
+        .fold(0.0_f64, f64::max);
+    max_ts <= dur as f64 + 5.0
 }
 
 /// Strips YouTube/release noise from titles before querying LRCLIB.
@@ -262,7 +310,7 @@ pub fn lyrics_candidate_matches(
     cand_dur_secs: Option<u64>,
 ) -> bool {
     if let (Some(a), Some(b)) = (req_dur_secs, cand_dur_secs) {
-        if b > 0 && a.abs_diff(b) > 12 {
+        if b > 0 && a.abs_diff(b) > 5 {
             return false;
         }
     }
@@ -395,5 +443,66 @@ mod tests {
             sanitize_title("Blinding Lights (Official Audio) feat. Someone"),
             "Blinding Lights"
         );
+    }
+
+    #[test]
+    fn keeps_lead_verse_active_during_overlapping_background_vocal() {
+        let lines = vec![
+            LyricLine {
+                time_secs: 10.0,
+                text: "Lead verse words".into(),
+                words: vec![
+                    LyricWord {
+                        start_secs: 10.0,
+                        end_secs: Some(11.5),
+                        text: "Lead".into(),
+                    },
+                    LyricWord {
+                        start_secs: 12.0,
+                        end_secs: Some(14.5),
+                        text: "words".into(),
+                    },
+                ],
+                voice: LyricVoice::Lead,
+            },
+            LyricLine {
+                time_secs: 11.8,
+                text: "(echo)".into(),
+                words: vec![LyricWord {
+                    start_secs: 11.8,
+                    end_secs: Some(12.6),
+                    text: "(echo)".into(),
+                }],
+                voice: LyricVoice::Lead,
+            },
+        ];
+        assert_eq!(active_line_index(&lines, 12.1), Some(0));
+        assert_eq!(active_line_index(&lines, 14.0), Some(0));
+    }
+
+    #[test]
+    fn rejects_large_duration_mismatch_and_overrunning_lyrics() {
+        assert!(lyrics_candidate_matches(
+            "Song",
+            "Artist",
+            Some(200),
+            "Song",
+            "Artist",
+            Some(204)
+        ));
+        assert!(!lyrics_candidate_matches(
+            "Song",
+            "Artist",
+            Some(200),
+            "Song",
+            "Artist",
+            Some(208)
+        ));
+
+        let within = vec![LyricLine::new(10.0, "A"), LyricLine::new(195.0, "B")];
+        assert!(synced_lyrics_match_duration(&within, Some(200)));
+
+        let overrun = vec![LyricLine::new(10.0, "A"), LyricLine::new(212.0, "B")];
+        assert!(!synced_lyrics_match_duration(&overrun, Some(200)));
     }
 }

@@ -104,6 +104,7 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
         stream_badge: "Idle".to_string(),
         lyrics: LyricsState::Idle,
         art_path: None,
+        animated_art_frames: Arc::new(Vec::new()),
         ambient_rgb: (110, 90, 170),
         spotify_notice: None,
     });
@@ -195,6 +196,7 @@ struct BackendEngine {
     pub(super) muted: bool,
     pub(super) lyrics: LyricsState,
     pub(super) art_path: Option<PathBuf>,
+    pub(super) animated_art_frames: Arc<Vec<PathBuf>>,
     pub(super) ambient_rgb: (u8, u8, u8),
     pub(super) spotify_notice: Option<String>,
     pub(super) pos_anchor: Option<(f64, Instant)>,
@@ -308,6 +310,7 @@ async fn run_backend_loop(
         muted: false,
         lyrics: LyricsState::Idle,
         art_path: None,
+        animated_art_frames: Arc::new(Vec::new()),
         ambient_rgb: (110, 90, 170),
         spotify_notice: None,
         pos_anchor: None,
@@ -338,6 +341,7 @@ async fn run_backend_loop(
     } else {
         engine.load_home_feed();
     }
+    engine.sync_hyprland_opacity();
     engine.publish(true).await;
 
     let mut smooth_tick = tokio::time::interval(Duration::from_millis(40));
@@ -654,31 +658,36 @@ impl BackendEngine {
                 );
             }
             BackendCmd::StepHyprlandOpacity(forward) => {
-                const STEPS: &[f32] = &[0.50, 0.60, 0.70, 0.80, 0.90, 1.00];
-                let cur = self.config.hyprland_opacity;
-                let idx = STEPS
-                    .iter()
-                    .enumerate()
-                    .min_by(|(_, a), (_, b)| {
-                        ((*a - cur).abs())
-                            .partial_cmp(&((*b - cur).abs()))
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    })
-                    .map(|(i, _)| i)
-                    .unwrap_or(4);
-                let next = if forward {
-                    (idx + 1).min(STEPS.len() - 1)
+                if !hyprland::is_hyprland() {
+                    self.status_line =
+                        "Hyprland Opacity is locked to Solid (100%) outside Hyprland".to_string();
                 } else {
-                    idx.saturating_sub(1)
-                };
-                self.config.hyprland_opacity = STEPS[next];
-                self.base_theme.hyprland_opacity = None;
-                let _ = self.config.save();
-                self.sync_hyprland_opacity();
-                self.status_line = format!(
-                    "Hyprland Window Opacity: {:.0}%",
-                    self.config.hyprland_opacity * 100.0
-                );
+                    const STEPS: &[f32] = &[0.50, 0.60, 0.70, 0.80, 0.90, 1.00];
+                    let cur = self.config.hyprland_opacity;
+                    let idx = STEPS
+                        .iter()
+                        .enumerate()
+                        .min_by(|(_, a), (_, b)| {
+                            ((*a - cur).abs())
+                                .partial_cmp(&((*b - cur).abs()))
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                        .map(|(i, _)| i)
+                        .unwrap_or(4);
+                    let next = if forward {
+                        (idx + 1).min(STEPS.len() - 1)
+                    } else {
+                        idx.saturating_sub(1)
+                    };
+                    self.config.hyprland_opacity = STEPS[next];
+                    self.base_theme.hyprland_opacity = None;
+                    let _ = self.config.save();
+                    self.sync_hyprland_opacity();
+                    self.status_line = format!(
+                        "Hyprland Window Opacity: {:.0}%",
+                        self.config.hyprland_opacity * 100.0
+                    );
+                }
             }
             BackendCmd::SelectTheme(name) => {
                 self.apply_theme_by_name(&name);
@@ -1060,13 +1069,19 @@ impl BackendEngine {
                 track_id,
                 lyrics,
             } => {
-                if play_seq == self.play_seq
-                    && self
-                        .playback
-                        .current_track()
-                        .is_some_and(|t| t.id == track_id)
-                {
-                    self.lyrics = lyrics;
+                if play_seq == self.play_seq {
+                    if let Some(track) = self.playback.current_track().filter(|t| t.id == track_id)
+                    {
+                        if let LyricsState::Synced(ref lines) = lyrics {
+                            if !sonata_core::lyrics::synced_lyrics_match_duration(
+                                lines,
+                                track.duration_secs,
+                            ) {
+                                return;
+                            }
+                        }
+                        self.lyrics = lyrics;
+                    }
                 }
             }
             InternalEvent::ArtworkReady {
@@ -1117,6 +1132,21 @@ impl BackendEngine {
                 {
                     self.art_path = art_path;
                     self.ambient_rgb = ambient_rgb;
+                }
+            }
+            InternalEvent::AnimatedArtworkReady {
+                play_seq,
+                track_id,
+                frames,
+            } => {
+                if play_seq == self.play_seq
+                    && !frames.is_empty()
+                    && self
+                        .playback
+                        .current_track()
+                        .is_some_and(|track| track.id == track_id)
+                {
+                    self.animated_art_frames = Arc::new(frames);
                 }
             }
             InternalEvent::ThumbnailsReady => {}
@@ -1184,6 +1214,7 @@ impl BackendEngine {
             stream_badge: self.playback.stream_badge.clone(),
             lyrics: self.lyrics.clone(),
             art_path: self.art_path.clone(),
+            animated_art_frames: self.animated_art_frames.clone(),
             ambient_rgb: self.ambient_rgb,
             spotify_notice: self.spotify_notice.clone(),
         });
@@ -1318,6 +1349,7 @@ mod tests {
             stream_badge: String::new(),
             lyrics: LyricsState::Idle,
             art_path: None,
+            animated_art_frames: Arc::new(Vec::new()),
             ambient_rgb: (0, 0, 0),
             spotify_notice: None,
         }));

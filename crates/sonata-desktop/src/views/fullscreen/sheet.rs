@@ -52,13 +52,6 @@ pub(super) fn build_sheet_entries<'a>(
 
     for (idx, line) in lines.iter().enumerate() {
         let next_start = lines.get(idx + 1).map(|next| next.time_secs);
-        let estimated_end = next_start.unwrap_or_else(|| {
-            if track_duration > line.time_secs + 0.5 {
-                track_duration.min(line.time_secs + 6.0)
-            } else {
-                line.time_secs + DEFAULT_LINE_SWEEP_SECS
-            }
-        });
 
         // Empty synced line acts as an explicit instrumental break marker.
         if line.text.trim().is_empty() {
@@ -78,14 +71,7 @@ pub(super) fn build_sheet_entries<'a>(
             .words
             .last()
             .and_then(|w| w.end_secs.or(Some(w.start_secs + 0.7)));
-        let verse_end = match (word_end, next_start) {
-            (Some(we), Some(ns)) => we.min(ns).max(line.time_secs + 0.4),
-            (Some(we), None) => we.max(line.time_secs + 0.4),
-            (None, Some(ns)) => {
-                ns.min(line.time_secs + DEFAULT_LINE_SWEEP_SECS.max((ns - line.time_secs).min(6.5)))
-            }
-            (None, None) => estimated_end,
-        };
+        let verse_end = estimate_verse_end_secs(line, next_start, track_duration);
 
         entries.push(SheetEntry::Verse {
             line_index: idx,
@@ -113,9 +99,37 @@ pub(super) fn build_sheet_entries<'a>(
     entries
 }
 
+pub(in crate::views) fn estimate_verse_end_secs(
+    line: &LyricLine,
+    next_start: Option<f64>,
+    track_duration: f64,
+) -> f64 {
+    let word_end = line
+        .words
+        .last()
+        .and_then(|w| w.end_secs.or(Some(w.start_secs + 0.7)));
+    match (word_end, next_start) {
+        (Some(we), Some(ns)) => we.min(ns).max(line.time_secs + 0.4),
+        (Some(we), None) => we.max(line.time_secs + 0.4),
+        (None, Some(ns)) => {
+            let est = line.time_secs + estimate_sung_duration(&line.text);
+            let gap_cap = line.time_secs + ((ns - line.time_secs) * 0.82).max(0.45);
+            est.min(gap_cap)
+        }
+        (None, None) => {
+            let est = line.time_secs + estimate_sung_duration(&line.text);
+            if track_duration > line.time_secs + 0.5 {
+                track_duration.min(est.max(line.time_secs + DEFAULT_LINE_SWEEP_SECS))
+            } else {
+                est.max(line.time_secs + DEFAULT_LINE_SWEEP_SECS)
+            }
+        }
+    }
+}
+
 fn estimate_sung_duration(text: &str) -> f64 {
-    let chars = text.chars().count().max(4) as f64;
-    (chars * 0.085).clamp(1.6, 4.5)
+    let chars = text.chars().count().max(3) as f64;
+    (chars * 0.062).clamp(1.1, 3.4)
 }
 
 fn active_sheet_child_index(
@@ -611,8 +625,19 @@ pub(super) fn is_background_lyric(text: &str) -> bool {
     trimmed.starts_with('(') && trimmed.ends_with(')') && trimmed.len() > 2
 }
 
+pub(in crate::views) struct KaraokePalette {
+    pub font_size: f32,
+    pub line_height: f32,
+    pub align_right: bool,
+    pub is_background: bool,
+    pub dim_color: Hsla,
+    pub lit_color: Hsla,
+    pub active_glow_color: Hsla,
+    pub sung_glow_color: Hsla,
+}
+
 /// Renders the active lyric verse with a sub-pixel progressive karaoke reveal
-/// (`"The empt"` bright white + `"iness machine"` translucent gray).
+/// (`"The empt"` bright glowing white + `"iness machine"` translucent gray).
 fn render_active_karaoke_verse(
     line: &LyricLine,
     position_secs: f64,
@@ -622,13 +647,37 @@ fn render_active_karaoke_verse(
     align_right: bool,
     is_background: bool,
 ) -> AnyElement {
-    let dim_color = rgb_hsla((255, 255, 255), if is_background { 0.34 } else { 0.42 });
-    let lit_color = rgb_hsla((255, 255, 255), if is_background { 0.86 } else { 0.98 });
-    let weight = if is_background {
-        FontWeight::MEDIUM
-    } else {
+    render_active_karaoke_verse_styled(
+        line,
+        position_secs,
+        line_end_secs,
+        KaraokePalette {
+            font_size,
+            line_height,
+            align_right,
+            is_background,
+            dim_color: rgb_hsla((255, 255, 255), if is_background { 0.22 } else { 0.28 }),
+            lit_color: rgb_hsla((255, 255, 255), if is_background { 0.92 } else { 1.0 }),
+            active_glow_color: rgb_hsla((255, 255, 255), if is_background { 0.34 } else { 0.48 }),
+            sung_glow_color: rgb_hsla((255, 255, 255), if is_background { 0.16 } else { 0.26 }),
+        },
+    )
+}
+
+pub(in crate::views) fn render_active_karaoke_verse_styled(
+    line: &LyricLine,
+    position_secs: f64,
+    line_end_secs: f64,
+    style: KaraokePalette,
+) -> AnyElement {
+    const KARAOKE_LEAD_SECS: f64 = 0.22;
+
+    let weight = if style.is_background {
         FontWeight::SEMIBOLD
+    } else {
+        FontWeight::BOLD
     };
+    let sweep_pos = position_secs + KARAOKE_LEAD_SECS;
 
     // Build `(token_with_space, progress 0.0..=1.0)` pairs either from Enhanced LRC word tags
     // or proportional character-weighted line sweep so standard LRCLIB lines still sweep smoothly.
@@ -639,12 +688,20 @@ fn render_active_karaoke_verse(
             .enumerate()
             .map(|(i, w)| {
                 let start = w.start_secs;
-                let end = w
+                let raw_end = w
                     .end_secs
                     .or_else(|| line.words.get(i + 1).map(|next| next.start_secs))
                     .unwrap_or(line_end_secs)
-                    .max(start + 0.18);
-                let share = ((position_secs - start) / (end - start)).clamp(0.0, 1.0) as f32;
+                    .max(start + 0.14);
+                let max_word_span = (w.text.chars().count().max(2) as f64 * 0.11).clamp(0.28, 1.35);
+                let effective_end = if w.end_secs.is_some() {
+                    raw_end
+                } else {
+                    raw_end.min(start + max_word_span)
+                };
+                let linear = ((sweep_pos - start) / (effective_end - start).max(0.12))
+                    .clamp(0.0, 1.0) as f32;
+                let share = linear.powf(0.68);
                 let mut label = w.text.clone();
                 if i + 1 < count {
                     label.push(' ');
@@ -658,8 +715,8 @@ fn render_active_karaoke_verse(
             Vec::new()
         } else {
             let total_chars: f64 = words.iter().map(|w| (w.chars().count() + 1) as f64).sum();
-            let span = (line_end_secs - line.time_secs).max(0.6);
-            let line_progress = ((position_secs - line.time_secs) / span).clamp(0.0, 1.0);
+            let span = (line_end_secs - line.time_secs).max(0.5);
+            let line_progress = ((sweep_pos - line.time_secs) / span).clamp(0.0, 1.0);
             let mut cursor = 0.0f64;
             let count = words.len();
             words
@@ -670,11 +727,12 @@ fn render_active_karaoke_verse(
                     let w_start = cursor;
                     let w_end = (cursor + weight).min(1.0);
                     cursor = w_end;
-                    let share = if w_end > w_start {
+                    let linear = if w_end > w_start {
                         ((line_progress - w_start) / (w_end - w_start)).clamp(0.0, 1.0) as f32
                     } else {
                         1.0
                     };
+                    let share = linear.powf(0.72);
                     let mut label = w.to_string();
                     if i + 1 < count {
                         label.push(' ');
@@ -685,33 +743,55 @@ fn render_active_karaoke_verse(
         }
     };
 
+    let lit_color = style.lit_color;
+    let active_glow = style.active_glow_color;
+    let sung_glow = style.sung_glow_color;
+
     div()
         .w_full()
         .flex()
         .flex_wrap()
-        .when(align_right, |el| el.justify_end())
-        .text_size(px(font_size))
-        .line_height(px(line_height))
+        .when(style.align_right, |el| el.justify_end())
+        .text_size(px(style.font_size))
+        .line_height(px(style.line_height))
         .font_weight(weight)
-        .text_color(dim_color)
+        .text_color(style.dim_color)
         .children(tokens.into_iter().map(move |(token, share)| {
             let shared = SharedString::from(token);
+            let is_sweeping = share > 0.01 && share < 0.99;
+            let glow_color = if is_sweeping { active_glow } else { sung_glow };
             div()
                 .relative()
                 .flex_none()
                 .whitespace_nowrap()
+                .when(is_sweeping, |el| el.top(px(-1.0)))
                 .child(shared.clone())
                 .when(share > 0.005, |el| {
                     el.child(
                         div()
                             .absolute()
-                            .top_0()
-                            .bottom_0()
+                            .top(px(-2.0))
+                            .bottom(px(-2.0))
                             .left_0()
                             .w(relative(share))
                             .overflow_hidden()
-                            .text_color(lit_color)
-                            .child(div().whitespace_nowrap().child(shared)),
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top(px(1.4))
+                                    .left(px(0.5))
+                                    .whitespace_nowrap()
+                                    .text_color(glow_color)
+                                    .child(shared.clone()),
+                            )
+                            .child(
+                                div()
+                                    .relative()
+                                    .top(px(2.0))
+                                    .whitespace_nowrap()
+                                    .text_color(lit_color)
+                                    .child(shared),
+                            ),
                     )
                 })
         }))

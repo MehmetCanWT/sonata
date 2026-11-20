@@ -9,6 +9,7 @@ use crate::theme_tui::TuiTheme;
 use image::DynamicImage;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
+use ratatui_image::protocol::StatefulProtocol;
 use sonata_core::auth::ExtractedCookies;
 use sonata_core::hyprland;
 use sonata_core::lyrics::LyricsState;
@@ -128,6 +129,11 @@ pub enum AppEvent {
         image: DynamicImage,
         png_bytes: Vec<u8>,
     },
+    AnimatedArtworkReady {
+        play_seq: u64,
+        track_id: String,
+        frames: Vec<(StatefulProtocol, Vec<u8>)>,
+    },
     Mpv(MpvEvent),
     PlaylistCreated(Playlist),
     StatusMessage(String),
@@ -193,13 +199,22 @@ impl App {
             .clamp(0.50, 1.00)
     }
 
+    fn ensure_hyprland_window(&mut self) -> Option<String> {
+        if hyprland::is_hyprland() {
+            if let Some(fresh) = hyprland::find_terminal_window_address() {
+                self.hyprland_window = Some(fresh);
+            }
+        }
+        self.hyprland_window.clone()
+    }
+
     pub fn sync_appearance(&mut self) {
         let transparent = self.effective_transparent_bg();
         self.theme = TuiTheme::from_core(&self.base_theme.with_transparency(transparent));
         if let Color::Rgb(r, g, b) = self.theme.bg {
             self.picker.set_background_color([r, g, b, 255]);
         }
-        if let Some(addr) = self.hyprland_window.clone() {
+        if let Some(addr) = self.ensure_hyprland_window() {
             let opacity = if transparent {
                 self.effective_hyprland_opacity()
             } else {
@@ -211,9 +226,9 @@ impl App {
         }
     }
 
-    pub fn restore_hyprland_opacity(&self) {
-        if let Some(addr) = &self.hyprland_window {
-            hyprland::set_window_opacity_sync(addr, 1.0);
+    pub fn restore_hyprland_opacity(&mut self) {
+        if let Some(addr) = self.ensure_hyprland_window() {
+            hyprland::set_window_opacity_sync(&addr, 1.0);
         }
     }
 
@@ -233,6 +248,11 @@ impl App {
     }
 
     pub fn cycle_hyprland_opacity(&mut self, forward: bool) {
+        if !hyprland::is_hyprland() {
+            self.status_line =
+                "Hyprland Opacity is locked to Solid (100%) outside Hyprland".to_string();
+            return;
+        }
         const STEPS: &[f32] = &[0.50, 0.60, 0.70, 0.80, 0.90, 1.00];
         let cur = self.config.hyprland_opacity;
         let idx = STEPS
@@ -253,6 +273,7 @@ impl App {
         self.config.hyprland_opacity = STEPS[next];
         self.base_theme.hyprland_opacity = None;
         let _ = self.config.save();
+        let _ = self.ensure_hyprland_window();
         self.sync_appearance();
         self.status_line = format!(
             "Hyprland Window Opacity: {:.0}%",

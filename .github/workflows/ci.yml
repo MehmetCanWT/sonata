@@ -19,7 +19,7 @@ jobs:
       - name: Install native build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libdbus-1-dev libegl1-mesa-dev libfontconfig1-dev libwayland-dev libxkbcommon-dev pkg-config
+          sudo apt-get install -y libasound2-dev libdbus-1-dev libegl1-mesa-dev libfontconfig1-dev libwayland-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev pkg-config
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
