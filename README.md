@@ -64,7 +64,7 @@ Sonata is organized as a 4-crate Cargo workspace so clients share the same strea
 ## Screenshots (TUI)
 
 | Hyprland Glass Transparency | Hyprland Glass Desktop | Mini Mode (Art + Lyrics) | Compact Mini Player |
-|---|---|---|
+|---|---|---|---|
 | ![Hyprland Glass](assets/hyprland-glass.png) | ![Hyprland Glass Desktop](assets/hyprland-glass-desktop.png) | ![Mini Mode](assets/mini-lyrics.png) | ![Mini Player](assets/mini-player.png) |
 
 ## Shared Engine Highlights
