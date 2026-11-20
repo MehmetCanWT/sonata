@@ -4,6 +4,7 @@ members = [
     "crates/sonata-core",
     "crates/sonata-tui",
     "crates/sonata-desktop",
+    "crates/sonata-desktop-makepad",
     "crates/sonata-android",
 ]
 default-members = ["crates/sonata-tui", "crates/sonata-desktop"]

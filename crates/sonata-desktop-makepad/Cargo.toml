@@ -1,0 +1,9 @@
+[package]
+name = "sonata-desktop-makepad"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+makepad-widgets = { git = "https://github.com/makepad/makepad.git", rev = "506ec05105b9adb08d1d21f9879df181b5244ea7", version = "2.0.0", default-features = false }
