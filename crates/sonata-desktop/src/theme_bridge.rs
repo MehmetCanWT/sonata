@@ -53,6 +53,23 @@ fn mix_rgb(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
     )
 }
 
+fn readable_foreground(rgb: (u8, u8, u8)) -> (u8, u8, u8) {
+    let linear = |channel: u8| {
+        let channel = f32::from(channel) / 255.0;
+        if channel <= 0.04045 {
+            channel / 12.92
+        } else {
+            ((channel + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let luminance = 0.2126 * linear(rgb.0) + 0.7152 * linear(rgb.1) + 0.0722 * linear(rgb.2);
+    if luminance > 0.35 {
+        (18, 18, 24)
+    } else {
+        (255, 255, 255)
+    }
+}
+
 impl GlassPalette {
     pub fn from_theme(base: &Theme, transparent: bool, ambient_rgb: (u8, u8, u8)) -> Self {
         let base_bg = base.bg.to_rgb((0x1a, 0x1a, 0x24));
@@ -91,10 +108,10 @@ impl GlassPalette {
             muted: core_hsla(base.muted, 1.0, (0x7c, 0x82, 0x99)),
             accent: rgb_hsla(base_accent, 1.0),
             accent_soft: rgb_hsla(base_accent, 0.22),
-            accent_fg: rgb_hsla((18, 18, 24), 1.0),
+            accent_fg: rgb_hsla(readable_foreground(base_accent), 1.0),
             highlight_bg: rgb_hsla(base_hl, if transparent { 0.68 } else { 0.90 }),
             highlight_fg: core_hsla(base.highlight_fg, 1.0, (0xff, 0xff, 0xff)),
-            lyrics_active: rgb_hsla((255, 255, 255), 1.0),
+            lyrics_active: core_hsla(base.lyrics_active, 1.0, (255, 255, 255)),
             lyrics_mid: rgb_hsla(base_fg, 0.62),
             lyrics_inactive: core_hsla(base.lyrics_inactive, 0.44, (0x6c, 0x70, 0x86)),
             success: core_hsla(base.success, 1.0, (0xa6, 0xe3, 0xa1)),

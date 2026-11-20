@@ -369,6 +369,15 @@ mod tests {
     }
 
     #[test]
+    fn rejects_missing_and_unclosed_genius_lyrics_containers() {
+        assert_eq!(extract_genius_lyrics_from_html("<html></html>"), None);
+        assert_eq!(
+            extract_genius_lyrics_from_html(r#"<div data-lyrics-container="true"><div>unfinished"#),
+            None
+        );
+    }
+
+    #[test]
     fn rejects_mismatched_kugou_candidates() {
         use serde_json::json;
         let candidates = vec![

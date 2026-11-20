@@ -70,8 +70,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('S') => {
                     app.modal = ActiveModal::None;
                 }
-                KeyCode::Down | KeyCode::Char('j') => *sel = (*sel + 1) % 7,
-                KeyCode::Up | KeyCode::Char('k') => *sel = (*sel + 6) % 7,
+                KeyCode::Down | KeyCode::Char('j') => *sel = (*sel + 1) % 8,
+                KeyCode::Up | KeyCode::Char('k') => *sel = (*sel + 7) % 8,
                 KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter | KeyCode::Char(' ') => {
                     match *sel {
                         0 => app.cycle_provider_mode(true),
@@ -80,7 +80,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                         3 => app.toggle_transparent_bg(),
                         4 => app.cycle_hyprland_opacity(true),
                         5 => app.step_cache_limit(true),
-                        _ => app.cycle_theme(true),
+                        6 => app.cycle_theme(true),
+                        _ => {}
                     }
                 }
                 KeyCode::Left | KeyCode::Char('h') => match *sel {
@@ -90,7 +91,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                     3 => app.toggle_transparent_bg(),
                     4 => app.cycle_hyprland_opacity(false),
                     5 => app.step_cache_limit(false),
-                    _ => app.cycle_theme(false),
+                    6 => app.cycle_theme(false),
+                    _ => {}
                 },
                 _ => {}
             }
@@ -251,7 +253,7 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) {
                 app.apply_theme_by_index(next);
             }
             ActiveModal::Settings(sel) => {
-                *sel = ((*sel as isize + delta).rem_euclid(6)) as usize;
+                *sel = ((*sel as isize + delta).rem_euclid(8)) as usize;
             }
             ActiveModal::AddToPlaylist(sel) if writable_count > 0 => {
                 *sel = ((*sel as isize + delta).rem_euclid(writable_count as isize)) as usize;

@@ -74,7 +74,7 @@ pub fn render_home_page(
                                     .items_center()
                                     .gap_2()
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.open_sign_in_modal(cx);
+                                        this.navigate_to(crate::backend::NavTarget::Settings, cx);
                                     }))
                                     .child(ui_icon(IconName::LogIn, 14.0, p.accent_fg))
                                     .child(
@@ -293,6 +293,7 @@ fn render_home_card(
         HomeCardKind::Playlist => "Playlist",
         HomeCardKind::Song => "Song",
         HomeCardKind::Video => "Video",
+        HomeCardKind::Artist => "Artist",
     };
 
     div()
@@ -326,6 +327,12 @@ fn render_home_card(
                     thumbnail_url: card_clone.thumbnail_url.clone(),
                     editable: false,
                 });
+                cx.notify();
+            }
+            HomeCardKind::Artist => {
+                this.center_mode = super::CenterMode::Page;
+                this.backend
+                    .send(BackendCmd::OpenArtist(card_clone.id.clone()));
                 cx.notify();
             }
             HomeCardKind::Song | HomeCardKind::Video => {

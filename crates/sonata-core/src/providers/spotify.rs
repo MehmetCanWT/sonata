@@ -879,4 +879,17 @@ mod tests {
         assert_eq!(tracks[0].artist, "M83");
         assert_eq!(tracks[0].duration_secs, Some(243));
     }
+
+    #[test]
+    fn rejects_missing_malformed_and_incomplete_embed_data() {
+        assert!(parse_embed_playlist_html("<html></html>").is_err());
+        assert!(parse_embed_playlist_html(
+            r#"<script id="__NEXT_DATA__" type="application/json">{broken}</script>"#
+        )
+        .is_err());
+        assert!(parse_embed_playlist_html(
+            r#"<script id="__NEXT_DATA__" type="application/json">{}</script>"#
+        )
+        .is_err());
+    }
 }

@@ -182,6 +182,8 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    let _telemetry_guard = sonata_core::telemetry::init("desktop");
+
     let (win_tx, mut win_rx) = mpsc::unbounded_channel::<UiWindowCmd>();
     let backend = spawn_backend(win_tx.clone())?;
 

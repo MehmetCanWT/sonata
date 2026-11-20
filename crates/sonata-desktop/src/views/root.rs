@@ -1,7 +1,7 @@
 use super::{
-    cached_thumb_path, home, render_avatar, render_cover_art, render_icon_button,
-    render_progress_slider, render_track_row, render_volume_slider, search, settings, ui_icon,
-    CenterMode, FluentDivExt, SonataDesktopView,
+    artist, cached_thumb_path, fullscreen, home, render_avatar, render_cover_art,
+    render_icon_button, render_progress_slider, render_track_row, render_volume_slider, search,
+    settings, ui_icon, CenterMode, FluentDivExt, SonataDesktopView,
 };
 use crate::backend::{BackendCmd, NavTarget};
 use crate::theme_bridge::GlassPalette;
@@ -23,6 +23,10 @@ pub fn render_full_workspace(
     _window: &mut Window,
     cx: &mut Context<SonataDesktopView>,
 ) -> AnyElement {
+    if view.center_mode == CenterMode::Fullscreen {
+        return fullscreen::render_fullscreen_workspace(view, p, cx);
+    }
+
     div()
         .size_full()
         .bg(p.window_bg)
@@ -129,7 +133,7 @@ fn render_top_header(
             .gap(px(6.0))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(|this, _, _, cx| {
-                this.open_sign_in_modal(cx);
+                this.navigate_to(NavTarget::Settings, cx);
             }))
             .child(ui_icon(IconName::LogIn, 14.0, p.accent_fg))
             .child(
@@ -369,11 +373,11 @@ pub fn render_account_popover(
         ))
         .child(popover_menu_row(
             "pop-switch",
-            "Switch Browser...",
+            "Browser Settings",
             IconName::Globe,
             p.text,
             p,
-            |this, cx| this.open_sign_in_modal(cx),
+            |this, cx| this.navigate_to(NavTarget::Settings, cx),
             cx,
         ))
         .child(
@@ -563,7 +567,7 @@ fn render_sidebar(
                                 .justify_center()
                                 .gap_1()
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.open_sign_in_modal(cx);
+                                    this.navigate_to(NavTarget::Settings, cx);
                                 }))
                                 .child(ui_icon(IconName::LogIn, 12.0, p.accent))
                                 .child(
@@ -698,11 +702,13 @@ fn render_center_stage(
 ) -> AnyElement {
     let inner = match view.center_mode {
         CenterMode::Lyrics => render_lyrics_stage(view, p, cx),
+        CenterMode::Fullscreen => fullscreen::render_fullscreen(view, p, cx),
         CenterMode::Page => match &view.snapshot.active_nav {
             NavTarget::Home => home::render_home_page(view, p, cx),
             NavTarget::Search => search::render_search_page(view, p, cx),
             NavTarget::Queue => render_collection_stage(view, p, true, cx),
             NavTarget::Playlist(_) => render_collection_stage(view, p, false, cx),
+            NavTarget::Artist(_) => artist::render_artist_page(view, p, cx),
             NavTarget::Settings => settings::render_settings_page(view, p, cx),
         },
     };
@@ -1401,7 +1407,7 @@ fn render_player_bar(
                                 .id("pb-art-toggle")
                                 .cursor_pointer()
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.toggle_lyrics_view(cx);
+                                    this.toggle_fullscreen_view(cx);
                                 }))
                                 .child(render_cover_art(snap.art_path.as_ref(), 52.0, 10.0, p)),
                         )

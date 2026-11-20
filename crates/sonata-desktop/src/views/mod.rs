@@ -1,3 +1,5 @@
+pub mod artist;
+pub mod fullscreen;
 pub mod home;
 pub mod mini_player;
 pub mod modals;
@@ -22,11 +24,13 @@ use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CenterMode {
     Page,
     Lyrics,
+    Fullscreen,
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +63,7 @@ pub struct SonataDesktopView {
     pub volume_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     pub dragging_progress: bool,
     pub dragging_volume: bool,
+    pub fullscreen_last_activity: Instant,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -148,6 +153,7 @@ impl SonataDesktopView {
             volume_bounds: Rc::new(Cell::new(None)),
             dragging_progress: false,
             dragging_volume: false,
+            fullscreen_last_activity: Instant::now(),
             _subscriptions: subscriptions,
         }
     }
@@ -186,9 +192,34 @@ impl SonataDesktopView {
                 }
                 CenterMode::Lyrics
             }
-            CenterMode::Lyrics => CenterMode::Page,
+            CenterMode::Lyrics | CenterMode::Fullscreen => CenterMode::Page,
         };
         cx.notify();
+    }
+
+    pub fn toggle_fullscreen_view(&mut self, cx: &mut Context<Self>) {
+        self.account_menu_open = false;
+        self.show_queue = false;
+        self.center_mode = if self.center_mode == CenterMode::Fullscreen {
+            CenterMode::Page
+        } else {
+            self.fullscreen_last_activity = Instant::now();
+            CenterMode::Fullscreen
+        };
+        cx.notify();
+    }
+
+    pub fn note_fullscreen_activity(&mut self, cx: &mut Context<Self>) {
+        if self.center_mode == CenterMode::Fullscreen {
+            self.fullscreen_last_activity = Instant::now();
+            cx.notify();
+        }
+    }
+
+    pub fn fullscreen_controls_visible(&self) -> bool {
+        self.snapshot.config.reduce_motion
+            || self.snapshot.paused
+            || self.fullscreen_last_activity.elapsed() < Duration::from_secs(2)
     }
 
     pub fn toggle_mini_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -253,6 +284,8 @@ impl SonataDesktopView {
         let ctrl = ev.keystroke.modifiers.control;
         let key = ev.keystroke.key.as_str();
 
+        self.note_fullscreen_activity(cx);
+
         if key == "escape" {
             if !matches!(self.modal, DesktopModal::None) {
                 self.modal = DesktopModal::None;
@@ -267,6 +300,11 @@ impl SonataDesktopView {
             }
             if self.show_queue {
                 self.show_queue = false;
+                cx.notify();
+                return;
+            }
+            if self.center_mode == CenterMode::Fullscreen {
+                self.center_mode = CenterMode::Page;
                 cx.notify();
                 return;
             }
@@ -326,6 +364,7 @@ impl SonataDesktopView {
         }
 
         match key {
+            "f" => self.toggle_fullscreen_view(cx),
             "space" => self.backend.send(BackendCmd::TogglePause),
             "right" => self.backend.send(BackendCmd::SeekRelative(5.0)),
             "left" => self.backend.send(BackendCmd::SeekRelative(-5.0)),

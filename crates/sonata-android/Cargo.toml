@@ -7,3 +7,6 @@ description = "Reserved package for the future Sonata Android client"
 
 [lib]
 path = "src/lib.rs"
+
+[lints]
+workspace = true

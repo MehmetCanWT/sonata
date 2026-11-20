@@ -1,10 +1,15 @@
+pub mod coordinator;
 pub mod mpv;
+pub mod precache;
+pub mod tasks;
 
 use crate::config::EnhancerMode;
 use crate::providers::hifi::ResolvedStream;
 use crate::providers::Track;
 pub use mpv::{MpvController, MpvEvent};
+pub use precache::{NextTrackPrecache, NextTrackPrecacheState, PrecacheKey};
 use serde::{Deserialize, Serialize};
+pub use tasks::{PlaybackTask, PlaybackTaskSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]

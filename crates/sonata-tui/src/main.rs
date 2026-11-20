@@ -20,7 +20,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 #[cfg(unix)]
-fn redirect_tui_diagnostics() {
+fn redirect_tui_diagnostics() -> io::Result<()> {
     use std::fs::{self, OpenOptions};
     use std::os::fd::AsRawFd;
 
@@ -38,19 +38,23 @@ fn redirect_tui_diagnostics() {
     }
     let log_file = options
         .open(log_path)
-        .or_else(|_| OpenOptions::new().write(true).open("/dev/null"));
-    let Ok(log_file) = log_file else {
-        return;
-    };
+        .or_else(|_| OpenOptions::new().write(true).open("/dev/null"))?;
 
     // Keep async diagnostics out of the terminal's alternate screen.
-    unsafe {
-        libc::dup2(log_file.as_raw_fd(), libc::STDERR_FILENO);
+    // SAFETY: both descriptors are valid for this call. `dup2` duplicates the open
+    // file descriptor before `log_file` is dropped, and STDERR_FILENO is process-owned.
+    let result = unsafe { libc::dup2(log_file.as_raw_fd(), libc::STDERR_FILENO) };
+    if result == -1 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 
 #[cfg(not(unix))]
-fn redirect_tui_diagnostics() {}
+fn redirect_tui_diagnostics() -> io::Result<()> {
+    Ok(())
+}
 
 fn detect_picker() -> Picker {
     let mut picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
@@ -97,7 +101,11 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    redirect_tui_diagnostics();
+    let redirect_error = redirect_tui_diagnostics().err();
+    let _telemetry_guard = sonata_core::telemetry::init("tui");
+    if let Some(error) = redirect_error {
+        tracing::warn!(%error, "TUI diagnostic redirection failed");
+    }
     let config = AppConfig::load();
     // Query terminal graphics protocol and font metrics before entering alternate screen
     let picker = detect_picker();
@@ -123,7 +131,7 @@ async fn main() -> Result<()> {
     terminal.clear()?;
 
     let (app_tx, mut app_rx) = mpsc::unbounded_channel::<AppEvent>();
-    let (mpv_tx, mut mpv_rx) = mpsc::unbounded_channel();
+    let (mpv_tx, mut mpv_rx) = mpsc::channel(64);
 
     let mut app = App::new(config.clone(), picker, app_tx.clone());
 
@@ -217,6 +225,7 @@ async fn main() -> Result<()> {
     app.clear_now_playing();
     app.restore_hyprland_opacity();
     let _ = app.config.save();
+    app.shutdown_playback_tasks().await;
     if let Some(mpv) = app.mpv.take() {
         mpv.shutdown().await;
     }

@@ -23,6 +23,7 @@ pub struct YtAccountProfile {
 pub enum HomeCardKind {
     Playlist,
     Album,
+    Artist,
     Song,
     Video,
 }
@@ -42,6 +43,17 @@ pub struct HomeShelf {
     pub title: String,
     pub tracks: Vec<Track>,
     pub cards: Vec<HomeCard>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ArtistPage {
+    pub id: String,
+    pub name: String,
+    pub subtitle: String,
+    pub thumbnail_url: Option<String>,
+    pub popular_tracks: Vec<Track>,
+    pub releases: Vec<HomeCard>,
+    pub related_artists: Vec<HomeCard>,
 }
 
 pub fn upscale_thumbnail(url: &str) -> String {
@@ -291,6 +303,15 @@ impl YtMusicClient {
             }
             Ok(shelves)
         }
+    }
+
+    /// Fetch an artist only when YouTube Music supplied a concrete browse ID.
+    pub async fn fetch_artist_page(&self, browse_id: &str) -> Result<ArtistPage> {
+        let mut body = Self::base_context();
+        body["browseId"] = json!(browse_id);
+        let data = self.post("browse", body).await?;
+        parse_artist_page_json(browse_id, &data)
+            .ok_or_else(|| anyhow!("YouTube Music artist page contained no usable content"))
     }
 
     pub async fn fetch_native_lyrics(&self, video_id: &str) -> Option<String> {
@@ -853,6 +874,16 @@ fn parse_home_two_row(r: &Value) -> Option<HomeCard> {
                 track: None,
             });
         }
+        if browse_id.starts_with("UC") {
+            return Some(HomeCard {
+                kind: HomeCardKind::Artist,
+                id: browse_id.to_string(),
+                title,
+                subtitle,
+                thumbnail_url,
+                track: None,
+            });
+        }
         return None;
     }
 
@@ -894,6 +925,90 @@ fn parse_home_two_row(r: &Value) -> Option<HomeCard> {
     }
 
     None
+}
+
+pub fn parse_artist_page_json(browse_id: &str, val: &Value) -> Option<ArtistPage> {
+    let name = val
+        .pointer("/header/musicImmersiveHeaderRenderer/title")
+        .and_then(extract_runs_text)
+        .or_else(|| {
+            val.pointer("/header/musicVisualHeaderRenderer/title")
+                .and_then(extract_runs_text)
+        })
+        .or_else(|| find_first_runs_text(val, "title"))?;
+    let subtitle = val
+        .pointer("/header/musicImmersiveHeaderRenderer/description")
+        .and_then(extract_runs_text)
+        .or_else(|| {
+            val.pointer("/header/musicVisualHeaderRenderer/description")
+                .and_then(extract_runs_text)
+        })
+        .unwrap_or_default();
+    let thumbnail_url = find_header_thumbnail(val);
+    let mut popular_tracks = Vec::new();
+    collect_tracks(val, &mut popular_tracks);
+    popular_tracks.truncate(10);
+    let mut cards = Vec::new();
+    collect_artist_cards(val, &mut cards);
+    let mut releases = Vec::new();
+    let mut related_artists = Vec::new();
+    for card in cards {
+        match card.kind {
+            HomeCardKind::Album => releases.push(card),
+            HomeCardKind::Artist => related_artists.push(card),
+            _ => {}
+        }
+    }
+    releases.truncate(24);
+    related_artists.truncate(12);
+    Some(ArtistPage {
+        id: browse_id.to_string(),
+        name,
+        subtitle,
+        thumbnail_url,
+        popular_tracks,
+        releases,
+        related_artists,
+    })
+}
+
+fn collect_artist_cards(value: &Value, out: &mut Vec<HomeCard>) {
+    match value {
+        Value::Object(map) => {
+            if let Some(card) = map
+                .get("musicTwoRowItemRenderer")
+                .and_then(parse_home_two_row)
+            {
+                out.push(card);
+                return;
+            }
+            for child in map.values() {
+                collect_artist_cards(child, out);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_artist_cards(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn find_first_runs_text(value: &Value, key: &str) -> Option<String> {
+    match value {
+        Value::Object(map) => {
+            if let Some(text) = map.get(key).and_then(extract_runs_text) {
+                return Some(text);
+            }
+            map.values()
+                .find_map(|child| find_first_runs_text(child, key))
+        }
+        Value::Array(items) => items
+            .iter()
+            .find_map(|item| find_first_runs_text(item, key)),
+        _ => None,
+    }
 }
 
 fn extract_artist_from_subtitle(subtitle: &str) -> String {
@@ -1018,5 +1133,45 @@ mod tests {
         assert_eq!(shelves[1].tracks[0].id, "vid_999");
         assert_eq!(shelves[1].tracks[0].artist, "Artist X");
         assert_eq!(shelves[1].tracks[0].duration_secs, Some(200));
+    }
+
+    #[test]
+    fn artist_cards_and_pages_parse_without_guessing_artist_ids() {
+        let card = json!({
+            "title": { "runs": [{ "text": "Artist One" }] },
+            "subtitle": { "runs": [{ "text": "1.2M monthly listeners" }] },
+            "navigationEndpoint": { "browseEndpoint": { "browseId": "UCartist" } }
+        });
+        let parsed_card = parse_home_two_row(&card).expect("artist card");
+        assert_eq!(parsed_card.kind, HomeCardKind::Artist);
+        assert_eq!(parsed_card.id, "UCartist");
+
+        let page = json!({
+            "header": {
+                "musicImmersiveHeaderRenderer": {
+                    "title": { "runs": [{ "text": "Artist One" }] },
+                    "description": { "runs": [{ "text": "Official artist channel" }] }
+                }
+            },
+            "contents": [{
+                "musicResponsiveListItemRenderer": {
+                    "playlistItemData": { "videoId": "popular-1" },
+                    "flexColumns": [
+                        { "musicResponsiveListItemFlexColumnRenderer": { "text": { "runs": [{ "text": "Popular Song" }] } } },
+                        { "musicResponsiveListItemFlexColumnRenderer": { "text": { "runs": [{ "text": "Artist One" }, { "text": " • " }, { "text": "3:20" }] } } }
+                    ]
+                }
+            }, {
+                "musicTwoRowItemRenderer": {
+                    "title": { "runs": [{ "text": "Album One" }] },
+                    "subtitle": { "runs": [{ "text": "Album" }] },
+                    "navigationEndpoint": { "browseEndpoint": { "browseId": "MPREalbum" } }
+                }
+            }]
+        });
+        let artist = parse_artist_page_json("UCartist", &page).expect("artist page");
+        assert_eq!(artist.name, "Artist One");
+        assert_eq!(artist.popular_tracks[0].id, "popular-1");
+        assert_eq!(artist.releases[0].id, "MPREalbum");
     }
 }

@@ -266,6 +266,90 @@ impl Theme {
         }
     }
 
+    pub fn spotify_inspired_dark() -> Self {
+        Self {
+            name: "Spotify Inspired Dark".into(),
+            transparent_bg: None,
+            hyprland_opacity: None,
+            bg: RgbColor::Rgb(0x12, 0x12, 0x12),
+            surface: RgbColor::Rgb(0x18, 0x18, 0x18),
+            fg: RgbColor::Rgb(0xff, 0xff, 0xff),
+            muted: RgbColor::Rgb(0xb3, 0xb3, 0xb3),
+            accent: RgbColor::Rgb(0x1e, 0xd7, 0x60),
+            border: RgbColor::Rgb(0x30, 0x30, 0x30),
+            highlight_bg: RgbColor::Rgb(0x28, 0x28, 0x28),
+            highlight_fg: RgbColor::Rgb(0xff, 0xff, 0xff),
+            lyrics_active: RgbColor::Rgb(0x1e, 0xd7, 0x60),
+            lyrics_inactive: RgbColor::Rgb(0x72, 0x72, 0x72),
+            success: RgbColor::Rgb(0x1e, 0xd7, 0x60),
+            warning: RgbColor::Rgb(0xf9, 0xab, 0x00),
+            error: RgbColor::Rgb(0xff, 0x6b, 0x6b),
+        }
+    }
+
+    pub fn spotify_inspired_light() -> Self {
+        Self {
+            name: "Spotify Inspired Light".into(),
+            transparent_bg: Some(false),
+            hyprland_opacity: None,
+            bg: RgbColor::Rgb(0xf6, 0xf7, 0xf6),
+            surface: RgbColor::Rgb(0xff, 0xff, 0xff),
+            fg: RgbColor::Rgb(0x12, 0x12, 0x12),
+            muted: RgbColor::Rgb(0x5f, 0x63, 0x68),
+            accent: RgbColor::Rgb(0x13, 0x7d, 0x35),
+            border: RgbColor::Rgb(0xd8, 0xdd, 0xd9),
+            highlight_bg: RgbColor::Rgb(0xe4, 0xf3, 0xe9),
+            highlight_fg: RgbColor::Rgb(0x0e, 0x28, 0x17),
+            lyrics_active: RgbColor::Rgb(0x13, 0x7d, 0x35),
+            lyrics_inactive: RgbColor::Rgb(0x6b, 0x72, 0x6e),
+            success: RgbColor::Rgb(0x13, 0x7d, 0x35),
+            warning: RgbColor::Rgb(0x8a, 0x4b, 0x00),
+            error: RgbColor::Rgb(0xb3, 0x26, 0x1e),
+        }
+    }
+
+    pub fn youtube_music_inspired_dark() -> Self {
+        Self {
+            name: "YouTube Music Inspired Dark".into(),
+            transparent_bg: None,
+            hyprland_opacity: None,
+            bg: RgbColor::Rgb(0x0f, 0x0f, 0x0f),
+            surface: RgbColor::Rgb(0x18, 0x18, 0x18),
+            fg: RgbColor::Rgb(0xff, 0xff, 0xff),
+            muted: RgbColor::Rgb(0xaa, 0xaa, 0xaa),
+            accent: RgbColor::Rgb(0xff, 0x33, 0x55),
+            border: RgbColor::Rgb(0x30, 0x30, 0x30),
+            highlight_bg: RgbColor::Rgb(0x32, 0x18, 0x20),
+            highlight_fg: RgbColor::Rgb(0xff, 0xff, 0xff),
+            lyrics_active: RgbColor::Rgb(0xff, 0x4d, 0x6d),
+            lyrics_inactive: RgbColor::Rgb(0x77, 0x77, 0x77),
+            success: RgbColor::Rgb(0x3d, 0xdc, 0x84),
+            warning: RgbColor::Rgb(0xf9, 0xab, 0x00),
+            error: RgbColor::Rgb(0xff, 0x6b, 0x6b),
+        }
+    }
+
+    pub fn youtube_music_inspired_light() -> Self {
+        Self {
+            name: "YouTube Music Inspired Light".into(),
+            transparent_bg: Some(false),
+            hyprland_opacity: None,
+            bg: RgbColor::Rgb(0xf8, 0xf8, 0xf8),
+            surface: RgbColor::Rgb(0xff, 0xff, 0xff),
+            fg: RgbColor::Rgb(0x18, 0x18, 0x18),
+            muted: RgbColor::Rgb(0x60, 0x60, 0x60),
+            accent: RgbColor::Rgb(0xc0, 0x00, 0x2b),
+            border: RgbColor::Rgb(0xdd, 0xdd, 0xdd),
+            highlight_bg: RgbColor::Rgb(0xfb, 0xe8, 0xed),
+            highlight_fg: RgbColor::Rgb(0x3a, 0x07, 0x12),
+            lyrics_active: RgbColor::Rgb(0xc0, 0x00, 0x2b),
+            lyrics_inactive: RgbColor::Rgb(0x70, 0x70, 0x70),
+            success: RgbColor::Rgb(0x13, 0x7d, 0x35),
+            warning: RgbColor::Rgb(0x8a, 0x4b, 0x00),
+            error: RgbColor::Rgb(0xb3, 0x26, 0x1e),
+        }
+    }
+
     pub fn builtins() -> Vec<Self> {
         vec![
             Self::catppuccin_mocha(),
@@ -274,6 +358,10 @@ impl Theme {
             Self::gruvbox_dark(),
             Self::rose_pine(),
             Self::nord(),
+            Self::spotify_inspired_dark(),
+            Self::spotify_inspired_light(),
+            Self::youtube_music_inspired_dark(),
+            Self::youtube_music_inspired_light(),
         ]
     }
 
@@ -413,5 +501,17 @@ mod tests {
         assert_eq!(theme.bg, RgbColor::Reset);
         let applied = theme.with_transparency(true);
         assert_eq!(applied.surface, RgbColor::Reset);
+    }
+
+    #[test]
+    fn includes_brand_inspired_dark_and_light_themes() {
+        let names: Vec<_> = Theme::builtins()
+            .into_iter()
+            .map(|theme| theme.name)
+            .collect();
+        assert!(names.contains(&"Spotify Inspired Dark".to_string()));
+        assert!(names.contains(&"Spotify Inspired Light".to_string()));
+        assert!(names.contains(&"YouTube Music Inspired Dark".to_string()));
+        assert!(names.contains(&"YouTube Music Inspired Light".to_string()));
     }
 }

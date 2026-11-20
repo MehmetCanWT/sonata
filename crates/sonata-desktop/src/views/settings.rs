@@ -403,6 +403,23 @@ pub fn render_settings_page(
             opacity_ctrl,
             p,
         ))
+        .child(setting_row(
+            "Reduce Motion",
+            "Disable fullscreen motion and automatic control hiding",
+            render_pill_button(
+                "set-reduce-motion",
+                if cfg.reduce_motion {
+                    "Enabled".to_string()
+                } else {
+                    "Disabled".to_string()
+                },
+                cfg.reduce_motion,
+                p,
+                |this, _, _| this.backend.send(BackendCmd::ToggleReduceMotion),
+                cx,
+            ),
+            p,
+        ))
         .child(
             div()
                 .pt_2()

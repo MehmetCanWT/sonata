@@ -1,21 +1,23 @@
 use crate::config::AppConfig;
 use crate::providers::{Playlist, Track};
 use rusqlite::{params, Connection};
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+mod media;
+
+pub use media::{
+    enforce_active_media_cache_limit_async, enforce_media_cache_limit,
+    prune_active_media_cache_async, prune_media_cache, start_media_cache_maintenance,
+};
 
 const CACHE_SCHEMA_VERSION: i64 = 2;
 const MAX_CACHE_DB_PAGES: i64 = 32_768;
 const MAX_CACHED_STREAMS: i64 = 2_048;
 const MAX_CACHED_PLAYLISTS: i64 = 500;
 const MAX_PLAYLIST_JSON_BYTES: usize = 16 * 1024 * 1024;
-
-static MEDIA_CACHE_PRUNE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-static LAST_MEDIA_CACHE_PRUNE: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
-const MEDIA_CACHE_SWEEP_INTERVAL: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone, Default)]
 pub struct TrackEnrichment {
@@ -47,7 +49,7 @@ impl CacheDb {
     pub fn open_at(path: &PathBuf) -> Option<Self> {
         if let Some(parent) = path.parent() {
             if let Err(error) = std::fs::create_dir_all(parent) {
-                eprintln!(
+                tracing::warn!(
                     "[sonata:cache] create-directory failed path={} error={error}",
                     parent.display()
                 );
@@ -57,7 +59,7 @@ impl CacheDb {
         let conn = match Connection::open(path) {
             Ok(conn) => conn,
             Err(error) => {
-                eprintln!(
+                tracing::warn!(
                     "[sonata:cache] open failed path={} error={error}",
                     path.display()
                 );
@@ -66,18 +68,18 @@ impl CacheDb {
         };
         let _ = conn.busy_timeout(Duration::from_secs(5));
         if let Err(error) = conn.pragma_update(None, "max_page_count", MAX_CACHE_DB_PAGES) {
-            eprintln!("[sonata:cache] database-size-limit failed error={error}");
+            tracing::warn!("[sonata:cache] database-size-limit failed error={error}");
         }
         let schema_version: i64 =
             match conn.pragma_query_value(None, "user_version", |row| row.get(0)) {
                 Ok(version) => version,
                 Err(error) => {
-                    eprintln!("[sonata:cache] schema-version-read failed error={error}");
+                    tracing::warn!("[sonata:cache] schema-version-read failed error={error}");
                     return None;
                 }
             };
         if schema_version > CACHE_SCHEMA_VERSION {
-            eprintln!(
+            tracing::warn!(
                 "[sonata:cache] schema-too-new found={schema_version} supported={CACHE_SCHEMA_VERSION} path={}",
                 path.display()
             );
@@ -126,7 +128,7 @@ impl CacheDb {
              PRAGMA user_version = 2;
              COMMIT;",
         ) {
-            eprintln!(
+            tracing::warn!(
                 "[sonata:cache] schema-initialize failed path={} error={error}",
                 path.display()
             );
@@ -137,13 +139,13 @@ impl CacheDb {
             "DELETE FROM stream_cache WHERE expires_at <= ?1",
             params![now],
         ) {
-            eprintln!("[sonata:cache] stream-expiry-cleanup failed error={error}");
+            tracing::warn!("[sonata:cache] stream-expiry-cleanup failed error={error}");
         }
         if let Err(error) = conn.execute(
             "DELETE FROM stream_cache WHERE lower(url) LIKE '%googlevideo.com%'",
             [],
         ) {
-            eprintln!("[sonata:cache] volatile-stream-cleanup failed error={error}");
+            tracing::warn!("[sonata:cache] volatile-stream-cleanup failed error={error}");
         }
         if let Err(error) = conn.execute(
             "UPDATE track_enrichment SET cover_url = NULL, cover_source = 'none'
@@ -151,7 +153,7 @@ impl CacheDb {
                 OR lower(COALESCE(cover_url, '')) LIKE '%jiosaavn%'",
             [],
         ) {
-            eprintln!("[sonata:cache] legacy-cover-invalidation failed error={error}");
+            tracing::warn!("[sonata:cache] legacy-cover-invalidation failed error={error}");
         }
         invalidate_legacy_covers(&conn);
         Some(Self {
@@ -175,7 +177,7 @@ impl CacheDb {
 
     fn clear_cached_records(conn: &Mutex<Connection>) {
         let Ok(conn) = conn.lock() else {
-            eprintln!("[sonata:cache] clear skipped reason=database-lock-poisoned");
+            tracing::warn!("[sonata:cache] clear skipped reason=database-lock-poisoned");
             return;
         };
         if let Err(error) = conn.execute_batch(
@@ -188,7 +190,7 @@ impl CacheDb {
              PRAGMA wal_checkpoint(TRUNCATE);
              VACUUM;",
         ) {
-            eprintln!("[sonata:cache] clear failed error={error}");
+            tracing::warn!("[sonata:cache] clear failed error={error}");
         }
     }
 
@@ -198,7 +200,7 @@ impl CacheDb {
                 "DELETE FROM stream_cache WHERE cache_key IN (?1, ?2)",
                 params![format!("yt:{track_id}"), format!("hifi:{track_id}")],
             ) {
-                eprintln!("[sonata:cache] stream-invalidate failed error={error}");
+                tracing::warn!("[sonata:cache] stream-invalidate failed error={error}");
             }
         }
     }
@@ -239,7 +241,7 @@ impl CacheDb {
                  ON CONFLICT(track_id) DO UPDATE SET cover_url = excluded.cover_url, cover_source = excluded.cover_source",
                 params![track_id, url, source],
             ) {
-                eprintln!("[sonata:cache] cover-write failed track_id={track_id} error={error}");
+                tracing::warn!("[sonata:cache] cover-write failed track_id={track_id} error={error}");
             }
         }
     }
@@ -264,7 +266,7 @@ impl CacheDb {
                      updated_at = excluded.updated_at",
                 params![track_id, synced, plain, status, updated_at],
             ) {
-                eprintln!("[sonata:cache] lyrics-write failed track_id={track_id} error={error}");
+                tracing::warn!("[sonata:cache] lyrics-write failed track_id={track_id} error={error}");
             }
         }
     }
@@ -280,7 +282,9 @@ impl CacheDb {
                  ON CONFLICT(track_id) DO UPDATE SET average_bitrate = excluded.average_bitrate",
                 params![track_id, bitrate],
             ) {
-                eprintln!("[sonata:cache] bitrate-write failed track_id={track_id} error={error}");
+                tracing::warn!(
+                    "[sonata:cache] bitrate-write failed track_id={track_id} error={error}"
+                );
             }
         }
     }
@@ -326,13 +330,13 @@ impl CacheDb {
                  ON CONFLICT(cache_key) DO UPDATE SET url = excluded.url, badge = excluded.badge, expires_at = excluded.expires_at",
                 params![key, url, badge, expires_at],
             ) {
-                eprintln!("[sonata:cache] stream-write failed error={error}");
+                tracing::warn!("[sonata:cache] stream-write failed error={error}");
             } else if let Err(error) = guard.execute(
                 "DELETE FROM stream_cache WHERE cache_key IN
                  (SELECT cache_key FROM stream_cache ORDER BY expires_at DESC LIMIT -1 OFFSET ?1)",
                 params![MAX_CACHED_STREAMS],
             ) {
-                eprintln!("[sonata:cache] stream-prune failed error={error}");
+                tracing::warn!("[sonata:cache] stream-prune failed error={error}");
             }
         }
     }
@@ -355,7 +359,7 @@ impl CacheDb {
         let tracks: Vec<Track> = match serde_json::from_str(&json) {
             Ok(tracks) => tracks,
             Err(error) => {
-                eprintln!(
+                tracing::warn!(
                     "[sonata:cache] playlist-discarded key={key} reason=invalid-json error={error}"
                 );
                 if let Ok(conn) = self.conn.lock() {
@@ -379,7 +383,7 @@ impl CacheDb {
             return;
         };
         if json.len() > MAX_PLAYLIST_JSON_BYTES {
-            eprintln!("[sonata:cache] playlist-write skipped key={key} reason=cache-entry-too-large bytes={}", json.len());
+            tracing::warn!("[sonata:cache] playlist-write skipped key={key} reason=cache-entry-too-large bytes={}", json.len());
             return;
         }
         let now = now_secs() as i64;
@@ -389,13 +393,13 @@ impl CacheDb {
                  ON CONFLICT(playlist_key) DO UPDATE SET name = excluded.name, tracks_json = excluded.tracks_json, updated_at = excluded.updated_at",
                 params![key, name, json, now],
             ) {
-                eprintln!("[sonata:cache] playlist-write failed key={key} error={error}");
+                tracing::warn!("[sonata:cache] playlist-write failed key={key} error={error}");
             } else if let Err(error) = guard.execute(
                 "DELETE FROM playlist_cache WHERE playlist_key IN
                  (SELECT playlist_key FROM playlist_cache ORDER BY updated_at DESC LIMIT -1 OFFSET ?1)",
                 params![MAX_CACHED_PLAYLISTS],
             ) {
-                eprintln!("[sonata:cache] playlist-prune failed error={error}");
+                tracing::warn!("[sonata:cache] playlist-prune failed error={error}");
             }
         }
     }
@@ -410,7 +414,7 @@ impl CacheDb {
                 None => guard.execute("DELETE FROM playlist_cache", []),
             };
             if let Err(error) = result {
-                eprintln!("[sonata:cache] playlist-invalidate failed error={error}");
+                tracing::warn!("[sonata:cache] playlist-invalidate failed error={error}");
             }
         }
     }
@@ -430,7 +434,7 @@ impl CacheDb {
         match serde_json::from_str(&json) {
             Ok(playlists) => Some(playlists),
             Err(error) => {
-                eprintln!(
+                tracing::warn!(
                     "[sonata:cache] library-discarded key={key} reason=invalid-json error={error}"
                 );
                 let _ = guard.execute(
@@ -450,7 +454,7 @@ impl CacheDb {
             return;
         };
         if json.len() > MAX_PLAYLIST_JSON_BYTES {
-            eprintln!("[sonata:cache] library-write skipped key={key} reason=cache-entry-too-large bytes={}", json.len());
+            tracing::warn!("[sonata:cache] library-write skipped key={key} reason=cache-entry-too-large bytes={}", json.len());
             return;
         }
         let now = now_secs() as i64;
@@ -460,7 +464,7 @@ impl CacheDb {
                  ON CONFLICT(library_key) DO UPDATE SET playlists_json = excluded.playlists_json, updated_at = excluded.updated_at",
                 params![key, json, now],
             ) {
-                eprintln!("[sonata:cache] library-write failed key={key} error={error}");
+                tracing::warn!("[sonata:cache] library-write failed key={key} error={error}");
             }
         }
     }
@@ -547,181 +551,6 @@ fn invalidate_legacy_covers(conn: &Connection) {
 fn is_legacy_cover_url(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
     lower.contains("saavncdn") || lower.contains("jiosaavn")
-}
-
-struct MediaCacheEntry {
-    paths: Vec<PathBuf>,
-    bytes: u64,
-    last_used: SystemTime,
-}
-
-/// Keep shared artwork, audio, and lyric files under the configured byte budget.
-/// Metadata remains in the bounded SQLite database; disabling cache removes all media files.
-pub fn prune_media_cache(limit_bytes: u64) -> u64 {
-    prune_media_cache_inner(limit_bytes, false)
-}
-
-/// Enforce a newly selected limit immediately, bypassing the normal sweep interval.
-pub fn enforce_media_cache_limit(limit_bytes: u64) -> u64 {
-    prune_media_cache_inner(limit_bytes, true)
-}
-
-fn prune_media_cache_inner(limit_bytes: u64, force: bool) -> u64 {
-    let lock = MEDIA_CACHE_PRUNE_LOCK.get_or_init(|| Mutex::new(()));
-    let Ok(_guard) = lock.lock() else {
-        eprintln!("[sonata:cache] prune skipped reason=cache-lock-poisoned");
-        return 0;
-    };
-    let last_sweep = LAST_MEDIA_CACHE_PRUNE.get_or_init(|| Mutex::new(None));
-    let Ok(mut last_sweep) = last_sweep.lock() else {
-        eprintln!("[sonata:cache] prune skipped reason=sweep-clock-poisoned");
-        return 0;
-    };
-    if !force
-        && limit_bytes > 0
-        && last_sweep.is_some_and(|last| last.elapsed() < MEDIA_CACHE_SWEEP_INTERVAL)
-    {
-        return 0;
-    }
-    *last_sweep = Some(Instant::now());
-
-    let mut grouped: HashMap<(String, String), MediaCacheEntry> = HashMap::new();
-    for (kind, dir) in [
-        ("audio", AppConfig::audio_cache_dir()),
-        ("art", AppConfig::art_cache_dir()),
-        ("lyrics", AppConfig::lyrics_cache_dir()),
-    ] {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Ok(metadata) = std::fs::symlink_metadata(&path) else {
-                continue;
-            };
-            if !metadata.file_type().is_file() {
-                continue;
-            }
-            let extension = path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-
-            if extension == "tmp" || extension == "part" {
-                let age = SystemTime::now()
-                    .duration_since(metadata.modified().unwrap_or(UNIX_EPOCH))
-                    .unwrap_or_default();
-                if limit_bytes == 0 || age >= Duration::from_secs(60 * 60) {
-                    let _ = std::fs::remove_file(path);
-                }
-                continue;
-            }
-
-            let group = match (kind, extension.as_str()) {
-                ("audio", "audio") => path.file_stem().and_then(|name| name.to_str()),
-                ("art", "png") => path.file_name().and_then(|name| name.to_str()),
-                ("lyrics", "lrc" | "txt") => path.file_stem().and_then(|name| name.to_str()),
-                ("audio", "badge") => {
-                    if !path.with_extension("audio").exists() {
-                        let _ = std::fs::remove_file(path);
-                    }
-                    continue;
-                }
-                _ => None,
-            };
-            let Some(group) = group else {
-                continue;
-            };
-
-            let key = (kind.to_string(), group.to_string());
-            let cache_entry = grouped.entry(key).or_insert_with(|| MediaCacheEntry {
-                paths: Vec::new(),
-                bytes: 0,
-                last_used: metadata
-                    .accessed()
-                    .or_else(|_| metadata.modified())
-                    .unwrap_or(UNIX_EPOCH),
-            });
-            cache_entry.bytes = cache_entry.bytes.saturating_add(metadata.len());
-            cache_entry.last_used = cache_entry.last_used.min(
-                metadata
-                    .accessed()
-                    .or_else(|_| metadata.modified())
-                    .unwrap_or(UNIX_EPOCH),
-            );
-            cache_entry.paths.push(path.clone());
-
-            if kind == "audio" {
-                let badge_path = path.with_extension("badge");
-                if let Ok(badge_metadata) = std::fs::symlink_metadata(&badge_path) {
-                    if badge_metadata.file_type().is_file() {
-                        cache_entry.bytes = cache_entry.bytes.saturating_add(badge_metadata.len());
-                        cache_entry.paths.push(badge_path);
-                    }
-                }
-            }
-        }
-    }
-
-    let mut entries: Vec<_> = grouped.into_values().collect();
-    let mut remaining = entries
-        .iter()
-        .fold(0_u64, |total, entry| total.saturating_add(entry.bytes));
-    let original = remaining;
-    if remaining <= limit_bytes {
-        return 0;
-    }
-
-    entries.sort_by_key(|entry| entry.last_used);
-    let mut removed = 0_u64;
-    for entry in entries {
-        if remaining <= limit_bytes {
-            break;
-        }
-        for path in entry.paths {
-            if let Ok(metadata) = std::fs::symlink_metadata(&path) {
-                if std::fs::remove_file(&path).is_ok() {
-                    let size = metadata.len();
-                    removed = removed.saturating_add(size);
-                    remaining = remaining.saturating_sub(size);
-                }
-            }
-        }
-    }
-
-    if removed > 0 {
-        eprintln!(
-            "[sonata:cache] media-pruned bytes_before={original} bytes_after={remaining} limit_bytes={limit_bytes} bytes_removed={removed}"
-        );
-    }
-    removed
-}
-
-/// Run filesystem pruning away from UI and async executor threads.
-pub async fn prune_active_media_cache_async() -> u64 {
-    tokio::task::spawn_blocking(|| prune_media_cache(AppConfig::active_cache_limit_bytes()))
-        .await
-        .unwrap_or_default()
-}
-
-/// Apply the latest saved limit away from the async executor.
-pub async fn enforce_active_media_cache_limit_async() -> u64 {
-    tokio::task::spawn_blocking(|| enforce_media_cache_limit(AppConfig::active_cache_limit_bytes()))
-        .await
-        .unwrap_or_default()
-}
-
-/// Periodically reconcile shared media files with the active quota.
-pub fn start_media_cache_maintenance() {
-    tokio::spawn(async {
-        let mut sweep = tokio::time::interval(Duration::from_secs(60));
-        sweep.tick().await;
-        loop {
-            sweep.tick().await;
-            enforce_active_media_cache_limit_async().await;
-        }
-    });
 }
 
 fn now_secs() -> u64 {

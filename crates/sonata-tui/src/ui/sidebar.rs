@@ -39,9 +39,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         })
         .collect();
 
-    let title = format!(" Library ({}) ", app.browser_label);
     let block = Block::default()
-        .title(title)
+        .title(" Library ")
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)

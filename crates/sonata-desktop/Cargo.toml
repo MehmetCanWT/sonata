@@ -19,3 +19,7 @@ mpris-server.workspace = true
 reqwest.workspace = true
 sonata-core = { path = "../sonata-core" }
 tokio.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

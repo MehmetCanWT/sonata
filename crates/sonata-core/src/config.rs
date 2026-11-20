@@ -114,6 +114,7 @@ pub struct AppConfig {
     /// Maximum retained media cache size in GiB. Zero disables persistent caching.
     pub cache_limit_gb: u8,
     pub transparent_bg: bool,
+    pub reduce_motion: bool,
     pub hyprland_opacity: f32,
     pub left_pane_pct: u16,
     pub right_pane_pct: u16,
@@ -136,6 +137,7 @@ impl Default for AppConfig {
             hifi_substitution: true,
             cache_limit_gb: DEFAULT_CACHE_LIMIT_GB,
             transparent_bg: true,
+            reduce_motion: false,
             hyprland_opacity: 0.90,
             left_pane_pct: 32,
             right_pane_pct: 22,

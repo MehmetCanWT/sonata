@@ -209,7 +209,13 @@ fn render_create_playlist(frame: &mut Frame<'_>, area: Rect, app: &App, input: &
 }
 
 fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize) {
-    let popup = centered_rect(64, 14, area);
+    let max_width = area.width.saturating_sub(4).clamp(1, 78);
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(max_width) / 2,
+        y: area.y + area.height.saturating_sub(15.min(area.height)) / 2,
+        width: max_width,
+        height: 15.min(area.height),
+    };
     frame.render_widget(Clear, popup);
 
     let transparent_label = if app.effective_transparent_bg() {
@@ -230,6 +236,7 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
         (
             "Music Providers",
             app.config.provider_mode.label().to_string(),
+            true,
         ),
         (
             "YouTube Music Quality Upgrade",
@@ -238,58 +245,85 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
             } else {
                 "Disabled".to_string()
             },
+            true,
         ),
         (
             "Audio Enhancer DSP",
             app.playback.enhancer.label().to_string(),
+            true,
         ),
-        ("Transparent TUI Bg", transparent_label.to_string()),
-        ("Hyprland Opacity", opacity_label),
+        ("Transparent TUI Bg", transparent_label.to_string(), true),
+        ("Hyprland Opacity", opacity_label, true),
         (
             "Media Cache Limit",
             AppConfig::cache_limit_label(app.config.cache_limit_gb),
+            true,
         ),
-        ("Color Theme", app.base_theme.name.clone()),
+        ("Color Theme", app.base_theme.name.clone(), true),
+        ("Browser Session", app.browser_label.clone(), false),
     ];
+    let block = Block::default()
+        .title(" Settings (←/→: Change · Esc: Close) ")
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(app.theme.accent))
+        .style(Style::default().bg(app.theme.surface).fg(app.theme.fg));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
 
-    let items: Vec<ListItem> = rows
-        .iter()
-        .enumerate()
-        .map(|(i, (label, val))| {
-            let prefix = if i == selected { " ▶ " } else { "   " };
-            ListItem::new(Line::from(vec![
-                Span::styled(prefix, Style::default().fg(app.theme.accent)),
-                Span::styled(format!("{label:<22}"), Style::default().fg(app.theme.fg)),
-                Span::styled(
-                    format!("◀  {val}  ▶"),
-                    Style::default()
-                        .fg(app.theme.accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]))
-        })
-        .collect();
-
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .title(" Settings (←/→/Enter: Change · Esc: Close) ")
-                .title_alignment(Alignment::Center)
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(app.theme.accent))
-                .style(Style::default().bg(app.theme.surface).fg(app.theme.fg)),
-        )
-        .highlight_style(
-            Style::default()
-                .bg(app.theme.highlight_bg)
-                .fg(app.theme.highlight_fg)
-                .add_modifier(Modifier::BOLD),
+    let row_constraints = vec![Constraint::Length(1); rows.len()];
+    let row_areas = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(row_constraints)
+        .split(inner);
+    for (index, ((label, value, adjustable), row)) in rows.iter().zip(row_areas.iter()).enumerate()
+    {
+        let selected_style = if index == selected {
+            Style::default().bg(app.theme.highlight_bg)
+        } else {
+            Style::default().bg(app.theme.surface)
+        };
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Length(25.min(row.width.saturating_sub(12))),
+                Constraint::Length(3),
+                Constraint::Min(6),
+                Constraint::Length(3),
+            ])
+            .split(*row);
+        let marker = if index == selected { "▶" } else { " " };
+        frame.render_widget(
+            Paragraph::new(marker).style(selected_style.fg(app.theme.accent)),
+            cols[0],
         );
-
-    let mut state = ListState::default();
-    state.select(Some(selected));
-    frame.render_stateful_widget(list, popup, &mut state);
+        frame.render_widget(
+            Paragraph::new(*label).style(selected_style.fg(app.theme.fg)),
+            cols[1],
+        );
+        frame.render_widget(
+            Paragraph::new(if *adjustable { "◀" } else { " " })
+                .style(selected_style.fg(app.theme.accent)),
+            cols[2],
+        );
+        frame.render_widget(
+            Paragraph::new(value.as_str())
+                .style(selected_style.fg(if *adjustable {
+                    app.theme.accent
+                } else {
+                    app.theme.muted
+                }))
+                .wrap(Wrap { trim: true }),
+            cols[3],
+        );
+        frame.render_widget(
+            Paragraph::new(if *adjustable { "▶" } else { " " })
+                .style(selected_style.fg(app.theme.accent)),
+            cols[4],
+        );
+    }
 }
 
 fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {

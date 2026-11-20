@@ -15,7 +15,11 @@ use sonata_core::config::{AppConfig, ProviderMode};
 use sonata_core::hyprland;
 use sonata_core::lyrics::{active_line_index, lrclib, LyricsState};
 use sonata_core::media;
-use sonata_core::player::{MpvController, MpvEvent, PlaybackState};
+use sonata_core::player::coordinator::{PlaybackCommand, PlaybackCoordinator, PlaybackTransition};
+use sonata_core::player::{
+    MpvController, MpvEvent, NextTrackPrecache, PlaybackState, PlaybackTask, PlaybackTaskSet,
+    PrecacheKey,
+};
 use sonata_core::providers::hifi::{ResolvedStream, StreamResolver};
 use sonata_core::providers::spotify::{extract_playlist_id, SpotifyClient};
 use sonata_core::providers::ytmusic::YtMusicClient;
@@ -201,15 +205,17 @@ pub struct App {
     pub tracks_req_id: u64,
     pub play_seq: u64,
     pub retried_play_seq: u64,
-    pub active_stream_task: Option<tokio::task::AbortHandle>,
-    pub active_upgrade_task: Option<tokio::task::AbortHandle>,
-    pub next_prefetch_task: Option<(String, tokio::task::JoinHandle<Option<ResolvedStream>>)>,
+    pub playback_tasks: PlaybackTaskSet,
+    pub next_precache: NextTrackPrecache,
+    pub next_prefetch_task: Option<(PrecacheKey, PlaybackTask<Option<ResolvedStream>>)>,
+    pub adopted_prefetch_task: Option<(String, PlaybackTask<Option<ResolvedStream>>)>,
     pub pending_auto_advance: Option<(u64, String)>,
     pub awaiting_playback_start: bool,
     pub upgrade_started_play_seq: Option<u64>,
     pub cover_started_play_seq: Option<u64>,
     pub config_dirty: bool,
     pub last_exported_state: Option<ExportFingerprint>,
+    pub play_requested_at: Option<Instant>,
 }
 
 impl App {
@@ -307,15 +313,17 @@ impl App {
             tracks_req_id: 0,
             play_seq: 0,
             retried_play_seq: 0,
-            active_stream_task: None,
-            active_upgrade_task: None,
+            playback_tasks: PlaybackTaskSet::default(),
+            next_precache: NextTrackPrecache::default(),
             next_prefetch_task: None,
+            adopted_prefetch_task: None,
             pending_auto_advance: None,
             awaiting_playback_start: false,
             upgrade_started_play_seq: None,
             cover_started_play_seq: None,
             config_dirty: false,
             last_exported_state: None,
+            play_requested_at: None,
         };
         app.rebuild_sidebar();
         app.sync_appearance();
@@ -457,7 +465,20 @@ impl App {
                 }
                 let current_track = self.playback.current_track().cloned();
                 if let Some(track) = current_track.filter(|t| t.id == track_id) {
-                    self.active_stream_task = None;
+                    tracing::info!(
+                        event = "stream_ready",
+                        client = "tui",
+                        track_id = %track.id,
+                        title = %track.title,
+                        artist = %track.artist,
+                        provider = ?track.source,
+                        play_seq,
+                        attempt = if self.retried_play_seq == play_seq { "retry" } else { "initial" },
+                        transport = if stream.url.starts_with("http") { "remote" } else { "local" },
+                        quality = %stream.badge,
+                        resolve_ms = self.play_requested_at.map_or(0, |at| at.elapsed().as_millis()),
+                        "stream resolved"
+                    );
                     self.playback.loading_track = false;
                     self.playback.paused = true;
                     self.awaiting_playback_start = true;
@@ -478,7 +499,6 @@ impl App {
                             mpv.load_stream(&stream);
                         }
                     }
-                    self.prefetch_next();
                 }
             }
             AppEvent::StreamUpgrade {
@@ -497,13 +517,20 @@ impl App {
                     if !self.playback.set_upgraded_stream(stream.clone()) {
                         return;
                     }
-                    self.active_upgrade_task = None;
                     let was_paused = self.playback.paused;
                     let pos = self.interpolated_position();
                     self.pos_anchor = Some((pos, Instant::now()));
                     self.playback.position_secs = pos;
                     self.playback.stream_badge = stream.badge.clone();
-                    self.status_line = format!("Upgraded audio quality: {}", stream.badge);
+                    tracing::info!(
+                        event = "quality_upgraded",
+                        client = "tui",
+                        track_id = %track_id,
+                        play_seq,
+                        quality = %stream.badge,
+                        resume_secs = pos,
+                        "audio quality upgraded"
+                    );
                     if let Some(mpv) = &self.mpv {
                         mpv.load_stream_at(&stream, pos);
                         mpv.set_paused(was_paused);
@@ -518,11 +545,22 @@ impl App {
                 if play_seq != self.play_seq {
                     return;
                 }
-                if self
+                if let Some(track) = self
                     .playback
                     .current_track()
-                    .is_some_and(|t| t.id == track_id)
+                    .filter(|track| track.id == track_id)
                 {
+                    tracing::error!(
+                        event = "resolve_failed",
+                        client = "tui",
+                        track_id = %track.id,
+                        title = %track.title,
+                        artist = %track.artist,
+                        provider = ?track.source,
+                        play_seq,
+                        error = %error,
+                        "stream resolution failed"
+                    );
                     self.playback.paused = true;
                     self.pos_anchor = None;
                     self.playback.loading_track = false;
@@ -670,8 +708,20 @@ impl App {
                     self.pos_anchor = Some((self.playback.position_secs, Instant::now()));
                     if was_starting {
                         if let Some(track) = self.playback.current_track() {
-                            self.status_line =
-                                format!("Playing: {} — {}", track.title, track.artist);
+                            tracing::info!(
+                                event = "playing",
+                                client = "tui",
+                                track_id = %track.id,
+                                title = %track.title,
+                                artist = %track.artist,
+                                provider = ?track.source,
+                                play_seq = self.play_seq,
+                                quality = %self.playback.stream_badge,
+                                first_audio_ms = self.play_requested_at.take().map_or(0, |at| at.elapsed().as_millis()),
+                                pending_tasks = self.playback_tasks.pending_count(),
+                                "playback started"
+                            );
+                            self.status_line.clear();
                         }
                     }
                     self.start_hifi_upgrade();
@@ -679,6 +729,17 @@ impl App {
                 }
                 MpvEvent::TrackEnded => {
                     if !self.playback.loading_track {
+                        if let Some(track) = self.playback.current_track() {
+                            tracing::info!(
+                                event = "track_ended",
+                                client = "tui",
+                                track_id = %track.id,
+                                play_seq = self.play_seq,
+                                position_secs = self.playback.position_secs,
+                                duration_secs = self.playback.duration_secs,
+                                "track ended"
+                            );
+                        }
                         if let Some(next_idx) = self.playback.peek_next_index() {
                             self.prepare_next_before_advance(next_idx);
                         } else {
@@ -692,13 +753,36 @@ impl App {
                         (file.as_deref(), self.playback.active_stream.as_ref())
                     {
                         if active.url != file {
-                            eprintln!("[sonata:retry] ignoring stale mpv error for another file");
+                            tracing::debug!(
+                                event = "stale_playback_error",
+                                client = "tui",
+                                play_seq = self.play_seq,
+                                "ignored playback error for stale stream"
+                            );
                             return;
                         }
                     }
                     if !self.playback.loading_track {
+                        tracing::warn!(
+                            event = "playback_error",
+                            client = "tui",
+                            track_id = self.playback.current_track().map(|track| track.id.as_str()).unwrap_or("-"),
+                            play_seq = self.play_seq,
+                            error = %err,
+                            "mpv could not continue playback"
+                        );
                         if let Some(stream) = self.playback.restore_base_stream() {
                             let resume_at = self.interpolated_position();
+                            tracing::warn!(
+                                event = "upgrade_fallback",
+                                client = "tui",
+                                track_id = self.playback.current_track().map(|track| track.id.as_str()).unwrap_or("-"),
+                                play_seq = self.play_seq,
+                                error = %err,
+                                fallback_quality = %stream.badge,
+                                resume_secs = resume_at,
+                                "quality upgrade failed; restoring original stream"
+                            );
                             self.playback.position_secs = resume_at;
                             self.playback.paused = true;
                             self.awaiting_playback_start = true;
@@ -713,9 +797,14 @@ impl App {
                         }
                         if self.retried_play_seq != self.play_seq {
                             if let Some(track) = self.playback.current_track().cloned() {
-                                if let Some(handle) = self.active_upgrade_task.take() {
-                                    handle.abort();
+                                self.playback_tasks.restart();
+                                if let Some((_, task)) = self.next_prefetch_task.take() {
+                                    task.abort();
                                 }
+                                if let Some((_, task)) = self.adopted_prefetch_task.take() {
+                                    task.abort();
+                                }
+                                self.next_precache.take();
                                 self.retried_play_seq = self.play_seq;
                                 let play_seq = self.play_seq;
                                 self.playback.loading_track = true;
@@ -725,9 +814,20 @@ impl App {
                                 self.upgrade_started_play_seq = None;
                                 self.playback.stream_badge = "Retrying...".to_string();
                                 self.status_line = "Stream expired, retrying...".to_string();
+                                tracing::warn!(
+                                    event = "retrying",
+                                    client = "tui",
+                                    track_id = %track.id,
+                                    title = %track.title,
+                                    artist = %track.artist,
+                                    provider = ?track.source,
+                                    play_seq,
+                                    error = %err,
+                                    "playback stream failed; resolving a fresh stream"
+                                );
                                 let resolver = self.resolver.clone();
                                 let tx = self.tx.clone();
-                                tokio::spawn(async move {
+                                self.playback_tasks.spawn(async move {
                                     match resolver.resolve_recovery(&track).await {
                                         Ok(stream) => {
                                             let _ = tx.send(AppEvent::StreamReady {
@@ -845,10 +945,21 @@ impl App {
 
         let play_seq = self.play_seq;
         self.upgrade_started_play_seq = Some(play_seq);
+        tracing::info!(
+            event = "upgrade_resolving",
+            client = "tui",
+            track_id = %track.id,
+            title = %track.title,
+            artist = %track.artist,
+            provider = ?track.source,
+            play_seq,
+            current_quality = %stream.badge,
+            "resolving higher quality stream"
+        );
         let resolver = self.resolver.clone();
         let tx = self.tx.clone();
         let allow_hifi = self.config.hifi_substitution;
-        let join = tokio::spawn(async move {
+        self.playback_tasks.spawn(async move {
             if let Some(upgraded) = resolver
                 .resolve_hifi_upgrade(&track, &stream, allow_hifi)
                 .await
@@ -858,9 +969,16 @@ impl App {
                     track_id: track.id,
                     stream: upgraded,
                 });
+            } else {
+                tracing::info!(
+                    event = "upgrade_unavailable",
+                    client = "tui",
+                    track_id = %track.id,
+                    play_seq,
+                    "no higher quality stream available"
+                );
             }
         });
-        self.active_upgrade_task = Some(join.abort_handle());
     }
 
     fn start_cover_enrichment(&mut self) {
@@ -879,7 +997,7 @@ impl App {
         let http = self.http.clone();
         let cache_db = self.cache_db.clone();
         let tx = self.tx.clone();
-        tokio::spawn(async move {
+        self.playback_tasks.spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
             let Some((url, _source)) =
                 media::resolve_track_cover(&http, cache_db.as_ref(), &track).await
@@ -1098,9 +1216,10 @@ impl App {
         if self.visible_tracks.is_empty() || selected >= self.visible_tracks.len() {
             return;
         }
-        self.playback.queue = self.visible_tracks.clone();
-        self.playback.history.clear();
-        self.playback.clear_upcoming();
+        PlaybackCoordinator::apply(
+            &mut self.playback,
+            PlaybackCommand::QueueChanged(self.visible_tracks.clone()),
+        );
         self.play_queue_index_inner(selected, false);
     }
 
@@ -1175,8 +1294,10 @@ impl App {
     }
 
     pub fn play_next_track(&mut self) {
-        if let Some(next_idx) = self.playback.peek_next_index() {
-            self.play_queue_index_inner(next_idx, true);
+        if let Some(transition) =
+            PlaybackCoordinator::apply(&mut self.playback, PlaybackCommand::Next)
+        {
+            self.start_play_transition(transition, None);
         } else {
             self.playback.paused = true;
             self.pos_anchor = None;
@@ -1184,8 +1305,10 @@ impl App {
     }
 
     pub fn play_prev_track(&mut self) {
-        if let Some(prev_idx) = self.playback.pop_prev_index() {
-            self.play_queue_index_inner(prev_idx, false);
+        if let Some(transition) =
+            PlaybackCoordinator::apply(&mut self.playback, PlaybackCommand::Previous)
+        {
+            self.start_play_transition(transition, None);
         }
     }
 
@@ -1199,32 +1322,66 @@ impl App {
         push_history: bool,
         prepared_stream: Option<ResolvedStream>,
     ) {
-        let Some(track) = self.playback.queue.get(index).cloned() else {
+        let Some(transition) = PlaybackCoordinator::apply(
+            &mut self.playback,
+            PlaybackCommand::Play {
+                index,
+                push_history,
+            },
+        ) else {
             return;
         };
-        if let Some(handle) = self.active_stream_task.take() {
-            handle.abort();
+        self.start_play_transition(transition, prepared_stream);
+    }
+
+    fn start_play_transition(
+        &mut self,
+        transition: PlaybackTransition,
+        prepared_stream: Option<ResolvedStream>,
+    ) {
+        let PlaybackTransition::Play { track, .. } = transition else {
+            return;
+        };
+        self.playback_tasks.restart();
+        if let Some((_, task)) = self.next_prefetch_task.take() {
+            task.abort();
         }
-        if let Some(handle) = self.active_upgrade_task.take() {
-            handle.abort();
+        let adopted_for_track = self
+            .adopted_prefetch_task
+            .as_ref()
+            .is_some_and(|(track_id, _)| track_id == &track.id);
+        if !adopted_for_track {
+            if let Some((_, task)) = self.adopted_prefetch_task.take() {
+                task.abort();
+            }
         }
+        self.next_precache.take();
         self.clear_kitty_images();
         if let Some(mpv) = &self.mpv {
             mpv.stop();
         }
         self.play_seq = self.play_seq.wrapping_add(1);
         let play_seq = self.play_seq;
+        if adopted_for_track {
+            self.upgrade_started_play_seq = Some(play_seq);
+        }
+        self.play_requested_at = Some(Instant::now());
+        tracing::info!(
+            event = "resolving",
+            client = "tui",
+            track_id = %track.id,
+            title = %track.title,
+            artist = %track.artist,
+            provider = ?track.source,
+            play_seq,
+            prepared = prepared_stream.is_some(),
+            "resolving playback stream"
+        );
         self.awaiting_playback_start = false;
         self.pending_auto_advance = None;
         self.upgrade_started_play_seq = None;
         self.cover_started_play_seq = None;
         self.pos_anchor = None;
-        self.playback.commit_play(index, push_history);
-        self.playback.position_secs = 0.0;
-        self.playback.duration_secs = track.duration_secs.unwrap_or(0) as f64;
-        self.playback.loading_track = true;
-        self.playback.paused = true;
-        self.playback.stream_badge = "Loading YTM...".to_string();
         self.lyrics = LyricsState::Loading;
         self.album_art = None;
         self.kitty_art_png = None;
@@ -1243,7 +1400,7 @@ impl App {
                 stream,
             });
         } else {
-            let join = tokio::spawn(async move {
+            self.playback_tasks.spawn(async move {
                 match resolver.resolve_fast(&track_clone).await {
                     Ok(stream) => {
                         let _ = tx.send(AppEvent::StreamReady {
@@ -1261,7 +1418,6 @@ impl App {
                     }
                 }
             });
-            self.active_stream_task = Some(join.abort_handle());
         }
 
         let lyrics_tx = self.tx.clone();
@@ -1269,7 +1425,7 @@ impl App {
         let lyrics_ytm = self.ytm.clone();
         let lyrics_cache = self.cache_db.clone();
         let lyrics_track = track.clone();
-        tokio::spawn(async move {
+        self.playback_tasks.spawn(async move {
             let lyrics = lrclib::fetch_lyrics(
                 &lyrics_http,
                 &lyrics_ytm,
@@ -1287,7 +1443,7 @@ impl App {
         if let Some(url) = track.thumbnail_url.clone() {
             let art_tx = self.tx.clone();
             let track_id = track.id.clone();
-            tokio::spawn(async move {
+            self.playback_tasks.spawn(async move {
                 if let Some((img, png_bytes)) = media::fetch_and_decode_art(&http, &url).await {
                     let _ = art_tx.send(AppEvent::ArtworkReady {
                         play_seq,
@@ -1301,40 +1457,95 @@ impl App {
         }
     }
 
-    fn prefetch_next(&mut self) {
-        let Some(next_idx) = self.playback.peek_next_index() else {
-            return;
-        };
-        let Some(next_track) = self.playback.queue.get(next_idx).cloned() else {
-            return;
-        };
-        if self
-            .next_prefetch_task
-            .as_ref()
-            .is_some_and(|(track_id, _)| track_id == &next_track.id)
+    fn maybe_precache_next(&mut self) {
+        let current = self.playback.current_track().cloned();
+        let next_track = self
+            .playback
+            .peek_next_index()
+            .and_then(|index| self.playback.queue.get(index).cloned());
+        let Some(current) = current else { return };
+        let next_id = next_track.as_ref().map(|track| track.id.as_str());
+        if let Some(cancelled) =
+            self.next_precache
+                .cancel_if_changed(self.play_seq, Some(&current.id), next_id)
         {
+            if let Some((key, task)) = self.next_prefetch_task.take() {
+                if key == cancelled {
+                    task.abort();
+                    tracing::info!(
+                        event = "next_precache_cancelled",
+                        client = "tui",
+                        track_id = %cancelled.next_track_id,
+                        reason = "next-track-changed",
+                        "next-track precache cancelled"
+                    );
+                } else {
+                    self.next_prefetch_task = Some((key, task));
+                }
+            }
+        }
+        let Some(key) = self.next_precache.schedule(
+            self.play_seq,
+            &current.id,
+            next_id,
+            self.playback.position_secs,
+            self.playback.duration_secs,
+            self.config.cache_limit_gb > 0 && self.config.hifi_substitution,
+        ) else {
             return;
-        }
-        if let Some((_, task)) = self.next_prefetch_task.take() {
-            task.abort();
-        }
+        };
+        let Some(next_track) = next_track else { return };
+        tracing::info!(
+            event = "next_precache_scheduled",
+            client = "tui",
+            track_id = %next_track.id,
+            title = %next_track.title,
+            remaining_secs = (self.playback.duration_secs - self.playback.position_secs).max(0.0),
+            "next-track quality precache scheduled"
+        );
         let resolver = self.resolver.clone();
         let hifi = self.config.hifi_substitution;
-        let http = self.http.clone();
-        let art_url = next_track.thumbnail_url.clone();
-        let track_id = next_track.id.clone();
-        let task =
-            tokio::spawn(async move { resolver.prefetch_hifi_audio(&next_track, hifi).await });
-        self.next_prefetch_task = Some((track_id, task));
-        if let Some(url) = art_url {
-            tokio::spawn(async move {
-                let _ = media::fetch_and_decode_art(&http, &url).await;
-            });
-        }
+        let task = PlaybackTask::spawn_detached(async move {
+            resolver.precache_hifi_audio(&next_track, hifi).await
+        });
+        self.next_prefetch_task = Some((key, task));
+    }
+
+    fn poll_adopted_precache(&mut self) {
+        let finished = self
+            .adopted_prefetch_task
+            .as_mut()
+            .and_then(|(_, task)| task.try_take());
+        let Some(result) = finished else { return };
+        let Some((track_id, _)) = self.adopted_prefetch_task.take() else {
+            return;
+        };
+        let Some(stream) = result else {
+            tracing::info!(
+                event = "next_precache_failed",
+                client = "tui",
+                track_id = %track_id,
+                reason = "quality-unavailable",
+                "adopted next-track precache did not produce an upgrade"
+            );
+            return;
+        };
+        tracing::info!(
+            event = "next_precache_adopted",
+            client = "tui",
+            track_id = %track_id,
+            quality = %stream.badge,
+            "applying completed precache to current track"
+        );
+        let _ = self.tx.send(AppEvent::StreamUpgrade {
+            play_seq: self.play_seq,
+            track_id,
+            stream,
+        });
     }
 
     fn prepare_next_before_advance(&mut self, index: usize) {
-        // Natural EOF waits for this task so the next stream can use its completed cache file.
+        // A quality prefetch must not delay the next audible track.
         let Some(track) = self.playback.queue.get(index).cloned() else {
             return;
         };
@@ -1352,8 +1563,21 @@ impl App {
         self.pos_anchor = None;
         self.status_line = format!("Caching next track: {}", track.title);
 
-        let matching_task = match self.next_prefetch_task.take() {
-            Some((track_id, task)) if track_id == track.id => Some(task),
+        let prepared = match self.next_prefetch_task.take() {
+            Some((key, mut task)) if key.next_track_id == track.id => match task.try_take() {
+                Some(result) => {
+                    if result.is_some() {
+                        self.next_precache.mark_ready(&key);
+                    } else {
+                        self.next_precache.mark_failed(&key);
+                    }
+                    result
+                }
+                None => {
+                    self.adopted_prefetch_task = Some((track.id.clone(), task));
+                    None
+                }
+            },
             Some((_, task)) => {
                 task.abort();
                 None
@@ -1362,14 +1586,9 @@ impl App {
         };
         let play_seq = self.play_seq;
         let resolver = self.resolver.clone();
-        let allow_hifi = self.config.hifi_substitution;
         let tx = self.tx.clone();
-        tokio::spawn(async move {
-            let cached = match matching_task {
-                Some(task) => task.await.ok().flatten(),
-                None => resolver.prefetch_hifi_audio(&track, allow_hifi).await,
-            };
-            let result = match cached {
+        self.playback_tasks.spawn(async move {
+            let result = match prepared {
                 Some(stream) => Ok(stream),
                 None => resolver
                     .resolve_fast(&track)
@@ -1554,7 +1773,7 @@ impl App {
         } else if !self.playback.loading_track {
             self.pos_anchor = Some((self.playback.position_secs, Instant::now()));
         }
-        self.playback.paused = new_paused;
+        PlaybackCoordinator::apply(&mut self.playback, PlaybackCommand::Pause(new_paused));
         if let Some(mpv) = &self.mpv {
             mpv.set_paused(new_paused);
         }
@@ -1585,6 +1804,23 @@ impl App {
         }
     }
 
+    pub async fn shutdown_playback_tasks(&mut self) {
+        if let Some((_, task)) = self.next_prefetch_task.take() {
+            task.abort();
+        }
+        if let Some((_, task)) = self.adopted_prefetch_task.take() {
+            task.abort();
+        }
+        self.next_precache.take();
+        if !self
+            .playback_tasks
+            .shutdown(std::time::Duration::from_secs(2))
+            .await
+        {
+            tracing::warn!("playback tasks exceeded shutdown timeout and were aborted");
+        }
+    }
+
     pub fn adjust_volume(&mut self, delta: i8) {
         let next = (self.playback.volume as i16 + delta as i16).clamp(0, 100) as u8;
         self.set_volume(next, true);
@@ -1612,6 +1848,8 @@ impl App {
             return false;
         }
         self.playback.position_secs = self.interpolated_position();
+        self.poll_adopted_precache();
+        self.maybe_precache_next();
         true
     }
 
@@ -1620,9 +1858,6 @@ impl App {
         self.config.shuffle = self.playback.shuffle;
         let _ = self.config.save();
         self.playback.clear_upcoming();
-        if self.playback.current_track().is_some() {
-            self.prefetch_next();
-        }
         self.status_line = format!(
             "Shuffle: {}",
             if self.playback.shuffle { "On" } else { "Off" }
@@ -1653,15 +1888,16 @@ impl App {
         self.config.repeat_mode = self.playback.repeat;
         let _ = self.config.save();
         self.playback.clear_upcoming();
-        if self.playback.current_track().is_some() {
-            self.prefetch_next();
-        }
         self.status_line = format!("Repeat: {}", self.playback.repeat.label());
     }
 
     pub fn seek(&mut self, secs: f64) {
         let target = (self.interpolated_position() + secs).max(0.0);
-        self.playback.position_secs = target;
+        let Some(PlaybackTransition::Seeked(target)) =
+            PlaybackCoordinator::apply(&mut self.playback, PlaybackCommand::Seek(target))
+        else {
+            return;
+        };
         if !self.playback.paused {
             self.pos_anchor = Some((target, Instant::now()));
         }
@@ -1671,8 +1907,11 @@ impl App {
     }
 
     pub fn seek_to(&mut self, secs: f64) {
-        let target = secs.max(0.0);
-        self.playback.position_secs = target;
+        let Some(PlaybackTransition::Seeked(target)) =
+            PlaybackCoordinator::apply(&mut self.playback, PlaybackCommand::Seek(secs))
+        else {
+            return;
+        };
         if !self.playback.paused {
             self.pos_anchor = Some((target, Instant::now()));
         }

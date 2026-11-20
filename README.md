@@ -131,6 +131,16 @@ error = "#f85149"
 
 Global settings are stored in `~/.config/sonata/config.toml` and can also be edited live inside Settings in either client. The media cache limit applies to both clients.
 
+## Logs
+
+Both clients write runtime logs to `~/.cache/sonata/sonata.log`. Follow playback resolution, retries, quality upgrades, and failures with:
+
+```bash
+tail -f ~/.cache/sonata/sonata.log
+```
+
+Set `RUST_LOG=debug` before starting a client for resolver and mpv details. The log is limited to 10 MiB at startup and uses user-only permissions on Unix.
+
 ## External Integrations (`now_playing.json`)
 
 Both `sonata` and `sonata-desktop` atomically export live playback state to `$XDG_RUNTIME_DIR/sonata/now_playing.json` (fallback: `~/.cache/sonata/now_playing.json`) for Waybar, Hyprlock, Eww, or custom scripts (`status`, `title`, `artist`, `album`, `source`, `quality`, `position_secs`, `duration_secs`, `position`, `duration`, `lyric`, `art_path`, `art_url`, `updated_at`), and remove the file on clean exit. `sonata-desktop` additionally exposes full MPRIS2 control over D-Bus.

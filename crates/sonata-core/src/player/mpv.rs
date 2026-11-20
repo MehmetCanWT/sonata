@@ -1,5 +1,8 @@
 use crate::config::EnhancerMode;
 use crate::providers::hifi::ResolvedStream;
+use crate::redaction::{
+    json_payload as sanitize_payload, sensitive_text, stream_url as redact_mpv_url,
+};
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -8,60 +11,6 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::sync::{mpsc, Mutex};
-
-fn redact_mpv_url(url: &str) -> String {
-    if url.starts_with("http://") || url.starts_with("https://") {
-        if let Some(scheme_end) = url.find("://") {
-            let rest = &url[scheme_end + 3..];
-            if let Some(path_end) = rest.find('/') {
-                let host = &rest[..path_end];
-                return format!("{}://{host}/[redacted-stream-url]", &url[..scheme_end]);
-            }
-        }
-    }
-    if url.len() > 160 {
-        format!("{}...[redacted]", &url[..160])
-    } else {
-        url.to_string()
-    }
-}
-
-fn sanitize_payload(payload: &Value) -> Value {
-    let mut result = payload.clone();
-    fn redact_value(value: &Value) -> Value {
-        match value {
-            Value::Object(map) => Value::Object(
-                map.iter()
-                    .map(|(key, value)| {
-                        let redacted = if key == "url" || key == "file" {
-                            match value {
-                                Value::String(url) => json!(redact_mpv_url(url)),
-                                _ => redact_value(value),
-                            }
-                        } else {
-                            redact_value(value)
-                        };
-                        (key.clone(), redacted)
-                    })
-                    .collect(),
-            ),
-            Value::Array(values) => Value::Array(values.iter().map(redact_value).collect()),
-            Value::String(text) if text.starts_with("http://") || text.starts_with("https://") => {
-                json!(redact_mpv_url(text))
-            }
-            _ => value.clone(),
-        }
-    }
-    if let Some(obj) = result.as_object_mut() {
-        if let Some(url) = obj.get("url").and_then(|v| v.as_str()) {
-            obj.insert("url".to_string(), json!(redact_mpv_url(url)));
-        }
-        if let Some(file) = obj.get("file").and_then(|v| v.as_str()) {
-            obj.insert("file".to_string(), json!(redact_mpv_url(file)));
-        }
-    }
-    redact_value(&result)
-}
 
 #[derive(Debug, Clone)]
 pub enum MpvEvent {
@@ -83,7 +32,7 @@ impl MpvController {
     pub async fn spawn(
         volume: u8,
         enhancer: EnhancerMode,
-        event_tx: mpsc::UnboundedSender<MpvEvent>,
+        event_tx: mpsc::Sender<MpvEvent>,
     ) -> Result<Self> {
         Self::spawn_inner(volume, enhancer, event_tx).await
     }
@@ -91,7 +40,7 @@ impl MpvController {
     pub async fn spawn_desktop(
         volume: u8,
         enhancer: EnhancerMode,
-        event_tx: mpsc::UnboundedSender<MpvEvent>,
+        event_tx: mpsc::Sender<MpvEvent>,
     ) -> Result<Self> {
         Self::spawn_inner(volume, enhancer, event_tx).await
     }
@@ -99,7 +48,7 @@ impl MpvController {
     async fn spawn_inner(
         volume: u8,
         enhancer: EnhancerMode,
-        event_tx: mpsc::UnboundedSender<MpvEvent>,
+        event_tx: mpsc::Sender<MpvEvent>,
     ) -> Result<Self> {
         let pid = std::process::id();
         let sock_dir = dirs::runtime_dir().unwrap_or_else(crate::config::AppConfig::cache_dir);
@@ -135,23 +84,31 @@ impl MpvController {
             .spawn()
             .map_err(|e| anyhow!("Failed to start mpv (is mpv installed?): {e}"))?;
         let mpv_pid = child.id();
-        eprintln!(
-            "[sonata:mpv] process=start pid={mpv_pid} binary=mpv ipc={}",
-            sock_path.display()
+        tracing::info!(
+            event = "mpv_started",
+            pid = mpv_pid,
+            ipc_path = %sock_path.display(),
+            "mpv process started"
         );
         if let Some(stderr) = child.stderr.take() {
             std::thread::spawn(move || {
                 use std::io::{BufRead, BufReader};
                 for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                    let clean = line
-                        .replace("Cookie=", "[redacted-cookie]")
-                        .replace("Authorization=", "[redacted-auth]")
-                        .replace("SAPISID=", "[redacted-cookie]");
+                    let clean = sensitive_text(&line);
                     if !clean.trim().is_empty() {
-                        eprintln!("[sonata:mpv] stderr pid={mpv_pid} {}", clean.trim());
+                        tracing::warn!(
+                            event = "mpv_stderr",
+                            pid = mpv_pid,
+                            message = clean.trim(),
+                            "mpv reported a diagnostic"
+                        );
                     }
                 }
-                eprintln!("[sonata:mpv] stderr=closed pid={mpv_pid}");
+                tracing::debug!(
+                    event = "mpv_stderr_closed",
+                    pid = mpv_pid,
+                    "mpv stderr closed"
+                );
             });
         }
 
@@ -179,14 +136,16 @@ impl MpvController {
                 req_id = req_id.wrapping_add(1);
                 let payload = format!("{}\n", json!({ "command": command, "request_id": id }));
                 let safe_command = sanitize_payload(&json!({ "command": command }));
-                eprintln!(
-                    "[sonata:mpv] ipc=send request_id={id} command={}",
-                    safe_command
+                tracing::debug!(
+                    event = "mpv_ipc_send",
+                    request_id = id,
+                    command = %safe_command
                         .get("command")
                         .map(|v| serde_json::to_string(v)
                             .unwrap_or_else(|_| "[invalid]".to_string()))
                         .unwrap_or_else(|| "[invalid]".to_string())
-                        .replace(&json!(null).to_string(), "[null]")
+                        .replace(&json!(null).to_string(), "[null]"),
+                    "sending mpv command"
                 );
                 if write_half.write_all(payload.as_bytes()).await.is_err() {
                     break;
@@ -216,14 +175,15 @@ impl MpvController {
                 };
                 match val.get("event").and_then(|e| e.as_str()) {
                     Some("end-file") => {
-                        eprintln!(
-                            "[sonata:mpv] ipc=end-file payload={}",
-                            sanitize_payload(&val)
+                        tracing::debug!(
+                            event = "mpv_end_file",
+                            payload = %sanitize_payload(&val),
+                            "mpv ended media"
                         );
                     }
                     Some("property-change") => {}
                     Some(event) => {
-                        eprintln!("[sonata:mpv] ipc=event event={event}");
+                        tracing::debug!(event = "mpv_event", mpv_event = event, "mpv event");
                     }
                     None => {}
                 }
@@ -234,17 +194,17 @@ impl MpvController {
                         match name {
                             "time-pos" => {
                                 if let Some(pos) = data.and_then(|d| d.as_f64()) {
-                                    let _ = event_tx.send(MpvEvent::Position(pos));
+                                    let _ = event_tx.try_send(MpvEvent::Position(pos));
                                 }
                             }
                             "duration" => {
                                 if let Some(dur) = data.and_then(|d| d.as_f64()) {
-                                    let _ = event_tx.send(MpvEvent::Duration(dur));
+                                    let _ = event_tx.try_send(MpvEvent::Duration(dur));
                                 }
                             }
                             "pause" => {
                                 if let Some(p) = data.and_then(|d| d.as_bool()) {
-                                    let _ = event_tx.send(MpvEvent::Paused(p));
+                                    let _ = event_tx.try_send(MpvEvent::Paused(p));
                                 }
                             }
                             _ => {}
@@ -252,7 +212,7 @@ impl MpvController {
                     }
                     Some("end-file") => match val.get("reason").and_then(|r| r.as_str()) {
                         Some("eof") => {
-                            let _ = event_tx.send(MpvEvent::TrackEnded);
+                            let _ = event_tx.send(MpvEvent::TrackEnded).await;
                         }
                         Some("error") => {
                             let msg = val
@@ -265,12 +225,14 @@ impl MpvController {
                                 .and_then(|v| v.as_str())
                                 .or_else(|| val.get("file").and_then(|v| v.as_str()))
                                 .map(str::to_string);
-                            let _ = event_tx.send(MpvEvent::PlaybackError { error: msg, file });
+                            let _ = event_tx
+                                .send(MpvEvent::PlaybackError { error: msg, file })
+                                .await;
                         }
                         _ => {}
                     },
                     Some("playback-restart") => {
-                        let _ = event_tx.send(MpvEvent::PlaybackStarted);
+                        let _ = event_tx.send(MpvEvent::PlaybackStarted).await;
                     }
                     _ => {}
                 }
@@ -301,9 +263,11 @@ impl MpvController {
     }
 
     fn load_media_at(&self, url: &str, headers: &[(String, String)], start_secs: f64) {
-        eprintln!(
-            "[sonata:mpv] load-url-at start={start_secs:.2} url={}",
-            redact_mpv_url(url)
+        tracing::debug!(
+            event = "mpv_load_media",
+            start_secs,
+            media = %redact_mpv_url(url),
+            "loading media into mpv"
         );
         let mut options = serde_json::Map::new();
         if start_secs >= 0.35 {
