@@ -112,7 +112,10 @@ impl SonataDesktopView {
                     if just_signed_in && matches!(view.modal, DesktopModal::SignInBrowser) {
                         view.modal = DesktopModal::None;
                     }
-                    if view.center_mode == CenterMode::Lyrics {
+                    if matches!(
+                        view.center_mode,
+                        CenterMode::Lyrics | CenterMode::Fullscreen
+                    ) {
                         let active = view.snapshot.active_lyric_index();
                         if active != view.last_synced_lyric_idx {
                             view.last_synced_lyric_idx = active;
