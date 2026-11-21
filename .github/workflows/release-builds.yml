@@ -185,7 +185,7 @@ jobs:
           EOF
           cp Sonata.AppDir/sonata.desktop Sonata.AppDir/usr/share/applications/sonata.desktop
 
-          cat <<EOF > Sonata.AppDir/usr/share/metainfo/sonata.appdata.xml
+          cat <<EOF > Sonata.AppDir/usr/share/metainfo/dev.sonata.desktop.appdata.xml
           <?xml version="1.0" encoding="UTF-8"?>
           <component type="desktop-application">
             <id>dev.sonata.desktop</id>
@@ -193,8 +193,15 @@ jobs:
             <summary>High-fidelity native music player for YouTube Music and Spotify</summary>
             <metadata_license>CC0-1.0</metadata_license>
             <project_license>MIT</project_license>
+            <developer id="dev.sonata">
+              <name>MehmetCanWT</name>
+            </developer>
+            <description>
+              <p>Sonata is a fast, native Wayland/Hyprland music player built in Rust with Extreme audio playback, word-synced karaoke lyrics, animated motion covers, MPRIS2, and system tray support.</p>
+            </description>
             <launchable type="desktop-id">sonata.desktop</launchable>
             <url type="homepage">https://github.com/MehmetCanWT/sonata</url>
+            <content_rating type="oars-1.1" />
             <releases>
               <release version="${VERSION}" date="$(date -u +%Y-%m-%d)" />
             </releases>
@@ -242,8 +249,6 @@ jobs:
 
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v6
-        with:
-          gradle-home-cache-cleanup: true
 
       - name: Install Android NDK 27.2.12479018 & SDK 35
         run: |
