@@ -87,6 +87,7 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
@@ -128,6 +129,12 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.Player
@@ -205,6 +212,7 @@ import uniffi.sonata_android.AndroidHomeShelf
 import uniffi.sonata_android.AndroidLyricLine
 import uniffi.sonata_android.AndroidPlaylist
 import uniffi.sonata_android.AndroidTrack
+import uniffi.sonata_android.AndroidUpdateInfo
 import java.io.File
 import kotlin.math.roundToInt
 
@@ -409,6 +417,17 @@ private fun SonataAppContent(
         return
     }
 
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, vm) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                vm.onAppResumed()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     if (state.showSettingsSheet) {
         SettingsSheet(
             state = state,
@@ -421,7 +440,22 @@ private fun SonataAppContent(
             onToggleAnimatedArtwork = vm::toggleAnimatedArtwork,
             onSetFpsLimit = vm::setFpsLimit,
             onClearMediaCache = vm::clearMediaCache,
-            onCheckForUpdates = vm::checkForUpdates,
+            onCheckForUpdates = { vm.checkForUpdates(autoPopup = true, isManual = true) },
+            onDownloadUpdate = vm::downloadAndInstallUpdate,
+        )
+    }
+
+    if (state.showUpdateDialog && state.updateInfo?.updateAvailable == true) {
+        UpdateAvailableDialog(
+            info = state.updateInfo!!,
+            downloading = state.updateDownloading,
+            progress = state.updateDownloadProgress,
+            detail = state.updateDownloadDetail,
+            error = state.updateError,
+            hasDownloadedApk = !state.downloadedUpdateApkPath.isNullOrBlank(),
+            onDownloadOrInstall = vm::downloadAndInstallUpdate,
+            onCancelDownload = vm::cancelUpdateDownload,
+            onDismiss = vm::dismissUpdateDialog,
         )
     }
 
@@ -2797,6 +2831,7 @@ private fun SettingsSheet(
     onSetFpsLimit: (Int) -> Unit,
     onClearMediaCache: () -> Unit,
     onCheckForUpdates: () -> Unit,
+    onDownloadUpdate: () -> Unit,
 ) {
     val context = LocalContext.current
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -3063,8 +3098,9 @@ private fun SettingsSheet(
 
             if (matches("Updates Version Check Download APK Release")) {
                 item(key = "settings_updates_card") {
-                    val currentVer = state.updateInfo?.currentVersion ?: "0.1.0"
+                    val currentVer = state.updateInfo?.currentVersion ?: state.installedVersionName
                     val statusLabel = when {
+                        state.updateDownloading -> state.updateDownloadDetail.ifBlank { "Downloading update..." }
                         state.checkingUpdates -> "Checking for updates..."
                         state.updateInfo?.updateAvailable == true ->
                             "Update v${state.updateInfo.latestVersion} available"
@@ -3141,19 +3177,29 @@ private fun SettingsSheet(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable {
-                                    runCatching {
-                                        context.startActivity(
-                                            Intent(Intent.ACTION_VIEW, Uri.parse(releaseTarget))
-                                        )
+                                    if (state.updateInfo?.updateAvailable == true &&
+                                        !state.updateInfo.apkDownloadUrl.isNullOrBlank()
+                                    ) {
+                                        onDownloadUpdate()
+                                    } else {
+                                        runCatching {
+                                            context.startActivity(
+                                                Intent(Intent.ACTION_VIEW, Uri.parse(releaseTarget))
+                                            )
+                                        }
                                     }
                                 }
                                 .padding(horizontal = 16.dp, vertical = 14.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Text(
-                                text = "Download Latest APK / Release",
+                                text = if (state.updateInfo?.updateAvailable == true) {
+                                    "Download & Install v${state.updateInfo.latestVersion}"
+                                } else {
+                                    "Open GitHub Releases"
+                                },
                                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Medium),
-                                color = Color.White,
+                                color = if (state.updateInfo?.updateAvailable == true) SonataAccent else Color.White,
                                 modifier = Modifier.weight(1f),
                             )
                             Icon(
@@ -4960,6 +5006,184 @@ private fun NowPlayingQueuePanel(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UpdateAvailableDialog(
+    info: AndroidUpdateInfo,
+    downloading: Boolean,
+    progress: Float?,
+    detail: String,
+    error: String?,
+    hasDownloadedApk: Boolean,
+    onDownloadOrInstall: () -> Unit,
+    onCancelDownload: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val notesPreview = remember(info.releaseNotes) {
+        info.releaseNotes
+            .lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .take(8)
+            .joinToString("\n")
+    }
+    Dialog(
+        onDismissRequest = { if (!downloading) onDismiss() },
+        properties = DialogProperties(
+            dismissOnBackPress = !downloading,
+            dismissOnClickOutside = !downloading,
+        ),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(24.dp))
+                .background(Color(0xFF14151C))
+                .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(24.dp))
+                .padding(22.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(SonataAccent.copy(alpha = 0.18f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_sonata_moon),
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(24.dp),
+                    )
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = "Update Available",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = Color.White,
+                    )
+                    Text(
+                        text = "v${info.currentVersion}  →  v${info.latestVersion}",
+                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = SonataAccent,
+                    )
+                }
+            }
+
+            if (notesPreview.isNotBlank() && !downloading) {
+                Text(
+                    text = notesPreview,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = 0.74f),
+                    maxLines = 8,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
+            if (downloading) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (progress != null) {
+                        LinearProgressIndicator(
+                            progress = { progress.coerceIn(0f, 1f) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(Pill50Shape),
+                            color = SonataAccent,
+                            trackColor = Color.White.copy(alpha = 0.14f),
+                        )
+                    } else {
+                        LinearProgressIndicator(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(Pill50Shape),
+                            color = SonataAccent,
+                            trackColor = Color.White.copy(alpha = 0.14f),
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = detail.ifBlank { "Downloading APK..." },
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color.White.copy(alpha = 0.78f),
+                        )
+                        if (progress != null) {
+                            Text(
+                                text = "${(progress * 100f).roundToInt()}%",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                color = Color.White,
+                            )
+                        }
+                    }
+                }
+            } else if (detail.isNotBlank() && error == null) {
+                Text(
+                    text = detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = 0.80f),
+                )
+            }
+
+            if (!error.isNullOrBlank()) {
+                Text(
+                    text = error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFFF6B6B),
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(46.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Color.White.copy(alpha = 0.10f))
+                        .clickable {
+                            if (downloading) onCancelDownload() else onDismiss()
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = if (downloading) "Cancel" else "Later",
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                        color = Color.White.copy(alpha = 0.86f),
+                    )
+                }
+                if (!downloading) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1.35f)
+                            .height(46.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(SonataAccent)
+                            .clickable(onClick = onDownloadOrInstall),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = if (hasDownloadedApk) "Install Update" else "Download Now",
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                            color = Color.White,
+                        )
+                    }
                 }
             }
         }

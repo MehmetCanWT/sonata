@@ -340,6 +340,28 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          ARTIFACT_TAG: ${{ needs.version.outputs.artifact_tag }}
+        run: |
+          awk -v ver="${VERSION}" '
+            $0 ~ "^## \\[" ver "\\]" { in_section=1; next }
+            in_section && /^## \[/ { exit }
+            in_section { print }
+          ' CHANGELOG.md | sed '/./,$!d' > release-notes.md
+          if [[ -s release-notes.md ]]; then
+            echo "has_notes=true" >> "$GITHUB_OUTPUT"
+            echo "Extracted CHANGELOG section for v${VERSION} ($(wc -l < release-notes.md) lines)."
+          else
+            echo "has_notes=false" >> "$GITHUB_OUTPUT"
+            echo "No matching CHANGELOG section for v${VERSION}; falling back to auto-generated notes."
+          fi
+
       - name: Download Linux AppImage
         if: needs.version.outputs.build_desktop == 'true'
         uses: actions/download-artifact@v8
@@ -373,7 +395,18 @@ jobs:
             done
           fi
 
-      - name: Publish Release Assets
+      - name: Publish Release Assets (with CHANGELOG notes)
+        if: steps.notes.outputs.has_notes == 'true'
+        uses: softprops/action-gh-release@v3
+        with:
+          name: ${{ needs.version.outputs.release_title }}
+          body_path: release-notes.md
+          generate_release_notes: true
+          files: |
+            release-artifacts/*
+
+      - name: Publish Release Assets (auto-generated notes fallback)
+        if: steps.notes.outputs.has_notes != 'true'
         uses: softprops/action-gh-release@v3
         with:
           name: ${{ needs.version.outputs.release_title }}

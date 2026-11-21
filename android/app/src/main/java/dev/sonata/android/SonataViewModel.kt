@@ -262,6 +262,14 @@ data class SonataUiState(
     val recentSearches: List<String> = emptyList(),
     val updateInfo: AndroidUpdateInfo? = null,
     val checkingUpdates: Boolean = false,
+    val installedVersionName: String = "1.0.0",
+    val showUpdateDialog: Boolean = false,
+    val updateDownloading: Boolean = false,
+    val updateDownloadProgress: Float? = null,
+    val updateDownloadDetail: String = "",
+    val updateError: String? = null,
+    val downloadedUpdateApkPath: String? = null,
+    val pendingInstallPermission: Boolean = false,
 ) {
     val hasNext: Boolean
         get() = queue.isNotEmpty() && (
@@ -407,6 +415,9 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
             engineDeferred.complete(engine)
 
             // 3. Load lightweight cached auth/profile/playlists (never Home) for instant Library & Profile.
+            val installedVer = runCatching {
+                application.packageManager.getPackageInfo(application.packageName, 0).versionName.orEmpty()
+            }.getOrDefault("").ifBlank { "1.0.0" }
             val signedIn = runCatching { engine.isSignedIn() }.getOrDefault(false)
             val cachedProfile = if (signedIn) runCatching { engine.getCachedAccountProfile() }.getOrNull() else null
             val cachedPlaylists = if (signedIn) runCatching { engine.getCachedLibraryPlaylists() }.getOrDefault(emptyList()) else emptyList()
@@ -415,6 +426,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                 it.copy(
                     authInitialized = true,
                     signedIn = signedIn,
+                    installedVersionName = installedVer,
                     accountProfile = cachedProfile ?: it.accountProfile,
                     playlists = if (it.playlists.isEmpty()) cachedPlaylists else it.playlists,
                 )
@@ -427,10 +439,10 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                 fetchLyricsInBackground(restoredTrack)
             }
 
-            // 5. Defer update check well past critical cold launch & first scroll frames.
+            // 5. Check for updates shortly after launch frames settle and show popup if newer APK exists.
             launch(Dispatchers.IO) {
-                delay(8_000L)
-                checkForUpdates()
+                delay(2_200L)
+                checkForUpdates(autoPopup = true, isManual = false)
             }
         }
     }
@@ -1359,23 +1371,196 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         playbackClock.onSeek(clamped)
     }
 
-    fun checkForUpdates() {
+    private var updateDownloadJob: Job? = null
+    private var dismissedUpdateVersion: String? = null
+
+    fun checkForUpdates(autoPopup: Boolean = true, isManual: Boolean = true) {
         if (_uiState.value.checkingUpdates) return
+        if (isManual) {
+            dismissedUpdateVersion = null
+        }
         viewModelScope.launch(Dispatchers.IO) {
             val engine = requireEngine()
             val installedVersion = runCatching {
                 val app = getApplication<Application>()
                 app.packageManager.getPackageInfo(app.packageName, 0).versionName.orEmpty()
-            }.getOrDefault("")
-            _uiState.update { it.copy(checkingUpdates = true) }
+            }.getOrDefault("").ifBlank { _uiState.value.installedVersionName }
+            _uiState.update {
+                it.copy(
+                    checkingUpdates = true,
+                    installedVersionName = installedVersion,
+                    updateError = null,
+                )
+            }
             runCatching { engine.checkForUpdatesForVersion(installedVersion) }
                 .onSuccess { info ->
-                    _uiState.update { it.copy(updateInfo = info, checkingUpdates = false) }
+                    val shouldShowPopup = autoPopup &&
+                        info.updateAvailable &&
+                        (isManual || dismissedUpdateVersion != info.latestVersion)
+                    _uiState.update {
+                        it.copy(
+                            updateInfo = info,
+                            checkingUpdates = false,
+                            showUpdateDialog = it.showUpdateDialog || shouldShowPopup,
+                        )
+                    }
                 }
-                .onFailure {
-                    _uiState.update { it.copy(checkingUpdates = false) }
+                .onFailure { err ->
+                    _uiState.update {
+                        it.copy(
+                            checkingUpdates = false,
+                            updateError = if (isManual) err.message ?: "Update check failed" else it.updateError,
+                        )
+                    }
                 }
         }
+    }
+
+    fun openUpdateDialog() {
+        _uiState.update { it.copy(showUpdateDialog = true, updateError = null) }
+    }
+
+    fun dismissUpdateDialog() {
+        val latest = _uiState.value.updateInfo?.latestVersion
+        if (!latest.isNullOrBlank()) {
+            dismissedUpdateVersion = latest
+        }
+        _uiState.update { it.copy(showUpdateDialog = false) }
+    }
+
+    fun cancelUpdateDownload() {
+        updateDownloadJob?.cancel()
+        updateDownloadJob = null
+        _uiState.update {
+            it.copy(
+                updateDownloading = false,
+                updateDownloadProgress = null,
+                updateDownloadDetail = "",
+                updateError = null,
+                pendingInstallPermission = false,
+            )
+        }
+    }
+
+    fun downloadAndInstallUpdate() {
+        val state = _uiState.value
+        if (state.updateDownloading) return
+        val info = state.updateInfo ?: return
+        val apkUrl = info.apkDownloadUrl?.takeIf { it.isNotBlank() }
+        if (apkUrl == null) {
+            _uiState.update { it.copy(updateError = "No APK asset found in this release.") }
+            return
+        }
+
+        // If already downloaded on disk, launch Android's installer immediately without re-downloading.
+        val existingPath = state.downloadedUpdateApkPath
+        if (!existingPath.isNullOrBlank()) {
+            val existingFile = File(existingPath)
+            if (existingFile.isFile && existingFile.length() > 100_000L) {
+                triggerApkInstall(existingFile)
+                return
+            }
+        }
+
+        _uiState.update {
+            it.copy(
+                showUpdateDialog = true,
+                updateDownloading = true,
+                updateDownloadProgress = null,
+                updateDownloadDetail = "Starting download...",
+                updateError = null,
+                pendingInstallPermission = false,
+            )
+        }
+
+        updateDownloadJob?.cancel()
+        updateDownloadJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val app = getApplication<Application>()
+                val apkFile = ApkUpdater.downloadApk(
+                    context = app,
+                    urlString = apkUrl,
+                    versionLabel = info.latestVersion,
+                ) { fraction, downloaded, total ->
+                    val detail = if (total > 0L) {
+                        "${ApkUpdater.formatBytes(downloaded)} / ${ApkUpdater.formatBytes(total)}"
+                    } else {
+                        ApkUpdater.formatBytes(downloaded)
+                    }
+                    _uiState.update {
+                        it.copy(
+                            updateDownloadProgress = fraction,
+                            updateDownloadDetail = detail,
+                        )
+                    }
+                }
+                _uiState.update {
+                    it.copy(
+                        updateDownloading = false,
+                        updateDownloadProgress = 1f,
+                        updateDownloadDetail = "Ready to install",
+                        downloadedUpdateApkPath = apkFile.absolutePath,
+                    )
+                }
+                withContext(Dispatchers.Main) {
+                    triggerApkInstall(apkFile)
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (err: Throwable) {
+                Log.e("SonataUpdater", "APK download failed", err)
+                _uiState.update {
+                    it.copy(
+                        updateDownloading = false,
+                        updateDownloadProgress = null,
+                        updateDownloadDetail = "",
+                        updateError = err.message ?: "Download failed",
+                    )
+                }
+            }
+        }
+    }
+
+    fun onAppResumed() {
+        val state = _uiState.value
+        if (!state.pendingInstallPermission) return
+        val path = state.downloadedUpdateApkPath ?: return
+        val apkFile = File(path)
+        val app = getApplication<Application>()
+        if (apkFile.isFile && app.packageManager.canRequestPackageInstalls()) {
+            triggerApkInstall(apkFile)
+        }
+    }
+
+    private fun triggerApkInstall(apkFile: File) {
+        val app = getApplication<Application>()
+        runCatching { ApkUpdater.launchInstaller(app, apkFile) }
+            .onSuccess { outcome ->
+                when (outcome) {
+                    ApkUpdater.InstallOutcome.LaunchedInstaller -> {
+                        _uiState.update {
+                            it.copy(
+                                pendingInstallPermission = false,
+                                updateDownloadDetail = "Opening Android installer...",
+                            )
+                        }
+                    }
+                    ApkUpdater.InstallOutcome.NeedsUnknownSourcesPermission -> {
+                        _uiState.update {
+                            it.copy(
+                                pendingInstallPermission = true,
+                                updateDownloadDetail = "Allow \"Install unknown apps\" for Sonata, then return here.",
+                            )
+                        }
+                    }
+                }
+            }
+            .onFailure { err ->
+                Log.e("SonataUpdater", "Failed to launch APK installer", err)
+                _uiState.update {
+                    it.copy(updateError = err.message ?: "Could not open installer")
+                }
+            }
     }
 
     fun seekToFraction(fraction: Float) {
