@@ -7,48 +7,117 @@ on:
       - master
     tags:
       - "v*"
+      - "android-v*"
+      - "desktop-v*"
   pull_request:
   workflow_dispatch:
+    inputs:
+      target:
+        description: "Which platform artifact(s) to build"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - android
+          - desktop
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   version:
-    name: Resolve Release Version
+    name: Resolve Release Version & Targets
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.ver.outputs.version }}
       version_code: ${{ steps.ver.outputs.version_code }}
+      tag_name: ${{ steps.ver.outputs.tag_name }}
+      artifact_tag: ${{ steps.ver.outputs.artifact_tag }}
+      release_title: ${{ steps.ver.outputs.release_title }}
+      build_desktop: ${{ steps.ver.outputs.build_desktop }}
+      build_android: ${{ steps.ver.outputs.build_android }}
+      is_release: ${{ steps.ver.outputs.is_release }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
-      - name: Compute semantic version and Android versionCode
+      - name: Compute semantic version, targets, and Android versionCode
         id: ver
+        env:
+          INPUT_TARGET: ${{ inputs.target || 'all' }}
         run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            VERSION="${GITHUB_REF#refs/tags/v}"
+          BUILD_DESKTOP="true"
+          BUILD_ANDROID="true"
+          IS_RELEASE="false"
+          TAG_NAME=""
+
+          if [[ "${GITHUB_REF}" == refs/tags/android-v* ]]; then
+            TAG_NAME="${GITHUB_REF#refs/tags/}"
+            VERSION="${TAG_NAME#android-v}"
+            ARTIFACT_TAG="android-v${VERSION}"
+            RELEASE_TITLE="Sonata Android v${VERSION}"
+            BUILD_DESKTOP="false"
+            BUILD_ANDROID="true"
+            IS_RELEASE="true"
+          elif [[ "${GITHUB_REF}" == refs/tags/desktop-v* ]]; then
+            TAG_NAME="${GITHUB_REF#refs/tags/}"
+            VERSION="${TAG_NAME#desktop-v}"
+            ARTIFACT_TAG="desktop-v${VERSION}"
+            RELEASE_TITLE="Sonata Desktop v${VERSION}"
+            BUILD_DESKTOP="true"
+            BUILD_ANDROID="false"
+            IS_RELEASE="true"
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG_NAME="${GITHUB_REF#refs/tags/}"
+            VERSION="${TAG_NAME#v}"
+            ARTIFACT_TAG="v${VERSION}"
+            RELEASE_TITLE="Sonata v${VERSION}"
+            BUILD_DESKTOP="true"
+            BUILD_ANDROID="true"
+            IS_RELEASE="true"
           else
             VERSION="$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)"
+            ARTIFACT_TAG="v${VERSION}"
+            RELEASE_TITLE="Sonata v${VERSION}"
+            if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+              [[ "${INPUT_TARGET}" == "android" ]] && BUILD_DESKTOP="false"
+              [[ "${INPUT_TARGET}" == "desktop" ]] && BUILD_ANDROID="false"
+            fi
           fi
+
           CORE="${VERSION%%-*}"
           IFS='.' read -r MAJOR MINOR PATCH <<< "${CORE}"
           MAJOR="${MAJOR:-1}"
           MINOR="${MINOR:-0}"
           PATCH="${PATCH:-0}"
           VERSION_CODE="$(( MAJOR * 10000 + MINOR * 100 + PATCH ))"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "version_code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
-          echo "Resolved Sonata v${VERSION} (Android versionCode=${VERSION_CODE})"
+
+          {
+            echo "version=${VERSION}"
+            echo "version_code=${VERSION_CODE}"
+            echo "tag_name=${TAG_NAME}"
+            echo "artifact_tag=${ARTIFACT_TAG}"
+            echo "release_title=${RELEASE_TITLE}"
+            echo "build_desktop=${BUILD_DESKTOP}"
+            echo "build_android=${BUILD_ANDROID}"
+            echo "is_release=${IS_RELEASE}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Resolved ${RELEASE_TITLE} (version=${VERSION}, versionCode=${VERSION_CODE}, desktop=${BUILD_DESKTOP}, android=${BUILD_ANDROID}, release=${IS_RELEASE})"
 
   appimage:
     name: Linux Desktop AppImage (x86_64)
     needs: version
+    if: needs.version.outputs.build_desktop == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install native Linux desktop dependencies
         run: |
@@ -62,6 +131,7 @@ jobs:
             libxcb1-dev \
             libxkbcommon-dev \
             libxkbcommon-x11-dev \
+            librsvg2-bin \
             pkg-config \
             fuse \
             file
@@ -76,9 +146,13 @@ jobs:
         run: cargo build --release --locked -p sonata-desktop -p sonata-tui
 
       - name: Assemble Sonata.AppDir
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           mkdir -p Sonata.AppDir/usr/bin \
                    Sonata.AppDir/usr/share/applications \
+                   Sonata.AppDir/usr/share/metainfo \
+                   Sonata.AppDir/usr/share/icons/hicolor/256x256/apps \
                    Sonata.AppDir/usr/share/icons/hicolor/scalable/apps
 
           cp target/release/sonata-desktop Sonata.AppDir/usr/bin/sonata-desktop
@@ -111,50 +185,88 @@ jobs:
           EOF
           cp Sonata.AppDir/sonata.desktop Sonata.AppDir/usr/share/applications/sonata.desktop
 
-          cp assets/sonata-logo.svg Sonata.AppDir/sonata.svg
-          cp assets/sonata-logo.svg Sonata.AppDir/.DirIcon
+          cat <<EOF > Sonata.AppDir/usr/share/metainfo/sonata.appdata.xml
+          <?xml version="1.0" encoding="UTF-8"?>
+          <component type="desktop-application">
+            <id>dev.sonata.desktop</id>
+            <name>Sonata</name>
+            <summary>High-fidelity native music player for YouTube Music and Spotify</summary>
+            <metadata_license>CC0-1.0</metadata_license>
+            <project_license>MIT</project_license>
+            <launchable type="desktop-id">sonata.desktop</launchable>
+            <url type="homepage">https://github.com/MehmetCanWT/sonata</url>
+            <releases>
+              <release version="${VERSION}" date="$(date -u +%Y-%m-%d)" />
+            </releases>
+          </component>
+          EOF
+
+          rsvg-convert -w 256 -h 256 assets/sonata-logo.svg -o Sonata.AppDir/sonata.png
+          cp Sonata.AppDir/sonata.png Sonata.AppDir/.DirIcon
+          cp Sonata.AppDir/sonata.png Sonata.AppDir/usr/share/icons/hicolor/256x256/apps/sonata.png
           cp assets/sonata-logo.svg Sonata.AppDir/usr/share/icons/hicolor/scalable/apps/sonata.svg
 
       - name: Build AppImage
         env:
-          VERSION: ${{ needs.version.outputs.version }}
+          ARTIFACT_TAG: ${{ needs.version.outputs.artifact_tag }}
         run: |
           curl -fsSL -o appimagetool-x86_64.AppImage \
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x appimagetool-x86_64.AppImage
-          OUT="Sonata-v${VERSION}-x86_64.AppImage"
+          OUT="Sonata-${ARTIFACT_TAG}-x86_64.AppImage"
           ARCH=x86_64 ./appimagetool-x86_64.AppImage --appimage-extract-and-run Sonata.AppDir "${OUT}"
           chmod +x "${OUT}"
           ls -lh "${OUT}"
 
       - name: Upload Linux AppImage artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Sonata-Linux-AppImage
-          path: Sonata-v*-x86_64.AppImage
+          path: Sonata-*-x86_64.AppImage
           if-no-files-found: error
 
   android-apk:
     name: Android APK (arm64-v8a)
     needs: version
+    if: needs.version.outputs.build_android == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "21"
 
-      - name: Set up Android SDK & NDK
-        uses: android-actions/setup-android@v3
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-home-cache-cleanup: true
 
-      - name: Install Android NDK 27.2.12479018
+      - name: Install Android NDK 27.2.12479018 & SDK 35
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "ndk;27.2.12479018" "platforms;android-35" "build-tools;35.0.0"
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER=""
+          if [[ -x "${SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" ]]; then
+            SDKMANAGER="${SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          else
+            SDKMANAGER="$(find "${SDK_ROOT}/cmdline-tools" -maxdepth 3 -name sdkmanager -type f 2>/dev/null | sort -V | tail -n 1 || true)"
+          fi
+          if [[ -z "${SDKMANAGER}" || ! -x "${SDKMANAGER}" ]]; then
+            echo "sdkmanager not found under ${SDK_ROOT}" >&2
+            exit 1
+          fi
+          echo "Using sdkmanager: ${SDKMANAGER}"
+          yes | "${SDKMANAGER}" --sdk_root="${SDK_ROOT}" --licenses >/dev/null || true
+          "${SDKMANAGER}" --sdk_root="${SDK_ROOT}" \
+            "ndk;27.2.12479018" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+          echo "ANDROID_HOME=${SDK_ROOT}" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=${SDK_ROOT}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=${SDK_ROOT}/ndk/27.2.12479018" >> "$GITHUB_ENV"
 
       - name: Install Rust & Android target
         uses: dtolnay/rust-toolchain@stable
@@ -170,8 +282,6 @@ jobs:
           tool: cargo-ndk
 
       - name: Build Rust UniFFI shared library
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
         run: |
           cargo ndk -t arm64-v8a -P 26 -o android/app/src/main/jniLibs build -p sonata-android --release --locked
 
@@ -188,6 +298,7 @@ jobs:
         env:
           VERSION: ${{ needs.version.outputs.version }}
           VERSION_CODE: ${{ needs.version.outputs.version_code }}
+          ARTIFACT_TAG: ${{ needs.version.outputs.artifact_tag }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
@@ -198,19 +309,24 @@ jobs:
             -PsonataVersion="${VERSION}" \
             -PsonataVersionCode="${VERSION_CODE}" \
             --console=plain
-          cp app/build/outputs/apk/release/app-release.apk "../Sonata-v${VERSION}-arm64.apk"
-          ls -lh "../Sonata-v${VERSION}-arm64.apk"
+          OUT="../Sonata-${ARTIFACT_TAG}-arm64.apk"
+          cp app/build/outputs/apk/release/app-release.apk "${OUT}"
+          ls -lh "${OUT}"
 
       - name: Upload Android APK artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Sonata-Android-APK
-          path: Sonata-v*-arm64.apk
+          path: Sonata-*-arm64.apk
           if-no-files-found: error
 
   publish-release:
     name: Publish GitHub Release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      always() &&
+      needs.version.outputs.is_release == 'true' &&
+      (needs.appimage.result == 'success' || needs.appimage.result == 'skipped') &&
+      (needs.android-apk.result == 'success' || needs.android-apk.result == 'skipped')
     needs:
       - version
       - appimage
@@ -220,13 +336,15 @@ jobs:
       contents: write
     steps:
       - name: Download Linux AppImage
-        uses: actions/download-artifact@v4
+        if: needs.version.outputs.build_desktop == 'true'
+        uses: actions/download-artifact@v8
         with:
           name: Sonata-Linux-AppImage
           path: release-artifacts
 
       - name: Download Android APK
-        uses: actions/download-artifact@v4
+        if: needs.version.outputs.build_android == 'true'
+        uses: actions/download-artifact@v8
         with:
           name: Sonata-Android-APK
           path: release-artifacts
@@ -234,15 +352,26 @@ jobs:
       - name: Generate SHA256 checksums
         run: |
           cd release-artifacts
-          sha256sum Sonata-v* > SHA256SUMS.txt
+          sha256sum Sonata-* > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
+      - name: Remove stale assets if re-releasing same tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ needs.version.outputs.tag_name }}
+        run: |
+          if gh release view "${TAG_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release ${TAG_NAME} already exists; purging old assets before re-uploading fresh builds..."
+            ASSETS="$(gh release view "${TAG_NAME}" --repo "${GITHUB_REPOSITORY}" --json assets -q '.assets[].name')"
+            for asset in ${ASSETS}; do
+              gh release delete-asset "${TAG_NAME}" "${asset}" --repo "${GITHUB_REPOSITORY}" --yes || true
+            done
+          fi
+
       - name: Publish Release Assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
-          name: Sonata v${{ needs.version.outputs.version }}
+          name: ${{ needs.version.outputs.release_title }}
           generate_release_notes: true
           files: |
-            release-artifacts/Sonata-v*-x86_64.AppImage
-            release-artifacts/Sonata-v*-arm64.apk
-            release-artifacts/SHA256SUMS.txt
+            release-artifacts/*

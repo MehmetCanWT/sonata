@@ -137,13 +137,14 @@ cargo install --git https://github.com/MehmetCanWT/sonata.git --locked sonata-tu
 
 ## Versioning & Automated Releases
 
-Sonata follows [Semantic Versioning](https://semver.org/) starting at **`v1.0.0`**:
+Sonata follows [Semantic Versioning](https://semver.org/) starting at **`v1.0.0`** with both unified and per-platform release streams:
 
-- **Unified Version Source**: Rust workspace crates (`Cargo.toml`), Arch `PKGBUILD` / `PKGBUILD.desktop`, Android `versionName`, and GitHub Release tags share the same `MAJOR.MINOR.PATCH` version. Android `versionCode` is derived deterministically as `MAJOR * 10000 + MINOR * 100 + PATCH` (`1.0.0` → `10000`).
-- **Automated CI Releases**: Pushing a tag such as `v1.0.0` runs [`.github/workflows/release-builds.yml`](.github/workflows/release-builds.yml), which automatically builds and publishes:
-  - `Sonata-v<version>-x86_64.AppImage` (Linux Desktop GUI + bundled `--tui` mode)
-  - `Sonata-v<version>-arm64.apk` (Installable Android `arm64-v8a` APK)
-  - `SHA256SUMS.txt` (Integrity checksums for all assets)
+- **Unified Version Source**: Rust workspace crates (`Cargo.toml`), Arch `PKGBUILD` / `PKGBUILD.desktop`, Android `versionName`, and GitHub Release tags share `MAJOR.MINOR.PATCH`. Android `versionCode` is derived deterministically as `MAJOR * 10000 + MINOR * 100 + PATCH` (`1.0.0` → `10000`).
+- **Automated Per-Platform CI Releases** ([`.github/workflows/release-builds.yml`](.github/workflows/release-builds.yml)):
+  - **`vX.Y.Z`** (e.g., `v1.0.0`): Unified release — builds **both** `Sonata-vX.Y.Z-x86_64.AppImage` and `Sonata-vX.Y.Z-arm64.apk` (+ `SHA256SUMS.txt`), notifying all clients.
+  - **`android-vX.Y.Z`** (e.g., `android-v1.0.1`): Android-only release — builds **only** `Sonata-android-vX.Y.Z-arm64.apk` and triggers update notifications **only inside Android** (Desktop & TUI ignore it).
+  - **`desktop-vX.Y.Z`** (e.g., `desktop-v1.0.1`): Desktop/TUI-only release — builds **only** `Sonata-desktop-vX.Y.Z-x86_64.AppImage` and triggers update notifications **only inside Desktop & TUI** (Android ignores it).
+  - Force-moving an existing tag automatically purges stale assets on that GitHub Release before uploading the fresh builds.
 
 ---
 

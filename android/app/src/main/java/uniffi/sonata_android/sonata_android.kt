@@ -797,6 +797,8 @@ internal interface IntegrityCheckingUniffiLib : Library {
     // Integrity check functions only
     fun uniffi_sonata_android_checksum_method_sonataandroidengine_check_for_updates(
 ): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_check_for_updates_for_version(
+): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_clear_lyrics_cache(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_collection_tracks(
@@ -810,8 +812,6 @@ fun uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_lyrics(
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_get_account_profile(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_get_cached_account_profile(
-): Short
-fun uniffi_sonata_android_checksum_method_sonataandroidengine_get_cached_home_feed(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_get_cached_library_playlists(
 ): Short
@@ -895,6 +895,8 @@ fun uniffi_sonata_android_fn_constructor_sonataandroidengine_new(`configDir`: Ru
 ): Pointer
 fun uniffi_sonata_android_fn_method_sonataandroidengine_check_for_updates(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_sonata_android_fn_method_sonataandroidengine_check_for_updates_for_version(`ptr`: Pointer,`currentVersion`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_sonata_android_fn_method_sonataandroidengine_clear_lyrics_cache(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_sonata_android_fn_method_sonataandroidengine_fetch_collection_tracks(`ptr`: Pointer,`browseId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -908,8 +910,6 @@ fun uniffi_sonata_android_fn_method_sonataandroidengine_fetch_lyrics(`ptr`: Poin
 fun uniffi_sonata_android_fn_method_sonataandroidengine_get_account_profile(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_sonata_android_fn_method_sonataandroidengine_get_cached_account_profile(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_sonata_android_fn_method_sonataandroidengine_get_cached_home_feed(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_sonata_android_fn_method_sonataandroidengine_get_cached_library_playlists(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1057,7 +1057,10 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
-    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_check_for_updates() != 8136.toShort()) {
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_check_for_updates() != 35554.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_check_for_updates_for_version() != 59039.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_clear_lyrics_cache() != 62754.toShort()) {
@@ -1066,7 +1069,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_collection_tracks() != 49992.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_home_feed() != 12338.toShort()) {
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_home_feed() != 30455.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_library_playlists() != 53429.toShort()) {
@@ -1079,9 +1082,6 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_get_cached_account_profile() != 36193.toShort()) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
-    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_get_cached_home_feed() != 3528.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_get_cached_library_playlists() != 28358.toShort()) {
@@ -1522,9 +1522,14 @@ public object FfiConverterString: FfiConverter<String, RustBuffer.ByValue> {
 public interface SonataAndroidEngineInterface {
     
     /**
-     * Checks GitHub Releases for a newer Sonata APK or desktop release.
+     * Checks GitHub Releases for a newer Sonata Android APK release.
      */
     fun `checkForUpdates`(): AndroidUpdateInfo
+    
+    /**
+     * Checks GitHub Releases for a newer Sonata Android APK release against an explicit installed versionName.
+     */
+    fun `checkForUpdatesForVersion`(`currentVersion`: kotlin.String): AndroidUpdateInfo
     
     /**
      * Clears persisted lyrics from SQLite enrichment and on-disk `.lrc`/`.txt` cache files.
@@ -1537,7 +1542,7 @@ public interface SonataAndroidEngineInterface {
     fun `fetchCollectionTracks`(`browseId`: kotlin.String): List<AndroidTrack>
     
     /**
-     * Fetches YouTube Music home/discovery shelves.
+     * Fetches fresh YouTube Music home/discovery shelves live without persisting to disk.
      */
     fun `fetchHomeFeed`(): List<AndroidHomeShelf>
     
@@ -1560,11 +1565,6 @@ public interface SonataAndroidEngineInterface {
      * Reads the cached YouTube Music account profile from disk for instant startup display.
      */
     fun `getCachedAccountProfile`(): AndroidAccountProfile?
-    
-    /**
-     * Reads the cached Home feed shelves from disk for instant startup display.
-     */
-    fun `getCachedHomeFeed`(): List<AndroidHomeShelf>
     
     /**
      * Reads the cached library playlists from disk for instant startup display.
@@ -1708,7 +1708,7 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
 
     
     /**
-     * Checks GitHub Releases for a newer Sonata APK or desktop release.
+     * Checks GitHub Releases for a newer Sonata Android APK release.
      */
     @Throws(SonataAndroidException::class)override fun `checkForUpdates`(): AndroidUpdateInfo {
             return FfiConverterTypeAndroidUpdateInfo.lift(
@@ -1716,6 +1716,22 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
     uniffiRustCallWithError(SonataAndroidException) { _status ->
     UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_check_for_updates(
         it, _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Checks GitHub Releases for a newer Sonata Android APK release against an explicit installed versionName.
+     */
+    @Throws(SonataAndroidException::class)override fun `checkForUpdatesForVersion`(`currentVersion`: kotlin.String): AndroidUpdateInfo {
+            return FfiConverterTypeAndroidUpdateInfo.lift(
+    callWithPointer {
+    uniffiRustCallWithError(SonataAndroidException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_check_for_updates_for_version(
+        it, FfiConverterString.lower(`currentVersion`),_status)
 }
     }
     )
@@ -1754,7 +1770,7 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
 
     
     /**
-     * Fetches YouTube Music home/discovery shelves.
+     * Fetches fresh YouTube Music home/discovery shelves live without persisting to disk.
      */
     @Throws(SonataAndroidException::class)override fun `fetchHomeFeed`(): List<AndroidHomeShelf> {
             return FfiConverterSequenceTypeAndroidHomeShelf.lift(
@@ -1822,21 +1838,6 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
     callWithPointer {
     uniffiRustCall() { _status ->
     UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_get_cached_account_profile(
-        it, _status)
-}
-    }
-    )
-    }
-    
-
-    
-    /**
-     * Reads the cached Home feed shelves from disk for instant startup display.
-     */override fun `getCachedHomeFeed`(): List<AndroidHomeShelf> {
-            return FfiConverterSequenceTypeAndroidHomeShelf.lift(
-    callWithPointer {
-    uniffiRustCall() { _status ->
-    UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_get_cached_home_feed(
         it, _status)
 }
     }

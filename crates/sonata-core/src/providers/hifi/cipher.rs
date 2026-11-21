@@ -16,8 +16,11 @@ use std::io::Write as _;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+static CIPHER_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const PLAYER_CACHE_TTL_SECS: u64 = 86_400;
 const DEFAULT_SIGNATURE_TIMESTAMP: u64 = 20_774;
@@ -61,21 +64,35 @@ fn now_epoch_secs() -> u64 {
 }
 
 fn write_private_cache_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-        #[cfg(unix)]
-        let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
-    }
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    #[cfg(unix)]
+    let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("cipher_cache");
+    let seq = CIPHER_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp = parent.join(format!("{file_name}.{}.{}.tmp", std::process::id(), seq));
+
     let mut opts = OpenOptions::new();
     opts.write(true).create(true).truncate(true);
     #[cfg(unix)]
     opts.mode(0o600);
-    let mut file = opts.open(path)?;
-    #[cfg(unix)]
-    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    Ok(())
+    let write_res = (|| -> std::io::Result<()> {
+        let mut file = opts.open(&tmp)?;
+        #[cfg(unix)]
+        let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        fs::rename(&tmp, path)?;
+        Ok(())
+    })();
+    if write_res.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    write_res
 }
 
 fn player_cache_json_path() -> PathBuf {
@@ -342,6 +359,16 @@ impl StreamResolver {
     }
 
     pub async fn ensure_prepared_player_js(&self) -> Option<PreparedPlayerJs> {
+        if let Some(cached) = self.player_cipher.read().await.clone() {
+            let age = now_epoch_secs().saturating_sub(cached.cached_at_epoch_secs);
+            if age < PLAYER_CACHE_TTL_SECS {
+                return Some(cached);
+            }
+        }
+
+        // Single-flight initialization prevents concurrent base.js downloads, cache races,
+        // and duplicate WebView script evaluations.
+        let _init_guard = self.player_cipher_init.lock().await;
         if let Some(cached) = self.player_cipher.read().await.clone() {
             let age = now_epoch_secs().saturating_sub(cached.cached_at_epoch_secs);
             if age < PLAYER_CACHE_TTL_SECS {

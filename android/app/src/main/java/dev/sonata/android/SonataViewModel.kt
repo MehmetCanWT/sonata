@@ -3,15 +3,22 @@ package dev.sonata.android
 import android.app.Application
 import android.content.ComponentName
 import android.content.Context
+import android.content.SharedPreferences
 import android.hardware.display.DisplayManager
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.Display
 import android.webkit.WebView
 import androidx.annotation.OptIn
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -21,15 +28,22 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import org.json.JSONTokener
 import uniffi.sonata_android.AndroidAccountProfile
@@ -53,6 +67,7 @@ import kotlin.random.Random
 private class WebViewJsCipherSolver(context: Context) : AndroidJsCipherSolver {
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val loadLock = Any()
     @Volatile private var webView: WebView? = null
     @Volatile private var loadedHash: String? = null
 
@@ -73,28 +88,31 @@ private class WebViewJsCipherSolver(context: Context) : AndroidJsCipherSolver {
     override fun ensureLoaded(playerHash: String, hookedScript: String): Boolean {
         if (loadedHash == playerHash) return true
         if (Looper.myLooper() == Looper.getMainLooper()) return false
-        val future = CompletableFuture<Boolean>()
-        mainHandler.post {
-            try {
-                if (loadedHash == playerHash) {
-                    future.complete(true)
-                    return@post
-                }
-                val wv = getOrCreateWebViewOnMain()
-                wv.evaluateJavascript("$hookedScript;typeof globalThis._yt_solve === 'function'") { result ->
-                    val ok = result?.trim()?.removeSurrounding("\"") == "true"
-                    if (ok) {
-                        loadedHash = playerHash
+        synchronized(loadLock) {
+            if (loadedHash == playerHash) return true
+            val future = CompletableFuture<Boolean>()
+            mainHandler.post {
+                try {
+                    if (loadedHash == playerHash) {
+                        future.complete(true)
+                        return@post
                     }
-                    Log.i("SonataStream", "cipher_webview loaded hash=$playerHash ok=$ok")
-                    future.complete(ok)
+                    val wv = getOrCreateWebViewOnMain()
+                    wv.evaluateJavascript("$hookedScript;typeof globalThis._yt_solve === 'function'") { result ->
+                        val ok = result?.trim()?.removeSurrounding("\"") == "true"
+                        if (ok) {
+                            loadedHash = playerHash
+                        }
+                        Log.i("SonataStream", "cipher_webview loaded hash=$playerHash ok=$ok")
+                        future.complete(ok)
+                    }
+                } catch (t: Throwable) {
+                    Log.w("SonataStream", "cipher_webview load failed: ${t.message}")
+                    future.complete(false)
                 }
-            } catch (t: Throwable) {
-                Log.w("SonataStream", "cipher_webview load failed: ${t.message}")
-                future.complete(false)
             }
+            return runCatching { future.get(8, TimeUnit.SECONDS) }.getOrDefault(false)
         }
-        return runCatching { future.get(8, TimeUnit.SECONDS) }.getOrDefault(false)
     }
 
     override fun solve(playerHash: String, sig: String, n: String): AndroidSolvedCipher? {
@@ -146,13 +164,67 @@ private class WebViewJsCipherSolver(context: Context) : AndroidJsCipherSolver {
 
 enum class AndroidTab { Home, Explore, Library, Search }
 
+@Stable
+class PlaybackClockState {
+    var positionMs: Long by mutableLongStateOf(0L)
+        internal set
+    var sampledAtNanos: Long by mutableLongStateOf(0L)
+        internal set
+    var durationMs: Long by mutableLongStateOf(0L)
+        internal set
+    var seekDiscontinuity: Long by mutableLongStateOf(0L)
+        internal set
+
+    internal fun sync(
+        positionMs: Long,
+        durationMs: Long,
+        sampledAtNanos: Long = System.nanoTime(),
+    ) {
+        val safePos = positionMs.coerceAtLeast(0L)
+        val safeDur = durationMs.coerceAtLeast(0L)
+        Snapshot.withMutableSnapshot {
+            this.positionMs = safePos
+            this.sampledAtNanos = sampledAtNanos
+            if (safeDur > 0L && this.durationMs != safeDur) {
+                this.durationMs = safeDur
+            }
+        }
+    }
+
+    internal fun onSeek(
+        positionMs: Long,
+        sampledAtNanos: Long = System.nanoTime(),
+    ) {
+        val safePos = positionMs.coerceAtLeast(0L)
+        Snapshot.withMutableSnapshot {
+            this.positionMs = safePos
+            this.sampledAtNanos = sampledAtNanos
+            this.seekDiscontinuity += 1L
+        }
+    }
+
+    internal fun resetForTrack(
+        durationMs: Long,
+        sampledAtNanos: Long = System.nanoTime(),
+    ) {
+        val safeDur = durationMs.coerceAtLeast(0L)
+        Snapshot.withMutableSnapshot {
+            this.positionMs = 0L
+            this.sampledAtNanos = sampledAtNanos
+            this.durationMs = safeDur
+            this.seekDiscontinuity += 1L
+        }
+    }
+}
+
 @Immutable
 data class SonataUiState(
     val activeTab: AndroidTab = AndroidTab.Home,
     val query: String = "",
-    val loading: Boolean = false,
+    val loading: Boolean = true,
     val refreshing: Boolean = false,
-    val status: String = "",
+    val status: String = "Loading YouTube Music...",
+    val authInitialized: Boolean = false,
     val signedIn: Boolean = false,
     val accountProfile: AndroidAccountProfile? = null,
     val showLoginSheet: Boolean = false,
@@ -174,10 +246,6 @@ data class SonataUiState(
     val isPlaying: Boolean = false,
     val isBuffering: Boolean = false,
     val isUpgradingQuality: Boolean = false,
-    val positionMs: Long = 0L,
-    val positionSampledAtNanos: Long = System.nanoTime(),
-    val seekDiscontinuity: Long = 0L,
-    val durationMs: Long = 0L,
     val repeatMode: Int = Player.REPEAT_MODE_OFF,
     val shuffleEnabled: Boolean = false,
     val lyrics: List<AndroidLyricLine> = emptyList(),
@@ -202,23 +270,32 @@ data class SonataUiState(
                 (queueIndex in 0 until queue.lastIndex)
             )
 
-    val hasPrevious: Boolean
+    val hasPreviousInQueue: Boolean
         get() = activeTrack != null && (
-            positionMs > 3_000L ||
-                repeatMode == Player.REPEAT_MODE_ALL ||
+            repeatMode == Player.REPEAT_MODE_ALL ||
                 queueIndex > 0
             )
+
+    fun hasPrevious(positionMs: Long): Boolean =
+        activeTrack != null && (positionMs > 3_000L || hasPreviousInQueue)
 }
 
 class SonataViewModel(application: Application) : AndroidViewModel(application) {
-    private val engine = SonataAndroidEngine(
-        configDir = application.filesDir.absolutePath,
-        cacheDir = application.cacheDir.absolutePath
+    private data class CachedStream(
+        val stream: AndroidResolvedStream,
+        val cachedAtMs: Long,
     )
+
+    private val engineDeferred = CompletableDeferred<SonataAndroidEngine>()
     private val cipherSolver = WebViewJsCipherSolver(application)
 
-    private val streamCache = ConcurrentHashMap<String, AndroidResolvedStream>()
+    private val streamCache = ConcurrentHashMap<String, CachedStream>()
     private val inFlightPrefetch = ConcurrentHashMap.newKeySet<String>()
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val prefetchDispatcher = Dispatchers.IO.limitedParallelism(1)
+
+    val playbackClock = PlaybackClockState()
 
     private val _uiState = MutableStateFlow(SonataUiState())
     val uiState: StateFlow<SonataUiState> = _uiState.asStateFlow()
@@ -226,71 +303,136 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
     private var controller: MediaController? = null
     private var playJob: Job? = null
     private var lyricsJob: Job? = null
+    private var refreshJob: Job? = null
+    private var speculativePrefetchJob: Job? = null
     private var lyricsFetchedForTrackId: String? = null
+    @Volatile private var cipherWarmupScheduled = false
 
-    private val prefs = application.getSharedPreferences("sonata_prefs", Context.MODE_PRIVATE)
+    private val prefs: SharedPreferences by lazy {
+        getApplication<Application>().getSharedPreferences("sonata_prefs", Context.MODE_PRIVATE)
+    }
+
+    private suspend fun requireEngine(): SonataAndroidEngine = engineDeferred.await()
+
+    private fun getCachedStream(trackId: String): AndroidResolvedStream? {
+        val entry = streamCache[trackId] ?: return null
+        if (SystemClock.elapsedRealtime() - entry.cachedAtMs >= STREAM_CACHE_TTL_MS) {
+            streamCache.remove(trackId, entry)
+            return null
+        }
+        return entry.stream
+    }
+
+    private fun putCachedStream(trackId: String, stream: AndroidResolvedStream) {
+        val now = SystemClock.elapsedRealtime()
+        streamCache[trackId] = CachedStream(stream = stream, cachedAtMs = now)
+        if (streamCache.size > STREAM_CACHE_MAX_ENTRIES) {
+            streamCache.entries
+                .sortedBy { it.value.cachedAtMs }
+                .take(streamCache.size - STREAM_CACHE_MAX_ENTRIES)
+                .forEach { streamCache.remove(it.key, it.value) }
+        }
+    }
 
     init {
         val displayManager = application.getSystemService(DisplayManager::class.java)
         val defaultDisplay = displayManager?.getDisplay(Display.DEFAULT_DISPLAY)
         val supports120Hz = defaultDisplay?.supportedModes?.any { it.refreshRate >= 115f } ?: false
-        val savedFps = prefs.getInt("fps_limit", 60).let { if (it == 120 && supports120Hz) 120 else 60 }
-        val signedIn = runCatching { engine.isSignedIn() }.getOrDefault(false)
-        val cachedProfile = if (signedIn) runCatching { engine.getCachedAccountProfile() }.getOrNull() else null
-        val cachedShelves = runCatching { engine.getCachedHomeFeed() }.getOrDefault(emptyList())
-        val cachedPlaylists = if (signedIn) runCatching { engine.getCachedLibraryPlaylists() }.getOrDefault(emptyList()) else emptyList()
-        val cachedTracks = cachedShelves.firstOrNull { it.tracks.isNotEmpty() }?.tracks.orEmpty()
-        val restoredTrack = loadSavedActiveTrack(cachedTracks)
-        val initialQueue = when {
-            restoredTrack != null && cachedTracks.none { it.id == restoredTrack.id } ->
-                listOf(restoredTrack) + cachedTracks
-            cachedTracks.isNotEmpty() -> cachedTracks
-            restoredTrack != null -> listOf(restoredTrack)
-            else -> emptyList()
-        }
-        val initialQueueIndex = if (restoredTrack != null) {
-            initialQueue.indexOfFirst { it.id == restoredTrack.id }.coerceAtLeast(0)
-        } else {
-            -1
-        }
-        val savedBadge = prefs.getString("last_track_badge", null).orEmpty()
 
         _uiState.value = SonataUiState(
-            loading = cachedShelves.isEmpty(),
+            loading = true,
             refreshing = false,
-            status = if (cachedShelves.isNotEmpty()) "${cachedShelves.size} shelves ready" else "Loading YouTube Music...",
-            signedIn = signedIn,
-            accountProfile = cachedProfile,
-            shelves = cachedShelves,
-            playlists = cachedPlaylists,
-            tracks = cachedTracks,
-            queue = initialQueue,
-            queueIndex = initialQueueIndex,
-            activeTrack = restoredTrack,
-            streamBadge = savedBadge,
-            durationMs = (restoredTrack?.durationSecs?.toLong() ?: 0L) * 1000L,
-            fpsLimit = savedFps,
+            status = "Loading YouTube Music...",
             supports120Hz = supports120Hz,
         )
 
-        if (restoredTrack != null) {
-            fetchLyricsInBackground(restoredTrack)
-        }
-
-        runCatching { engine.setJsCipherSolver(cipherSolver) }
         registerQueueBridge()
-        connectMediaController()
         startPositionPoller()
+        startColdLaunchBootstrap(application, supports120Hz)
+    }
 
-        val initialPrefetch = (listOfNotNull(restoredTrack) + collectWarmCandidates(cachedShelves)).distinctBy { it.id }
+    @OptIn(UnstableApi::class)
+    private fun startColdLaunchBootstrap(application: Application, supports120Hz: Boolean) {
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching { engine.warmCipherSolver() }
-            if (initialPrefetch.isNotEmpty()) {
-                prefetchStreams(initialPrefetch)
+            // 1. Belt-and-suspenders removal of any legacy Home feed cache + non-blocking prefs load.
+            runCatching { File(application.cacheDir, "sonata/android_home.json").delete() }
+
+            val savedFps = prefs.getInt("fps_limit", 60).let { if (it == 120 && supports120Hz) 120 else 60 }
+            val restoredTrack = loadSavedActiveTrack(emptyList())
+            val savedBadge = prefs.getString("last_track_badge", null).orEmpty()
+            val initialQueue = listOfNotNull(restoredTrack)
+            val initialQueueIndex = if (restoredTrack != null) 0 else -1
+
+            if (restoredTrack != null) {
+                playbackClock.resetForTrack((restoredTrack.durationSecs?.toLong() ?: 0L) * 1000L)
+            }
+            _uiState.update {
+                it.copy(
+                    queue = if (it.queue.isEmpty()) initialQueue else it.queue,
+                    queueIndex = if (it.queueIndex < 0) initialQueueIndex else it.queueIndex,
+                    activeTrack = it.activeTrack ?: restoredTrack,
+                    streamBadge = if (it.streamBadge.isEmpty()) savedBadge else it.streamBadge,
+                    fpsLimit = savedFps,
+                    supports120Hz = supports120Hz,
+                )
+            }
+
+            // Pre-warm ExoPlayer's SimpleCache on IO so MediaSessionService.onCreate() does 0ms Main disk I/O.
+            launch(Dispatchers.IO) {
+                runCatching { PlaybackService.getOrCreateCache(application) }
+                withContext(Dispatchers.Main) {
+                    connectMediaController()
+                }
+            }
+
+            // 2. Construct the Rust UniFFI engine off the Main thread.
+            val engine = runCatching {
+                SonataAndroidEngine(
+                    configDir = application.filesDir.absolutePath,
+                    cacheDir = application.cacheDir.absolutePath,
+                ).also { eng ->
+                    runCatching { eng.setJsCipherSolver(cipherSolver) }
+                }
+            }.getOrElse { err ->
+                Log.e("SonataEngine", "Failed to initialize SonataAndroidEngine", err)
+                _uiState.update {
+                    it.copy(
+                        loading = false,
+                        authInitialized = true,
+                        status = "Engine init error: ${err.message}",
+                    )
+                }
+                return@launch
+            }
+            engineDeferred.complete(engine)
+
+            // 3. Load lightweight cached auth/profile/playlists (never Home) for instant Library & Profile.
+            val signedIn = runCatching { engine.isSignedIn() }.getOrDefault(false)
+            val cachedProfile = if (signedIn) runCatching { engine.getCachedAccountProfile() }.getOrNull() else null
+            val cachedPlaylists = if (signedIn) runCatching { engine.getCachedLibraryPlaylists() }.getOrDefault(emptyList()) else emptyList()
+
+            _uiState.update {
+                it.copy(
+                    authInitialized = true,
+                    signedIn = signedIn,
+                    accountProfile = cachedProfile ?: it.accountProfile,
+                    playlists = if (it.playlists.isEmpty()) cachedPlaylists else it.playlists,
+                )
+            }
+
+            // 4. Immediately fetch fresh live Home shelves (never disk-cached).
+            refreshInBackground(showBlockingSpinner = true)
+
+            if (restoredTrack != null && lyricsFetchedForTrackId != restoredTrack.id) {
+                fetchLyricsInBackground(restoredTrack)
+            }
+
+            // 5. Defer update check well past critical cold launch & first scroll frames.
+            launch(Dispatchers.IO) {
+                delay(8_000L)
+                checkForUpdates()
             }
         }
-        refreshInBackground(showBlockingSpinner = cachedShelves.isEmpty())
-        checkForUpdates()
     }
 
     private fun saveActiveTrackToPrefs(track: AndroidTrack, badge: String = "") {
@@ -331,6 +473,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         lyricsJob?.cancel()
         lyricsFetchedForTrackId = track.id
         lyricsJob = viewModelScope.launch(Dispatchers.IO) {
+            val engine = requireEngine()
             _uiState.update {
                 if (it.activeTrack?.id == track.id) it.copy(lyricsLoading = true, lyricsUnavailable = false) else it
             }
@@ -353,7 +496,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun registerQueueBridge() {
         PlaybackQueueBridge.canSkipNext = { _uiState.value.hasNext }
-        PlaybackQueueBridge.canSkipPrevious = { _uiState.value.hasPrevious }
+        PlaybackQueueBridge.canSkipPrevious = { _uiState.value.hasPrevious(playbackClock.positionMs) }
         PlaybackQueueBridge.onSkipNext = { viewModelScope.launch { nextTrack() } }
         PlaybackQueueBridge.onSkipPrevious = { viewModelScope.launch { prevTrack() } }
         PlaybackQueueBridge.onPlayFromEmpty = { viewModelScope.launch { togglePlayPause() } }
@@ -362,11 +505,27 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
     private fun collectWarmCandidates(shelves: List<AndroidHomeShelf>): List<AndroidTrack> {
         val fromTracks = shelves.flatMap { it.tracks }
         val fromCards = shelves.flatMap { it.cards }.mapNotNull { it.track }
-        return (fromTracks + fromCards).distinctBy { it.id }.take(3)
+        return (fromTracks + fromCards).distinctBy { it.id }.take(2)
+    }
+
+    private fun scheduleDeferredCipherWarmupAndPrefetch(candidates: List<AndroidTrack>) {
+        speculativePrefetchJob?.cancel()
+        speculativePrefetchJob = viewModelScope.launch(prefetchDispatcher) {
+            // Wait until first Home paint & initial user interaction/scroll settle before spinning up WebView JS.
+            delay(2_500L)
+            val engine = requireEngine()
+            if (!cipherWarmupScheduled) {
+                cipherWarmupScheduled = true
+                runCatching { engine.warmCipherSolver() }
+            }
+            resolvePrefetchList(engine, candidates.distinctBy { it.id }.take(2))
+        }
     }
 
     private fun refreshInBackground(showBlockingSpinner: Boolean = false) {
-        viewModelScope.launch(Dispatchers.IO) {
+        refreshJob?.cancel()
+        refreshJob = viewModelScope.launch(Dispatchers.IO) {
+            val engine = requireEngine()
             _uiState.update {
                 it.copy(
                     loading = showBlockingSpinner && it.shelves.isEmpty(),
@@ -378,7 +537,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                 launch {
                     runCatching { engine.getAccountProfile() }
                         .onSuccess { profile ->
-                            if (profile != null) {
+                            if (profile != null && profile != _uiState.value.accountProfile) {
                                 _uiState.update { it.copy(signedIn = true, accountProfile = profile) }
                             }
                         }
@@ -386,22 +545,27 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                 launch {
                     runCatching { engine.fetchLibraryPlaylists() }
                         .onSuccess { playlists ->
-                            _uiState.update { it.copy(playlists = playlists) }
+                            if (playlists != _uiState.value.playlists) {
+                                _uiState.update { it.copy(playlists = playlists) }
+                            }
                         }
                 }
             }
-                runCatching { engine.fetchHomeFeed() }
+            runCatching { engine.fetchHomeFeed() }
                 .onSuccess { shelves ->
                     val firstTracks = shelves.firstOrNull { it.tracks.isNotEmpty() }?.tracks.orEmpty()
-                    val fallbackActive = _uiState.value.activeTrack ?: firstTracks.firstOrNull()
-                    if (_uiState.value.activeTrack == null && fallbackActive != null) {
+                    val currentActive = _uiState.value.activeTrack
+                    val fallbackActive = currentActive ?: firstTracks.firstOrNull()
+                    if (currentActive == null && fallbackActive != null) {
                         saveActiveTrackToPrefs(fallbackActive)
+                        playbackClock.resetForTrack((fallbackActive.durationSecs?.toLong() ?: 0L) * 1000L)
                         fetchLyricsInBackground(fallbackActive)
                     }
                     _uiState.update {
                         it.copy(
                             loading = false,
                             refreshing = false,
+                            authInitialized = true,
                             signedIn = signedIn,
                             shelves = shelves,
                             tracks = if (it.tracks.isEmpty()) firstTracks else it.tracks,
@@ -411,13 +575,17 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                             status = "${shelves.size} personalized shelves"
                         )
                     }
-                    prefetchStreams(collectWarmCandidates(shelves))
+                    val warmList = (listOfNotNull(_uiState.value.activeTrack) + collectWarmCandidates(shelves))
+                        .distinctBy { it.id }
+                        .take(2)
+                    scheduleDeferredCipherWarmupAndPrefetch(warmList)
                 }
                 .onFailure { err ->
                     _uiState.update {
                         it.copy(
                             loading = false,
                             refreshing = false,
+                            authInitialized = true,
                             status = if (it.shelves.isEmpty()) "Home error: ${err.message}" else it.status
                         )
                     }
@@ -447,14 +615,15 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                             thumbnailUrl = meta.artworkUri?.toString(),
                             liked = false,
                         )
+                    playbackClock.sync(
+                        positionMs = ctrl.currentPosition.coerceAtLeast(0L),
+                        durationMs = ctrl.duration.coerceAtLeast(0L),
+                    )
                     _uiState.update {
                         it.copy(
                             activeTrack = liveTrack,
                             isPlaying = ctrl.isPlaying,
                             isBuffering = ctrl.playbackState == Player.STATE_BUFFERING,
-                            positionMs = ctrl.currentPosition.coerceAtLeast(0L),
-                            positionSampledAtNanos = System.nanoTime(),
-                            durationMs = ctrl.duration.coerceAtLeast(0L),
                         )
                     }
                     if (_uiState.value.lyrics.isEmpty()) {
@@ -463,25 +632,31 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                 }
                 ctrl.addListener(object : Player.Listener {
                     override fun onIsPlayingChanged(isPlaying: Boolean) {
-                        val activeId = _uiState.value.activeTrack?.id
+                        val state = _uiState.value
+                        val activeId = state.activeTrack?.id
                         val matchesActive = activeId != null && ctrl.currentMediaItem?.mediaId == activeId
                         if (matchesActive) {
-                            _uiState.update {
-                                it.copy(
-                                    isPlaying = isPlaying,
-                                    isBuffering = ctrl.playbackState == Player.STATE_BUFFERING,
-                                    positionMs = ctrl.currentPosition.coerceAtLeast(0L),
-                                    positionSampledAtNanos = System.nanoTime(),
-                                    durationMs = ctrl.duration.coerceAtLeast(0L),
-                                )
+                            playbackClock.sync(
+                                positionMs = ctrl.currentPosition.coerceAtLeast(0L),
+                                durationMs = ctrl.duration.coerceAtLeast(0L),
+                            )
+                            val buffering = ctrl.playbackState == Player.STATE_BUFFERING
+                            if (state.isPlaying != isPlaying || state.isBuffering != buffering) {
+                                _uiState.update {
+                                    it.copy(
+                                        isPlaying = isPlaying,
+                                        isBuffering = buffering,
+                                    )
+                                }
                             }
-                        } else if (!isPlaying) {
+                        } else if (!isPlaying && state.isPlaying) {
                             _uiState.update { it.copy(isPlaying = false) }
                         }
                     }
 
                     override fun onPlaybackStateChanged(playbackState: Int) {
-                        val activeTrack = _uiState.value.activeTrack
+                        val state = _uiState.value
+                        val activeTrack = state.activeTrack
                         val activeId = activeTrack?.id
                         val matchesActive = activeId != null && ctrl.currentMediaItem?.mediaId == activeId
                         if (matchesActive) {
@@ -496,19 +671,31 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                             } else {
                                 activeTrack
                             }
-                            _uiState.update {
-                                it.copy(
-                                    activeTrack = trackWithDuration,
-                                    isPlaying = ctrl.isPlaying && playbackState == Player.STATE_READY,
-                                    isBuffering = playbackState == Player.STATE_BUFFERING,
-                                    durationMs = readyDurationMs,
-                                    positionMs = ctrl.currentPosition.coerceAtLeast(0L),
-                                    positionSampledAtNanos = System.nanoTime()
-                                )
+                            playbackClock.sync(
+                                positionMs = ctrl.currentPosition.coerceAtLeast(0L),
+                                durationMs = readyDurationMs,
+                            )
+                            val nextPlaying = ctrl.isPlaying && playbackState == Player.STATE_READY
+                            val nextBuffering = playbackState == Player.STATE_BUFFERING
+                            if (
+                                state.activeTrack != trackWithDuration ||
+                                state.isPlaying != nextPlaying ||
+                                state.isBuffering != nextBuffering
+                            ) {
+                                _uiState.update {
+                                    it.copy(
+                                        activeTrack = trackWithDuration,
+                                        isPlaying = nextPlaying,
+                                        isBuffering = nextBuffering,
+                                    )
+                                }
                             }
                             if (playbackState == Player.STATE_READY) {
                                 if (trackWithDuration !== activeTrack) {
-                                    saveActiveTrackToPrefs(trackWithDuration, _uiState.value.streamBadge)
+                                    val badgeSnapshot = _uiState.value.streamBadge
+                                    viewModelScope.launch(Dispatchers.IO) {
+                                        saveActiveTrackToPrefs(trackWithDuration, badgeSnapshot)
+                                    }
                                 }
                                 if (lyricsFetchedForTrackId != activeId) {
                                     fetchLyricsInBackground(trackWithDuration)
@@ -523,7 +710,9 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                     }
 
                     override fun onRepeatModeChanged(repeatMode: Int) {
-                        _uiState.update { it.copy(repeatMode = repeatMode) }
+                        if (_uiState.value.repeatMode != repeatMode) {
+                            _uiState.update { it.copy(repeatMode = repeatMode) }
+                        }
                     }
                 })
             }
@@ -532,25 +721,28 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun startPositionPoller() {
         viewModelScope.launch {
-            while (isActive) {
-                val ctrl = controller
-                val activeId = _uiState.value.activeTrack?.id
-                if (ctrl != null &&
-                    activeId != null &&
-                    ctrl.currentMediaItem?.mediaId == activeId &&
-                    ctrl.playbackState == Player.STATE_READY &&
-                    ctrl.isPlaying
-                ) {
-                    _uiState.update {
-                        it.copy(
-                            positionMs = ctrl.currentPosition.coerceAtLeast(0L),
-                            positionSampledAtNanos = System.nanoTime(),
-                            durationMs = ctrl.duration.coerceAtLeast(0L)
-                        )
+            _uiState
+                .map { it.isPlaying && !it.isBuffering && it.activeTrack != null }
+                .distinctUntilChanged()
+                .collectLatest { activelyPlaying ->
+                    if (!activelyPlaying) return@collectLatest
+                    while (isActive) {
+                        val ctrl = controller
+                        val activeId = _uiState.value.activeTrack?.id
+                        if (ctrl != null &&
+                            activeId != null &&
+                            ctrl.currentMediaItem?.mediaId == activeId &&
+                            ctrl.playbackState == Player.STATE_READY &&
+                            ctrl.isPlaying
+                        ) {
+                            playbackClock.sync(
+                                positionMs = ctrl.currentPosition.coerceAtLeast(0L),
+                                durationMs = ctrl.duration.coerceAtLeast(0L),
+                            )
+                        }
+                        delay(200L)
                     }
                 }
-                delay(100L)
-            }
         }
     }
 
@@ -616,8 +808,10 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
 
     fun setFpsLimit(fps: Int) {
         val resolved = if (fps >= 120 && _uiState.value.supports120Hz) 120 else 60
-        prefs.edit().putInt("fps_limit", resolved).apply()
         _uiState.update { it.copy(fpsLimit = resolved) }
+        viewModelScope.launch(Dispatchers.IO) {
+            prefs.edit().putInt("fps_limit", resolved).apply()
+        }
     }
 
     fun toggleStarTrack(trackId: String) {
@@ -651,6 +845,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
     @OptIn(UnstableApi::class)
     fun clearMediaCache() {
         viewModelScope.launch(Dispatchers.IO) {
+            val engine = requireEngine()
             streamCache.clear()
             lyricsFetchedForTrackId = null
             runCatching {
@@ -665,15 +860,17 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
 
     fun completeLogin(cookieHeader: String) {
         viewModelScope.launch(Dispatchers.IO) {
+            val engine = requireEngine()
             _uiState.update {
                 it.copy(showLoginSheet = false, loading = true, status = "Signing in to YouTube Music...")
             }
             runCatching { engine.setYtmCookieHeader(cookieHeader) }
                 .onSuccess { profile ->
                     streamCache.clear()
-                    runCatching { engine.warmCipherSolver() }
+                    cipherWarmupScheduled = false
                     _uiState.update {
                         it.copy(
+                            authInitialized = true,
                             signedIn = true,
                             accountProfile = profile,
                             status = profile?.let { p -> "Signed in as ${p.name}" } ?: "Signed in to YouTube Music"
@@ -691,10 +888,12 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
 
     fun signOut() {
         viewModelScope.launch(Dispatchers.IO) {
+            val engine = requireEngine()
             engine.signOut()
             streamCache.clear()
             _uiState.update {
                 it.copy(
+                    authInitialized = true,
                     signedIn = false,
                     accountProfile = null,
                     playlists = emptyList(),
@@ -716,7 +915,9 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
     fun search(overrideQuery: String? = null) {
         val q = (overrideQuery ?: _uiState.value.query).trim()
         if (q.isEmpty()) return
+        speculativePrefetchJob?.cancel()
         viewModelScope.launch(Dispatchers.IO) {
+            val engine = requireEngine()
             _uiState.update { state ->
                 val updatedHistory = (listOf(q) + state.recentSearches.filterNot { it.equals(q, ignoreCase = true) }).take(12)
                 state.copy(
@@ -744,7 +945,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                             status = "${results.size} songs found"
                         )
                     }
-                    prefetchStreams(results.take(3))
+                    prefetchStreams(results.take(2), delayMs = 1_500L)
                 }
                 .onFailure { err ->
                     _uiState.update {
@@ -779,7 +980,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
             AndroidHomeCardKind.MOOD -> openMood(card.title)
             AndroidHomeCardKind.PLAYLIST, AndroidHomeCardKind.ALBUM -> {
                 val kind = if (card.kind == AndroidHomeCardKind.ALBUM) "Album" else "Playlist"
-                val year = Regex("\\b(19|20)\\d{2}\\b").find(card.subtitle)?.value
+                val year = YEAR_REGEX.find(card.subtitle)?.value
                 openCollectionById(
                     id = card.id,
                     title = card.title,
@@ -801,7 +1002,9 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         kindLabel: String? = null,
         year: String? = null,
     ) {
+        speculativePrefetchJob?.cancel()
         viewModelScope.launch(Dispatchers.IO) {
+            val engine = requireEngine()
             _uiState.update {
                 it.copy(
                     collectionTitle = title,
@@ -826,7 +1029,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                             status = "${tracks.size} tracks in $title"
                         )
                     }
-                    prefetchStreams(tracks.take(3))
+                    prefetchStreams(tracks.take(2), delayMs = 1_500L)
                 }
                 .onFailure { err ->
                     _uiState.update {
@@ -836,27 +1039,51 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun prefetchStreams(tracks: List<AndroidTrack>) {
-        tracks.distinctBy { it.id }.take(3).forEach { track ->
-            if (streamCache.containsKey(track.id) || !inFlightPrefetch.add(track.id)) return@forEach
-            viewModelScope.launch(Dispatchers.IO) {
-                try {
-                    runCatching { engine.resolveStream(track) }
-                        .onSuccess { stream ->
-                            streamCache[track.id] = stream
-                            val itagMatch = Regex("[?&]itag=(\\d+)").find(stream.url)?.groupValues?.getOrNull(1) ?: "local"
-                            Log.i(
-                                "SonataStream",
-                                "prefetched track=${track.id} title=\"${track.title}\" itag=$itagMatch badge=\"${stream.badge}\""
-                            )
-                            if (_uiState.value.activeTrack?.id == track.id && !_uiState.value.isPlaying) {
-                                saveActiveTrackToPrefs(track, stream.badge)
-                                _uiState.update { it.copy(streamBadge = stream.badge) }
-                            }
+    fun prefetchStreams(
+        tracks: List<AndroidTrack>,
+        delayMs: Long = 1_500L,
+        cancelPrevious: Boolean = true,
+    ) {
+        val candidates = tracks.distinctBy { it.id }.take(2)
+        if (candidates.isEmpty()) return
+        if (cancelPrevious) {
+            speculativePrefetchJob?.cancel()
+        }
+        val job = viewModelScope.launch(prefetchDispatcher) {
+            if (delayMs > 0L) {
+                delay(delayMs)
+            }
+            val engine = requireEngine()
+            resolvePrefetchList(engine, candidates)
+        }
+        if (cancelPrevious) {
+            speculativePrefetchJob = job
+        }
+    }
+
+    private suspend fun resolvePrefetchList(
+        engine: SonataAndroidEngine,
+        candidates: List<AndroidTrack>,
+    ) {
+        for (track in candidates) {
+            kotlin.coroutines.coroutineContext.ensureActive()
+            if (getCachedStream(track.id) != null || !inFlightPrefetch.add(track.id)) continue
+            try {
+                runCatching { engine.resolveStream(track) }
+                    .onSuccess { stream ->
+                        putCachedStream(track.id, stream)
+                        val itagMatch = ITAG_REGEX.find(stream.url)?.groupValues?.getOrNull(1) ?: "local"
+                        Log.i(
+                            "SonataStream",
+                            "prefetched track=${track.id} title=\"${track.title}\" itag=$itagMatch badge=\"${stream.badge}\""
+                        )
+                        if (_uiState.value.activeTrack?.id == track.id && !_uiState.value.isPlaying) {
+                            saveActiveTrackToPrefs(track, stream.badge)
+                            _uiState.update { it.copy(streamBadge = stream.badge) }
                         }
-                } finally {
-                    inFlightPrefetch.remove(track.id)
-                }
+                    }
+            } finally {
+                inFlightPrefetch.remove(track.id)
             }
         }
     }
@@ -871,6 +1098,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
     @OptIn(UnstableApi::class)
     fun playTrack(track: AndroidTrack, queueList: List<AndroidTrack>? = null) {
         playJob?.cancel()
+        speculativePrefetchJob?.cancel()
         val updatedQueue = when {
             !queueList.isNullOrEmpty() -> {
                 if (queueList.any { it.id == track.id }) queueList else listOf(track) + queueList
@@ -880,10 +1108,13 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         }
         val updatedIndex = updatedQueue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
 
+        playbackClock.resetForTrack((track.durationSecs?.toLong() ?: 0L) * 1000L)
+
         playJob = viewModelScope.launch(Dispatchers.IO) {
-            val cachedStream = streamCache[track.id]
+            val engine = requireEngine()
+            val cachedStream = getCachedStream(track.id)
             saveActiveTrackToPrefs(track, cachedStream?.badge.orEmpty())
-            viewModelScope.launch(Dispatchers.Main) {
+            withContext(Dispatchers.Main) {
                 controller?.pause()
             }
             _uiState.update {
@@ -895,11 +1126,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                     status = if (cachedStream != null) "Playing ${track.title}" else "Resolving ${track.title}...",
                     isPlaying = false,
                     isBuffering = true,
-                    isUpgradingQuality = true,
-                    positionMs = 0L,
-                    positionSampledAtNanos = System.nanoTime(),
-                    seekDiscontinuity = it.seekDiscontinuity + 1L,
-                    durationMs = (track.durationSecs?.toLong() ?: 0L) * 1000L,
+                    isUpgradingQuality = false,
                     lyrics = emptyList(),
                     lyricsLoading = true,
                     lyricsUnavailable = false,
@@ -918,14 +1145,14 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                 Result.success(cachedStream)
             } else {
                 runCatching { engine.resolveStream(track) }.onSuccess { resolved ->
-                    streamCache[track.id] = resolved
+                    putCachedStream(track.id, resolved)
                 }
             }
 
             streamResult
                 .onSuccess { stream ->
-                    if (_uiState.value.activeTrack?.id != track.id) return@onSuccess
-                    val itag = Regex("""[?&]itag=(\d+)""").find(stream.url)?.groupValues?.getOrNull(1) ?: "unknown"
+                    if (!isActive || _uiState.value.activeTrack?.id != track.id) return@onSuccess
+                    val itag = ITAG_REGEX.find(stream.url)?.groupValues?.getOrNull(1) ?: "unknown"
                     Log.i(
                         "SonataStream",
                         "Playing track='${track.title}' artist='${track.artist}' itag=$itag badge='${stream.badge}'"
@@ -938,7 +1165,8 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                         )
                     }
                     val item = buildMediaItem(track, stream)
-                    viewModelScope.launch(Dispatchers.Main) {
+                    withContext(Dispatchers.Main) {
+                        if (!isActive || _uiState.value.activeTrack?.id != track.id) return@withContext
                         controller?.apply {
                             setMediaItem(item)
                             prepare()
@@ -946,7 +1174,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                         }
                     }
 
-                    // Prefetch upcoming tracks in the queue
+                    // Delay upcoming queue prefetch so ExoPlayer gets full bandwidth for instant audio start.
                     val upcoming = buildList {
                         for (offset in 1..2) {
                             val nextIdx = updatedIndex + offset
@@ -954,22 +1182,26 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                         }
                     }
                     if (upcoming.isNotEmpty()) {
-                        prefetchStreams(upcoming)
+                        prefetchStreams(upcoming, delayMs = 1_500L, cancelPrevious = true)
                     }
 
                     // Only upgrade mid-song if the fast-start stream is low quality (<160kbps / Standard).
                     // Already-playing OPUS / >=160kbps streams are never interrupted with setMediaItem.
                     if (_uiState.value.preferHighQuality && isLowQualityBadge(stream.badge)) {
+                        _uiState.update {
+                            if (it.activeTrack?.id == track.id) it.copy(isUpgradingQuality = true) else it
+                        }
                         launch(Dispatchers.IO) {
                             try {
                                 val upgraded = runCatching {
                                     engine.resolveHifiUpgrade(track, stream)
                                 }.getOrNull()
-                                if (upgraded != null && _uiState.value.activeTrack?.id == track.id) {
-                                    streamCache[track.id] = upgraded
+                                if (upgraded != null && isActive && _uiState.value.activeTrack?.id == track.id) {
+                                    putCachedStream(track.id, upgraded)
                                     _uiState.update { it.copy(streamBadge = upgraded.badge) }
                                     val hiFiItem = buildMediaItem(track, upgraded)
-                                    viewModelScope.launch(Dispatchers.Main) {
+                                    withContext(Dispatchers.Main) {
+                                        if (!isActive || _uiState.value.activeTrack?.id != track.id) return@withContext
                                         controller?.let { ctrl ->
                                             val pos = ctrl.currentPosition.coerceAtLeast(0L)
                                             val wasPlaying = ctrl.isPlaying
@@ -979,16 +1211,6 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                                         }
                                     }
                                 }
-                            } finally {
-                                if (_uiState.value.activeTrack?.id == track.id) {
-                                    _uiState.update { it.copy(isUpgradingQuality = false) }
-                                }
-                            }
-                        }
-                    } else {
-                        launch(Dispatchers.IO) {
-                            try {
-                                delay(900L)
                             } finally {
                                 if (_uiState.value.activeTrack?.id == track.id) {
                                     _uiState.update { it.copy(isUpgradingQuality = false) }
@@ -1041,7 +1263,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         ) {
             return false
         }
-        val kbps = Regex("(\\d+)\\s*kbps").find(lower)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        val kbps = KBPS_REGEX.find(lower)?.groupValues?.getOrNull(1)?.toIntOrNull()
         if (kbps != null) return kbps < 160
         return lower.contains("standard")
     }
@@ -1065,7 +1287,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
 
     fun prevTrack() {
         val state = _uiState.value
-        val currentPos = controller?.currentPosition ?: state.positionMs
+        val currentPos = controller?.currentPosition ?: playbackClock.positionMs
         if (currentPos > 3_000L) {
             seekTo(0L)
             return
@@ -1093,7 +1315,8 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         if (state.hasNext) {
             nextTrack()
         } else {
-            _uiState.update { it.copy(isPlaying = false, positionMs = 0L) }
+            playbackClock.onSeek(0L)
+            _uiState.update { it.copy(isPlaying = false) }
         }
     }
 
@@ -1133,20 +1356,19 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
     fun seekTo(positionMs: Long) {
         val clamped = positionMs.coerceAtLeast(0L)
         controller?.seekTo(clamped)
-        _uiState.update {
-            it.copy(
-                positionMs = clamped,
-                positionSampledAtNanos = System.nanoTime(),
-                seekDiscontinuity = it.seekDiscontinuity + 1L,
-            )
-        }
+        playbackClock.onSeek(clamped)
     }
 
     fun checkForUpdates() {
         if (_uiState.value.checkingUpdates) return
         viewModelScope.launch(Dispatchers.IO) {
+            val engine = requireEngine()
+            val installedVersion = runCatching {
+                val app = getApplication<Application>()
+                app.packageManager.getPackageInfo(app.packageName, 0).versionName.orEmpty()
+            }.getOrDefault("")
             _uiState.update { it.copy(checkingUpdates = true) }
-            runCatching { engine.checkForUpdates() }
+            runCatching { engine.checkForUpdatesForVersion(installedVersion) }
                 .onSuccess { info ->
                     _uiState.update { it.copy(updateInfo = info, checkingUpdates = false) }
                 }
@@ -1157,7 +1379,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun seekToFraction(fraction: Float) {
-        val duration = _uiState.value.durationMs
+        val duration = playbackClock.durationMs
         if (duration > 0L) {
             seekTo((fraction.coerceIn(0f, 1f) * duration).toLong())
         }
@@ -1172,9 +1394,22 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         PlaybackQueueBridge.canSkipPrevious = { false }
         PlaybackQueueBridge.onSkipNext = {}
         PlaybackQueueBridge.onSkipPrevious = {}
+        PlaybackQueueBridge.onPlayFromEmpty = {}
+        speculativePrefetchJob?.cancel()
+        refreshJob?.cancel()
+        playJob?.cancel()
+        lyricsJob?.cancel()
         cipherSolver.destroy()
         controller?.release()
         controller = null
         super.onCleared()
+    }
+
+    companion object {
+        private const val STREAM_CACHE_TTL_MS = 4L * 60L * 60L * 1000L
+        private const val STREAM_CACHE_MAX_ENTRIES = 64
+        private val YEAR_REGEX = Regex("\\b(19|20)\\d{2}\\b")
+        private val ITAG_REGEX = Regex("[?&]itag=(\\d+)")
+        private val KBPS_REGEX = Regex("(\\d+)\\s*kbps")
     }
 }

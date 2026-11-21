@@ -25,6 +25,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -70,12 +71,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.CornerBasedShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.GraphicEq
-import androidx.compose.material.icons.rounded.MoreVert
-import androidx.compose.material.icons.rounded.MusicNote
-import androidx.compose.material.icons.rounded.Pause
-import androidx.compose.material.icons.rounded.ThumbUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -108,7 +103,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.BlendMode
@@ -136,9 +131,15 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.Player
+import coil3.ImageLoader
+import coil3.SingletonImageLoader
 import coil3.compose.AsyncImage
-import dev.chrisbanes.haze.HazeState
-import dev.chrisbanes.haze.hazeSource
+import coil3.disk.DiskCache
+import coil3.disk.directory
+import coil3.memory.MemoryCache
+import coil3.request.allowHardware
+import coil3.request.crossfade
+import coil3.size.Precision
 import dev.sonata.android.backdrop.backdrops.LayerBackdrop
 import dev.sonata.android.backdrop.backdrops.layerBackdrop
 import dev.sonata.android.backdrop.backdrops.rememberLayerBackdrop
@@ -178,6 +179,7 @@ import dev.sonata.android.ui.SHELF_CARD_WIDTH
 import dev.sonata.android.ui.SearchField
 import dev.sonata.android.ui.SonataAccent
 import dev.sonata.android.ui.SonataIcons
+import dev.sonata.android.ui.SonataShimmerHost
 import dev.sonata.android.ui.SonataTheme
 import dev.sonata.android.ui.SweptKaraokeLyricText
 import dev.sonata.android.ui.SystemBarIcons
@@ -185,10 +187,12 @@ import dev.sonata.android.ui.ThinSlider
 import dev.sonata.android.ui.TopFadeBlur
 import dev.sonata.android.ui.TopPickMood
 import dev.sonata.android.ui.artworkAt
+import dev.sonata.android.ui.artworkMemoryCacheKey
 import dev.sonata.android.ui.detailSkeleton
 import dev.sonata.android.ui.feedSkeleton
 import dev.sonata.android.ui.recentlyPlayedSkeleton
 import dev.sonata.android.ui.rememberArtworkPalette
+import dev.sonata.android.ui.rememberArtworkRequest
 import dev.sonata.android.ui.rememberSmoothLyricClock
 import dev.sonata.android.ui.toMeshPalette
 import dev.sonata.android.ui.topPicksSkeleton
@@ -201,12 +205,28 @@ import uniffi.sonata_android.AndroidHomeShelf
 import uniffi.sonata_android.AndroidLyricLine
 import uniffi.sonata_android.AndroidPlaylist
 import uniffi.sonata_android.AndroidTrack
+import java.io.File
 import kotlin.math.roundToInt
 
 private val TopBarContentHeight = 52.dp
 private val NavBarLift = 10.dp
 private val InlineSpacing = 12.dp
 private val InlineGutter = 24.dp
+
+private val Shape7 = RoundedCornerShape(7.dp)
+private val Shape8 = RoundedCornerShape(8.dp)
+private val Shape10 = RoundedCornerShape(10.dp)
+private val Shape11 = RoundedCornerShape(11.dp)
+private val Shape12 = RoundedCornerShape(12.dp)
+private val Shape14 = RoundedCornerShape(14.dp)
+private val Shape20 = RoundedCornerShape(20.dp)
+private val Shape22 = RoundedCornerShape(22.dp)
+private val Pill50Shape = RoundedCornerShape(percent = 50)
+private val CapsulePillShape = SquirclePillShape()
+private val NowPlayingBottomScrim = Brush.verticalGradient(
+    0.38f to Color.Transparent,
+    1f to Color.Black.copy(alpha = 0.46f),
+)
 
 private data class NavTabSpec(
     val tab: AndroidTab,
@@ -228,6 +248,25 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        SingletonImageLoader.setSafe { appCtx ->
+            ImageLoader.Builder(appCtx)
+                .memoryCache {
+                    MemoryCache.Builder()
+                        .maxSizePercent(appCtx, 0.25)
+                        .strongReferencesEnabled(true)
+                        .build()
+                }
+                .diskCache {
+                    DiskCache.Builder()
+                        .directory(File(appCtx.cacheDir, "image_cache"))
+                        .maxSizeBytes(200L * 1024L * 1024L)
+                        .build()
+                }
+                .crossfade(false)
+                .precision(Precision.INEXACT)
+                .allowHardware(true)
+                .build()
+        }
         enableEdgeToEdge()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -300,9 +339,6 @@ private fun SonataAppContent(
     appBackdrop: LayerBackdrop,
     vm: SonataViewModel,
 ) {
-    val hazeState = remember { HazeState() }
-    val density = LocalDensity.current
-
     var showNowPlaying by rememberSaveable { mutableStateOf(false) }
     var showAllMoods by remember { mutableStateOf(false) }
 
@@ -318,12 +354,12 @@ private fun SonataAppContent(
         inlineBehavior = FloatingTabBarInlineBehavior.OnScrollDown,
     )
 
-    var bottomBarsHeightPx by remember { mutableIntStateOf(0) }
     val statusTopPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val topBarHeight = statusTopPadding + TopBarContentHeight
-    val bottomBarInset = with(density) { bottomBarsHeightPx.toDp() }.coerceAtLeast(
-        WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 92.dp
-    ) + 12.dp
+    // Fixed bottom inset keyed only on activeTrack presence so FloatingTabBar collapse/expand
+    // never triggers full LazyColumn relayout mid-fling.
+    val navBottomPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val bottomBarInset = navBottomPadding + if (state.activeTrack != null) 144.dp else 92.dp
 
     val scrolled by remember(
         state.activeTab,
@@ -395,11 +431,11 @@ private fun SonataAppContent(
             .background(Color.Black),
     ) {
         // Scrollable backdrop source sampled by sibling floating Liquid Glass overlays
+        // (single offscreen capture; redundant Haze capture removed).
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .layerBackdrop(appBackdrop)
-                .hazeSource(hazeState),
+                .layerBackdrop(appBackdrop),
         ) {
             val topPad = if (state.activeTab == AndroidTab.Search && state.collectionTitle == null && !showAllMoods) {
                 topBarHeight + 10.dp
@@ -483,7 +519,7 @@ private fun SonataAppContent(
             }
         }
 
-        // Top progressive fade blur behind floating top-bar controls when scrolled
+        // Top progressive fade scrim behind floating top-bar controls when scrolled
         val topFadeAlpha by animateFloatAsState(
             targetValue = if (scrolled && state.collectionTitle == null) 1f else 0f,
             animationSpec = tween(180),
@@ -491,7 +527,6 @@ private fun SonataAppContent(
         )
         if (topFadeAlpha > 0.01f) {
             TopFadeBlur(
-                hazeState = hazeState,
                 pageColor = Color.Black,
                 topHeight = topBarHeight,
                 modifier = Modifier
@@ -529,8 +564,7 @@ private fun SonataAppContent(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .widthIn(max = FLOATING_BAR_MAX_WIDTH)
-                .fillMaxWidth()
-                .onSizeChanged { bottomBarsHeightPx = it.height },
+                .fillMaxWidth(),
         ) {
             SonataGlassNavBar(
                 selectedTab = state.activeTab,
@@ -567,6 +601,7 @@ private fun SonataAppContent(
                 NowPlayingScreen(
                     track = track,
                     state = state,
+                    clock = vm.playbackClock,
                     onToggleLyrics = vm::toggleLyrics,
                     onToggleStar = { vm.toggleStarTrack(track.id) },
                     onTogglePlayPause = vm::togglePlayPause,
@@ -717,6 +752,7 @@ private fun AvatarCircleContent(
     onClick: () -> Unit,
 ) {
     val avatar = if (signedIn) profile?.avatarUrl else null
+    val avatarRequest = rememberArtworkRequest(avatar, 128, 128)
     Box(
         modifier = Modifier
             .size(size)
@@ -725,9 +761,9 @@ private fun AvatarCircleContent(
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        if (!avatar.isNullOrBlank()) {
+        if (avatarRequest != null) {
             AsyncImage(
-                model = avatar,
+                model = avatarRequest,
                 contentDescription = "Account and Settings",
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize().clip(CircleShape),
@@ -757,17 +793,18 @@ private fun SonataGlassNavBar(
     onPrevious: () -> Unit,
     onExpand: () -> Unit,
 ) {
-    val pillShape = remember { RoundedCornerShape(percent = 50) }
     val glassSupported = LocalLiquidGlassEnabled.current && isGlassSupported()
     val contentColor = glassContentColor()
     val selectedColor = contentColor
     val unselectedColor = contentColor.copy(alpha = 0.65f)
     val selectedIndex = PrimaryTabs.indexOfFirst { it.tab == selectedTab }.coerceAtLeast(0)
-    val glassSurface: @Composable () -> Modifier = {
-        Modifier.adaptiveLiquidGlass(
-            shape = pillShape,
-            fallbackColor = Color(0xFF141418).copy(alpha = 0.94f),
-        )
+    val glassSurface: @Composable () -> Modifier = remember {
+        {
+            Modifier.adaptiveLiquidGlass(
+                shape = Pill50Shape,
+                fallbackColor = Color(0xFF141418).copy(alpha = 0.94f),
+            )
+        }
     }
 
     FloatingTabBar(
@@ -959,22 +996,23 @@ private fun GlassMiniPlayer(
             Box(
                 modifier = Modifier
                     .size(if (isInline) 34.dp else 40.dp)
-                    .clip(RoundedCornerShape(8.dp))
+                    .clip(Shape8)
                     .background(Color.White.copy(alpha = 0.08f))
-                    .border(0.5.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(8.dp)),
+                    .border(0.5.dp, Color.White.copy(alpha = 0.14f), Shape8),
                 contentAlignment = Alignment.Center,
             ) {
-                val thumb = track.thumbnailUrl.artworkAt(ROW_ART_PX)
-                if (!thumb.isNullOrBlank()) {
+                val thumb = remember(track.thumbnailUrl) { track.thumbnailUrl.artworkAt(ROW_ART_PX) }
+                val thumbRequest = rememberArtworkRequest(thumb, ROW_ART_PX, ROW_ART_PX)
+                if (thumbRequest != null) {
                     AsyncImage(
-                        model = thumb,
+                        model = thumbRequest,
                         contentDescription = null,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize(),
                     )
                 } else {
                     Icon(
-                        imageVector = Icons.Rounded.MusicNote,
+                        imageVector = SonataIcons.MusicNote,
                         contentDescription = null,
                         tint = contentColor.copy(alpha = 0.7f),
                         modifier = Modifier.size(18.dp),
@@ -990,6 +1028,7 @@ private fun GlassMiniPlayer(
                         fontWeight = FontWeight.SemiBold,
                     ),
                     color = contentColor,
+                    enabled = isPlaying,
                 )
                 Text(
                     text = track.artist,
@@ -1043,10 +1082,28 @@ private fun GlassMiniPlayer(
 }
 
 private sealed interface TopPickEntry {
-    data class Release(val card: AndroidHomeCard, val shelfTracks: List<AndroidTrack>) : TopPickEntry
-    data class ArtistMix(val card: AndroidHomeCard, val portraits: List<String>) : TopPickEntry
-    data object PersonalStation : TopPickEntry
-    data object DiscoveryStation : TopPickEntry
+    val stableKey: String
+    val contentType: String
+
+    data class Release(val card: AndroidHomeCard, val shelfTracks: List<AndroidTrack>) : TopPickEntry {
+        override val stableKey: String get() = "release_${card.kind}_${card.id}_${card.title}"
+        override val contentType: String get() = "top_pick_release"
+    }
+
+    data class ArtistMix(val card: AndroidHomeCard, val portraits: List<String>) : TopPickEntry {
+        override val stableKey: String get() = "artist_mix_${card.id}_${card.title}"
+        override val contentType: String get() = "top_pick_artist_mix"
+    }
+
+    data object PersonalStation : TopPickEntry {
+        override val stableKey: String get() = "personal_station"
+        override val contentType: String get() = "top_pick_personal"
+    }
+
+    data object DiscoveryStation : TopPickEntry {
+        override val stableKey: String get() = "discovery_station"
+        override val contentType: String get() = "top_pick_discovery"
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1151,158 +1208,202 @@ private fun HomeTabContent(
         entries
     }
 
+    val recentsTracks = remember(recentsShelf) {
+        if (recentsShelf == null) {
+            emptyList()
+        } else if (recentsShelf.tracks.isNotEmpty()) {
+            recentsShelf.tracks
+        } else {
+            recentsShelf.cards.mapNotNull { it.track }
+        }
+    }
+    val recentsColumns = remember(recentsTracks) { recentsTracks.chunked(4) }
+    val showSkeleton = state.loading && state.shelves.isEmpty()
+
     PullToRefreshBox(
         isRefreshing = state.refreshing,
         onRefresh = onRefresh,
         modifier = modifier.fillMaxSize(),
     ) {
-        LazyColumn(
-            state = listState,
+        Crossfade(
+            targetState = showSkeleton,
+            animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
+            label = "homeSkeletonCrossfade",
             modifier = Modifier.fillMaxSize(),
-            contentPadding = contentPadding,
-        ) {
-            // Top-left DynamicMoonLogo (live astronomical phase, geographic tilt, Blood Moon tap cycle)
-            item(key = "home_logo") {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = PAGE_GUTTER, vertical = 6.dp)
-                        .padding(bottom = 12.dp),
-                ) {
-                    DynamicMoonLogo(modifier = Modifier.size(34.dp))
+        ) { loadingSkeleton ->
+            if (loadingSkeleton) {
+                SonataShimmerHost {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = contentPadding,
+                        userScrollEnabled = false,
+                    ) {
+                        item(key = "home_logo_skeleton", contentType = "home_logo") {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = PAGE_GUTTER, vertical = 6.dp)
+                                    .padding(bottom = 12.dp),
+                            ) {
+                                DynamicMoonLogo(modifier = Modifier.size(34.dp))
+                            }
+                        }
+                        topPicksSkeleton()
+                        recentlyPlayedSkeleton()
+                        feedSkeleton()
+                    }
                 }
-            }
-
-            if (!state.signedIn) {
-                item(key = "home_sign_in_banner") {
-                    SignInBanner(
-                        onSignIn = onSignIn,
-                        modifier = Modifier.padding(bottom = 14.dp),
-                    )
-                }
-            }
-
-            if (state.loading && state.shelves.isEmpty()) {
-                topPicksSkeleton()
-                recentlyPlayedSkeleton()
-                feedSkeleton()
             } else {
-                // Shelf 1: Top Picks for You (252.dp x 336.dp 3:4 portrait cards)
-                item(key = "top_picks_shelf") {
-                    Column(Modifier.padding(bottom = 26.dp)) {
-                        SectionHeader(title = "Top Picks for You")
-                        LazyRow(
-                            contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
-                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = contentPadding,
+                ) {
+                    // Top-left DynamicMoonLogo (live astronomical phase, geographic tilt, Blood Moon tap cycle)
+                    item(key = "home_logo", contentType = "home_logo") {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = PAGE_GUTTER, vertical = 6.dp)
+                                .padding(bottom = 12.dp),
                         ) {
-                            items(topPicks, key = { it.hashCode() }) { pick ->
-                                when (pick) {
-                                    is TopPickEntry.Release -> ReleaseArt(
-                                        artworkUrl = pick.card.thumbnailUrl.artworkAt(CARD_ART_PX),
-                                        title = pick.card.title,
-                                        subtitle = pick.card.subtitle,
-                                        eyebrow = if (pick.card.kind == AndroidHomeCardKind.ALBUM) {
-                                            "NEW RELEASE"
-                                        } else {
-                                            "FEATURED PLAYLIST"
-                                        },
-                                        modifier = Modifier.clickable {
-                                            onOpenCard(pick.card, pick.shelfTracks)
-                                        },
-                                    )
+                            DynamicMoonLogo(modifier = Modifier.size(34.dp))
+                        }
+                    }
 
-                                    is TopPickEntry.ArtistMix -> ArtistCollageArt(
-                                        images = pick.portraits.mapNotNull { it.artworkAt(CARD_ART_PX) },
-                                        title = pick.card.title,
-                                        subtitle = pick.card.subtitle.ifBlank { "Featuring artists you love" },
-                                        modifier = Modifier.clickable {
-                                            onOpenCard(pick.card, emptyList())
-                                        },
-                                    )
+                    if (state.authInitialized && !state.signedIn) {
+                        item(key = "home_sign_in_banner", contentType = "sign_in_banner") {
+                            SignInBanner(
+                                onSignIn = onSignIn,
+                                modifier = Modifier.padding(bottom = 14.dp),
+                            )
+                        }
+                    }
 
-                                    TopPickEntry.PersonalStation -> {
-                                        val name = state.accountProfile?.name?.takeIf { it.isNotBlank() }
-                                        Box(
+                    // Shelf 1: Top Picks for You (252.dp x 336.dp 3:4 portrait cards)
+                    item(key = "top_picks_shelf", contentType = "top_picks_shelf") {
+                        Column(Modifier.padding(bottom = 26.dp)) {
+                            SectionHeader(title = "Top Picks for You")
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
+                                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                            ) {
+                                items(
+                                    items = topPicks,
+                                    key = { it.stableKey },
+                                    contentType = { it.contentType },
+                                ) { pick ->
+                                    when (pick) {
+                                        is TopPickEntry.Release -> {
+                                            val artUrl = remember(pick.card.thumbnailUrl) {
+                                                pick.card.thumbnailUrl.artworkAt(CARD_ART_PX)
+                                            }
+                                            ReleaseArt(
+                                                artworkUrl = artUrl,
+                                                title = pick.card.title,
+                                                subtitle = pick.card.subtitle,
+                                                eyebrow = if (pick.card.kind == AndroidHomeCardKind.ALBUM) {
+                                                    "NEW RELEASE"
+                                                } else {
+                                                    "FEATURED PLAYLIST"
+                                                },
+                                                modifier = Modifier.clickable {
+                                                    onOpenCard(pick.card, pick.shelfTracks)
+                                                },
+                                            )
+                                        }
+
+                                        is TopPickEntry.ArtistMix -> {
+                                            val sizedPortraits = remember(pick.portraits) {
+                                                pick.portraits.mapNotNull { it.artworkAt(CARD_ART_PX) }
+                                            }
+                                            ArtistCollageArt(
+                                                images = sizedPortraits,
+                                                title = pick.card.title,
+                                                subtitle = pick.card.subtitle.ifBlank { "Featuring artists you love" },
+                                                modifier = Modifier.clickable {
+                                                    onOpenCard(pick.card, emptyList())
+                                                },
+                                            )
+                                        }
+
+                                        TopPickEntry.PersonalStation -> {
+                                            val name = state.accountProfile?.name?.takeIf { it.isNotBlank() }
+                                            Box(
+                                                modifier = Modifier
+                                                    .width(252.dp)
+                                                    .height(336.dp)
+                                                    .clip(Shape12)
+                                                    .clickable {
+                                                        val tracks = recentsShelf?.tracks?.ifEmpty { state.tracks } ?: state.tracks
+                                                        tracks.firstOrNull()?.let { first -> onPlayTrack(first, tracks) }
+                                                    },
+                                            ) {
+                                                PersonalStationArt(Modifier.fillMaxSize(), still = true)
+                                                Column(
+                                                    modifier = Modifier
+                                                        .align(Alignment.BottomStart)
+                                                        .padding(18.dp),
+                                                ) {
+                                                    Text(
+                                                        text = "PERSONALIZED STATION",
+                                                        style = MaterialTheme.typography.labelSmall.copy(
+                                                            fontWeight = FontWeight.Bold,
+                                                            letterSpacing = 1.2.sp,
+                                                        ),
+                                                        color = Color.White.copy(alpha = 0.8f),
+                                                    )
+                                                    Spacer(Modifier.height(4.dp))
+                                                    Text(
+                                                        text = if (name != null) "$name's Station" else "My Station",
+                                                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                                                        color = Color.White,
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        TopPickEntry.DiscoveryStation -> Box(
                                             modifier = Modifier
                                                 .width(252.dp)
                                                 .height(336.dp)
-                                                .clip(RoundedCornerShape(12.dp))
+                                                .clip(Shape12)
                                                 .clickable {
-                                                    val tracks = recentsShelf?.tracks?.ifEmpty { state.tracks } ?: state.tracks
+                                                    val tracks = state.tracks.reversed()
                                                     tracks.firstOrNull()?.let { first -> onPlayTrack(first, tracks) }
                                                 },
                                         ) {
-                                            PersonalStationArt(Modifier.fillMaxSize())
+                                            DiscoveryStationArt(Modifier.fillMaxSize(), still = true)
                                             Column(
                                                 modifier = Modifier
                                                     .align(Alignment.BottomStart)
                                                     .padding(18.dp),
                                             ) {
                                                 Text(
-                                                    text = "PERSONALIZED STATION",
+                                                    text = "CURATED FOR YOU",
                                                     style = MaterialTheme.typography.labelSmall.copy(
                                                         fontWeight = FontWeight.Bold,
                                                         letterSpacing = 1.2.sp,
                                                     ),
-                                                    color = Color.White.copy(alpha = 0.8f),
+                                                    color = Color.White.copy(alpha = 0.82f),
                                                 )
                                                 Spacer(Modifier.height(4.dp))
                                                 Text(
-                                                    text = if (name != null) "$name's Station" else "My Station",
+                                                    text = "Discovery Station",
                                                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                                                     color = Color.White,
                                                 )
                                             }
                                         }
                                     }
-
-                                    TopPickEntry.DiscoveryStation -> Box(
-                                        modifier = Modifier
-                                            .width(252.dp)
-                                            .height(336.dp)
-                                            .clip(RoundedCornerShape(12.dp))
-                                            .clickable {
-                                                val tracks = state.tracks.reversed()
-                                                tracks.firstOrNull()?.let { first -> onPlayTrack(first, tracks) }
-                                            },
-                                    ) {
-                                        DiscoveryStationArt(Modifier.fillMaxSize())
-                                        Column(
-                                            modifier = Modifier
-                                                .align(Alignment.BottomStart)
-                                                .padding(18.dp),
-                                        ) {
-                                            Text(
-                                                text = "CURATED FOR YOU",
-                                                style = MaterialTheme.typography.labelSmall.copy(
-                                                    fontWeight = FontWeight.Bold,
-                                                    letterSpacing = 1.2.sp,
-                                                ),
-                                                color = Color.White.copy(alpha = 0.82f),
-                                            )
-                                            Spacer(Modifier.height(4.dp))
-                                            Text(
-                                                text = "Discovery Station",
-                                                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                                                color = Color.White,
-                                            )
-                                        }
-                                    }
                                 }
                             }
                         }
                     }
-                }
 
-                // Shelf 2: Recents / Quick Picks (4-rows-per-column pager)
-                if (recentsShelf != null) {
-                    val recentsTracks = if (recentsShelf.tracks.isNotEmpty()) {
-                        recentsShelf.tracks
-                    } else {
-                        recentsShelf.cards.mapNotNull { it.track }
-                    }
-                    if (recentsTracks.isNotEmpty()) {
-                        item(key = "recents_shelf") {
+                    // Shelf 2: Recents / Quick Picks (4-rows-per-column pager)
+                    if (recentsShelf != null && recentsColumns.isNotEmpty()) {
+                        item(key = "recents_shelf", contentType = "recents_shelf") {
                             val activeId = state.activeTrack?.id
                             val colWidth = trackColumnWidth(LocalConfiguration.current.screenWidthDp.dp)
                             Column(Modifier.padding(bottom = 26.dp)) {
@@ -1311,7 +1412,11 @@ private fun HomeTabContent(
                                     contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
                                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                                 ) {
-                                    items(recentsTracks.chunked(4)) { column ->
+                                    itemsIndexed(
+                                        items = recentsColumns,
+                                        key = { colIdx, col -> "recents_col_${colIdx}_${col.firstOrNull()?.id.orEmpty()}" },
+                                        contentType = { _, _ -> "recents_col" },
+                                    ) { _, column ->
                                         Column(Modifier.width(colWidth)) {
                                             column.forEach { track ->
                                                 val current = activeId != null && track.id == activeId
@@ -1328,60 +1433,73 @@ private fun HomeTabContent(
                             }
                         }
                     }
-                }
 
-                // Shelf 3: Find Your Mood (150.dp 1:1 square MoodTiles + Show all)
-                item(key = "find_your_mood_shelf") {
-                    Column(Modifier.padding(bottom = 26.dp)) {
-                        SectionHeader(
-                            title = "Find Your Mood",
-                            onShowAll = onShowAllMoods,
-                        )
-                        LazyRow(
-                            contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
-                            horizontalArrangement = Arrangement.spacedBy(14.dp),
-                        ) {
-                            items(TopPickMood.entries, key = { it.name }) { mood ->
-                                MoodTile(
-                                    mood = mood,
-                                    onClick = { _, label -> onOpenMood(label) },
-                                )
-                            }
-                        }
-                    }
-                }
-
-                // Remaining Shelves: clean 150.dp 1:1 square ShelfCards & 248.dp 16:9 VideoShelfCards
-                itemsIndexed(
-                    items = remainingShelves,
-                    key = { idx, shelf -> "shelf_${shelf.title}_$idx" },
-                ) { _, shelf ->
-                    val cards = shelf.cards.filter { it.kind != AndroidHomeCardKind.MOOD }
-                    if (cards.isNotEmpty()) {
-                        val isVideoShelf = cards.all { it.kind == AndroidHomeCardKind.VIDEO }
+                    // Shelf 3: Find Your Mood (150.dp 1:1 square MoodTiles + Show all)
+                    item(key = "find_your_mood_shelf", contentType = "mood_shelf") {
                         Column(Modifier.padding(bottom = 26.dp)) {
-                            SectionHeader(title = shelf.title)
+                            SectionHeader(
+                                title = "Find Your Mood",
+                                onShowAll = onShowAllMoods,
+                            )
                             LazyRow(
                                 contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
                                 horizontalArrangement = Arrangement.spacedBy(14.dp),
                             ) {
-                                items(cards, key = { "${it.kind}_${it.id}_${it.title}" }) { card ->
-                                    val activeId = state.activeTrack?.id
-                                    val current = activeId != null && card.track?.id == activeId
-                                    if (isVideoShelf) {
-                                        VideoShelfCard(
-                                            card = card,
-                                            isCurrent = current,
-                                            isPlaying = current && state.isPlaying,
-                                            onClick = { onOpenCard(card, shelf.tracks) },
-                                        )
-                                    } else {
-                                        ShelfCard(
-                                            card = card,
-                                            isCurrent = current,
-                                            isPlaying = current && state.isPlaying,
-                                            onClick = { onOpenCard(card, shelf.tracks) },
-                                        )
+                                items(
+                                    items = TopPickMood.entries,
+                                    key = { it.name },
+                                    contentType = { "mood_tile" },
+                                ) { mood ->
+                                    MoodTile(
+                                        mood = mood,
+                                        onClick = { _, label -> onOpenMood(label) },
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Remaining Shelves: clean 150.dp 1:1 square ShelfCards & 248.dp 16:9 VideoShelfCards
+                    itemsIndexed(
+                        items = remainingShelves,
+                        key = { idx, shelf -> "shelf_${shelf.title}_$idx" },
+                        contentType = { _, _ -> "home_shelf" },
+                    ) { _, shelf ->
+                        val cards = remember(shelf.cards) {
+                            shelf.cards.filter { it.kind != AndroidHomeCardKind.MOOD }
+                        }
+                        if (cards.isNotEmpty()) {
+                            val isVideoShelf = remember(cards) {
+                                cards.all { it.kind == AndroidHomeCardKind.VIDEO }
+                            }
+                            Column(Modifier.padding(bottom = 26.dp)) {
+                                SectionHeader(title = shelf.title)
+                                LazyRow(
+                                    contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
+                                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                                ) {
+                                    itemsIndexed(
+                                        items = cards,
+                                        key = { cardIdx, card -> "${card.kind}_${card.id}_${card.title}_$cardIdx" },
+                                        contentType = { _, _ -> if (isVideoShelf) "video_card" else "shelf_card" },
+                                    ) { _, card ->
+                                        val activeId = state.activeTrack?.id
+                                        val current = activeId != null && card.track?.id == activeId
+                                        if (isVideoShelf) {
+                                            VideoShelfCard(
+                                                card = card,
+                                                isCurrent = current,
+                                                isPlaying = current && state.isPlaying,
+                                                onClick = { onOpenCard(card, shelf.tracks) },
+                                            )
+                                        } else {
+                                            ShelfCard(
+                                                card = card,
+                                                isCurrent = current,
+                                                isPlaying = current && state.isPlaying,
+                                                onClick = { onOpenCard(card, shelf.tracks) },
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -1454,20 +1572,20 @@ private fun SignInBanner(
             )
         )
     }
-    val shape = RoundedCornerShape(22.dp)
     Box(
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = PAGE_GUTTER, vertical = 6.dp)
-            .clip(shape)
-            .border(0.75.dp, Color.White.copy(alpha = 0.14f), shape)
+            .clip(Shape22)
+            .border(0.75.dp, Color.White.copy(alpha = 0.14f), Shape22)
             .clickable(onClick = onSignIn),
     ) {
         MeshGradientBackground(
             palette = palette,
             modifier = Modifier.matchParentSize(),
             blurRadius = 36.dp,
-            continuous = true,
+            continuous = false,
+            animated = false,
         )
         Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 18.dp)) {
             Text(
@@ -1524,7 +1642,7 @@ private fun CompactTrackRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
+            .clip(Shape10)
             .clickable(onClick = onClick)
             .padding(vertical = 6.dp, horizontal = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -1542,22 +1660,23 @@ private fun CompactTrackRow(
         Box(
             modifier = Modifier
                 .size(48.dp)
-                .clip(RoundedCornerShape(8.dp))
+                .clip(Shape8)
                 .background(MaterialTheme.colorScheme.surfaceVariant)
-                .border(0.5.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(8.dp)),
+                .border(0.5.dp, Color.White.copy(alpha = 0.14f), Shape8),
             contentAlignment = Alignment.Center,
         ) {
-            val thumb = track.thumbnailUrl.artworkAt(ROW_ART_PX)
-            if (!thumb.isNullOrBlank()) {
+            val thumb = remember(track.thumbnailUrl) { track.thumbnailUrl.artworkAt(ROW_ART_PX) }
+            val thumbRequest = rememberArtworkRequest(thumb, ROW_ART_PX, ROW_ART_PX)
+            if (thumbRequest != null) {
                 AsyncImage(
-                    model = thumb,
+                    model = thumbRequest,
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),
                 )
             } else {
                 Icon(
-                    imageVector = Icons.Rounded.MusicNote,
+                    imageVector = SonataIcons.MusicNote,
                     contentDescription = null,
                     tint = Color.White.copy(alpha = 0.6f),
                     modifier = Modifier.size(20.dp),
@@ -1571,7 +1690,7 @@ private fun CompactTrackRow(
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
-                        imageVector = if (isPlaying) Icons.Rounded.GraphicEq else Icons.Rounded.Pause,
+                        imageVector = if (isPlaying) SonataIcons.GraphicEq else SonataIcons.Pause,
                         contentDescription = null,
                         tint = SonataAccent,
                         modifier = Modifier.size(20.dp),
@@ -1600,7 +1719,7 @@ private fun CompactTrackRow(
             )
         }
         Icon(
-            imageVector = Icons.Rounded.MoreVert,
+            imageVector = SonataIcons.MoreVert,
             contentDescription = "Track options",
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier
@@ -1618,32 +1737,32 @@ private fun ShelfCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier.width(SHELF_CARD_WIDTH),
 ) {
-    val shape = RoundedCornerShape(12.dp)
     Column(
         modifier = modifier
-            .clip(shape)
+            .clip(Shape12)
             .clickable(onClick = onClick),
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(1f)
-                .clip(shape)
+                .clip(Shape12)
                 .background(MaterialTheme.colorScheme.surfaceVariant)
-                .border(0.5.dp, Color.White.copy(alpha = 0.14f), shape),
+                .border(0.5.dp, Color.White.copy(alpha = 0.14f), Shape12),
             contentAlignment = Alignment.Center,
         ) {
-            val thumb = card.thumbnailUrl.artworkAt(CARD_ART_PX)
-            if (!thumb.isNullOrBlank()) {
+            val thumb = remember(card.thumbnailUrl) { card.thumbnailUrl.artworkAt(CARD_ART_PX) }
+            val thumbRequest = rememberArtworkRequest(thumb, 360, 360)
+            if (thumbRequest != null) {
                 AsyncImage(
-                    model = thumb,
+                    model = thumbRequest,
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),
                 )
             } else {
                 Icon(
-                    imageVector = Icons.Rounded.MusicNote,
+                    imageVector = SonataIcons.MusicNote,
                     contentDescription = null,
                     tint = Color.White.copy(alpha = 0.45f),
                     modifier = Modifier.size(34.dp),
@@ -1657,7 +1776,7 @@ private fun ShelfCard(
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.GraphicEq,
+                        imageVector = SonataIcons.GraphicEq,
                         contentDescription = null,
                         tint = SonataAccent,
                         modifier = Modifier.size(28.dp),
@@ -1696,24 +1815,24 @@ private fun VideoShelfCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier.width(248.dp),
 ) {
-    val shape = RoundedCornerShape(12.dp)
     Column(
         modifier = modifier
-            .clip(shape)
+            .clip(Shape12)
             .clickable(onClick = onClick),
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(16f / 9f)
-                .clip(shape)
+                .clip(Shape12)
                 .background(MaterialTheme.colorScheme.surfaceVariant)
-                .border(0.5.dp, Color.White.copy(alpha = 0.14f), shape),
+                .border(0.5.dp, Color.White.copy(alpha = 0.14f), Shape12),
             contentAlignment = Alignment.Center,
         ) {
-            if (!card.thumbnailUrl.isNullOrBlank()) {
+            val videoThumbRequest = rememberArtworkRequest(card.thumbnailUrl, 480, 270)
+            if (videoThumbRequest != null) {
                 AsyncImage(
-                    model = card.thumbnailUrl,
+                    model = videoThumbRequest,
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),
@@ -1727,7 +1846,7 @@ private fun VideoShelfCard(
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.GraphicEq,
+                        imageVector = SonataIcons.GraphicEq,
                         contentDescription = null,
                         tint = SonataAccent,
                         modifier = Modifier.size(28.dp),
@@ -1786,243 +1905,248 @@ private fun DetailScreen(
                 )
             ),
     ) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = contentPadding,
-        ) {
-            item(key = "detail_header") {
-                val screenWidth = LocalConfiguration.current.screenWidthDp.dp
-                val isWideTablet = screenWidth >= 680.dp
-                val artShape = RoundedCornerShape(14.dp)
-                val cover = state.collectionCoverUrl.artworkAt(HEADER_ART_PX)
-                val meta = listOfNotNull(
-                    state.collectionKindLabel,
-                    state.collectionYear,
-                    state.collectionTracks.takeIf { it.isNotEmpty() }?.let { "${it.size} songs" },
-                ).joinToString(" · ")
-
-                @Composable
-                fun HeaderActionRow() {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Button(
-                            onClick = onPlayAll,
-                            enabled = state.collectionTracks.isNotEmpty(),
-                            shape = SquirclePillShape(),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = SonataAccent,
-                                contentColor = Color.White,
-                            ),
-                            contentPadding = PaddingValues(horizontal = 26.dp, vertical = 12.dp),
-                        ) {
-                            Icon(
-                                painter = painterResource(R.drawable.ic_player_play),
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp),
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                text = "Play",
-                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                            )
-                        }
-                        Box(
-                            modifier = Modifier
-                                .size(42.dp)
-                                .lightweightLiquidGlass(CircleShape, fallbackColor = Color.White.copy(alpha = 0.14f))
-                                .clip(CircleShape)
-                                .clickable(enabled = state.collectionTracks.isNotEmpty(), onClick = onShuffleAll),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                imageVector = SonataIcons.Shuffle,
-                                contentDescription = "Shuffle",
-                                tint = Color.White,
-                                modifier = Modifier.size(18.dp),
-                            )
-                        }
-                        Box(
-                            modifier = Modifier
-                                .size(42.dp)
-                                .lightweightLiquidGlass(CircleShape, fallbackColor = Color.White.copy(alpha = 0.14f))
-                                .clip(CircleShape)
-                                .clickable { savedToLibrary = !savedToLibrary },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                imageVector = if (savedToLibrary) SonataIcons.Check else SonataIcons.TabLibrary,
-                                contentDescription = "Save to Library",
-                                tint = if (savedToLibrary) SonataAccent else Color.White,
-                                modifier = Modifier.size(18.dp),
-                            )
-                        }
+        SonataShimmerHost {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = contentPadding,
+            ) {
+                item(key = "detail_header", contentType = "detail_header") {
+                    val screenWidth = LocalConfiguration.current.screenWidthDp.dp
+                    val isWideTablet = screenWidth >= 680.dp
+                    val cover = remember(state.collectionCoverUrl) { state.collectionCoverUrl.artworkAt(HEADER_ART_PX) }
+                    val coverRequest = rememberArtworkRequest(cover, 600, 600)
+                    val meta = remember(state.collectionKindLabel, state.collectionYear, state.collectionTracks.size) {
+                        listOfNotNull(
+                            state.collectionKindLabel,
+                            state.collectionYear,
+                            state.collectionTracks.takeIf { it.isNotEmpty() }?.let { "${it.size} songs" },
+                        ).joinToString(" · ")
                     }
-                }
 
-                if (isWideTablet) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = PAGE_GUTTER, vertical = 14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(26.dp),
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(196.dp)
-                                .shadow(18.dp, artShape, clip = false)
-                                .clip(artShape)
-                                .background(palette.elevated)
-                                .border(0.5.dp, Color.White.copy(alpha = 0.16f), artShape),
-                            contentAlignment = Alignment.Center,
+                    @Composable
+                    fun HeaderActionRow() {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            if (!cover.isNullOrBlank()) {
-                                AsyncImage(
-                                    model = cover,
-                                    contentDescription = state.collectionTitle,
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier.fillMaxSize(),
-                                )
-                            } else {
+                            Button(
+                                onClick = onPlayAll,
+                                enabled = state.collectionTracks.isNotEmpty(),
+                                shape = CapsulePillShape,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = SonataAccent,
+                                    contentColor = Color.White,
+                                ),
+                                contentPadding = PaddingValues(horizontal = 26.dp, vertical = 12.dp),
+                            ) {
                                 Icon(
-                                    imageVector = SonataIcons.TabLibrary,
+                                    painter = painterResource(R.drawable.ic_player_play),
                                     contentDescription = null,
-                                    tint = Color.White.copy(alpha = 0.55f),
-                                    modifier = Modifier.size(60.dp),
+                                    modifier = Modifier.size(16.dp),
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    text = "Play",
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                                )
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .lightweightLiquidGlass(CircleShape, fallbackColor = Color.White.copy(alpha = 0.14f))
+                                    .clip(CircleShape)
+                                    .clickable(enabled = state.collectionTracks.isNotEmpty(), onClick = onShuffleAll),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    imageVector = SonataIcons.Shuffle,
+                                    contentDescription = "Shuffle",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .lightweightLiquidGlass(CircleShape, fallbackColor = Color.White.copy(alpha = 0.14f))
+                                    .clip(CircleShape)
+                                    .clickable { savedToLibrary = !savedToLibrary },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    imageVector = if (savedToLibrary) SonataIcons.Check else SonataIcons.TabLibrary,
+                                    contentDescription = "Save to Library",
+                                    tint = if (savedToLibrary) SonataAccent else Color.White,
+                                    modifier = Modifier.size(18.dp),
                                 )
                             }
                         }
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.Center,
+                    }
+
+                    if (isWideTablet) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = PAGE_GUTTER, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(26.dp),
                         ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(196.dp)
+                                    .shadow(18.dp, Shape14, clip = false)
+                                    .clip(Shape14)
+                                    .background(palette.elevated)
+                                    .border(0.5.dp, Color.White.copy(alpha = 0.16f), Shape14),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                if (coverRequest != null) {
+                                    AsyncImage(
+                                        model = coverRequest,
+                                        contentDescription = state.collectionTitle,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize(),
+                                    )
+                                } else {
+                                    Icon(
+                                        imageVector = SonataIcons.TabLibrary,
+                                        contentDescription = null,
+                                        tint = Color.White.copy(alpha = 0.55f),
+                                        modifier = Modifier.size(60.dp),
+                                    )
+                                }
+                            }
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.Center,
+                            ) {
+                                Text(
+                                    text = state.collectionTitle.orEmpty(),
+                                    style = MaterialTheme.typography.headlineMedium.copy(
+                                        fontSize = 28.sp,
+                                        fontWeight = FontWeight.Bold,
+                                    ),
+                                    color = Color.White,
+                                )
+                                state.collectionSubtitle?.takeIf { it.isNotBlank() }?.let { subtitle ->
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(
+                                        text = subtitle,
+                                        style = MaterialTheme.typography.titleMedium.copy(
+                                            fontSize = 18.sp,
+                                            fontWeight = FontWeight.Medium,
+                                        ),
+                                        color = SonataAccent,
+                                    )
+                                }
+                                if (meta.isNotBlank()) {
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(
+                                        text = meta,
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = Color.White.copy(alpha = 0.62f),
+                                    )
+                                }
+                                Spacer(Modifier.height(18.dp))
+                                HeaderActionRow()
+                            }
+                        }
+                    } else {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = PAGE_GUTTER, vertical = 10.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            val artWidth = ((screenWidth - PAGE_GUTTER * 2) * 0.76f).coerceAtMost(310.dp)
+                            Box(
+                                modifier = Modifier
+                                    .size(artWidth)
+                                    .shadow(18.dp, Shape14, clip = false)
+                                    .clip(Shape14)
+                                    .background(palette.elevated)
+                                    .border(0.5.dp, Color.White.copy(alpha = 0.16f), Shape14),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                if (coverRequest != null) {
+                                    AsyncImage(
+                                        model = coverRequest,
+                                        contentDescription = state.collectionTitle,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize(),
+                                    )
+                                } else {
+                                    Icon(
+                                        imageVector = SonataIcons.TabLibrary,
+                                        contentDescription = null,
+                                        tint = Color.White.copy(alpha = 0.55f),
+                                        modifier = Modifier.size(64.dp),
+                                    )
+                                }
+                            }
+
+                            Spacer(Modifier.height(18.dp))
                             Text(
                                 text = state.collectionTitle.orEmpty(),
-                                style = MaterialTheme.typography.headlineMedium.copy(
-                                    fontSize = 28.sp,
+                                style = MaterialTheme.typography.headlineSmall.copy(
+                                    fontSize = 23.sp,
                                     fontWeight = FontWeight.Bold,
                                 ),
                                 color = Color.White,
+                                textAlign = TextAlign.Center,
                             )
                             state.collectionSubtitle?.takeIf { it.isNotBlank() }?.let { subtitle ->
                                 Spacer(Modifier.height(4.dp))
                                 Text(
                                     text = subtitle,
                                     style = MaterialTheme.typography.titleMedium.copy(
-                                        fontSize = 18.sp,
+                                        fontSize = 17.sp,
                                         fontWeight = FontWeight.Medium,
                                     ),
                                     color = SonataAccent,
+                                    textAlign = TextAlign.Center,
                                 )
                             }
                             if (meta.isNotBlank()) {
                                 Spacer(Modifier.height(4.dp))
                                 Text(
                                     text = meta,
-                                    style = MaterialTheme.typography.labelLarge,
+                                    style = MaterialTheme.typography.labelMedium,
                                     color = Color.White.copy(alpha = 0.62f),
                                 )
                             }
-                            Spacer(Modifier.height(18.dp))
+
+                            Spacer(Modifier.height(16.dp))
                             HeaderActionRow()
+                            Spacer(Modifier.height(14.dp))
                         }
-                    }
-                } else {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = PAGE_GUTTER, vertical = 10.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        val artWidth = ((screenWidth - PAGE_GUTTER * 2) * 0.76f).coerceAtMost(310.dp)
-                        Box(
-                            modifier = Modifier
-                                .size(artWidth)
-                                .shadow(18.dp, artShape, clip = false)
-                                .clip(artShape)
-                                .background(palette.elevated)
-                                .border(0.5.dp, Color.White.copy(alpha = 0.16f), artShape),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            if (!cover.isNullOrBlank()) {
-                                AsyncImage(
-                                    model = cover,
-                                    contentDescription = state.collectionTitle,
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier.fillMaxSize(),
-                                )
-                            } else {
-                                Icon(
-                                    imageVector = SonataIcons.TabLibrary,
-                                    contentDescription = null,
-                                    tint = Color.White.copy(alpha = 0.55f),
-                                    modifier = Modifier.size(64.dp),
-                                )
-                            }
-                        }
-
-                        Spacer(Modifier.height(18.dp))
-                        Text(
-                            text = state.collectionTitle.orEmpty(),
-                            style = MaterialTheme.typography.headlineSmall.copy(
-                                fontSize = 23.sp,
-                                fontWeight = FontWeight.Bold,
-                            ),
-                            color = Color.White,
-                            textAlign = TextAlign.Center,
-                        )
-                        state.collectionSubtitle?.takeIf { it.isNotBlank() }?.let { subtitle ->
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                text = subtitle,
-                                style = MaterialTheme.typography.titleMedium.copy(
-                                    fontSize = 17.sp,
-                                    fontWeight = FontWeight.Medium,
-                                ),
-                                color = SonataAccent,
-                                textAlign = TextAlign.Center,
-                            )
-                        }
-                        if (meta.isNotBlank()) {
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                text = meta,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = Color.White.copy(alpha = 0.62f),
-                            )
-                        }
-
-                        Spacer(Modifier.height(16.dp))
-                        HeaderActionRow()
-                        Spacer(Modifier.height(14.dp))
                     }
                 }
-            }
 
-            if (state.loading && state.collectionTracks.isEmpty()) {
-                detailSkeleton(trackRows = 8)
-            } else {
-                itemsIndexed(
-                    items = state.collectionTracks,
-                    key = { idx, track -> "${track.id}_$idx" },
-                ) { idx, track ->
-                    val activeId = state.activeTrack?.id
-                    val current = activeId != null && track.id == activeId
-                    Column(modifier = Modifier.padding(horizontal = PAGE_GUTTER)) {
-                        CompactTrackRow(
-                            track = track,
-                            isCurrent = current,
-                            isPlaying = current && state.isPlaying,
-                            leadingIndex = idx + 1,
-                            onClick = { onPlayTrack(track) },
-                        )
-                        HorizontalDivider(
-                            color = Color.White.copy(alpha = 0.08f),
-                            modifier = Modifier.padding(start = 84.dp),
-                        )
+                if (state.loading && state.collectionTracks.isEmpty()) {
+                    detailSkeleton(trackRows = 8)
+                } else {
+                    itemsIndexed(
+                        items = state.collectionTracks,
+                        key = { idx, track -> "${track.id}_$idx" },
+                        contentType = { _, _ -> "detail_track" },
+                    ) { idx, track ->
+                        val activeId = state.activeTrack?.id
+                        val current = activeId != null && track.id == activeId
+                        Column(modifier = Modifier.padding(horizontal = PAGE_GUTTER)) {
+                            CompactTrackRow(
+                                track = track,
+                                isCurrent = current,
+                                isPlaying = current && state.isPlaying,
+                                leadingIndex = idx + 1,
+                                onClick = { onPlayTrack(track) },
+                            )
+                            HorizontalDivider(
+                                color = Color.White.copy(alpha = 0.08f),
+                                modifier = Modifier.padding(start = 84.dp),
+                            )
+                        }
                     }
                 }
             }
@@ -2045,7 +2169,11 @@ private fun AllMoodsScreen(
         horizontalArrangement = Arrangement.spacedBy(14.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
-        items(TopPickMood.entries, key = { it.name }) { mood ->
+        items(
+            items = TopPickMood.entries,
+            key = { it.name },
+            contentType = { "mood_grid_tile" },
+        ) { mood ->
             MoodTile(
                 mood = mood,
                 onClick = { _, label -> onOpenMood(label) },
@@ -2102,12 +2230,14 @@ private fun ExploreTabContent(
         }
     }
 
+    val moodRows = remember(moodSleeves, moodColumns) { moodSleeves.chunked(moodColumns) }
+
     LazyColumn(
         state = listState,
         modifier = modifier.fillMaxSize(),
         contentPadding = contentPadding,
     ) {
-        item(key = "explore_heading") {
+        item(key = "explore_heading", contentType = "tab_heading") {
             Text(
                 text = "Explore",
                 style = MaterialTheme.typography.displayLarge.copy(
@@ -2119,7 +2249,11 @@ private fun ExploreTabContent(
             )
         }
 
-        itemsIndexed(moodSleeves.chunked(moodColumns)) { rowIdx, rowItems ->
+        itemsIndexed(
+            items = moodRows,
+            key = { rowIdx, row -> "mood_row_${rowIdx}_${row.firstOrNull()?.title.orEmpty()}" },
+            contentType = { _, _ -> "explore_mood_row" },
+        ) { rowIdx, rowItems ->
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -2130,14 +2264,13 @@ private fun ExploreTabContent(
                     val globalIdx = rowIdx * moodColumns + colIdx
                     val resolvedThumb = mood.thumbnailUrl?.takeIf { it.isNotBlank() }
                         ?: if (artPool.isNotEmpty()) artPool[globalIdx % artPool.size] else null
-                    val shape = RoundedCornerShape(12.dp)
                     MoodGenreSleeve(
                         title = mood.title,
-                        thumbnailUrl = resolvedThumb.artworkAt(CARD_ART_PX),
+                        thumbnailUrl = resolvedThumb,
                         modifier = Modifier
                             .weight(1f)
                             .aspectRatio(1.9f)
-                            .clip(shape)
+                            .clip(Shape12)
                             .clickable { onOpenMood(mood.title) },
                     )
                 }
@@ -2150,8 +2283,9 @@ private fun ExploreTabContent(
         itemsIndexed(
             items = releaseShelves,
             key = { idx, shelf -> "explore_${shelf.title}_$idx" },
+            contentType = { _, _ -> "explore_shelf" },
         ) { _, shelf ->
-            val cards = shelf.cards.filter { it.kind != AndroidHomeCardKind.MOOD }
+            val cards = remember(shelf.cards) { shelf.cards.filter { it.kind != AndroidHomeCardKind.MOOD } }
             if (cards.isNotEmpty()) {
                 Column(Modifier.padding(top = 18.dp, bottom = 10.dp)) {
                     SectionHeader(title = shelf.title)
@@ -2159,7 +2293,11 @@ private fun ExploreTabContent(
                         contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
                         horizontalArrangement = Arrangement.spacedBy(14.dp),
                     ) {
-                        items(cards, key = { "${it.kind}_${it.id}_${it.title}" }) { card ->
+                        itemsIndexed(
+                            items = cards,
+                            key = { cardIdx, card -> "${card.kind}_${card.id}_${card.title}_$cardIdx" },
+                            contentType = { _, _ -> "shelf_card" },
+                        ) { _, card ->
                             val activeId = state.activeTrack?.id
                             val current = activeId != null && card.track?.id == activeId
                             ShelfCard(
@@ -2198,13 +2336,14 @@ private fun LibraryTabContent(
             ?: state.playlists.firstOrNull { !it.thumbnailUrl.isNullOrBlank() }?.thumbnailUrl
     }
     val holderName = state.accountProfile?.name?.takeIf { it.isNotBlank() } ?: "SONATA LISTENER"
+    val playlistRows = remember(state.playlists, playlistColumns) { state.playlists.chunked(playlistColumns) }
 
     LazyColumn(
         state = listState,
         modifier = modifier.fillMaxSize(),
         contentPadding = contentPadding,
     ) {
-        item(key = "library_heading") {
+        item(key = "library_heading", contentType = "tab_heading") {
             Text(
                 text = "Library",
                 style = MaterialTheme.typography.displayLarge.copy(
@@ -2217,12 +2356,12 @@ private fun LibraryTabContent(
         }
 
         // Horizontal ReplayCreditCard carousel
-        item(key = "library_replay_carousel") {
+        item(key = "library_replay_carousel", contentType = "replay_carousel") {
             LazyRow(
                 contentPadding = PaddingValues(horizontal = PAGE_GUTTER, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                item(key = "replay_card_tracks") {
+                item(key = "replay_card_tracks", contentType = "replay_card") {
                     ReplayCreditCard(
                         label = "Tracks Ready",
                         value = "${state.tracks.size} Tracks",
@@ -2235,7 +2374,7 @@ private fun LibraryTabContent(
                         modifier = Modifier.width(300.dp),
                     )
                 }
-                item(key = "replay_card_playlists") {
+                item(key = "replay_card_playlists", contentType = "replay_card") {
                     ReplayCreditCard(
                         label = "Library Playlists",
                         value = "${state.playlists.size} Mixes",
@@ -2254,7 +2393,7 @@ private fun LibraryTabContent(
         }
 
         // Downloads & Local Music navigation rows
-        item(key = "library_device_rows") {
+        item(key = "library_device_rows", contentType = "device_rows") {
             Column(modifier = Modifier.padding(horizontal = PAGE_GUTTER)) {
                 LibraryNavRow(
                     icon = SonataIcons.Download,
@@ -2276,16 +2415,16 @@ private fun LibraryTabContent(
             Spacer(Modifier.height(14.dp))
         }
 
-        if (!state.signedIn) {
-            item(key = "library_signin_banner") {
+        if (state.authInitialized && !state.signedIn) {
+            item(key = "library_signin_banner", contentType = "sign_in_banner") {
                 SignInBanner(onSignIn = onSignIn)
             }
-        } else {
-            item(key = "library_playlists_header") {
+        } else if (state.signedIn) {
+            item(key = "library_playlists_header", contentType = "section_header") {
                 SectionHeader(title = "Playlists")
             }
             if (state.playlists.isEmpty()) {
-                item(key = "library_empty_playlists") {
+                item(key = "library_empty_playlists", contentType = "empty_state") {
                     Text(
                         text = "Your YouTube Music playlists will appear here once synced.",
                         style = MaterialTheme.typography.bodyMedium,
@@ -2294,7 +2433,11 @@ private fun LibraryTabContent(
                     )
                 }
             } else {
-                items(state.playlists.chunked(playlistColumns)) { rowPlaylists ->
+                itemsIndexed(
+                    items = playlistRows,
+                    key = { rowIdx, row -> "pl_row_${rowIdx}_${row.firstOrNull()?.id.orEmpty()}" },
+                    contentType = { _, _ -> "playlist_grid_row" },
+                ) { _, rowPlaylists ->
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -2355,50 +2498,47 @@ private fun LibraryNavRow(
     }
 }
 
+private val LikedPlaylistBrush = Brush.linearGradient(listOf(Color(0xFF7B52FF), Color(0xFFF35CA8)))
+
 @Composable
 private fun PlaylistGridCard(
     playlist: AndroidPlaylist,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val shape = RoundedCornerShape(12.dp)
     val isLikedPlaylist = playlist.id == "LM" || playlist.name.contains("Liked", ignoreCase = true)
-    val cover = playlist.thumbnailUrl.artworkAt(CARD_ART_PX)
+    val cover = remember(playlist.thumbnailUrl) { playlist.thumbnailUrl.artworkAt(CARD_ART_PX) }
+    val coverRequest = rememberArtworkRequest(cover, 360, 360)
     Column(
         modifier = modifier
-            .clip(shape)
+            .clip(Shape12)
             .clickable(onClick = onClick),
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(1f)
-                .clip(shape)
-                .background(
-                    if (isLikedPlaylist || cover.isNullOrBlank()) {
-                        Brush.linearGradient(listOf(Color(0xFF7B52FF), Color(0xFFF35CA8)))
+                .clip(Shape12)
+                .then(
+                    if (isLikedPlaylist || coverRequest == null) {
+                        Modifier.background(LikedPlaylistBrush)
                     } else {
-                        Brush.linearGradient(
-                            listOf(
-                                MaterialTheme.colorScheme.surfaceVariant,
-                                MaterialTheme.colorScheme.surfaceVariant,
-                            )
-                        )
+                        Modifier.background(MaterialTheme.colorScheme.surfaceVariant)
                     }
                 )
-                .border(0.5.dp, Color.White.copy(alpha = 0.14f), shape),
+                .border(0.5.dp, Color.White.copy(alpha = 0.14f), Shape12),
             contentAlignment = Alignment.Center,
         ) {
-            if (isLikedPlaylist || cover.isNullOrBlank()) {
+            if (isLikedPlaylist || coverRequest == null) {
                 Icon(
-                    imageVector = Icons.Rounded.ThumbUp,
+                    imageVector = SonataIcons.ThumbUp,
                     contentDescription = null,
                     tint = Color.White,
                     modifier = Modifier.size(64.dp),
                 )
             } else {
                 AsyncImage(
-                    model = cover,
+                    model = coverRequest,
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),
@@ -2502,7 +2642,11 @@ private fun SearchTabContent(
                             )
                         }
                     }
-                    items(state.recentSearches, key = { "recent_$it" }) { q ->
+                    items(
+                        items = state.recentSearches,
+                        key = { "recent_$it" },
+                        contentType = { "recent_search" },
+                    ) { q ->
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -2539,10 +2683,14 @@ private fun SearchTabContent(
                 }
 
                 if (state.tracks.isNotEmpty()) {
-                    item(key = "search_results_header") {
+                    item(key = "search_results_header", contentType = "section_header") {
                         SectionHeader(title = state.listTitle)
                     }
-                    items(state.tracks, key = { "yt_${it.id}" }) { track ->
+                    items(
+                        items = state.tracks,
+                        key = { "yt_${it.id}" },
+                        contentType = { "search_track" },
+                    ) { track ->
                         val activeId = state.activeTrack?.id
                         val current = activeId != null && track.id == activeId
                         Box(modifier = Modifier.padding(horizontal = PAGE_GUTTER)) {
@@ -2558,7 +2706,11 @@ private fun SearchTabContent(
             }
 
             1 -> {
-                items(filteredLibraryTracks, key = { "lib_search_${it.id}" }) { track ->
+                items(
+                    items = filteredLibraryTracks,
+                    key = { "lib_search_${it.id}" },
+                    contentType = { "search_track" },
+                ) { track ->
                     val activeId = state.activeTrack?.id
                     val current = activeId != null && track.id == activeId
                     Box(modifier = Modifier.padding(horizontal = PAGE_GUTTER)) {
@@ -2573,7 +2725,11 @@ private fun SearchTabContent(
             }
 
             else -> {
-                items(filteredPlaylists, key = { "pl_search_${it.id}" }) { playlist ->
+                items(
+                    items = filteredPlaylists,
+                    key = { "pl_search_${it.id}" },
+                    contentType = { "search_playlist" },
+                ) { playlist ->
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -2584,14 +2740,15 @@ private fun SearchTabContent(
                         Box(
                             modifier = Modifier
                                 .size(50.dp)
-                                .clip(RoundedCornerShape(8.dp))
+                                .clip(Shape8)
                                 .background(MaterialTheme.colorScheme.surfaceVariant),
                             contentAlignment = Alignment.Center,
                         ) {
-                            val thumb = playlist.thumbnailUrl.artworkAt(ROW_ART_PX)
-                            if (!thumb.isNullOrBlank()) {
+                            val thumb = remember(playlist.thumbnailUrl) { playlist.thumbnailUrl.artworkAt(ROW_ART_PX) }
+                            val thumbRequest = rememberArtworkRequest(thumb, ROW_ART_PX, ROW_ART_PX)
+                            if (thumbRequest != null) {
                                 AsyncImage(
-                                    model = thumb,
+                                    model = thumbRequest,
                                     contentDescription = null,
                                     contentScale = ContentScale.Crop,
                                     modifier = Modifier.fillMaxSize(),
@@ -2706,9 +2863,10 @@ private fun SettingsSheet(
                                 contentAlignment = Alignment.Center,
                             ) {
                                 val avatar = if (state.signedIn) state.accountProfile?.avatarUrl else null
-                                if (!avatar.isNullOrBlank()) {
+                                val avatarRequest = rememberArtworkRequest(avatar, 128, 128)
+                                if (avatarRequest != null) {
                                     AsyncImage(
-                                        model = avatar,
+                                        model = avatarRequest,
                                         contentDescription = null,
                                         contentScale = ContentScale.Crop,
                                         modifier = Modifier.fillMaxSize(),
@@ -3084,6 +3242,7 @@ private fun SettingsSwitchRow(
 private fun NowPlayingScreen(
     track: AndroidTrack,
     state: SonataUiState,
+    clock: PlaybackClockState,
     onToggleLyrics: () -> Unit,
     onToggleStar: () -> Unit,
     onTogglePlayPause: () -> Unit,
@@ -3099,6 +3258,7 @@ private fun NowPlayingScreen(
 ) {
     var showQueue by remember { mutableStateOf(false) }
     var dragOffsetY by remember { mutableFloatStateOf(0f) }
+    var scrubbing by remember { mutableStateOf(false) }
 
     val panelOpen = state.showLyrics || showQueue
     val isLiked = track.id in state.likedTrackIds
@@ -3108,25 +3268,13 @@ private fun NowPlayingScreen(
         artPx = CARD_ART_PX,
     )
 
-    var scrubbing by remember { mutableStateOf(false) }
-    var scrubFraction by remember { mutableFloatStateOf(0f) }
-    val playbackFraction = if (state.durationMs > 0L) {
-        (state.positionMs.toFloat() / state.durationMs.toFloat()).coerceIn(0f, 1f)
-    } else {
-        0f
-    }
-    val displayedFraction = if (scrubbing) scrubFraction else playbackFraction
-    val shownMs = (displayedFraction * state.durationMs).toLong()
-    val remainingMs = (state.durationMs - shownMs).coerceAtLeast(0L)
-
+    // Reads PlaybackClockState strictly inside withFrameNanos / snapshotFlow -> 0 recompositions here.
     val smoothClockMs = rememberSmoothLyricClock(
-        reportedMs = state.positionMs,
-        sampledAtNanos = state.positionSampledAtNanos,
+        clock = clock,
         isPlaying = state.isPlaying,
         isBuffering = state.isBuffering,
         fpsLimit = state.fpsLimit,
         trackKey = track.id,
-        discontinuity = state.seekDiscontinuity,
     )
     val density = LocalDensity.current
     val screenWidth = LocalConfiguration.current.screenWidthDp.dp
@@ -3143,8 +3291,13 @@ private fun NowPlayingScreen(
     // All portrait viewports (phones and portrait tablets) use the full-bleed hero artwork style.
     val playerFillsWindow = !isLandscapePlayer
     val showPortraitHero = !panelOpen && !isLandscapePlayer
-    val heroUrl = track.thumbnailUrl.artworkAt(PLAYER_ART_PX)
-    val hasArtwork = !heroUrl.isNullOrBlank()
+    val heroUrl = remember(track.thumbnailUrl) { track.thumbnailUrl.artworkAt(PLAYER_ART_PX) }
+    val heroPlaceholderKey = remember(track.thumbnailUrl) {
+        artworkMemoryCacheKey(track.thumbnailUrl.artworkAt(CARD_ART_PX), 360, 360)
+            ?: artworkMemoryCacheKey(track.thumbnailUrl.artworkAt(ROW_ART_PX), ROW_ART_PX, ROW_ART_PX)
+    }
+    val heroRequest = rememberArtworkRequest(heroUrl, 1024, 1024, placeholderKey = heroPlaceholderKey)
+    val hasArtwork = heroRequest != null
 
     // Measured portrait column and artwork slot dimensions via onSizeChanged.
     var portraitColumnWidthPx by remember { mutableIntStateOf(0) }
@@ -3248,16 +3401,11 @@ private fun NowPlayingScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        0.38f to Color.Transparent,
-                        1f to Color.Black.copy(alpha = 0.46f),
-                    )
-                ),
+                .background(NowPlayingBottomScrim),
         )
 
         // Full-bleed edge-to-edge hero cover at y = 0 dissolving smoothly into mesh backdrop
-        // (covers phones and portrait tablets up to 620dp width).
+        // (covers phones and portrait tablets).
         AnimatedVisibility(
             visible = showPortraitHero,
             enter = fadeIn(tween(260)),
@@ -3269,22 +3417,22 @@ private fun NowPlayingScreen(
                     .fillMaxWidth()
                     .height(heroHeight)
                     .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-                    .drawWithContent {
-                        drawContent()
-                        drawRect(
-                            brush = Brush.verticalGradient(
-                                colorStops = HERO_FADE_STOPS,
-                                startY = size.height * (1f - HERO_FADE_FRACTION),
-                                endY = size.height,
-                            ),
-                            blendMode = BlendMode.DstIn,
+                    .drawWithCache {
+                        val fadeBrush = Brush.verticalGradient(
+                            colorStops = HERO_FADE_STOPS,
+                            startY = size.height * (1f - HERO_FADE_FRACTION),
+                            endY = size.height,
                         )
+                        onDrawWithContent {
+                            drawContent()
+                            drawRect(brush = fadeBrush, blendMode = BlendMode.DstIn)
+                        }
                     },
                 contentAlignment = Alignment.Center,
             ) {
-                if (hasArtwork) {
+                if (heroRequest != null) {
                     AsyncImage(
-                        model = heroUrl,
+                        model = heroRequest,
                         contentDescription = track.title,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize(),
@@ -3297,7 +3445,7 @@ private fun NowPlayingScreen(
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
-                            imageVector = Icons.Rounded.MusicNote,
+                            imageVector = SonataIcons.MusicNote,
                             contentDescription = null,
                             tint = Color.White.copy(alpha = 0.45f),
                             modifier = Modifier.size(84.dp),
@@ -3349,27 +3497,19 @@ private fun NowPlayingScreen(
                 NowPlayingLandscapeLayout(
                     track = track,
                     state = state,
+                    clock = clock,
                     showQueue = showQueue,
                     isLiked = isLiked,
                     elevatedColor = palette.elevated,
-                    heroUrl = heroUrl,
+                    heroRequest = heroRequest,
                     hasArtwork = hasArtwork,
                     coverScale = coverScale,
-                    displayedFraction = displayedFraction,
-                    shownMs = shownMs,
-                    remainingMs = remainingMs,
                     smoothClockMs = smoothClockMs,
                     screenWidth = screenWidth,
                     screenHeight = screenHeight,
                     compactLandscape = compactLandscape,
-                    onScrubStartOrChange = { frac ->
-                        scrubbing = true
-                        scrubFraction = frac
-                    },
-                    onScrubFinished = {
-                        onSeekFraction(scrubFraction)
-                        scrubbing = false
-                    },
+                    onScrubbingChanged = { scrubbing = it },
+                    onSeekFraction = onSeekFraction,
                     onToggleLyrics = {
                         if (showQueue) showQueue = false
                         onToggleLyrics()
@@ -3402,16 +3542,14 @@ private fun NowPlayingScreen(
                 NowPlayingPortraitLayout(
                     track = track,
                     state = state,
+                    clock = clock,
                     showQueue = showQueue,
                     panelOpen = panelOpen,
                     isLiked = isLiked,
                     elevatedColor = palette.elevated,
-                    heroUrl = heroUrl,
+                    heroRequest = heroRequest,
                     hasArtwork = hasArtwork,
                     coverScale = coverScale,
-                    displayedFraction = displayedFraction,
-                    shownMs = shownMs,
-                    remainingMs = remainingMs,
                     smoothClockMs = smoothClockMs,
                     playerMaxWidth = playerMaxWidth,
                     headerHeight = headerHeight,
@@ -3421,14 +3559,8 @@ private fun NowPlayingScreen(
                     portraitTopGap = portraitTopGap,
                     portraitBottomGap = portraitBottomGap,
                     onPortraitSlotHeightChanged = { portraitSlotHeightPx = it },
-                    onScrubStartOrChange = { frac ->
-                        scrubbing = true
-                        scrubFraction = frac
-                    },
-                    onScrubFinished = {
-                        onSeekFraction(scrubFraction)
-                        scrubbing = false
-                    },
+                    onScrubbingChanged = { scrubbing = it },
+                    onSeekFraction = onSeekFraction,
                     onToggleLyrics = {
                         if (showQueue) showQueue = false
                         onToggleLyrics()
@@ -3582,32 +3714,48 @@ private fun NowPlayingActionRowBlock(
     Spacer(Modifier.height(if (compact) 2.dp else 6.dp))
 }
 
+/**
+ * Narrowest leaf composable that subscribes to [PlaybackClockState.positionMs] & [PlaybackClockState.durationMs].
+ * Keeps all 5Hz playback ticking completely isolated from NowPlayingScreen, layouts, and tabs.
+ */
 @Composable
-private fun NowPlayingScrubberAndTransportBlock(
-    state: SonataUiState,
-    showQueue: Boolean,
-    displayedFraction: Float,
-    shownMs: Long,
-    remainingMs: Long,
-    includeActions: Boolean = true,
-    transportTopGap: Dp = 14.dp,
-    transportBottomGap: Dp = 18.dp,
-    onScrubStartOrChange: (Float) -> Unit,
-    onScrubFinished: () -> Unit,
-    onPrevious: () -> Unit,
-    onTogglePlayPause: () -> Unit,
-    onNext: () -> Unit,
-    onToggleLyrics: () -> Unit,
-    onToggleQueue: () -> Unit,
-    onToggleShuffle: () -> Unit,
-    onToggleRepeat: () -> Unit,
-    onOpenSettings: () -> Unit,
+private fun NowPlayingProgressSection(
+    clock: PlaybackClockState,
+    isBuffering: Boolean,
+    isUpgradingQuality: Boolean,
+    streamBadge: String,
+    onScrubbingChanged: (Boolean) -> Unit,
+    onSeekFraction: (Float) -> Unit,
 ) {
+    var scrubbing by remember { mutableStateOf(false) }
+    var scrubFraction by remember { mutableFloatStateOf(0f) }
+
+    val durationMs = clock.durationMs
+    val positionMs = clock.positionMs
+    val playbackFraction = if (durationMs > 0L) {
+        (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+    val displayedFraction = if (scrubbing) scrubFraction else playbackFraction
+    val shownMs = (displayedFraction * durationMs).toLong()
+    val remainingMs = (durationMs - shownMs).coerceAtLeast(0L)
+
     ThinSlider(
         value = displayedFraction,
-        onValueChange = onScrubStartOrChange,
-        onValueChangeFinished = onScrubFinished,
-        loading = state.isBuffering,
+        onValueChange = { frac ->
+            if (!scrubbing) {
+                scrubbing = true
+                onScrubbingChanged(true)
+            }
+            scrubFraction = frac
+        },
+        onValueChangeFinished = {
+            onSeekFraction(scrubFraction)
+            scrubbing = false
+            onScrubbingChanged(false)
+        },
+        loading = isBuffering,
     )
 
     Box(
@@ -3631,12 +3779,12 @@ private fun NowPlayingScrubberAndTransportBlock(
                 color = Color.White.copy(alpha = 0.58f),
             )
         }
-        val upgrading = state.isBuffering || state.isUpgradingQuality
+        val upgrading = isBuffering || isUpgradingQuality
         LosslessLabel(
             label = if (upgrading) {
                 "Upgrading Quality"
             } else {
-                state.streamBadge.ifBlank { "Lossless" }
+                streamBadge.ifBlank { "Lossless" }
             },
             pulsing = upgrading,
             modifier = Modifier
@@ -3644,10 +3792,48 @@ private fun NowPlayingScrubberAndTransportBlock(
                 .padding(top = 6.dp),
         )
     }
+}
+
+@Composable
+private fun NowPlayingScrubberAndTransportBlock(
+    state: SonataUiState,
+    clock: PlaybackClockState,
+    showQueue: Boolean,
+    includeActions: Boolean = true,
+    compactTransport: Boolean = false,
+    transportTopGap: Dp = 14.dp,
+    transportBottomGap: Dp = 18.dp,
+    onScrubbingChanged: (Boolean) -> Unit,
+    onSeekFraction: (Float) -> Unit,
+    onPrevious: () -> Unit,
+    onTogglePlayPause: () -> Unit,
+    onNext: () -> Unit,
+    onToggleLyrics: () -> Unit,
+    onToggleQueue: () -> Unit,
+    onToggleShuffle: () -> Unit,
+    onToggleRepeat: () -> Unit,
+    onOpenSettings: () -> Unit,
+) {
+    NowPlayingProgressSection(
+        clock = clock,
+        isBuffering = state.isBuffering,
+        isUpgradingQuality = state.isUpgradingQuality,
+        streamBadge = state.streamBadge,
+        onScrubbingChanged = onScrubbingChanged,
+        onSeekFraction = onSeekFraction,
+    )
 
     if (transportTopGap > 0.dp) {
         Spacer(Modifier.height(transportTopGap))
     }
+
+    val hasPrevious by remember(state.activeTrack, state.repeatMode, state.queueIndex, clock) {
+        derivedStateOf { state.hasPrevious(clock.positionMs) }
+    }
+    val sideButtonSize = if (compactTransport) 44.dp else 64.dp
+    val sideIconSize = if (compactTransport) 34.dp else 53.dp
+    val playButtonSize = if (compactTransport) 52.dp else 88.dp
+    val playIconSize = if (compactTransport) 36.dp else 54.dp
 
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -3656,34 +3842,34 @@ private fun NowPlayingScrubberAndTransportBlock(
     ) {
         IconButton(
             onClick = onPrevious,
-            enabled = state.hasPrevious,
-            modifier = Modifier.size(64.dp),
+            enabled = hasPrevious,
+            modifier = Modifier.size(sideButtonSize),
         ) {
             Icon(
                 painter = painterResource(R.drawable.ic_player_previous),
                 contentDescription = "Previous",
-                tint = if (state.hasPrevious) Color.White else Color.White.copy(alpha = 0.35f),
+                tint = if (hasPrevious) Color.White else Color.White.copy(alpha = 0.35f),
                 modifier = Modifier
-                    .size(53.dp)
+                    .size(sideIconSize)
                     .graphicsLayer { scaleY = 0.85f },
             )
         }
 
         if (state.isBuffering) {
             Box(
-                modifier = Modifier.size(88.dp),
+                modifier = Modifier.size(playButtonSize),
                 contentAlignment = Alignment.Center,
             ) {
                 CircularProgressIndicator(
                     color = Color.White,
-                    strokeWidth = 3.dp,
-                    modifier = Modifier.size(38.dp),
+                    strokeWidth = if (compactTransport) 2.5.dp else 3.dp,
+                    modifier = Modifier.size(if (compactTransport) 26.dp else 38.dp),
                 )
             }
         } else {
             IconButton(
                 onClick = onTogglePlayPause,
-                modifier = Modifier.size(88.dp),
+                modifier = Modifier.size(playButtonSize),
             ) {
                 Icon(
                     painter = painterResource(
@@ -3691,7 +3877,7 @@ private fun NowPlayingScrubberAndTransportBlock(
                     ),
                     contentDescription = if (state.isPlaying) "Pause" else "Play",
                     tint = Color.White,
-                    modifier = Modifier.size(54.dp),
+                    modifier = Modifier.size(playIconSize),
                 )
             }
         }
@@ -3699,14 +3885,14 @@ private fun NowPlayingScrubberAndTransportBlock(
         IconButton(
             onClick = onNext,
             enabled = state.hasNext,
-            modifier = Modifier.size(64.dp),
+            modifier = Modifier.size(sideButtonSize),
         ) {
             Icon(
                 painter = painterResource(R.drawable.ic_player_next),
                 contentDescription = "Next",
                 tint = if (state.hasNext) Color.White else Color.White.copy(alpha = 0.35f),
                 modifier = Modifier
-                    .size(53.dp)
+                    .size(sideIconSize)
                     .graphicsLayer { scaleY = 0.85f },
             )
         }
@@ -3732,21 +3918,19 @@ private fun NowPlayingScrubberAndTransportBlock(
 private fun NowPlayingLandscapeLayout(
     track: AndroidTrack,
     state: SonataUiState,
+    clock: PlaybackClockState,
     showQueue: Boolean,
     isLiked: Boolean,
     elevatedColor: Color,
-    heroUrl: String?,
+    heroRequest: coil3.request.ImageRequest?,
     hasArtwork: Boolean,
     coverScale: Float,
-    displayedFraction: Float,
-    shownMs: Long,
-    remainingMs: Long,
     smoothClockMs: State<Long>,
     screenWidth: Dp,
     screenHeight: Dp,
     compactLandscape: Boolean,
-    onScrubStartOrChange: (Float) -> Unit,
-    onScrubFinished: () -> Unit,
+    onScrubbingChanged: (Boolean) -> Unit,
+    onSeekFraction: (Float) -> Unit,
     onToggleLyrics: () -> Unit,
     onToggleQueue: () -> Unit,
     onClosePanels: () -> Unit,
@@ -3803,7 +3987,6 @@ private fun NowPlayingLandscapeLayout(
                 } else {
                     minOf(screenWidth * 0.40f, screenHeight * 0.66f).coerceIn(200.dp, 360.dp)
                 }
-                val coverShape = RoundedCornerShape(11.dp)
                 Box(
                     modifier = Modifier
                         .size(coverSize)
@@ -3815,26 +3998,26 @@ private fun NowPlayingLandscapeLayout(
                                 ambientShadowColor = Color.Black.copy(alpha = 0.65f)
                                 spotShadowColor = Color.Black.copy(alpha = 0.75f)
                             }
-                            shape = coverShape
+                            shape = Shape11
                             clip = true
                         }
                         .background(elevatedColor)
-                        .border(0.5.dp, Color.White.copy(alpha = 0.08f), coverShape)
+                        .border(0.5.dp, Color.White.copy(alpha = 0.08f), Shape11)
                         .clickable {
                             if (showQueue) onClosePanels() else onToggleLyrics()
                         },
                     contentAlignment = Alignment.Center,
                 ) {
-                    if (hasArtwork) {
+                    if (heroRequest != null) {
                         AsyncImage(
-                            model = heroUrl,
+                            model = heroRequest,
                             contentDescription = track.title,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.fillMaxSize(),
                         )
                     } else {
                         Icon(
-                            imageVector = Icons.Rounded.MusicNote,
+                            imageVector = SonataIcons.MusicNote,
                             contentDescription = null,
                             tint = Color.White.copy(alpha = 0.45f),
                             modifier = Modifier.size(84.dp),
@@ -3851,107 +4034,24 @@ private fun NowPlayingLandscapeLayout(
             ) {
                 if (activePane != 0) {
                     Spacer(Modifier.height(8.dp))
-                    ThinSlider(
-                        value = displayedFraction,
-                        onValueChange = onScrubStartOrChange,
-                        onValueChangeFinished = onScrubFinished,
-                        loading = state.isBuffering,
+                    NowPlayingScrubberAndTransportBlock(
+                        state = state,
+                        clock = clock,
+                        showQueue = showQueue,
+                        includeActions = false,
+                        compactTransport = true,
+                        transportTopGap = 4.dp,
+                        onScrubbingChanged = onScrubbingChanged,
+                        onSeekFraction = onSeekFraction,
+                        onPrevious = onPrevious,
+                        onTogglePlayPause = onTogglePlayPause,
+                        onNext = onNext,
+                        onToggleLyrics = onToggleLyrics,
+                        onToggleQueue = onToggleQueue,
+                        onToggleShuffle = onToggleShuffle,
+                        onToggleRepeat = onToggleRepeat,
+                        onOpenSettings = onOpenSettings,
                     )
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .offset(y = (-6).dp),
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = formatDurationMs(shownMs),
-                                style = MaterialTheme.typography.labelMedium,
-                                color = Color.White.copy(alpha = 0.58f),
-                            )
-                            Text(
-                                text = "-${formatDurationMs(remainingMs)}",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = Color.White.copy(alpha = 0.58f),
-                            )
-                        }
-                        val upgrading = state.isBuffering || state.isUpgradingQuality
-                        LosslessLabel(
-                            label = if (upgrading) {
-                                "Upgrading Quality"
-                            } else {
-                                state.streamBadge.ifBlank { "Lossless" }
-                            },
-                            pulsing = upgrading,
-                            modifier = Modifier
-                                .align(Alignment.TopCenter)
-                                .padding(top = 6.dp),
-                        )
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceAround,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        IconButton(
-                            onClick = onPrevious,
-                            enabled = state.hasPrevious,
-                            modifier = Modifier.size(44.dp),
-                        ) {
-                            Icon(
-                                painter = painterResource(R.drawable.ic_player_previous),
-                                contentDescription = "Previous",
-                                tint = if (state.hasPrevious) Color.White else Color.White.copy(alpha = 0.35f),
-                                modifier = Modifier
-                                    .size(34.dp)
-                                    .graphicsLayer { scaleY = 0.85f },
-                            )
-                        }
-                        if (state.isBuffering) {
-                            Box(
-                                modifier = Modifier.size(52.dp),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                CircularProgressIndicator(
-                                    color = Color.White,
-                                    strokeWidth = 2.5.dp,
-                                    modifier = Modifier.size(26.dp),
-                                )
-                            }
-                        } else {
-                            IconButton(
-                                onClick = onTogglePlayPause,
-                                modifier = Modifier.size(52.dp),
-                            ) {
-                                Icon(
-                                    painter = painterResource(
-                                        if (state.isPlaying) R.drawable.ic_player_pause else R.drawable.ic_player_play
-                                    ),
-                                    contentDescription = if (state.isPlaying) "Pause" else "Play",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(36.dp),
-                                )
-                            }
-                        }
-                        IconButton(
-                            onClick = onNext,
-                            enabled = state.hasNext,
-                            modifier = Modifier.size(44.dp),
-                        ) {
-                            Icon(
-                                painter = painterResource(R.drawable.ic_player_next),
-                                contentDescription = "Next",
-                                tint = if (state.hasNext) Color.White else Color.White.copy(alpha = 0.35f),
-                                modifier = Modifier
-                                    .size(34.dp)
-                                    .graphicsLayer { scaleY = 0.85f },
-                            )
-                        }
-                    }
                     Spacer(Modifier.height(6.dp))
                 } else {
                     Spacer(Modifier.height(if (compactLandscape) 8.dp else 14.dp))
@@ -3985,7 +4085,7 @@ private fun NowPlayingLandscapeLayout(
                     lyrics = state.lyrics,
                     lyricsLoading = state.lyricsLoading,
                     clockMs = smoothClockMs,
-                    durationMs = state.durationMs,
+                    clock = clock,
                     onSeekTo = onSeekTo,
                 )
 
@@ -4018,6 +4118,7 @@ private fun NowPlayingLandscapeLayout(
                                         fontWeight = FontWeight.Bold,
                                     ),
                                     color = Color.White,
+                                    enabled = state.isPlaying,
                                 )
                                 Spacer(Modifier.height(4.dp))
                                 Text(
@@ -4055,20 +4156,18 @@ private fun NowPlayingLandscapeLayout(
                             lyricsLoading = state.lyricsLoading,
                             lyricsUnavailable = state.lyricsUnavailable,
                             clockMs = smoothClockMs,
-                            durationMs = state.durationMs,
+                            clock = clock,
                             onClick = onOpenLyrics,
                         )
 
                         NowPlayingScrubberAndTransportBlock(
                             state = state,
+                            clock = clock,
                             showQueue = showQueue,
-                            displayedFraction = displayedFraction,
-                            shownMs = shownMs,
-                            remainingMs = remainingMs,
                             includeActions = false,
                             transportTopGap = if (compactLandscape) 0.dp else 8.dp,
-                            onScrubStartOrChange = onScrubStartOrChange,
-                            onScrubFinished = onScrubFinished,
+                            onScrubbingChanged = onScrubbingChanged,
+                            onSeekFraction = onSeekFraction,
                             onPrevious = onPrevious,
                             onTogglePlayPause = onTogglePlayPause,
                             onNext = onNext,
@@ -4089,16 +4188,14 @@ private fun NowPlayingLandscapeLayout(
 private fun NowPlayingPortraitLayout(
     track: AndroidTrack,
     state: SonataUiState,
+    clock: PlaybackClockState,
     showQueue: Boolean,
     panelOpen: Boolean,
     isLiked: Boolean,
     elevatedColor: Color,
-    heroUrl: String?,
+    heroRequest: coil3.request.ImageRequest?,
     hasArtwork: Boolean,
     coverScale: Float,
-    displayedFraction: Float,
-    shownMs: Long,
-    remainingMs: Long,
     smoothClockMs: State<Long>,
     playerMaxWidth: Dp,
     headerHeight: Dp,
@@ -4108,8 +4205,8 @@ private fun NowPlayingPortraitLayout(
     portraitTopGap: Dp,
     portraitBottomGap: Dp,
     onPortraitSlotHeightChanged: (Int) -> Unit,
-    onScrubStartOrChange: (Float) -> Unit,
-    onScrubFinished: () -> Unit,
+    onScrubbingChanged: (Boolean) -> Unit,
+    onSeekFraction: (Float) -> Unit,
     onToggleLyrics: () -> Unit,
     onToggleQueue: () -> Unit,
     onClosePanels: () -> Unit,
@@ -4159,26 +4256,27 @@ private fun NowPlayingPortraitLayout(
                                 .height(headerHeight),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            val thumbUrl = track.thumbnailUrl.artworkAt(CARD_ART_PX)
+                            val thumbUrl = remember(track.thumbnailUrl) { track.thumbnailUrl.artworkAt(ROW_ART_PX) }
+                            val thumbRequest = rememberArtworkRequest(thumbUrl, ROW_ART_PX, ROW_ART_PX)
                             Box(
                                 modifier = Modifier
                                     .size(54.dp)
-                                    .clip(RoundedCornerShape(8.dp))
+                                    .clip(Shape8)
                                     .background(Color.White.copy(alpha = 0.1f))
-                                    .border(0.5.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(8.dp))
+                                    .border(0.5.dp, Color.White.copy(alpha = 0.18f), Shape8)
                                     .clickable(onClick = onClosePanels),
                                 contentAlignment = Alignment.Center,
                             ) {
-                                if (!thumbUrl.isNullOrBlank()) {
+                                if (thumbRequest != null) {
                                     AsyncImage(
-                                        model = thumbUrl,
+                                        model = thumbRequest,
                                         contentDescription = null,
                                         contentScale = ContentScale.Crop,
                                         modifier = Modifier.fillMaxSize(),
                                     )
                                 } else {
                                     Icon(
-                                        imageVector = Icons.Rounded.MusicNote,
+                                        imageVector = SonataIcons.MusicNote,
                                         contentDescription = null,
                                         tint = Color.White.copy(alpha = 0.65f),
                                     )
@@ -4193,6 +4291,7 @@ private fun NowPlayingPortraitLayout(
                                         fontWeight = FontWeight.Bold,
                                     ),
                                     color = Color.White,
+                                    enabled = state.isPlaying,
                                 )
                                 Text(
                                     text = track.artist,
@@ -4236,7 +4335,7 @@ private fun NowPlayingPortraitLayout(
                                     lyrics = state.lyrics,
                                     lyricsLoading = state.lyricsLoading,
                                     clockMs = smoothClockMs,
-                                    durationMs = state.durationMs,
+                                    clock = clock,
                                     onSeekTo = onSeekTo,
                                 )
                             }
@@ -4256,7 +4355,6 @@ private fun NowPlayingPortraitLayout(
                                 contentAlignment = Alignment.Center,
                             ) {
                                 val portraitArtSize = portraitWantArt.coerceIn(260.dp, 460.dp)
-                                val artShape = RoundedCornerShape(12.dp)
                                 Box(
                                     modifier = Modifier
                                         .size(portraitArtSize)
@@ -4268,23 +4366,23 @@ private fun NowPlayingPortraitLayout(
                                                 ambientShadowColor = Color.Black.copy(alpha = 0.65f)
                                                 spotShadowColor = Color.Black.copy(alpha = 0.75f)
                                             }
-                                            shape = artShape
+                                            shape = Shape12
                                             clip = true
                                         }
                                         .background(elevatedColor)
-                                        .border(0.5.dp, Color.White.copy(alpha = 0.08f), artShape),
+                                        .border(0.5.dp, Color.White.copy(alpha = 0.08f), Shape12),
                                     contentAlignment = Alignment.Center,
                                 ) {
-                                    if (hasArtwork) {
+                                    if (heroRequest != null) {
                                         AsyncImage(
-                                            model = heroUrl,
+                                            model = heroRequest,
                                             contentDescription = track.title,
                                             contentScale = ContentScale.Crop,
                                             modifier = Modifier.fillMaxSize(),
                                         )
                                     } else {
                                         Icon(
-                                            imageVector = Icons.Rounded.MusicNote,
+                                            imageVector = SonataIcons.MusicNote,
                                             contentDescription = null,
                                             tint = Color.White.copy(alpha = 0.45f),
                                             modifier = Modifier.size(84.dp),
@@ -4308,6 +4406,7 @@ private fun NowPlayingPortraitLayout(
                                         fontWeight = FontWeight.Bold,
                                     ),
                                     color = Color.White,
+                                    enabled = state.isPlaying,
                                 )
                                 Spacer(Modifier.height(2.dp))
                                 Text(
@@ -4348,7 +4447,7 @@ private fun NowPlayingPortraitLayout(
                 lyricsLoading = state.lyricsLoading,
                 lyricsUnavailable = state.lyricsUnavailable,
                 clockMs = smoothClockMs,
-                durationMs = state.durationMs,
+                clock = clock,
                 onClick = onOpenLyrics,
             )
         } else {
@@ -4357,15 +4456,13 @@ private fun NowPlayingPortraitLayout(
 
         NowPlayingScrubberAndTransportBlock(
             state = state,
+            clock = clock,
             showQueue = showQueue,
-            displayedFraction = displayedFraction,
-            shownMs = shownMs,
-            remainingMs = remainingMs,
             includeActions = true,
             transportTopGap = if (panelOpen) 12.dp else portraitTopGap,
             transportBottomGap = if (panelOpen) 14.dp else portraitBottomGap,
-            onScrubStartOrChange = onScrubStartOrChange,
-            onScrubFinished = onScrubFinished,
+            onScrubbingChanged = onScrubbingChanged,
+            onSeekFraction = onSeekFraction,
             onPrevious = onPrevious,
             onTogglePlayPause = onTogglePlayPause,
             onNext = onNext,
@@ -4403,9 +4500,10 @@ private fun CurrentLyricStrip(
     lyricsLoading: Boolean,
     lyricsUnavailable: Boolean,
     clockMs: State<Long>,
-    durationMs: Long,
+    clock: PlaybackClockState,
     onClick: () -> Unit,
 ) {
+    val durationMs = clock.durationMs
     var showUnavailable by remember(trackId) { mutableStateOf(false) }
 
     LaunchedEffect(trackId, lyricsUnavailable, lyricsLoading) {
@@ -4507,7 +4605,7 @@ private fun NowPlayingLyricsPanel(
     lyrics: List<AndroidLyricLine>,
     lyricsLoading: Boolean,
     clockMs: State<Long>,
-    durationMs: Long,
+    clock: PlaybackClockState,
     onSeekTo: (Long) -> Unit,
 ) {
     if (lyricsLoading) {
@@ -4526,6 +4624,7 @@ private fun NowPlayingLyricsPanel(
         return
     }
 
+    val durationMs = clock.durationMs
     val isTablet = LocalConfiguration.current.screenWidthDp >= 600
     val hasDuetVoices = remember(lyrics) {
         lyrics.any {
@@ -4599,19 +4698,19 @@ private fun NowPlayingLyricsPanel(
             .fillMaxSize()
             .onSizeChanged { panelHeightPx = it.height }
             .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-            .drawWithContent {
-                drawContent()
+            .drawWithCache {
                 val topFadePx = 14.dp.toPx().coerceAtMost(size.height * 0.12f)
                 val bottomFadePx = 42.dp.toPx().coerceAtMost(size.height * 0.22f)
-                drawRect(
-                    brush = Brush.verticalGradient(
-                        0f to Color.Transparent,
-                        (topFadePx / size.height.coerceAtLeast(1f)).coerceIn(0.01f, 0.15f) to Color.Black,
-                        (1f - (bottomFadePx / size.height.coerceAtLeast(1f))).coerceIn(0.75f, 0.99f) to Color.Black,
-                        1f to Color.Transparent,
-                    ),
-                    blendMode = BlendMode.DstIn,
+                val maskBrush = Brush.verticalGradient(
+                    0f to Color.Transparent,
+                    (topFadePx / size.height.coerceAtLeast(1f)).coerceIn(0.01f, 0.15f) to Color.Black,
+                    (1f - (bottomFadePx / size.height.coerceAtLeast(1f))).coerceIn(0.75f, 0.99f) to Color.Black,
+                    1f to Color.Transparent,
                 )
+                onDrawWithContent {
+                    drawContent()
+                    drawRect(brush = maskBrush, blendMode = BlendMode.DstIn)
+                }
             },
     ) {
         LazyColumn(
@@ -4620,17 +4719,23 @@ private fun NowPlayingLyricsPanel(
             contentPadding = PaddingValues(top = 14.dp, bottom = bottomPadDp),
             verticalArrangement = Arrangement.spacedBy(if (isTablet) 24.dp else 20.dp),
         ) {
-            itemsIndexed(lyrics) { index, line ->
+            itemsIndexed(
+                items = lyrics,
+                key = { idx, line -> "${idx}_${line.timeSecs}" },
+                contentType = { _, _ -> "lyric_line" },
+            ) { index, line ->
                 val isActive = index == activeIndex
                 val rawTrimmed = line.text.trim()
                 val isCounter = line.isCounterVoice ||
                     rawTrimmed.startsWith("v2:", ignoreCase = true) ||
                     rawTrimmed.startsWith("bg:", ignoreCase = true)
-                val cleanText = rawTrimmed
-                    .removePrefix("v2:").removePrefix("V2:")
-                    .removePrefix("v1:").removePrefix("V1:")
-                    .removePrefix("bg:").removePrefix("BG:")
-                    .trim()
+                val cleanText = remember(rawTrimmed) {
+                    rawTrimmed
+                        .removePrefix("v2:").removePrefix("V2:")
+                        .removePrefix("v1:").removePrefix("V1:")
+                        .removePrefix("bg:").removePrefix("BG:")
+                        .trim()
+                }
                 val isBackgroundVocal = cleanText.startsWith("(") && cleanText.endsWith(")") && cleanText.length > 2
 
                 val scale by animateFloatAsState(
@@ -4689,43 +4794,72 @@ private fun NowPlayingLyricsPanel(
                                     pivotFractionY = 0.5f,
                                 )
                             }
-                            .clip(RoundedCornerShape(12.dp))
+                            .clip(Shape12)
                             .clickable { onSeekTo(lineStartMs) }
                             .padding(vertical = 4.dp),
                     )
 
-                    // 3-dot instrumental break indicator when a >= 5.5s gap follows this verse
-                    if (nextLineStartMs != null && (nextLineStartMs - lineStartMs) >= 5_500L) {
-                        val breakStartMs = lineStartMs + minOf(
-                            (cleanText.length.coerceAtLeast(3) * 65L).coerceIn(1_100L, 3_600L),
-                            ((nextLineStartMs - lineStartMs) * 55L / 100L),
+                    // 3-dot instrumental break indicator (Draw-phase Canvas -> 0 row recompositions/sec)
+                    if (isActive && nextLineStartMs != null && (nextLineStartMs - lineStartMs) >= 5_500L) {
+                        InstrumentalBreakDots(
+                            lineStartMs = lineStartMs,
+                            nextLineStartMs = nextLineStartMs,
+                            cleanTextLength = cleanText.length,
+                            clockMs = clockMs,
                         )
-                        val nowMs = clockMs.value
-                        if (isActive && nowMs >= breakStartMs && nowMs < nextLineStartMs) {
-                            val breakProgress = ((nowMs - breakStartMs).toFloat() /
-                                (nextLineStartMs - breakStartMs).coerceAtLeast(1L).toFloat()).coerceIn(0f, 1f)
-                            Row(
-                                modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                repeat(3) { dotIdx ->
-                                    val dotThreshold = (dotIdx + 1) / 3.2f
-                                    val lit = breakProgress >= dotThreshold
-                                    Box(
-                                        modifier = Modifier
-                                            .size(if (lit) 9.dp else 7.dp)
-                                            .clip(CircleShape)
-                                            .background(
-                                                Color.White.copy(alpha = if (lit) 0.92f else 0.28f)
-                                            ),
-                                    )
-                                }
-                            }
-                        }
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * Leaf composable rendering the 3-dot instrumental interlude progress indicator.
+ * Visibility is gated via `derivedStateOf` and dot lighting reads `clockMs.value` strictly
+ * in the Canvas Draw phase so the parent lyric row never recomposes at 60/120fps.
+ */
+@Composable
+private fun InstrumentalBreakDots(
+    lineStartMs: Long,
+    nextLineStartMs: Long,
+    cleanTextLength: Int,
+    clockMs: State<Long>,
+) {
+    val breakStartMs = remember(lineStartMs, nextLineStartMs, cleanTextLength) {
+        lineStartMs + minOf(
+            (cleanTextLength.coerceAtLeast(3) * 65L).coerceIn(1_100L, 3_600L),
+            ((nextLineStartMs - lineStartMs) * 55L / 100L),
+        )
+    }
+    val visible by remember(breakStartMs, nextLineStartMs, clockMs) {
+        derivedStateOf {
+            val now = clockMs.value
+            now >= breakStartMs && now < nextLineStartMs
+        }
+    }
+    if (!visible) return
+
+    Canvas(
+        modifier = Modifier
+            .padding(top = 12.dp, bottom = 4.dp)
+            .width(46.dp)
+            .height(10.dp),
+    ) {
+        val nowMs = clockMs.value
+        val breakProgress = ((nowMs - breakStartMs).toFloat() /
+            (nextLineStartMs - breakStartMs).coerceAtLeast(1L).toFloat()).coerceIn(0f, 1f)
+        val centerY = size.height / 2f
+        val spacing = 16.dp.toPx()
+        val startX = 5.dp.toPx()
+        for (dotIdx in 0 until 3) {
+            val dotThreshold = (dotIdx + 1) / 3.2f
+            val lit = breakProgress >= dotThreshold
+            drawCircle(
+                color = Color.White.copy(alpha = if (lit) 0.92f else 0.28f),
+                radius = (if (lit) 4.5.dp else 3.5.dp).toPx(),
+                center = Offset(startX + dotIdx * spacing, centerY),
+            )
         }
     }
 }
@@ -4742,7 +4876,7 @@ private fun NowPlayingQueuePanel(
         contentPadding = PaddingValues(vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        item(key = "queue_header") {
+        item(key = "queue_header", contentType = "queue_header") {
             Text(
                 text = "Up Next",
                 style = MaterialTheme.typography.titleMedium.copy(
@@ -4753,12 +4887,16 @@ private fun NowPlayingQueuePanel(
                 modifier = Modifier.padding(vertical = 6.dp),
             )
         }
-        itemsIndexed(queue, key = { idx, t -> "q_${t.id}_$idx" }) { idx, item ->
+        itemsIndexed(
+            items = queue,
+            key = { idx, t -> "q_${t.id}_$idx" },
+            contentType = { _, _ -> "queue_track" },
+        ) { idx, item ->
             val isCurrent = idx == queueIndex
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
+                    .clip(Shape10)
                     .background(if (isCurrent) Color.White.copy(alpha = 0.14f) else Color.Transparent)
                     .clickable { onSelectIndex(idx) }
                     .padding(horizontal = 8.dp, vertical = 6.dp),
@@ -4767,21 +4905,22 @@ private fun NowPlayingQueuePanel(
                 Box(
                     modifier = Modifier
                         .size(44.dp)
-                        .clip(RoundedCornerShape(7.dp))
+                        .clip(Shape7)
                         .background(Color.White.copy(alpha = 0.1f)),
                     contentAlignment = Alignment.Center,
                 ) {
-                    val thumb = item.thumbnailUrl.artworkAt(ROW_ART_PX)
-                    if (!thumb.isNullOrBlank()) {
+                    val thumb = remember(item.thumbnailUrl) { item.thumbnailUrl.artworkAt(ROW_ART_PX) }
+                    val thumbRequest = rememberArtworkRequest(thumb, ROW_ART_PX, ROW_ART_PX)
+                    if (thumbRequest != null) {
                         AsyncImage(
-                            model = thumb,
+                            model = thumbRequest,
                             contentDescription = null,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.fillMaxSize(),
                         )
                     } else {
                         Icon(
-                            imageVector = Icons.Rounded.MusicNote,
+                            imageVector = SonataIcons.MusicNote,
                             contentDescription = null,
                             tint = Color.White.copy(alpha = 0.6f),
                         )
@@ -4794,7 +4933,7 @@ private fun NowPlayingQueuePanel(
                             contentAlignment = Alignment.Center,
                         ) {
                             Icon(
-                                imageVector = if (isPlaying) Icons.Rounded.GraphicEq else Icons.Rounded.Pause,
+                                imageVector = if (isPlaying) SonataIcons.GraphicEq else SonataIcons.Pause,
                                 contentDescription = null,
                                 tint = SonataAccent,
                                 modifier = Modifier.size(18.dp),

@@ -77,10 +77,12 @@ import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -90,6 +92,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -181,20 +184,19 @@ import coil3.compose.LocalPlatformContext
 import coil3.request.ImageRequest
 import coil3.request.SuccessResult
 import coil3.request.allowHardware
+import coil3.request.crossfade
 import coil3.request.transformations
+import coil3.size.Precision
 import coil3.toBitmap
 import coil3.transform.Transformation
-import dev.chrisbanes.haze.ExperimentalHazeApi
-import dev.chrisbanes.haze.HazeInputScale
-import dev.chrisbanes.haze.HazeProgressive
-import dev.chrisbanes.haze.HazeState
-import dev.chrisbanes.haze.hazeEffect
 import dev.sonata.android.LocalReduceAnimation
+import dev.sonata.android.PlaybackClockState
 import dev.sonata.android.R
 import dev.sonata.android.SquirclePillShape
 import dev.sonata.android.lightweightLiquidGlass
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
@@ -391,6 +393,40 @@ fun String?.croppedAt(width: Int, height: Int = width): String? {
         replace(GOOGLE_SIZE_SUFFIX, "=w$width-h$height-p-l90-rj")
     } else {
         artworkAt(maxOf(width, height))
+    }
+}
+
+/** Deterministic Coil memory cache key for a sized artwork variant. */
+fun artworkMemoryCacheKey(url: String?, widthPx: Int, heightPx: Int = widthPx): String? =
+    url?.takeIf { it.isNotBlank() }?.let { "${it}_${widthPx}x${heightPx}" }
+
+/**
+ * Builds and remembers a hardware-accelerated, explicitly downsampled Coil 3 [ImageRequest]
+ * with crossfade disabled so scrolling Lazy lists never allocate full-res bitmaps or fade-jank.
+ */
+@Composable
+fun rememberArtworkRequest(
+    url: String?,
+    widthPx: Int,
+    heightPx: Int = widthPx,
+    placeholderKey: String? = null,
+): ImageRequest? {
+    val context = LocalPlatformContext.current
+    return remember(context, url, widthPx, heightPx, placeholderKey) {
+        val clean = url?.takeIf { it.isNotBlank() } ?: return@remember null
+        ImageRequest.Builder(context)
+            .data(clean)
+            .size(widthPx, heightPx)
+            .precision(Precision.INEXACT)
+            .allowHardware(true)
+            .crossfade(false)
+            .memoryCacheKey(artworkMemoryCacheKey(clean, widthPx, heightPx))
+            .apply {
+                if (!placeholderKey.isNullOrBlank()) {
+                    placeholderMemoryCacheKey(placeholderKey)
+                }
+            }
+            .build()
     }
 }
 
@@ -1099,6 +1135,90 @@ object SonataIcons {
             fill = stroke,
         ).build()
     }
+
+    val MusicNote: ImageVector by lazy {
+        ImageVector.Builder(
+            name = "sonata_music_note",
+            defaultWidth = 24.dp,
+            defaultHeight = 24.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f,
+        ).addPath(
+            pathData = addPathNodes(
+                "M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"
+            ),
+            fill = stroke,
+        ).build()
+    }
+
+    val GraphicEq: ImageVector by lazy {
+        ImageVector.Builder(
+            name = "sonata_graphic_eq",
+            defaultWidth = 24.dp,
+            defaultHeight = 24.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f,
+        ).apply {
+            path(stroke = stroke, strokeLineWidth = 2.4f, strokeLineCap = StrokeCap.Round) {
+                moveTo(4f, 10f); lineTo(4f, 14f)
+                moveTo(8f, 6.5f); lineTo(8f, 17.5f)
+                moveTo(12f, 3.5f); lineTo(12f, 20.5f)
+                moveTo(16f, 6.5f); lineTo(16f, 17.5f)
+                moveTo(20f, 10f); lineTo(20f, 14f)
+            }
+        }.build()
+    }
+
+    val Pause: ImageVector by lazy {
+        ImageVector.Builder(
+            name = "sonata_pause",
+            defaultWidth = 24.dp,
+            defaultHeight = 24.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f,
+        ).apply {
+            path(fill = stroke) {
+                moveTo(6.5f, 5f); lineTo(10.2f, 5f); lineTo(10.2f, 19f); lineTo(6.5f, 19f); close()
+                moveTo(13.8f, 5f); lineTo(17.5f, 5f); lineTo(17.5f, 19f); lineTo(13.8f, 19f); close()
+            }
+        }.build()
+    }
+
+    val MoreVert: ImageVector by lazy {
+        ImageVector.Builder(
+            name = "sonata_more_vert",
+            defaultWidth = 24.dp,
+            defaultHeight = 24.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f,
+        ).apply {
+            path(fill = stroke) {
+                for (cy in listOf(6.2f, 12f, 17.8f)) {
+                    moveTo(13.5f, cy)
+                    arcToRelative(1.5f, 1.5f, 0f, true, true, -3f, 0f)
+                    arcToRelative(1.5f, 1.5f, 0f, true, true, 3f, 0f)
+                    close()
+                }
+            }
+        }.build()
+    }
+
+    val ThumbUp: ImageVector by lazy {
+        ImageVector.Builder(
+            name = "sonata_thumb_up",
+            defaultWidth = 24.dp,
+            defaultHeight = 24.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f,
+        ).addPath(
+            pathData = addPathNodes(
+                "M2 20h2c.55 0 1-.45 1-1v-9c0-.55-.45-1-1-1H2v11zm19.83-7.12c.11-.25.17-.52.17-.8V11c0-1.1-.9-2-2-2h-5.5" +
+                    "l.92-4.65c.05-.22.02-.46-.08-.66-.23-.45-.52-.86-.88-1.22L14 2 7.59 8.41C7.21 8.79 7 9.3 7 9.83" +
+                    "v7.84C7 18.95 8.05 20 9.34 20h8.11c.7 0 1.36-.37 1.72-.97l2.66-6.15z"
+            ),
+            fill = stroke,
+        ).build()
+    }
 }
 
 // =============================================================================
@@ -1111,16 +1231,37 @@ private val SkeletonLineShape = RoundedCornerShape(4.dp)
 private val TitleWidths = listOf(0.68f, 0.46f, 0.58f, 0.74f, 0.52f)
 private val SubtitleWidths = listOf(0.34f, 0.44f, 0.27f, 0.38f, 0.31f)
 
+/** Shared shimmer progress state so 30+ skeleton tiles run on a single InfiniteTransition. */
+private val LocalShimmerProgress = compositionLocalOf<State<Float>?> { null }
+
+/** Hosts a single shared shimmer transition for all descendant skeleton placeholders. */
+@Composable
+fun SonataShimmerHost(content: @Composable () -> Unit) {
+    val sweep = rememberInfiniteTransition(label = "sonataShimmerHost").animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(SHIMMER_PERIOD_MS, easing = LinearEasing)),
+        label = "shimmerSweep",
+    )
+    CompositionLocalProvider(LocalShimmerProgress provides sweep) {
+        content()
+    }
+}
+
 @Composable
 fun ShimmerBox(
     modifier: Modifier = Modifier,
     shape: Shape = SkeletonBlockShape,
 ) {
     val base = MaterialTheme.colorScheme.surfaceVariant
-    val highlight = MaterialTheme.colorScheme.onSurfaceVariant
-        .copy(alpha = 0.16f)
-        .compositeOver(base)
-    val sweep = rememberInfiniteTransition(label = "skeleton").animateFloat(
+    val onVariant = MaterialTheme.colorScheme.onSurfaceVariant
+    val highlight = remember(base, onVariant) {
+        onVariant
+            .copy(alpha = 0.16f)
+            .compositeOver(base)
+    }
+    val sharedSweep = LocalShimmerProgress.current
+    val sweep = sharedSweep ?: rememberInfiniteTransition(label = "skeleton").animateFloat(
         initialValue = 0f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(tween(SHIMMER_PERIOD_MS, easing = LinearEasing)),
@@ -1130,14 +1271,20 @@ fun ShimmerBox(
         modifier
             .clip(shape)
             .drawWithCache {
-                val band = size.width * 0.5f
-                val startX = -band + sweep.value * (size.width + band * 2)
-                val brush = Brush.horizontalGradient(
+                val band = (size.width * 0.5f).coerceAtLeast(1f)
+                val bandBrush = Brush.horizontalGradient(
                     colors = listOf(base, highlight, base),
-                    startX = startX,
-                    endX = startX + band,
+                    startX = 0f,
+                    endX = band,
                 )
-                onDrawBehind { drawRect(brush) }
+                val travel = size.width + band * 2f
+                onDrawBehind {
+                    drawRect(base)
+                    val startX = -band + sweep.value * travel
+                    translate(left = startX) {
+                        drawRect(brush = bandBrush, size = Size(band, size.height))
+                    }
+                }
             },
     )
 }
@@ -1389,6 +1536,14 @@ fun LyricsSkeleton(modifier: Modifier = Modifier) {
         label = "sweep",
     )
     var columnWidthPx by remember { mutableIntStateOf(0) }
+    val baseFill = remember { Color.White.copy(alpha = 0.10f) }
+    val bandColors = remember {
+        listOf(
+            Color.Transparent,
+            Color.White.copy(alpha = 0.18f),
+            Color.Transparent,
+        )
+    }
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -1403,22 +1558,23 @@ fun LyricsSkeleton(modifier: Modifier = Modifier) {
                         Modifier
                             .fillMaxWidth(fraction)
                             .height(26.dp)
-                            .clip(RoundedCornerShape(4.dp))
-                            .drawWithContent {
-                                val full = columnWidthPx.toFloat().coerceAtLeast(size.width)
-                                val band = full * 0.45f
-                                val startX = -band + sweep.value * (full + band * 2)
-                                drawRect(
-                                    brush = Brush.horizontalGradient(
-                                        colors = listOf(
-                                            Color.White.copy(alpha = 0.10f),
-                                            Color.White.copy(alpha = 0.26f),
-                                            Color.White.copy(alpha = 0.10f),
-                                        ),
-                                        startX = startX,
-                                        endX = startX + band,
-                                    ),
+                            .clip(SkeletonLineShape)
+                            .drawWithCache {
+                                val full = columnWidthPx.toFloat().coerceAtLeast(size.width).coerceAtLeast(1f)
+                                val band = (full * 0.45f).coerceAtLeast(1f)
+                                val bandBrush = Brush.horizontalGradient(
+                                    colors = bandColors,
+                                    startX = 0f,
+                                    endX = band,
                                 )
+                                val travel = full + band * 2f
+                                onDrawBehind {
+                                    drawRect(baseFill)
+                                    val startX = -band + sweep.value * travel
+                                    translate(left = startX) {
+                                        drawRect(brush = bandBrush, size = Size(band, size.height))
+                                    }
+                                }
                             },
                     )
                 }
@@ -1514,6 +1670,7 @@ fun rememberArtworkPalette(
     artworkUrl: String?,
     dark: Boolean = true,
     artPx: Int = CARD_ART_PX,
+    animated: Boolean = true,
 ): ArtworkPalette {
     val context = LocalPlatformContext.current
     val scheme = MaterialTheme.colorScheme
@@ -1526,7 +1683,9 @@ fun rememberArtworkPalette(
         val request = ImageRequest.Builder(context)
             .data(artworkUrl.artworkAt(artPx))
             .size(PALETTE_SOURCE_PX)
+            .precision(Precision.INEXACT)
             .allowHardware(false)
+            .crossfade(false)
             .build()
         val result = SingletonImageLoader.get(context).execute(request)
         val bitmap = (result as? SuccessResult)?.image?.toBitmap() ?: return@LaunchedEffect
@@ -1535,18 +1694,24 @@ fun rememberArtworkPalette(
         seed = extracted
     }
 
-    val target = seed?.toPalette(dark) ?: ArtworkPalette(
-        background = scheme.background,
-        wash = scheme.background,
-        elevated = scheme.surfaceVariant,
-        accent = SonataAccent,
-        onBackground = scheme.onBackground,
-        onBackgroundVariant = scheme.onSurfaceVariant,
-        divider = scheme.outline,
-        meshColors = DefaultFallbackColors,
-    )
+    val target = remember(seed, dark, scheme) {
+        seed?.toPalette(dark) ?: ArtworkPalette(
+            background = scheme.background,
+            wash = scheme.background,
+            elevated = scheme.surfaceVariant,
+            accent = SonataAccent,
+            onBackground = scheme.onBackground,
+            onBackgroundVariant = scheme.onSurfaceVariant,
+            divider = scheme.outline,
+            meshColors = DefaultFallbackColors,
+        )
+    }
 
-    val spec: AnimationSpec<Color> = if (reduceAnimation || knownUpFront) snap() else tween(PALETTE_FADE_MS)
+    if (!animated || reduceAnimation || knownUpFront) {
+        return target
+    }
+
+    val spec: AnimationSpec<Color> = tween(PALETTE_FADE_MS)
     return ArtworkPalette(
         background = animateColorAsState(target.background, spec, label = "artBg").value,
         wash = animateColorAsState(target.wash, spec, label = "artWash").value,
@@ -1562,12 +1727,17 @@ fun rememberArtworkPalette(
 fun ArtworkPalette.toMeshPalette(): MeshPalette = MeshPalette(meshColors)
 
 private fun extractArtworkSeed(bitmap: Bitmap): ArtworkSeed? {
-    val all = Palette.from(bitmap).maximumColorCount(24).clearFilters().generate().swatches
+    // Run a single median-cut quantization pass and filter extreme near-black/white swatches in Kotlin.
+    val all = Palette.from(bitmap).maximumColorCount(16).clearFilters().generate().swatches
     if (all.isEmpty()) return null
-    val filtered = Palette.from(bitmap).maximumColorCount(24).generate().swatches.ifEmpty { all }
+    val hsl = FloatArray(3)
+    val filtered = all.filter { swatch ->
+        ColorUtils.colorToHSL(swatch.rgb, hsl)
+        hsl[2] in 0.08f..0.92f
+    }.ifEmpty { all }
     val dominant = all.maxBy { it.population }
     val vibrant = filtered.maxBy { swatch ->
-        val hsl = FloatArray(3).also { ColorUtils.colorToHSL(swatch.rgb, it) }
+        ColorUtils.colorToHSL(swatch.rgb, hsl)
         hsl[1] * sqrt(swatch.population.toFloat())
     }
     val edge = bitmap.sampleBottomBandColor()
@@ -1704,6 +1874,22 @@ private fun ArtworkSeed.toPalette(dark: Boolean): ArtworkPalette = if (dark) {
 data class MeshPalette(val colors: List<Color>)
 
 private val MeshDriftRadians = (PI * 0.45).toFloat()
+private val MeshAnchors = arrayOf(
+    Offset(0.20f, 0.25f),
+    Offset(0.80f, 0.20f),
+    Offset(0.75f, 0.80f),
+    Offset(0.25f, 0.75f),
+)
+private val MeshSpeeds = floatArrayOf(1f, -0.7f, 0.85f, -1.15f)
+private val MeshSmoothAlphaSteps = FloatArray(FADE_CURVE_STOPS + 1) { i ->
+    0.85f * (1f - smootherStep(i / FADE_CURVE_STOPS.toFloat()))
+}
+private val MeshReadabilityScrim = Brush.verticalGradient(
+    colors = listOf(
+        Color.Black.copy(alpha = 0.10f),
+        Color.Black.copy(alpha = 0.38f),
+    ),
+)
 
 private fun Color.meshTuned(): Color {
     val hsl = FloatArray(3).also { ColorUtils.colorToHSL(toArgb(), it) }
@@ -1730,15 +1916,32 @@ fun MeshGradientBackground(
     colorFadeMillis: Int = 1400,
 ) {
     val reduceAnimation = LocalReduceAnimation.current
-    val tuned = (palette.colors.ifEmpty { DefaultFallbackColors } + DefaultFallbackColors)
-        .take(4)
-        .map { it.meshTuned() }
-
-    val colorSpec: AnimationSpec<Color> = if (reduceAnimation || !animated) snap() else tween(colorFadeMillis)
-    val animatedColors = tuned.mapIndexed { index, color ->
-        animateColorAsState(color, colorSpec, label = "meshColor$index").value
+    val tuned = remember(palette) {
+        (palette.colors.ifEmpty { DefaultFallbackColors } + DefaultFallbackColors)
+            .take(4)
+            .map { it.meshTuned() }
     }
-    val baseColor by animateColorAsState(tuned.first().meshDimmed(), colorSpec, label = "meshBase")
+    val dimmedBase = remember(tuned) { tuned.first().meshDimmed() }
+
+    val c0: Color
+    val c1: Color
+    val c2: Color
+    val c3: Color
+    val baseColor: Color
+    if (reduceAnimation || !animated) {
+        c0 = tuned[0]
+        c1 = tuned[1]
+        c2 = tuned[2]
+        c3 = tuned[3]
+        baseColor = dimmedBase
+    } else {
+        val colorSpec: AnimationSpec<Color> = tween(colorFadeMillis)
+        c0 = animateColorAsState(tuned[0], colorSpec, label = "meshColor0").value
+        c1 = animateColorAsState(tuned[1], colorSpec, label = "meshColor1").value
+        c2 = animateColorAsState(tuned[2], colorSpec, label = "meshColor2").value
+        c3 = animateColorAsState(tuned[3], colorSpec, label = "meshColor3").value
+        baseColor = animateColorAsState(dimmedBase, colorSpec, label = "meshBase").value
+    }
 
     val phase = remember { Animatable(0f) }
     LaunchedEffect(trackKey, reduceAnimation, continuous, animated, paused) {
@@ -1758,7 +1961,7 @@ fun MeshGradientBackground(
         }
     }
 
-    Canvas(
+    Box(
         modifier = modifier
             .fillMaxSize()
             .clipToBounds()
@@ -1766,47 +1969,40 @@ fun MeshGradientBackground(
                 scaleX = 1.3f
                 scaleY = 1.3f
             }
-            .background(baseColor),
-    ) {
-        val anchors = listOf(
-            Offset(0.20f, 0.25f),
-            Offset(0.80f, 0.20f),
-            Offset(0.75f, 0.80f),
-            Offset(0.25f, 0.75f),
-        )
-        val speeds = listOf(1f, -0.7f, 0.85f, -1.15f)
-        val drift = phase.value
-
-        animatedColors.forEachIndexed { index, color ->
-            val anchor = anchors[index]
-            val center = Offset(
-                x = (anchor.x + 0.16f * cos(drift * speeds[index] + index * 1.7f)) * size.width,
-                y = (anchor.y + 0.16f * sin(drift * speeds[index] * 0.9f + index * 2.3f)) * size.height,
-            )
-            val radius = size.maxDimension * 0.62f
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colorStops = Array(FADE_CURVE_STOPS + 1) { i ->
-                        val t = i / FADE_CURVE_STOPS.toFloat()
-                        t to color.copy(alpha = 0.85f * (1f - smootherStep(t)))
-                    },
-                    center = center,
-                    radius = radius,
-                ),
-                radius = radius,
-                center = center,
-            )
-        }
-
-        drawRect(
-            brush = Brush.verticalGradient(
-                colors = listOf(
-                    Color.Black.copy(alpha = 0.10f),
-                    Color.Black.copy(alpha = 0.38f),
-                ),
-            ),
-        )
-    }
+            .background(baseColor)
+            .drawWithCache {
+                val radius = (size.maxDimension * 0.62f).coerceAtLeast(1f)
+                val colors = arrayOf(c0, c1, c2, c3)
+                val brushes = Array(4) { idx ->
+                    val col = colors[idx]
+                    val stops = Array(FADE_CURVE_STOPS + 1) { i ->
+                        (i / FADE_CURVE_STOPS.toFloat()) to col.copy(alpha = MeshSmoothAlphaSteps[i])
+                    }
+                    Brush.radialGradient(
+                        colorStops = stops,
+                        center = Offset.Zero,
+                        radius = radius,
+                    )
+                }
+                onDrawBehind {
+                    val drift = phase.value
+                    for (index in 0 until 4) {
+                        val anchor = MeshAnchors[index]
+                        val speed = MeshSpeeds[index]
+                        val cx = (anchor.x + 0.16f * cos(drift * speed + index * 1.7f)) * size.width
+                        val cy = (anchor.y + 0.16f * sin(drift * speed * 0.9f + index * 2.3f)) * size.height
+                        translate(left = cx, top = cy) {
+                            drawCircle(
+                                brush = brushes[index],
+                                radius = radius,
+                                center = Offset.Zero,
+                            )
+                        }
+                    }
+                    drawRect(brush = MeshReadabilityScrim)
+                }
+            },
+    )
 }
 
 // =============================================================================
@@ -1856,8 +2052,11 @@ private val PersonalLayers = listOf(
 private class PersonalBrushes(val background: Brush, val layers: List<Brush>)
 
 @Composable
-fun PersonalStationArt(modifier: Modifier = Modifier) {
-    val phase by loopPhase(9_000)
+fun PersonalStationArt(
+    modifier: Modifier = Modifier,
+    still: Boolean = false,
+) {
+    val phaseState = if (still) null else loopPhase(9_000)
     val path = remember { Path() }
     val brushes = remember {
         SizeCache { size ->
@@ -1874,8 +2073,9 @@ fun PersonalStationArt(modifier: Modifier = Modifier) {
             )
         }
     }
-    Box(modifier.graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }) {
+    Box(modifier) {
         Canvas(Modifier.fillMaxSize()) {
+            val phase = phaseState?.value ?: 0f
             val w = size.width
             val h = size.height
             val cached = brushes.get(size)
@@ -1916,8 +2116,11 @@ private val DiscoveryInnerArrow = Color(0xFF3C1981).copy(alpha = 0.35f)
 private class DiscoveryBrushes(val background: Brush, val top: List<Brush>, val bottom: List<Brush>, val arrow: Brush)
 
 @Composable
-fun DiscoveryStationArt(modifier: Modifier = Modifier) {
-    val phase by loopPhase(9_000)
+fun DiscoveryStationArt(
+    modifier: Modifier = Modifier,
+    still: Boolean = false,
+) {
+    val phaseState = if (still) null else loopPhase(9_000)
     val path = remember { Path() }
     val brushes = remember {
         SizeCache { size ->
@@ -1943,8 +2146,9 @@ fun DiscoveryStationArt(modifier: Modifier = Modifier) {
             )
         }
     }
-    Box(modifier.graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }) {
+    Box(modifier) {
         Canvas(Modifier.fillMaxSize()) {
+            val phase = phaseState?.value ?: 0f
             val w = size.width
             val h = size.height
             val cached = brushes.get(size)
@@ -2313,8 +2517,11 @@ fun ArtistCollageArt(
         slots.zip(images).forEach { (slot, url) ->
             val (cx, cy, d) = slot
             val diameter = w * d
+            val targetPx = if (d > 0.5f) 320 else 200
+            val sizedUrl = remember(url, targetPx) { url.croppedAt(targetPx) }
+            val req = rememberArtworkRequest(sizedUrl, targetPx, targetPx)
             AsyncImage(
-                model = url.croppedAt(if (d > 0.5f) HEADER_ART_PX else CARD_ART_PX),
+                model = req,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
@@ -2380,11 +2587,15 @@ private object ArtworkBottomStripBlur : Transformation() {
         val top = (input.height * 0.6f).toInt().coerceIn(0, input.height - 1)
         val w = 48
         val h = ((input.height - top) * w / input.width.toFloat()).toInt().coerceAtLeast(4)
-        val sw = if (input.config == Bitmap.Config.HARDWARE) input.copy(Bitmap.Config.ARGB_8888, false) else input
+        val copiedSw = input.config == Bitmap.Config.HARDWARE
+        val sw = if (copiedSw) input.copy(Bitmap.Config.ARGB_8888, false) else input
         val strip = Bitmap.createBitmap(sw, 0, top, sw.width, sw.height - top)
         val small = Bitmap.createScaledBitmap(strip, w, h, true)
         val pixels = IntArray(w * h)
         small.getPixels(pixels, 0, w, 0, 0, w, h)
+        if (small !== strip) small.recycle()
+        if (strip !== sw) strip.recycle()
+        if (copiedSw) sw.recycle()
         repeat(3) {
             boxBlurPass(pixels, w, h, 3, horizontal = true)
             boxBlurPass(pixels, w, h, 3, horizontal = false)
@@ -2421,6 +2632,12 @@ private object ArtworkBottomStripBlur : Transformation() {
     }
 }
 
+private val ReleaseCardShape = RoundedCornerShape(12.dp)
+private val ReleaseBottomScrim = Brush.verticalGradient(
+    0.6f to Color.Black.copy(alpha = 0.08f),
+    1f to Color.Black.copy(alpha = 0.38f),
+)
+
 @Composable
 fun ReleaseArt(
     artworkUrl: String?,
@@ -2431,20 +2648,25 @@ fun ReleaseArt(
     showBrandLogo: Boolean = false,
 ) {
     val context = LocalPlatformContext.current
-    val shape = RoundedCornerShape(12.dp)
     val blurredModel = remember(artworkUrl, context) {
         artworkUrl?.croppedAt(160)?.let { url ->
             ImageRequest.Builder(context)
                 .data(url)
+                .size(96, 96)
+                .precision(Precision.INEXACT)
+                .allowHardware(false)
+                .crossfade(false)
                 .transformations(ArtworkBottomStripBlur)
                 .build()
         }
     }
+    val coverUrl = remember(artworkUrl) { artworkUrl.croppedAt(CARD_ART_PX) }
+    val coverRequest = rememberArtworkRequest(coverUrl, CARD_ART_PX, CARD_ART_PX)
     Box(
         modifier
             .width(252.dp)
             .height(336.dp)
-            .clip(shape)
+            .clip(ReleaseCardShape)
             .background(Color.Black),
     ) {
         AsyncImage(
@@ -2459,27 +2681,22 @@ fun ReleaseArt(
         Box(
             Modifier
                 .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        0.6f to Color.Black.copy(alpha = 0.08f),
-                        1f to Color.Black.copy(alpha = 0.38f),
-                    ),
-                ),
+                .background(ReleaseBottomScrim),
         )
         AsyncImage(
-            model = artworkUrl.croppedAt(CARD_ART_PX),
+            model = coverRequest,
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(1f)
                 .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-                .drawWithContent {
-                    drawContent()
-                    drawRect(
-                        Brush.verticalGradient(0.78f to Color.Black, 1f to Color.Transparent),
-                        blendMode = BlendMode.DstIn,
-                    )
+                .drawWithCache {
+                    val maskBrush = Brush.verticalGradient(0.78f to Color.Black, 1f to Color.Transparent)
+                    onDrawWithContent {
+                        drawContent()
+                        drawRect(maskBrush, blendMode = BlendMode.DstIn)
+                    }
                 },
         )
         if (showBrandLogo) {
@@ -2563,8 +2780,10 @@ fun MoodGenreSleeve(
                 .background(tone.placeholder),
         ) {
             if (!thumbnailUrl.isNullOrBlank()) {
+                val sizedThumb = remember(thumbnailUrl) { thumbnailUrl.artworkAt(CARD_ART_PX) }
+                val sleeveRequest = rememberArtworkRequest(sizedThumb, 360, 360)
                 AsyncImage(
-                    model = thumbnailUrl.artworkAt(CARD_ART_PX),
+                    model = sleeveRequest,
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
                     colorFilter = tone.duotone,
@@ -2639,8 +2858,8 @@ fun ReplayCreditCard(
     onClick: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    val cardShape = RoundedCornerShape(20.dp)
-    val artPalette = rememberArtworkPalette(artworkUrl, dark = true)
+    val cardShape = remember { RoundedCornerShape(20.dp) }
+    val artPalette = rememberArtworkPalette(artworkUrl, dark = true, animated = false)
     Box(
         modifier = modifier
             .aspectRatio(1.586f)
@@ -2884,7 +3103,10 @@ fun ShimmerText(
         label = "lossless-shimmer-progress",
     )
     val tint = Color.White
-    val baseColor = Color.White.copy(alpha = baseAlpha)
+    val baseColor = remember(baseAlpha) { Color.White.copy(alpha = baseAlpha) }
+    val stops = remember(baseColor) {
+        arrayOf(0f to baseColor, 0.5f to tint, 1f to baseColor)
+    }
     Text(
         text = text,
         style = style,
@@ -2893,22 +3115,31 @@ fun ShimmerText(
         overflow = TextOverflow.Ellipsis,
         modifier = modifier
             .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-            .drawWithContent {
-                drawContent()
-                val width = size.width
-                val band = width * 0.6f
-                val center = -band + progress.value * (width + 2 * band)
-                drawRect(
-                    brush = Brush.linearGradient(
-                        colorStops = arrayOf(0f to baseColor, 0.5f to tint, 1f to baseColor),
-                        start = Offset(center - band, 0f),
-                        end = Offset(center + band, 0f),
-                    ),
-                    blendMode = BlendMode.SrcIn,
+            .drawWithCache {
+                val width = size.width.coerceAtLeast(1f)
+                val band = (width * 0.6f).coerceAtLeast(1f)
+                val bandBrush = Brush.linearGradient(
+                    colorStops = stops,
+                    start = Offset(0f, 0f),
+                    end = Offset(band * 2f, 0f),
                 )
+                val travel = width + 2f * band
+                onDrawWithContent {
+                    drawContent()
+                    val center = -band + progress.value * travel
+                    translate(left = center - band) {
+                        drawRect(
+                            brush = bandBrush,
+                            size = Size(band * 2f, size.height),
+                            blendMode = BlendMode.SrcIn,
+                        )
+                    }
+                }
             },
     )
 }
+
+private val LosslessPillShape = SquirclePillShape()
 
 @Composable
 fun LosslessLabel(
@@ -2931,10 +3162,9 @@ fun LosslessLabel(
     } else {
         1f
     }
-    val shape = SquirclePillShape()
     Row(
         modifier = modifier
-            .lightweightLiquidGlass(shape, fallbackColor = Color.White.copy(alpha = 0.14f))
+            .lightweightLiquidGlass(LosslessPillShape, fallbackColor = Color.White.copy(alpha = 0.14f))
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
             .padding(horizontal = 10.dp, vertical = 4.dp)
             .graphicsLayer {
@@ -3139,43 +3369,30 @@ fun BottomFadeScrim(
     )
 }
 
-private val TopFootFade = Brush.verticalGradient(
-    colorStops = Array(9) { i ->
-        val t = i / 8f
-        val at = 0.6f + 0.4f * t
-        at to Color.Black.copy(alpha = 1f - EaseInOut.transform(t))
-    },
-)
-
-@OptIn(ExperimentalHazeApi::class)
+/**
+ * Smooth eased vertical top scrim behind floating top controls.
+ * Avoids a second full-screen Haze offscreen capture on every scroll frame.
+ */
 @Composable
 fun TopFadeBlur(
-    hazeState: HazeState,
     pageColor: Color = MaterialTheme.colorScheme.background,
     topHeight: Dp = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 52.dp,
     modifier: Modifier = Modifier,
 ) {
+    val brush = remember(pageColor) {
+        Brush.verticalGradient(
+            colorStops = Array(12) { i ->
+                val t = i / 11f
+                val alpha = (1f - EaseInOut.transform(t)) * 0.88f
+                t to pageColor.copy(alpha = alpha)
+            },
+        )
+    }
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(topHeight + 16.dp)
-            .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-            .drawWithContent {
-                drawContent()
-                drawRect(TopFootFade, blendMode = BlendMode.DstIn)
-            }
-            .hazeEffect(state = hazeState) {
-                backgroundColor = pageColor
-                tints = emptyList()
-                blurRadius = 24.dp
-                noiseFactor = 0f
-                inputScale = HazeInputScale.Fixed(0.33f)
-                progressive = HazeProgressive.verticalGradient(
-                    easing = EaseInOut,
-                    startIntensity = 1f,
-                    endIntensity = 0f,
-                )
-            },
+            .height(topHeight + 20.dp)
+            .background(brush),
     )
 }
 
@@ -3412,7 +3629,7 @@ fun FullArtworkBlurBackdrop(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalPlatformContext.current
-    var blurred by remember { mutableStateOf(artworkUrl?.let(FullArtworkBlurCache::get)) }
+    var blurred by remember(artworkUrl) { mutableStateOf(artworkUrl?.let(FullArtworkBlurCache::get)) }
 
     LaunchedEffect(artworkUrl) {
         artworkUrl?.let(FullArtworkBlurCache::get)?.let {
@@ -3421,9 +3638,11 @@ fun FullArtworkBlurBackdrop(
         }
         if (artworkUrl.isNullOrBlank()) return@LaunchedEffect
         val request = ImageRequest.Builder(context)
-            .data(artworkUrl.artworkAt(CARD_ART_PX))
-            .size(128)
+            .data(artworkUrl.artworkAt(ROW_ART_PX))
+            .size(64)
+            .precision(Precision.INEXACT)
             .allowHardware(false)
+            .crossfade(false)
             .build()
         val result = SingletonImageLoader.get(context).execute(request)
         val bitmap = (result as? SuccessResult)?.image?.toBitmap() ?: return@LaunchedEffect
@@ -3806,7 +4025,7 @@ private class SteeredLyricClock(startMs: Long) {
             lastNowMs = nowMs
             val takenAt = when {
                 sampledAtMs.isNaN() || sampledAtMs <= heldAtMs -> nowMs
-                else -> minOf(sampledAtMs, nowMs).coerceAtLeast(nowMs - 250.0)
+                else -> minOf(sampledAtMs, nowMs).coerceAtLeast(nowMs - 500.0)
             }
             anchorAtMs = takenAt
             anchorMs = safeReported.toDouble()
@@ -3821,7 +4040,7 @@ private class SteeredLyricClock(startMs: Long) {
             val takenAt = if (sampledAtMs.isNaN()) {
                 nowMs
             } else {
-                minOf(sampledAtMs, nowMs).coerceAtLeast(nowMs - 250.0)
+                minOf(sampledAtMs, nowMs).coerceAtLeast(nowMs - 500.0)
             }
             if (takenAt >= anchorAtMs) {
                 anchorAtMs = takenAt
@@ -3829,7 +4048,7 @@ private class SteeredLyricClock(startMs: Long) {
             }
         }
 
-        val target = anchorMs + (nowMs - anchorAtMs).coerceIn(0.0, 250.0)
+        val target = anchorMs + (nowMs - anchorAtMs).coerceIn(0.0, 500.0)
         val error = target - (displayedMs + dt)
         displayedMs = when {
             abs(error) > 400.0 -> target
@@ -3845,7 +4064,59 @@ private class SteeredLyricClock(startMs: Long) {
 
 /**
  * 120fps-capable monotonic playback clock driven by `withFrameNanos` while playing,
- * steered smoothly toward dated ExoPlayer readings without backward jitter.
+ * reading [PlaybackClockState] strictly inside frame callbacks / snapshotFlow so host
+ * composables NEVER recompose on playback ticks.
+ */
+@Composable
+fun rememberSmoothLyricClock(
+    clock: PlaybackClockState,
+    isPlaying: Boolean,
+    isBuffering: Boolean,
+    fpsLimit: Int = 60,
+    trackKey: String = "",
+): State<Long> {
+    val initialPos = remember(trackKey, clock) {
+        Snapshot.withoutReadObservation { clock.positionMs.coerceAtLeast(0L) }
+    }
+    val smoothClock = remember(trackKey) { mutableLongStateOf(initialPos) }
+    val engine = remember(trackKey) { SteeredLyricClock(initialPos) }
+    val minFrameStepNanos = if (fpsLimit >= 120) 7_000_000L else 15_500_000L
+
+    LaunchedEffect(clock, trackKey, isPlaying, isBuffering, minFrameStepNanos) {
+        if (!isPlaying || isBuffering) {
+            snapshotFlow { clock.positionMs to clock.seekDiscontinuity }
+                .collectLatest { (reported, _) ->
+                    val clamped = reported.coerceAtLeast(0L)
+                    engine.hold(clamped, System.nanoTime() / 1_000_000.0)
+                    smoothClock.longValue = clamped
+                }
+            return@LaunchedEffect
+        }
+        engine.restart()
+        var lastFrameNanos = 0L
+        while (isActive) {
+            withFrameNanos { frameNanos ->
+                if (frameNanos - lastFrameNanos >= minFrameStepNanos) {
+                    lastFrameNanos = frameNanos
+                    val nowMs = System.nanoTime() / 1_000_000.0
+                    val sampledNanos = clock.sampledAtNanos
+                    val sampledAtMs = if (sampledNanos > 0L) sampledNanos / 1_000_000.0 else Double.NaN
+                    smoothClock.longValue = engine.frame(
+                        nowMs = nowMs,
+                        reportedMs = clock.positionMs,
+                        sampledAtMs = sampledAtMs,
+                        discontinuity = clock.seekDiscontinuity,
+                    )
+                }
+            }
+        }
+    }
+
+    return smoothClock
+}
+
+/**
+ * Legacy primitive overload kept for direct callers.
  */
 @Composable
 fun rememberSmoothLyricClock(
@@ -3902,6 +4173,12 @@ fun rememberSmoothLyricClock(
     return clock
 }
 
+private val KaraokeWordRegex = Regex("""\S+""")
+private val KaraokeSweepStops = arrayOf(
+    0f to Color.Black,
+    1f to Color.Transparent,
+)
+
 private data class KaraokeWordSpan(
     val startChar: Int,
     val endChar: Int,
@@ -3943,7 +4220,7 @@ private fun buildKaraokeSpans(
     }
 
     // Synthesize smooth proportional spans across the exact source line duration when word timestamps are absent.
-    val matches = Regex("""\S+""").findAll(text).toList()
+    val matches = KaraokeWordRegex.findAll(text).toList()
     if (matches.isEmpty()) {
         return listOf(KaraokeWordSpan(0, text.length, lineStartMs, safeLineEnd))
     }
@@ -4087,10 +4364,7 @@ fun SweptKaraokeLyricText(
                                     val gradEnd = (sweepX + featherPx * 0.65f).coerceAtLeast(gradStart + 1f)
                                     drawRect(
                                         brush = Brush.horizontalGradient(
-                                            colorStops = arrayOf(
-                                                0f to Color.Black,
-                                                1f to Color.Transparent,
-                                            ),
+                                            colorStops = KaraokeSweepStops,
                                             startX = gradStart,
                                             endX = gradEnd,
                                         ),

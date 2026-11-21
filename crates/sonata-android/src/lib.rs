@@ -7,7 +7,8 @@
 //!    `AndroidHomeCard`, `AndroidLyricLine`, and `AndroidResolvedStream` mirror `sonata-core` types.
 //! 3. **Auth & Async Operations**: `set_ytm_cookie_header`, `sign_out`, `fetch_home_feed`, `fetch_library_playlists`,
 //!    `search_songs`, `resolve_stream`, `resolve_hifi_upgrade`, `fetch_lyrics`, and disk-persisted startup
-//!    cache readers (`get_cached_account_profile`, `get_cached_home_feed`, `get_cached_library_playlists`).
+//!    cache readers (`get_cached_account_profile`, `get_cached_library_playlists`). Home shelves are always
+//!    fetched live and never persisted to disk.
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -327,18 +328,18 @@ struct AndroidCipherBridgeAdapter {
 
 impl JsCipherBridge for AndroidCipherBridgeAdapter {
     fn ensure_loaded(&self, player_hash: &str, hooked_script: &str) -> bool {
-        if let Ok(guard) = self.loaded_hash.lock() {
-            if guard.as_deref() == Some(player_hash) {
-                return true;
-            }
+        let mut guard = self
+            .loaded_hash
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.as_deref() == Some(player_hash) {
+            return true;
         }
         let ok = self
             .solver
             .ensure_loaded(player_hash.to_string(), hooked_script.to_string());
         if ok {
-            if let Ok(mut guard) = self.loaded_hash.lock() {
-                *guard = Some(player_hash.to_string());
-            }
+            *guard = Some(player_hash.to_string());
         }
         ok
     }
@@ -412,11 +413,17 @@ impl SonataAndroidEngine {
             })?;
 
         let http = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(6))
             .timeout(std::time::Duration::from_secs(20))
+            .tcp_nodelay(true)
+            .pool_max_idle_per_host(8)
             .build()
             .map_err(|e| SonataAndroidError::Engine {
                 reason: format!("Failed to initialize HTTP client: {e}"),
             })?;
+
+        // Home shelves are always fetched live; purge any legacy home cache file from prior builds.
+        remove_cached_json(CACHE_HOME_FILE);
 
         let cache_db = CacheDb::open_default();
         let cookies = ExtractedCookies::load_saved_ytm_header().unwrap_or_default();
@@ -466,11 +473,6 @@ impl SonataAndroidEngine {
             return None;
         }
         load_cached_json(CACHE_PROFILE_FILE)
-    }
-
-    /// Reads the cached Home feed shelves from disk for instant startup display.
-    pub fn get_cached_home_feed(&self) -> Vec<AndroidHomeShelf> {
-        load_cached_json(CACHE_HOME_FILE).unwrap_or_default()
     }
 
     /// Reads the cached library playlists from disk for instant startup display.
@@ -529,6 +531,7 @@ impl SonataAndroidEngine {
     pub fn sign_out(&self) {
         ExtractedCookies::clear_saved_ytm_header();
         remove_cached_json(CACHE_PROFILE_FILE);
+        remove_cached_json(CACHE_HOME_FILE);
         remove_cached_json(CACHE_PLAYLISTS_FILE);
         let bridge = self.cipher_bridge.read().ok().and_then(|g| g.clone());
         let next_session = Self::build_session(
@@ -551,15 +554,13 @@ impl SonataAndroidEngine {
         Ok(out)
     }
 
-    /// Fetches YouTube Music home/discovery shelves.
+    /// Fetches fresh YouTube Music home/discovery shelves live without persisting to disk.
     pub fn fetch_home_feed(&self) -> Result<Vec<AndroidHomeShelf>, SonataAndroidError> {
         let ytm = self.current_ytm();
         let shelves = self
             .rt
             .block_on(async move { ytm.fetch_home_feed().await })?;
-        let out: Vec<AndroidHomeShelf> = shelves.iter().map(AndroidHomeShelf::from).collect();
-        save_cached_json(CACHE_HOME_FILE, &out);
-        Ok(out)
+        Ok(shelves.iter().map(AndroidHomeShelf::from).collect())
     }
 
     /// Searches YouTube Music songs for the given query.
@@ -676,12 +677,34 @@ impl SonataAndroidEngine {
         }
     }
 
-    /// Checks GitHub Releases for a newer Sonata APK or desktop release.
+    /// Checks GitHub Releases for a newer Sonata Android APK release.
     pub fn check_for_updates(&self) -> Result<AndroidUpdateInfo, SonataAndroidError> {
         let http = self.http.clone();
-        let res = self
-            .rt
-            .block_on(async move { sonata_core::updater::check_for_updates(&http).await })?;
+        let res = self.rt.block_on(async move {
+            sonata_core::updater::check_for_updates_for(
+                &http,
+                sonata_core::updater::UpdateTarget::Android,
+                sonata_core::updater::CURRENT_VERSION,
+            )
+            .await
+        })?;
+        Ok(res.into())
+    }
+
+    /// Checks GitHub Releases for a newer Sonata Android APK release against an explicit installed versionName.
+    pub fn check_for_updates_for_version(
+        &self,
+        current_version: String,
+    ) -> Result<AndroidUpdateInfo, SonataAndroidError> {
+        let http = self.http.clone();
+        let res = self.rt.block_on(async move {
+            sonata_core::updater::check_for_updates_for(
+                &http,
+                sonata_core::updater::UpdateTarget::Android,
+                &current_version,
+            )
+            .await
+        })?;
         Ok(res.into())
     }
 }
@@ -728,7 +751,8 @@ mod tests {
         assert_eq!(loaded_profile.handle, profile.handle);
         assert_eq!(loaded_profile.avatar_url, profile.avatar_url);
 
-        let shelves = vec![AndroidHomeShelf {
+        // Simulate a legacy android_home.json left by an older build and confirm cleanup removes it.
+        let legacy_shelves = vec![AndroidHomeShelf {
             title: "Quick picks".to_string(),
             tracks: vec![],
             cards: vec![AndroidHomeCard {
@@ -740,11 +764,10 @@ mod tests {
                 track: None,
             }],
         }];
-        save_cached_json_in(&dir, CACHE_HOME_FILE, &shelves);
-        let loaded_shelves: Vec<AndroidHomeShelf> =
-            load_cached_json_from(&dir, CACHE_HOME_FILE).expect("home feed should load");
-        assert_eq!(loaded_shelves.len(), 1);
-        assert_eq!(loaded_shelves[0].cards[0].id, "vid123");
+        save_cached_json_in(&dir, CACHE_HOME_FILE, &legacy_shelves);
+        assert!(dir.join(CACHE_HOME_FILE).exists());
+        remove_cached_json_from(&dir, CACHE_HOME_FILE);
+        assert!(!dir.join(CACHE_HOME_FILE).exists());
 
         let playlists = vec![AndroidPlaylist {
             id: "PL123".to_string(),

@@ -31,7 +31,7 @@ use sonata_core::providers::spotify::SpotifyClient;
 use sonata_core::providers::ytmusic::YtMusicClient;
 use sonata_core::providers::{build_http_client, Playlist, ProviderSource, Track};
 use sonata_core::theme::Theme;
-use sonata_core::updater::{check_for_updates, UpdateCheckResult};
+use sonata_core::updater::UpdateCheckResult;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -629,7 +629,13 @@ impl App {
 
     fn spawn_update_check(http: Client, tx: mpsc::UnboundedSender<AppEvent>) {
         tokio::spawn(async move {
-            match check_for_updates(&http).await {
+            match sonata_core::updater::check_for_updates_for(
+                &http,
+                sonata_core::updater::UpdateTarget::Tui,
+                sonata_core::updater::CURRENT_VERSION,
+            )
+            .await
+            {
                 Ok(info) => {
                     let _ = tx.send(AppEvent::UpdateChecked(info));
                 }

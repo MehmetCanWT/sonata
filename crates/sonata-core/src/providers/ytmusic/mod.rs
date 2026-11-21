@@ -314,7 +314,7 @@ impl YtMusicClient {
 
         let (home_res, exp_res) = tokio::join!(
             self.post("browse", home_body),
-            self.post("browse", exp_body)
+            tokio::time::timeout(Duration::from_secs(5), self.post("browse", exp_body))
         );
 
         let mut shelves = Vec::new();
@@ -327,7 +327,7 @@ impl YtMusicClient {
 
         // Merge discovery shelves from Explore (e.g. New albums & singles, Moods & genres)
         // before deciding whether an additional Home continuation page is needed.
-        if let Ok(exp_data) = exp_res {
+        if let Ok(Ok(exp_data)) = exp_res {
             merge_home_shelves(&mut shelves, parse_home_shelves_json(&exp_data));
         }
 
@@ -337,7 +337,15 @@ impl YtMusicClient {
                 let Some(token) = cont.take() else { break };
                 let mut next_body = Self::base_context();
                 next_body["continuation"] = json!(token);
-                let Ok(page) = self.post("browse", next_body).await else {
+                let page_res = if shelves.is_empty() {
+                    self.post("browse", next_body).await.ok()
+                } else {
+                    tokio::time::timeout(Duration::from_secs(5), self.post("browse", next_body))
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                };
+                let Some(page) = page_res else {
                     break;
                 };
                 let before = shelves.len();

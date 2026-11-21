@@ -1192,7 +1192,13 @@ impl BackendEngine {
         let http = self.http.clone();
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
-            match sonata_core::updater::check_for_updates(&http).await {
+            match sonata_core::updater::check_for_updates_for(
+                &http,
+                sonata_core::updater::UpdateTarget::Desktop,
+                sonata_core::updater::CURRENT_VERSION,
+            )
+            .await
+            {
                 Ok(info) => {
                     let _ = int_tx.send(InternalEvent::UpdateChecked(info));
                 }

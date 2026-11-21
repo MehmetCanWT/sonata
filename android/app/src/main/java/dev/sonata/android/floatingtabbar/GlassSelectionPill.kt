@@ -546,7 +546,7 @@ internal fun GlassSelectionPill(
                     lens(
                         refractionHeight = LENS_HEIGHT.toPx() * motion.glassPresence,
                         refractionAmount = LENS_AMOUNT.toPx() * motion.material,
-                        chromaticAberration = true,
+                        chromaticAberration = false,
                     )
                 }
             },

@@ -28,6 +28,7 @@ import androidx.media3.session.MediaSessionService
 import java.io.File
 import java.io.InterruptedIOException
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 internal object PlaybackQueueBridge {
     @Volatile
@@ -206,11 +207,13 @@ class PlaybackService : MediaSessionService() {
 
         override fun open(dataSpec: DataSpec): Long {
             val profile = resolveHttpProfile(dataSpec.uri)
-            val factory = DefaultHttpDataSource.Factory()
-                .setAllowCrossProtocolRedirects(true)
-                .setConnectTimeoutMs(6_000)
-                .setReadTimeoutMs(10_000)
-                .setUserAgent(profile.userAgent)
+            val factory = httpFactoriesByUa.getOrPut(profile.userAgent) {
+                DefaultHttpDataSource.Factory()
+                    .setAllowCrossProtocolRedirects(true)
+                    .setConnectTimeoutMs(6_000)
+                    .setReadTimeoutMs(10_000)
+                    .setUserAgent(profile.userAgent)
+            }
 
             val httpSource = factory.createDataSource()
             transferListeners.forEach { httpSource.addTransferListener(it) }
@@ -454,6 +457,9 @@ class PlaybackService : MediaSessionService() {
                 "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
         private const val DEFAULT_MOBILE_USER_AGENT =
             "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/131.0.0.0 Mobile Safari/537.36"
+
+        @OptIn(UnstableApi::class)
+        private val httpFactoriesByUa = ConcurrentHashMap<String, DefaultHttpDataSource.Factory>()
 
         @Volatile
         private var sharedCache: SimpleCache? = null

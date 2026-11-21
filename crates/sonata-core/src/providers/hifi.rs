@@ -77,6 +77,7 @@ pub struct StreamResolver {
     in_flight_prefetch: Arc<std::sync::Mutex<HashSet<String>>>,
     visitor_data: Arc<RwLock<Option<String>>>,
     player_cipher: Arc<RwLock<Option<PreparedPlayerJs>>>,
+    player_cipher_init: Arc<Mutex<()>>,
     js_cipher_bridge: Arc<std::sync::RwLock<Option<Arc<dyn JsCipherBridge>>>>,
 }
 
@@ -96,6 +97,7 @@ impl StreamResolver {
             in_flight_prefetch: Arc::new(std::sync::Mutex::new(HashSet::new())),
             visitor_data: Arc::new(RwLock::new(None)),
             player_cipher: Arc::new(RwLock::new(None)),
+            player_cipher_init: Arc::new(Mutex::new(())),
             js_cipher_bridge: Arc::new(std::sync::RwLock::new(None)),
         }
     }

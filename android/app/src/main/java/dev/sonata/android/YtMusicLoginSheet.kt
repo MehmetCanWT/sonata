@@ -169,6 +169,10 @@ fun YtMusicLoginScreen(
                     }
                     loadUrl(if (freshSignIn) YTM_LOGIN_URL else "$YTM_ORIGIN/")
                 }
+            },
+            onRelease = { webView ->
+                webView.stopLoading()
+                webView.destroy()
             }
         )
     }
