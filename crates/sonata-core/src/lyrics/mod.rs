@@ -277,21 +277,63 @@ pub fn synced_lyrics_match_duration(lines: &[LyricLine], duration_secs: Option<u
     max_ts <= dur as f64 + 5.0
 }
 
-/// Strips YouTube/release noise from titles before querying LRCLIB.
+/// Strips upload packaging and featured credits from YouTube titles while preserving
+/// recording-distinguishing qualifiers such as `(Remix)`, `(Live)`, `(Extended Version)`,
+/// `(Acoustic)`, `(Slowed)`, and `(Sped Up)`.
 pub fn sanitize_title(title: &str) -> String {
-    static RE_BRACKETS: OnceLock<Regex> = OnceLock::new();
-    static RE_FEAT: OnceLock<Regex> = OnceLock::new();
-    let re_brackets = RE_BRACKETS.get_or_init(|| {
-        Regex::new(r"(?i)\s*[\(\[](official|lyric|music|audio|video|hd|hq|4k|visualizer|remaster|explicit|clean)[^\)\]]*[\)\]]").unwrap()
+    static RE_CREDITS_BRACKET: OnceLock<Regex> = OnceLock::new();
+    static RE_CREDITS_TAIL: OnceLock<Regex> = OnceLock::new();
+    static RE_PACKAGING: OnceLock<Regex> = OnceLock::new();
+    static RE_OFFICIAL: OnceLock<Regex> = OnceLock::new();
+
+    let re_credits_bracket = RE_CREDITS_BRACKET.get_or_init(|| {
+        Regex::new(r"(?i)\s*[\(\[]\s*(?:feat|ft|featuring|with)\b[^\)\]]*[\)\]]").unwrap()
     });
-    let re_feat =
-        RE_FEAT.get_or_init(|| Regex::new(r"(?i)\s*[\(\[]?(feat\.|ft\.)[^\)\]]*[\)\]]?").unwrap());
-    let step1 = re_brackets.replace_all(title, "");
-    let step2 = re_feat.replace_all(&step1, "");
-    step2.split_whitespace().collect::<Vec<_>>().join(" ")
+    let re_credits_tail = RE_CREDITS_TAIL
+        .get_or_init(|| Regex::new(r"(?i)\s+(?:feat|ft|featuring)\.?\s+.*$").unwrap());
+    let re_packaging = RE_PACKAGING.get_or_init(|| {
+        Regex::new(
+            r"(?i)\s*[\(\[]\s*(?:official\s*)?(?:music\s*)?(?:video|audio|visuali[sz]er|lyrics?\s*video|lyrics?|m/?v|hd|hq|4k|full\s*song|explicit|clean)\s*[\)\]]",
+        )
+        .unwrap()
+    });
+    let re_official =
+        RE_OFFICIAL.get_or_init(|| Regex::new(r"(?i)\s*[\(\[]\s*official\s*[\)\]]").unwrap());
+
+    let s1 = re_credits_bracket.replace_all(title, " ");
+    let s2 = re_credits_tail.replace_all(&s1, " ");
+    let s3 = re_packaging.replace_all(&s2, " ");
+    let s4 = re_official.replace_all(&s3, " ");
+    let cleaned = s4
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_end_matches([',', '-', '–', '—'])
+        .trim()
+        .to_string();
+    if cleaned.is_empty() {
+        title.trim().to_string()
+    } else {
+        cleaned
+    }
 }
 
-fn norm_words(s: &str) -> String {
+/// Strips YouTube's auto-generated `" - Topic"` channel suffix from artist names.
+pub fn sanitize_artist(artist: &str) -> String {
+    let trimmed = artist.trim();
+    let stripped = trimmed
+        .strip_suffix(" - Topic")
+        .or_else(|| trimmed.strip_suffix(" - topic"))
+        .unwrap_or(trimmed)
+        .trim();
+    if stripped.is_empty() {
+        trimmed.to_string()
+    } else {
+        stripped.to_string()
+    }
+}
+
+pub(crate) fn norm_words(s: &str) -> String {
     s.to_lowercase()
         .chars()
         .map(|c| if c.is_alphanumeric() { c } else { ' ' })
@@ -299,6 +341,81 @@ fn norm_words(s: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+const VERSION_WORDS: &[&str] = &[
+    "live",
+    "remix",
+    "remixed",
+    "mix",
+    "acoustic",
+    "unplugged",
+    "instrumental",
+    "karaoke",
+    "cappella",
+    "acapella",
+    "demo",
+    "edit",
+    "version",
+    "cover",
+    "sped",
+    "slowed",
+    "reverb",
+    "nightcore",
+    "lofi",
+    "orchestral",
+    "extended",
+];
+
+/// Returns the core song title without bracketed qualifiers or `" - "` suffixes.
+pub(crate) fn title_core(title: &str) -> String {
+    static RE_BRACKETED: OnceLock<Regex> = OnceLock::new();
+    let re = RE_BRACKETED.get_or_init(|| Regex::new(r"[\(\[][^\)\]]*[\)\]]").unwrap());
+    let without_brackets = re.replace_all(title, " ");
+    let head = without_brackets
+        .split(" - ")
+        .next()
+        .unwrap_or(&without_brackets);
+    let core = norm_words(head);
+    if core.is_empty() {
+        norm_words(title)
+    } else {
+        core
+    }
+}
+
+/// Extracts recording-distinguishing version words from bracketed qualifiers or `" - "` suffixes.
+pub(crate) fn title_version_words(title: &str) -> std::collections::BTreeSet<String> {
+    static RE_BRACKETED: OnceLock<Regex> = OnceLock::new();
+    let re = RE_BRACKETED.get_or_init(|| Regex::new(r"[\(\[][^\)\]]*[\)\]]").unwrap());
+    let mut extras = String::new();
+    for m in re.find_iter(title) {
+        extras.push(' ');
+        extras.push_str(m.as_str());
+    }
+    if let Some((_, suffix)) = title.split_once(" - ") {
+        extras.push(' ');
+        extras.push_str(suffix);
+    }
+    norm_words(&extras)
+        .split_whitespace()
+        .filter(|w| VERSION_WORDS.contains(w))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Splits a multi-artist credit string into normalized individual artist names.
+pub(crate) fn artist_names_set(artist: &str) -> std::collections::BTreeSet<String> {
+    static RE_SPLIT: OnceLock<Regex> = OnceLock::new();
+    let re = RE_SPLIT.get_or_init(|| {
+        Regex::new(r"(?i)\s*(?:,|&|;|/|\s+and\s+|\s+x\s+|\s+with\s+|\s+feat\.?\s+|\s+ft\.?\s+)\s*")
+            .unwrap()
+    });
+    let clean = sanitize_artist(artist);
+    re.split(&clean)
+        .map(norm_words)
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 pub fn lyrics_candidate_matches(
@@ -310,23 +427,35 @@ pub fn lyrics_candidate_matches(
     cand_dur_secs: Option<u64>,
 ) -> bool {
     if let (Some(a), Some(b)) = (req_dur_secs, cand_dur_secs) {
-        if b > 0 && a.abs_diff(b) > 5 {
+        if b > 0 && a.abs_diff(b) > 4 {
             return false;
         }
     }
-    let rt = norm_words(req_title);
-    let ct = norm_words(cand_title);
+    // Never cross-match distinct recording versions (e.g. Extended/Slowed/Live vs album edit).
+    if title_version_words(req_title) != title_version_words(cand_title) {
+        return false;
+    }
+    let rt = title_core(req_title);
+    let ct = title_core(cand_title);
     if rt.is_empty() || ct.is_empty() {
         return false;
     }
     if rt != ct && !ct.contains(&rt) && !rt.contains(&ct) {
         return false;
     }
-    let ra = norm_words(req_artist);
-    let ca = norm_words(cand_artist);
-    if ra.is_empty() || ra == "unknown artist" || ca.is_empty() {
+    let req_artists = artist_names_set(req_artist);
+    let cand_artists = artist_names_set(cand_artist);
+    if req_artists.is_empty()
+        || req_artists.iter().all(|a| a == "unknown artist")
+        || cand_artists.is_empty()
+    {
         return true;
     }
+    if req_artists.iter().any(|ra| cand_artists.contains(ra)) {
+        return true;
+    }
+    let ra = norm_words(&sanitize_artist(req_artist));
+    let ca = norm_words(&sanitize_artist(cand_artist));
     ra == ca
         || ca.contains(&ra)
         || ra.contains(&ca)
@@ -504,5 +633,37 @@ mod tests {
 
         let overrun = vec![LyricLine::new(10.0, "A"), LyricLine::new(212.0, "B")];
         assert!(!synced_lyrics_match_duration(&overrun, Some(200)));
+    }
+
+    #[test]
+    fn preserves_recording_versions_and_rejects_cross_version_matches() {
+        assert_eq!(
+            sanitize_title("Hands Up (Extended Version) [Official Audio]"),
+            "Hands Up (Extended Version)"
+        );
+        assert_eq!(
+            sanitize_title("Dracula (feat. JENNIE) (Official Music Video)"),
+            "Dracula"
+        );
+        assert_eq!(sanitize_artist("The Weeknd - Topic"), "The Weeknd");
+
+        // Must NOT match Extended Version against the standard edit.
+        assert!(!lyrics_candidate_matches(
+            "Hands Up (Extended Version)",
+            "Vanessa Doll & V9P",
+            Some(228),
+            "Hands Up",
+            "Vanessa Doll, V9P",
+            Some(228),
+        ));
+        // Must match identical multi-artist album cuts across separator styles.
+        assert!(lyrics_candidate_matches(
+            "Tobey",
+            "Eminem, Big Sean & BabyTron",
+            Some(285),
+            "Tobey",
+            "Eminem, Big Sean, BabyTron",
+            Some(285),
+        ));
     }
 }

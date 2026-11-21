@@ -16,6 +16,7 @@ use sonata_core::lyrics::LyricsState;
 use sonata_core::player::MpvEvent;
 use sonata_core::providers::hifi::ResolvedStream;
 use sonata_core::providers::{Playlist, Track};
+use sonata_core::updater::UpdateCheckResult;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SplitTarget {
@@ -137,6 +138,7 @@ pub enum AppEvent {
     },
     Mpv(MpvEvent),
     PlaylistCreated(Playlist),
+    UpdateChecked(UpdateCheckResult),
     StatusMessage(String),
 }
 

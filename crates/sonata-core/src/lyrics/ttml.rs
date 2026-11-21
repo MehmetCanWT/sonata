@@ -136,7 +136,7 @@ fn collect_spans(
                 }
             }
             Some(role) if SKIP_ROLES.contains(&role) => {}
-            _ if child.has_attribute("begin") => {
+            _ if child.has_attribute("begin") && !has_timed_child(child) => {
                 if let Some(start_secs) = parse_attr_stamp(child, "begin") {
                     let end_secs = parse_attr_stamp(child, "end").map(|e| e.max(start_secs));
                     let raw_text: String = child
@@ -166,6 +166,17 @@ fn collect_spans(
             }
         }
     }
+}
+
+fn has_timed_child(node: Node<'_, '_>) -> bool {
+    node.descendants()
+        .skip(1)
+        .filter(Node::is_element)
+        .filter(|child| {
+            !matches!(role_attr(*child), Some(BG_ROLE))
+                && !role_attr(*child).is_some_and(|r| SKIP_ROLES.contains(&r))
+        })
+        .any(|child| child.has_attribute("begin"))
 }
 
 fn has_skipped_role(node: Node<'_, '_>) -> bool {

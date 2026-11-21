@@ -112,12 +112,58 @@ impl ExtractedCookies {
         Some(compute_sapisidhash(sapisid, "https://music.youtube.com"))
     }
 
+    pub fn ytm_sapisidhash_for_origin(&self, origin: &str) -> Option<String> {
+        let sapisid = self.ytm_sapisid()?;
+        Some(compute_sapisidhash_triple(sapisid, origin))
+    }
+
     pub fn has_ytm_auth(&self) -> bool {
         self.ytm_sapisid().is_some()
     }
 
     pub fn has_spotify_auth(&self) -> bool {
         self.spotify_sp_dc.is_some()
+    }
+
+    /// Parses a raw `Cookie` header string (such as `CookieManager.getCookie` on Android).
+    pub fn from_ytm_cookie_header(raw: &str) -> Self {
+        let mut ytm_cookies = HashMap::new();
+        for pair in raw.split(';') {
+            let trimmed = pair.trim();
+            if let Some((name, val)) = trimmed.split_once('=') {
+                let k = name.trim();
+                let v = val.trim();
+                if !k.is_empty() && !v.is_empty() {
+                    ytm_cookies.insert(k.to_string(), v.to_string());
+                }
+            }
+        }
+        Self {
+            browser_name: Some("Android WebView".to_string()),
+            ytm_cookies,
+            spotify_sp_dc: None,
+            netscape_file: None,
+        }
+    }
+
+    pub fn save_ytm_header(&self) -> std::io::Result<()> {
+        let path = AppConfig::config_dir().join("ytm_session.cookie");
+        if let Some(header) = self.ytm_cookie_header() {
+            write_private_file(&path, header.as_bytes())?;
+        }
+        Ok(())
+    }
+
+    pub fn load_saved_ytm_header() -> Option<Self> {
+        let path = AppConfig::config_dir().join("ytm_session.cookie");
+        let raw = fs::read_to_string(path).ok()?;
+        let parsed = Self::from_ytm_cookie_header(&raw);
+        parsed.has_ytm_auth().then_some(parsed)
+    }
+
+    pub fn clear_saved_ytm_header() {
+        let path = AppConfig::config_dir().join("ytm_session.cookie");
+        let _ = fs::remove_file(path);
     }
 }
 
@@ -131,6 +177,18 @@ pub fn compute_sapisidhash(sapisid: &str, origin: &str) -> String {
     let digest = hasher.finalize();
     let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
     format!("SAPISIDHASH {ts}_{hex}")
+}
+
+pub fn compute_sapisidhash_triple(sapisid: &str, origin: &str) -> String {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut hasher = Sha1::new();
+    hasher.update(format!("{ts} {sapisid} {origin}").as_bytes());
+    let digest = hasher.finalize();
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    format!("SAPISIDHASH {ts}_{hex} SAPISID1PHASH {ts}_{hex} SAPISID3PHASH {ts}_{hex}")
 }
 
 #[derive(Debug, Clone)]

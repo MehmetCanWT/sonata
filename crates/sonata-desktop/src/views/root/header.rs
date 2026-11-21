@@ -130,11 +130,44 @@ pub(super) fn render_top_header(
     };
 
     let ghost_bg = gpui_kit::transparent_black();
-    let right_tools = div()
+    let update_pill = snap
+        .update_info
+        .as_ref()
+        .filter(|info| info.update_available)
+        .map(|info| {
+            let label = format!("Update v{} available", info.latest_version);
+            div()
+                .id("hdr-update-pill")
+                .h(px(28.0))
+                .px_3()
+                .rounded_full()
+                .bg(p.accent_soft)
+                .border_1()
+                .border_color(p.accent)
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.navigate_to(NavTarget::Settings, cx);
+                }))
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(p.accent)
+                        .child(label),
+                )
+                .into_any_element()
+        });
+    let mut right_tools = div()
         .flex()
         .items_center()
         .gap(px(6.0))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+    if let Some(pill) = update_pill {
+        right_tools = right_tools.child(pill);
+    }
+    let right_tools = right_tools
         .child(render_icon_button(
             "hdr-lyrics",
             IconName::MicVocal,

@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="sky" x1="0.5" y1="0" x2="0.5" y2="1">
+      <stop offset="0%" stop-color="#07080D"/>
+      <stop offset="100%" stop-color="#141624"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%" stop-color="#C7D2FE" stop-opacity="0.22"/>
+      <stop offset="60%" stop-color="#818CF8" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#07080D" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="crescent" x1="0.2" y1="0.1" x2="0.85" y2="0.9">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#D6DEF6"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0.15" y1="0" x2="0.85" y2="1">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.24"/>
+      <stop offset="50%" stop-color="#A5B4FC" stop-opacity="0.10"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0.06"/>
+    </linearGradient>
+    <clipPath id="squircle">
+      <rect x="8" y="8" width="240" height="240" rx="58"/>
+    </clipPath>
+  </defs>
+
+  <rect x="8" y="8" width="240" height="240" rx="58" fill="url(#sky)"/>
+
+  <g clip-path="url(#squircle)">
+    <!-- Soft nocturnal lunar halo -->
+    <circle cx="128" cy="128" r="108" fill="url(#halo)"/>
+
+    <!-- Subtle starlight flecks -->
+    <circle cx="58" cy="54" r="2.2" fill="#FFFFFF" fill-opacity="0.22"/>
+    <circle cx="198" cy="68" r="1.8" fill="#FFFFFF" fill-opacity="0.18"/>
+    <circle cx="184" cy="192" r="2.0" fill="#FFFFFF" fill-opacity="0.20"/>
+    <circle cx="64" cy="194" r="1.6" fill="#FFFFFF" fill-opacity="0.16"/>
+
+    <!-- Subtle earthshine lunar disc -->
+    <circle cx="128" cy="128" r="64" fill="#1F2438"/>
+
+    <!-- Primary illuminated crescent -->
+    <path d="M145.6 66.4 A64 64 0 1 0 189.2 148.4 A50.5 50.5 0 1 1 145.6 66.4 Z" fill="url(#crescent)"/>
+
+    <!-- Soft inner crescent highlight -->
+    <path d="M136.6 71.8 A56.6 56.6 0 1 0 179.2 150.4 A47.2 47.2 0 1 1 136.6 71.8 Z" fill="#FFFFFF" fill-opacity="0.22"/>
+  </g>
+
+  <rect x="8" y="8" width="240" height="240" rx="58" fill="none" stroke="url(#rim)" stroke-width="3"/>
+</svg>

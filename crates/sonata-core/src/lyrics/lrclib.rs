@@ -15,7 +15,7 @@
 use crate::cache::{prune_active_media_cache_async, CacheDb};
 use crate::config::AppConfig;
 use crate::lyrics::{
-    format_lrc, lyrics_candidate_matches, parse_lrc, providers, sanitize_title,
+    format_lrc, lyrics_candidate_matches, parse_lrc, providers, sanitize_artist, sanitize_title,
     synced_lyrics_match_duration, LyricLine, LyricVoice, LyricsState,
 };
 use crate::providers::ytmusic::YtMusicClient;
@@ -76,7 +76,8 @@ pub async fn fetch_lyrics(
     cache_db: Option<&CacheDb>,
 ) -> LyricsState {
     let clean_title = sanitize_title(&track.title);
-    let artist = track.artist.trim();
+    let clean_artist = sanitize_artist(&track.artist);
+    let artist = clean_artist.as_str();
     let (lrc_path, txt_path, check_path) = cache_paths(artist, &clean_title);
     let cache_key = format!("{}::{}", artist.to_lowercase(), clean_title.to_lowercase());
     let is_ytm = track.source == ProviderSource::YouTubeMusic;
@@ -148,8 +149,33 @@ pub async fn fetch_lyrics(
         return LyricsState::Plain(plain.clone());
     }
 
-    // Query all synced providers concurrently and score the best candidate.
-    let (ttml_raw, lrclib_raw, kugou_raw, netease_raw, qq_raw) = tokio::join!(
+    // Query all synced providers concurrently: Apple TTML sources first (lrc.red, BetterLyrics,
+    // LyricsPlus, binimum), followed by LRCLIB, KuGou, NetEase, and QQ Music.
+    let (
+        lrcred_raw,
+        better_raw,
+        lyricsplus_raw,
+        ttml_raw,
+        lrclib_raw,
+        kugou_raw,
+        netease_raw,
+        qq_raw,
+    ) = tokio::join!(
+        providers::fetch_lrcred_synced(http, &clean_title, artist, track.duration_secs),
+        providers::fetch_betterlyrics_synced(
+            http,
+            &clean_title,
+            artist,
+            &track.album,
+            track.duration_secs
+        ),
+        providers::fetch_lyricsplus_synced(
+            http,
+            &clean_title,
+            artist,
+            &track.album,
+            track.duration_secs
+        ),
         providers::fetch_ttml_synced(
             http,
             &clean_title,
@@ -163,6 +189,9 @@ pub async fn fetch_lyrics(
         providers::fetch_qqmusic_synced(http, &clean_title, artist, track.duration_secs),
     );
 
+    let lrcred_synced = lrcred_raw.and_then(|lines| usable_synced_lyrics(lines, track));
+    let better_synced = better_raw.and_then(|lines| usable_synced_lyrics(lines, track));
+    let lyricsplus_synced = lyricsplus_raw.and_then(|lines| usable_synced_lyrics(lines, track));
     let ttml_synced = ttml_raw.and_then(|lines| usable_synced_lyrics(lines, track));
     let (lrc_synced, lrc_plain) = match lrclib_raw {
         Some((synced, plain)) => (
@@ -175,10 +204,31 @@ pub async fn fetch_lyrics(
     let netease_synced = netease_raw.and_then(|lines| usable_synced_lyrics(lines, track));
     let qq_synced = qq_raw.and_then(|lines| usable_synced_lyrics(lines, track));
 
+    // Strict priority win for Apple/Syllable word-timed providers so noisy fallback
+    // sources can never displace exact ISRC / Apple Music TTML timings.
+    for lines in [
+        lrcred_synced.as_ref(),
+        better_synced.as_ref(),
+        lyricsplus_synced.as_ref(),
+        ttml_synced.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if has_rich_timing(lines) {
+            save_lrc(&lrc_path, lines).await;
+            persist_lyrics(cache_db, track, Some(lines), None, "FOUND");
+            return LyricsState::Synced(lines.clone());
+        }
+    }
+
     let mut candidates: Vec<(i64, Vec<LyricLine>)> = Vec::new();
     for (bonus, maybe_lines) in [
-        (40i64, ttml_synced),
-        (35i64, lrc_synced),
+        (100i64, lrcred_synced),
+        (95i64, better_synced),
+        (90i64, lyricsplus_synced),
+        (85i64, ttml_synced),
+        (75i64, lrc_synced),
         (30i64, kugou_synced),
         (28i64, netease_synced),
         (20i64, qq_synced),

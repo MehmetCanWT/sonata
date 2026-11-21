@@ -325,32 +325,29 @@ impl YtMusicClient {
             cont = find_home_continuation(&home_data);
         }
 
-        // Follow up to 4 Home continuation pages so personalized YouTube Music shelves
-        // (Listen again, Quick picks / Top picks for you, Mixed for you, Forgotten favorites,
-        // Recommended albums, New albums & singles, etc.) are all populated.
-        for _ in 0..4 {
-            if shelves.len() >= 12 {
-                break;
-            }
-            let Some(token) = cont.take() else { break };
-            let mut next_body = Self::base_context();
-            next_body["continuation"] = json!(token);
-            let Ok(page) = self.post("browse", next_body).await else {
-                break;
-            };
-            let before = shelves.len();
-            merge_home_shelves(&mut shelves, parse_home_shelves_json(&page));
-            let next_cont = find_home_continuation(&page);
-            if next_cont.as_deref() == Some(token.as_str()) || shelves.len() == before {
-                break;
-            }
-            cont = next_cont;
-        }
-
         // Merge discovery shelves from Explore (e.g. New albums & singles, Moods & genres)
-        // without duplicating titles already returned by the personalized Home feed.
+        // before deciding whether an additional Home continuation page is needed.
         if let Ok(exp_data) = exp_res {
             merge_home_shelves(&mut shelves, parse_home_shelves_json(&exp_data));
+        }
+
+        // Follow at most 1 continuation page, and skip altogether if >= 6 shelves are already loaded.
+        if shelves.len() < 6 {
+            for _ in 0..1 {
+                let Some(token) = cont.take() else { break };
+                let mut next_body = Self::base_context();
+                next_body["continuation"] = json!(token);
+                let Ok(page) = self.post("browse", next_body).await else {
+                    break;
+                };
+                let before = shelves.len();
+                merge_home_shelves(&mut shelves, parse_home_shelves_json(&page));
+                let next_cont = find_home_continuation(&page);
+                if next_cont.as_deref() == Some(token.as_str()) || shelves.len() == before {
+                    break;
+                }
+                cont = next_cont;
+            }
         }
 
         if shelves.is_empty() {

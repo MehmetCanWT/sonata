@@ -410,10 +410,24 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         top_cols[1],
     );
 
-    let badges = Line::from(vec![Span::styled(
+    let mut badge_spans = Vec::new();
+    if let Some(info) = app
+        .update_info
+        .as_ref()
+        .filter(|info| info.update_available)
+    {
+        badge_spans.push(Span::styled(
+            format!("[Update v{}] ", info.latest_version),
+            Style::default()
+                .fg(app.theme.warning)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    badge_spans.push(Span::styled(
         format!("[{}] ", app.playback.stream_badge),
         Style::default().fg(app.theme.success),
-    )]);
+    ));
+    let badges = Line::from(badge_spans);
     frame.render_widget(
         Paragraph::new(badges).alignment(Alignment::Right),
         top_cols[2],

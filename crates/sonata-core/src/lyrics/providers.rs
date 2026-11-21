@@ -1,26 +1,435 @@
-//! External lyrics provider adapters for Sonata (TTML, KuGou KRC/LRC, NetEase YRC/LRC, and Genius).
+//! External lyrics provider adapters for Sonata (lrc.red, BetterLyrics, LyricsPlus, TTML, KuGou KRC/LRC, NetEase YRC/LRC, and Genius).
 //!
-//! 1. **TTML Catalogue**: `fetch_ttml_synced` queries `lyrics-api.binimum.org` for word-timed and
-//!    dual-voice (`Lead`/`Counter`) TTML sheets.
+//! 1. **Apple TTML Catalogues**: `fetch_lrcred_synced` (`lrc.red` by ISRC with strict version/duration
+//!    matching), `fetch_betterlyrics_synced` (`lyrics-api.boidu.dev`), `fetch_lyricsplus_synced`
+//!    (LyricsPlus v2 syllable-timed mirrors), and `fetch_ttml_synced` (`lyrics-api.binimum.org`).
 //! 2. **KuGou KRC & LRC**: `fetch_kugou_synced` tries XOR+zlib encrypted `fmt=krc` word-timed lyrics
 //!    first and falls back to plain `fmt=lrc`.
 //! 3. **NetEase & QQ Music**: `fetch_netease_synced` queries `api/song/lyric/v1` for word-timed
 //!    YRC (or LRC fallback), and `fetch_qqmusic_synced` queries QQ Music base64 LRC sheets.
 //! 4. **Genius Scraper**: `fetch_genius_lyrics` extracts plain lyrics from Genius HTML containers.
 
-use crate::lyrics::{lyrics_candidate_matches, parse_lrc, ttml, LyricLine, LyricVoice, LyricWord};
+use crate::lyrics::{
+    artist_names_set, lyrics_candidate_matches, parse_lrc, title_core, title_version_words, ttml,
+    LyricLine, LyricVoice, LyricWord,
+};
 use base64::Engine as _;
 use flate2::read::ZlibDecoder;
 use regex::Regex;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::io::Read as _;
 use std::sync::OnceLock;
 use std::time::Duration;
 
 const KRC_CIPHER: [u8; 16] = *b"@Gaw^2tGQ61-\xce\xd2ni";
 const SONATA_LYRICS_UA: &str = "Sonata/0.1.0 (lyrics lookup)";
+const LRCRED_DURATION_TOLERANCE_SECS: f64 = 3.5;
+
+#[derive(Deserialize)]
+struct LrcRedSearchResponse {
+    #[serde(default)]
+    hits: Vec<LrcRedHit>,
+}
+
+#[derive(Deserialize)]
+struct LrcRedHit {
+    #[serde(default)]
+    isrc: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    artist: Option<String>,
+    #[serde(default)]
+    duration: Option<f64>,
+}
+
+fn valid_lrcred_url(isrc: &str) -> Option<String> {
+    static RE_ISRC: OnceLock<Regex> = OnceLock::new();
+    let re = RE_ISRC.get_or_init(|| Regex::new(r"^[A-Z]{2}[A-Z0-9]{3}\d{7}$").unwrap());
+    let norm = isrc.trim().to_ascii_uppercase();
+    re.is_match(&norm)
+        .then(|| format!("https://lrc.red/s/{norm}.ttml"))
+}
+
+/// Fetches per-word / dual-voice Apple Music TTML lyrics directly from `lrc.red` by ISRC,
+/// enforcing exact core title, identical recording-version words, shared credited artist,
+/// and tight fractional duration tolerance (`<= 3.5s`).
+pub async fn fetch_lrcred_synced(
+    http: &Client,
+    title: &str,
+    artist: &str,
+    duration_secs: Option<u64>,
+) -> Option<Vec<LyricLine>> {
+    let clean_title = title.trim();
+    if clean_title.is_empty() {
+        return None;
+    }
+    let query = if artist.trim().is_empty() || artist.eq_ignore_ascii_case("unknown artist") {
+        clean_title.to_string()
+    } else {
+        format!("{clean_title} {}", artist.trim())
+    };
+    let resp = http
+        .get("https://lrc.red/search.json")
+        .query(&[("q", query.as_str())])
+        .header("User-Agent", SONATA_LYRICS_UA)
+        .timeout(Duration::from_millis(3800))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let payload: LrcRedSearchResponse = resp.json().await.ok()?;
+    let wanted_core = title_core(clean_title);
+    let wanted_version = title_version_words(clean_title);
+    let wanted_artists = artist_names_set(artist);
+    let target_dur = duration_secs.filter(|&d| d > 0).map(|d| d as f64);
+
+    let best = payload
+        .hits
+        .into_iter()
+        .filter_map(|hit| {
+            let url = valid_lrcred_url(hit.isrc.as_deref()?)?;
+            let cand_title = hit.title.as_deref()?;
+            if title_core(cand_title) != wanted_core {
+                return None;
+            }
+            if title_version_words(cand_title) != wanted_version {
+                return None;
+            }
+            if !wanted_artists.is_empty() && !wanted_artists.iter().all(|a| a == "unknown artist") {
+                let cand_artists = artist_names_set(hit.artist.as_deref().unwrap_or_default());
+                if !cand_artists.iter().any(|a| wanted_artists.contains(a)) {
+                    return None;
+                }
+            }
+            let dist = match (target_dur, hit.duration.filter(|&d| d > 0.0)) {
+                (Some(t), Some(c)) => {
+                    let d = (c - t).abs();
+                    if d > LRCRED_DURATION_TOLERANCE_SECS {
+                        return None;
+                    }
+                    d
+                }
+                _ => 0.0,
+            };
+            Some((dist, url))
+        })
+        .min_by(|(a, _), (b, _)| a.total_cmp(b))?;
+
+    let ttml_resp = http
+        .get(&best.1)
+        .header("User-Agent", SONATA_LYRICS_UA)
+        .timeout(Duration::from_millis(3800))
+        .send()
+        .await
+        .ok()?;
+    if !ttml_resp.status().is_success() {
+        return None;
+    }
+    let xml = ttml_resp.text().await.ok()?;
+    ttml::parse_ttml(&xml).filter(|lines| !lines.is_empty())
+}
+
+#[derive(Deserialize)]
+struct BetterLyricsResponse {
+    #[serde(default)]
+    ttml: Option<String>,
+}
+
+/// Fetches cached Apple Music TTML lyrics from BetterLyrics (`lyrics-api.boidu.dev`).
+pub async fn fetch_betterlyrics_synced(
+    http: &Client,
+    title: &str,
+    artist: &str,
+    album: &str,
+    duration_secs: Option<u64>,
+) -> Option<Vec<LyricLine>> {
+    if title.trim().is_empty() || artist.trim().is_empty() {
+        return None;
+    }
+    let dur_str = duration_secs.filter(|&d| d > 0).map(|d| d.to_string());
+    let mut params = vec![("s", title.trim()), ("a", artist.trim())];
+    if let Some(d) = dur_str.as_deref() {
+        params.push(("d", d));
+    }
+    if !album.trim().is_empty() {
+        params.push(("al", album.trim()));
+    }
+    let resp = http
+        .get("https://lyrics-api.boidu.dev/getLyrics")
+        .query(&params)
+        .header("User-Agent", SONATA_LYRICS_UA)
+        .timeout(Duration::from_millis(3500))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let payload: BetterLyricsResponse = resp.json().await.ok()?;
+    let xml = payload.ttml.as_deref()?.trim();
+    if xml.is_empty() {
+        return None;
+    }
+    ttml::parse_ttml(xml).filter(|lines| !lines.is_empty())
+}
+
+#[derive(Deserialize)]
+struct LyricsPlusResponse {
+    #[serde(default)]
+    lyrics: Vec<LyricsPlusLine>,
+    #[serde(default)]
+    metadata: Option<LyricsPlusMetadata>,
+}
+
+#[derive(Deserialize)]
+struct LyricsPlusMetadata {
+    #[serde(default)]
+    agents: HashMap<String, LyricsPlusAgent>,
+}
+
+#[derive(Deserialize)]
+struct LyricsPlusAgent {
+    #[serde(rename = "type", default)]
+    kind: Option<String>,
+    #[serde(default)]
+    alias: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct LyricsPlusLine {
+    #[serde(default)]
+    time: Option<u64>,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    syllabus: Vec<LyricsPlusSyllable>,
+    #[serde(default)]
+    element: Option<Value>,
+}
+
+#[derive(Deserialize)]
+struct LyricsPlusSyllable {
+    #[serde(default)]
+    time: Option<u64>,
+    #[serde(default)]
+    duration: Option<u64>,
+    #[serde(default)]
+    text: Option<String>,
+}
+
+/// Fetches syllable-timed lyrics from LyricsPlus v2 public mirrors concurrently.
+pub async fn fetch_lyricsplus_synced(
+    http: &Client,
+    title: &str,
+    artist: &str,
+    album: &str,
+    duration_secs: Option<u64>,
+) -> Option<Vec<LyricLine>> {
+    if title.trim().is_empty() || artist.trim().is_empty() {
+        return None;
+    }
+    const MIRRORS: [&str; 3] = [
+        "https://lyricsplus.prjktla.my.id",
+        "https://lyricsplus.atomix.one",
+        "https://lyricsplus.binimum.org",
+    ];
+    let (r0, r1, r2) = tokio::join!(
+        query_lyricsplus_mirror(http, MIRRORS[0], title, artist, album, duration_secs),
+        query_lyricsplus_mirror(http, MIRRORS[1], title, artist, album, duration_secs),
+        query_lyricsplus_mirror(http, MIRRORS[2], title, artist, album, duration_secs),
+    );
+    r0.or(r1).or(r2)
+}
+
+async fn query_lyricsplus_mirror(
+    http: &Client,
+    host: &str,
+    title: &str,
+    artist: &str,
+    album: &str,
+    duration_secs: Option<u64>,
+) -> Option<Vec<LyricLine>> {
+    let dur_str = duration_secs.filter(|&d| d > 0).map(|d| d.to_string());
+    let mut params = vec![("title", title.trim()), ("artist", artist.trim())];
+    if let Some(d) = dur_str.as_deref() {
+        params.push(("duration", d));
+    }
+    if !album.trim().is_empty() {
+        params.push(("album", album.trim()));
+    }
+    let resp = http
+        .get(format!("{host}/v2/lyrics/get"))
+        .query(&params)
+        .header("User-Agent", SONATA_LYRICS_UA)
+        .timeout(Duration::from_millis(3500))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let payload: LyricsPlusResponse = resp.json().await.ok()?;
+    parse_lyricsplus_response(payload)
+}
+
+fn parse_lyricsplus_response(payload: LyricsPlusResponse) -> Option<Vec<LyricLine>> {
+    let mut person_aliases: HashMap<String, bool> = HashMap::new();
+    if let Some(meta) = payload.metadata {
+        for (id, agent) in meta.agents {
+            let is_person = agent.kind.as_deref() == Some("person");
+            let key = agent.alias.unwrap_or(id);
+            person_aliases.insert(key, is_person);
+        }
+    }
+    let mut lead_singer: Option<String> = None;
+    let mut out = Vec::new();
+    for line in payload.lyrics {
+        let Some(time_ms) = line.time else {
+            continue;
+        };
+        let singer = line
+            .element
+            .as_ref()
+            .and_then(|el| el.get("singer"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let says_opposite = line
+            .element
+            .as_ref()
+            .and_then(|el| el.as_array())
+            .is_some_and(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .any(|tag| tag == "opposite" || tag == "right")
+            });
+        let voice = if says_opposite {
+            LyricVoice::Counter
+        } else if let Some(ref s) = singer {
+            let is_person = person_aliases.get(s).copied().unwrap_or(true);
+            if is_person {
+                if lead_singer.is_none() {
+                    lead_singer = Some(s.clone());
+                }
+                if lead_singer.as_deref() != Some(s.as_str()) {
+                    LyricVoice::Counter
+                } else {
+                    LyricVoice::Lead
+                }
+            } else {
+                LyricVoice::Lead
+            }
+        } else {
+            LyricVoice::Lead
+        };
+
+        let words = merge_lyricsplus_syllables(&line.syllabus);
+        let text = if !words.is_empty() {
+            words
+                .iter()
+                .map(|w| w.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        } else {
+            line.text.as_deref().unwrap_or_default().trim().to_string()
+        };
+        if text.is_empty() {
+            continue;
+        }
+        let start_secs = words
+            .first()
+            .map(|w| w.start_secs.min(time_ms as f64 / 1000.0))
+            .unwrap_or(time_ms as f64 / 1000.0);
+        out.push(LyricLine {
+            time_secs: start_secs,
+            text,
+            words,
+            voice,
+        });
+    }
+    out.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
+    (!out.is_empty()).then_some(out)
+}
+
+fn merge_lyricsplus_syllables(syllables: &[LyricsPlusSyllable]) -> Vec<LyricWord> {
+    let mut words: Vec<LyricWord> = Vec::new();
+    let mut current_text = String::new();
+    let mut current_start = 0.0f64;
+    let mut current_end = 0.0f64;
+    let mut has_active = false;
+
+    let flush =
+        |words: &mut Vec<LyricWord>, text: &mut String, start: f64, end: f64, active: &mut bool| {
+            let trimmed = text.trim();
+            if *active && !trimmed.is_empty() {
+                words.push(LyricWord {
+                    start_secs: start,
+                    end_secs: Some(end.max(start + 0.04)),
+                    text: trimmed.to_string(),
+                });
+            }
+            text.clear();
+            *active = false;
+        };
+
+    for syl in syllables {
+        let Some(raw) = syl.text.as_deref() else {
+            continue;
+        };
+        let Some(t_ms) = syl.time else {
+            continue;
+        };
+        let s_secs = t_ms as f64 / 1000.0;
+        let e_secs = (t_ms + syl.duration.unwrap_or(0)) as f64 / 1000.0;
+        if raw.trim().is_empty() {
+            flush(
+                &mut words,
+                &mut current_text,
+                current_start,
+                current_end,
+                &mut has_active,
+            );
+            continue;
+        }
+        if raw.starts_with(char::is_whitespace) {
+            flush(
+                &mut words,
+                &mut current_text,
+                current_start,
+                current_end,
+                &mut has_active,
+            );
+        }
+        if !has_active {
+            current_start = s_secs;
+            has_active = true;
+        }
+        current_text.push_str(raw.trim());
+        current_end = current_end.max(e_secs);
+        if raw.ends_with(char::is_whitespace) {
+            flush(
+                &mut words,
+                &mut current_text,
+                current_start,
+                current_end,
+                &mut has_active,
+            );
+        }
+    }
+    flush(
+        &mut words,
+        &mut current_text,
+        current_start,
+        current_end,
+        &mut has_active,
+    );
+    words
+}
 
 #[derive(Deserialize)]
 struct TtmlSearchResponse {
@@ -187,7 +596,7 @@ pub async fn fetch_kugou_synced(
                     let hash = item.get("hash").and_then(|v| v.as_str())?.to_string();
                     let dur = item.get("duration").and_then(|v| v.as_u64()).unwrap_or(0);
                     if let Some(target) = duration_secs {
-                        if target.abs_diff(dur) > 8 {
+                        if target.abs_diff(dur) > 4 {
                             return None;
                         }
                     }

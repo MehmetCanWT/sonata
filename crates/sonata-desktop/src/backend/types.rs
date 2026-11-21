@@ -14,6 +14,7 @@ use sonata_core::providers::hifi::ResolvedStream;
 use sonata_core::providers::ytmusic::{ArtistPage, HomeShelf, YtAccountProfile};
 use sonata_core::providers::{Playlist, ProviderSource, Track};
 use sonata_core::theme::Theme;
+use sonata_core::updater::UpdateCheckResult;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -90,6 +91,7 @@ pub enum BackendCmd {
     },
     RemoveTrackFromPlaylist(usize),
     ClickLinkSpotify,
+    CheckForUpdates,
     SetWindowAddress(Option<String>),
     SetWindowVisible(bool),
     Shutdown(std::sync::mpsc::SyncSender<()>),
@@ -141,6 +143,8 @@ pub struct DesktopSnapshot {
     pub motion_cover: Option<Arc<MotionCover>>,
     pub ambient_rgb: (u8, u8, u8),
     pub spotify_notice: Option<String>,
+    pub update_info: Option<UpdateCheckResult>,
+    pub checking_updates: bool,
 }
 
 impl DesktopSnapshot {
@@ -313,6 +317,8 @@ pub(super) enum InternalEvent {
     },
     ThumbnailsReady,
     PlaylistCreated(Playlist),
+    UpdateChecked(UpdateCheckResult),
+    UpdateCheckFailed(String),
     StatusMessage(String),
 }
 

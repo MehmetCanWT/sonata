@@ -107,6 +107,8 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
         motion_cover: None,
         ambient_rgb: (110, 90, 170),
         spotify_notice: None,
+        update_info: None,
+        checking_updates: false,
     });
 
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -199,6 +201,8 @@ struct BackendEngine {
     pub(super) motion_cover: Option<Arc<sonata_core::motion::MotionCover>>,
     pub(super) ambient_rgb: (u8, u8, u8),
     pub(super) spotify_notice: Option<String>,
+    pub(super) update_info: Option<sonata_core::updater::UpdateCheckResult>,
+    pub(super) checking_updates: bool,
     pub(super) pos_anchor: Option<(f64, Instant)>,
     pub(super) stream_loaded_at: Option<Instant>,
     pub(super) home_req_id: u64,
@@ -313,6 +317,8 @@ async fn run_backend_loop(
         motion_cover: None,
         ambient_rgb: (110, 90, 170),
         spotify_notice: None,
+        update_info: None,
+        checking_updates: false,
         pos_anchor: None,
         stream_loaded_at: None,
         home_req_id: 0,
@@ -341,6 +347,7 @@ async fn run_backend_loop(
     } else {
         engine.load_home_feed();
     }
+    engine.spawn_update_check();
     engine.sync_hyprland_opacity();
     engine.publish(true).await;
 
@@ -713,6 +720,9 @@ impl BackendEngine {
                     "Spotify integration is a preview placeholder and is not connected yet."
                         .to_string(),
                 );
+            }
+            BackendCmd::CheckForUpdates => {
+                self.spawn_update_check();
             }
             BackendCmd::SetWindowAddress(addr) => {
                 self.hyprland_window = addr;
@@ -1157,10 +1167,40 @@ impl BackendEngine {
                 }
                 self.status_line = format!("Created playlist \"{}\"", pl.name);
             }
+            InternalEvent::UpdateChecked(info) => {
+                self.checking_updates = false;
+                if info.update_available {
+                    self.status_line = format!("Update v{} available", info.latest_version);
+                }
+                self.update_info = Some(info);
+            }
+            InternalEvent::UpdateCheckFailed(err) => {
+                self.checking_updates = false;
+                tracing::warn!(error = %err, "desktop update check failed");
+            }
             InternalEvent::StatusMessage(msg) => {
                 self.status_line = msg;
             }
         }
+    }
+
+    fn spawn_update_check(&mut self) {
+        if self.checking_updates {
+            return;
+        }
+        self.checking_updates = true;
+        let http = self.http.clone();
+        let int_tx = self.int_tx.clone();
+        tokio::spawn(async move {
+            match sonata_core::updater::check_for_updates(&http).await {
+                Ok(info) => {
+                    let _ = int_tx.send(InternalEvent::UpdateChecked(info));
+                }
+                Err(err) => {
+                    let _ = int_tx.send(InternalEvent::UpdateCheckFailed(err.to_string()));
+                }
+            }
+        });
     }
 
     async fn publish(&mut self, notify_integrations: bool) {
@@ -1217,6 +1257,8 @@ impl BackendEngine {
             motion_cover: self.motion_cover.clone(),
             ambient_rgb: self.ambient_rgb,
             spotify_notice: self.spotify_notice.clone(),
+            update_info: self.update_info.clone(),
+            checking_updates: self.checking_updates,
         });
 
         let _ = self.snap_tx.send(snap.clone());
@@ -1352,6 +1394,8 @@ mod tests {
             motion_cover: None,
             ambient_rgb: (0, 0, 0),
             spotify_notice: None,
+            update_info: None,
+            checking_updates: false,
         }));
         let handle = BackendHandle {
             cmd_tx,

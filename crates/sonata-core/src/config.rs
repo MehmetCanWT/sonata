@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::OnceLock;
+
+static ANDROID_DIRS: OnceLock<(PathBuf, PathBuf)> = OnceLock::new();
 
 const DEFAULT_CACHE_LIMIT_GB: u8 = 1;
 pub const MAX_CACHE_LIMIT_GB: u8 = 10;
@@ -175,7 +178,15 @@ impl AppConfig {
         }
     }
 
+    /// Registers app-private Android `filesDir` and `cacheDir` paths before any config or cache access.
+    pub fn set_android_dirs(config_dir: PathBuf, cache_dir: PathBuf) {
+        let _ = ANDROID_DIRS.set((config_dir, cache_dir));
+    }
+
     pub fn config_dir() -> PathBuf {
+        if let Some((cfg, _)) = ANDROID_DIRS.get() {
+            return cfg.join("sonata");
+        }
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("sonata")
@@ -186,6 +197,9 @@ impl AppConfig {
     }
 
     pub fn cache_dir() -> PathBuf {
+        if let Some((_, cache)) = ANDROID_DIRS.get() {
+            return cache.join("sonata");
+        }
         dirs::cache_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))
             .join("sonata")

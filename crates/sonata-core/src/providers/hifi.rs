@@ -10,6 +10,7 @@
 //!    time, with a guard preventing duplicate concurrent prefetches.
 
 mod cache;
+mod cipher;
 mod innertube;
 mod matching;
 mod ytdlp;
@@ -27,7 +28,7 @@ use reqwest::Client;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use ytdlp::detect_js_runtime;
 
 #[cfg(test)]
@@ -41,6 +42,7 @@ use serde_json::json;
 #[cfg(test)]
 use ytdlp::{parse_ytdlp_audio_line, YtdlpAudioMetadata};
 
+pub use cipher::{JsCipherBridge, PreparedPlayerJs, SolvedCipherPair};
 pub use innertube::parse_innertube_best_audio;
 pub use matching::clean_search_title;
 
@@ -73,6 +75,9 @@ pub struct StreamResolver {
     cache: Arc<Mutex<HashMap<String, (Instant, ResolvedStream)>>>,
     cache_db: Option<CacheDb>,
     in_flight_prefetch: Arc<std::sync::Mutex<HashSet<String>>>,
+    visitor_data: Arc<RwLock<Option<String>>>,
+    player_cipher: Arc<RwLock<Option<PreparedPlayerJs>>>,
+    js_cipher_bridge: Arc<std::sync::RwLock<Option<Arc<dyn JsCipherBridge>>>>,
 }
 
 impl StreamResolver {
@@ -89,6 +94,9 @@ impl StreamResolver {
             cache: Arc::new(Mutex::new(HashMap::new())),
             cache_db,
             in_flight_prefetch: Arc::new(std::sync::Mutex::new(HashSet::new())),
+            visitor_data: Arc::new(RwLock::new(None)),
+            player_cipher: Arc::new(RwLock::new(None)),
+            js_cipher_bridge: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -99,14 +107,27 @@ impl StreamResolver {
             .timeout(Duration::from_secs(3))
             .send()
             .await;
+        let _ = self.ensure_visitor_data().await;
+        let _ = self.ensure_prepared_player_js().await;
         let _ = detect_js_runtime();
         tracing::info!(event = "resolver_warmed", "resolver prerequisites ready");
     }
 
-    /// Recovery after mpv rejects a stream. It does not repeat the cached resolver.
+    /// Recovery after mpv/ExoPlayer rejects a stream. It does not repeat the cached resolver.
     #[tracing::instrument(level = "debug", skip(self, track), fields(track_id = %track.id, provider = ?track.source))]
     pub async fn resolve_recovery(&self, track: &Track) -> Result<ResolvedStream> {
         self.invalidate_stream(&track.id).await;
+        if cfg!(target_os = "android") {
+            let stream = self
+                .resolve_youtube_best_innertube(track, self.cookies.has_ytm_auth())
+                .await
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Failed to recover stream for \"{}\"", track.title)
+                })?;
+            self.put_cached(format!("yt:{}", track.id), stream.clone())
+                .await;
+            return Ok(stream);
+        }
         if self.cookies.has_ytm_auth() {
             if let Ok(stream) = self.resolve_youtube_ytdlp(track, true, false).await {
                 tracing::info!(
@@ -152,18 +173,25 @@ impl StreamResolver {
     pub async fn resolve_fast(&self, track: &Track) -> Result<ResolvedStream> {
         if AppConfig::active_cache_limit_bytes() > 0 {
             if let Some(local) = cached_audio_stream(&track.id) {
-                tracing::debug!(
-                    "[sonata:resolver] cache-hit=local track_id={} source=local",
-                    track.id
-                );
-                self.cache_average_bitrate(&track.id, &local.badge);
-                return Ok(local);
+                if !self.cookies.has_ytm_auth()
+                    || !Self::needs_hifi_upgrade(&local.badge, &local.url)
+                {
+                    tracing::debug!(
+                        "[sonata:resolver] cache-hit=local track_id={} source=local",
+                        track.id
+                    );
+                    self.cache_average_bitrate(&track.id, &local.badge);
+                    return Ok(local);
+                }
             }
         }
         let key = format!("yt:{}", track.id);
         if let Some(stream) = self.get_cached_fresh(&key).await {
-            self.cache_average_bitrate(&track.id, &stream.badge);
-            return Ok(stream);
+            if !self.cookies.has_ytm_auth() || !Self::needs_hifi_upgrade(&stream.badge, &stream.url)
+            {
+                self.cache_average_bitrate(&track.id, &stream.badge);
+                return Ok(stream);
+            }
         }
 
         let stream = self.resolve_youtube_fast(track).await?;
@@ -211,11 +239,20 @@ impl StreamResolver {
         }
         if allow_hifi && Self::needs_hifi_upgrade(&current.badge, &current.url) {
             let mut candidate = None;
-            if self.cookies.has_ytm_auth() {
-                candidate = self.resolve_youtube_ytdlp(track, true, false).await.ok();
-            }
-            if candidate.is_none() {
-                candidate = self.resolve_youtube_ytdlp(track, false, false).await.ok();
+            if cfg!(target_os = "android") {
+                candidate = self
+                    .resolve_youtube_best_innertube(track, self.cookies.has_ytm_auth())
+                    .await;
+            } else {
+                if self.cookies.has_ytm_auth() {
+                    candidate = self.resolve_youtube_best_innertube(track, true).await;
+                    if candidate.is_none() {
+                        candidate = self.resolve_youtube_ytdlp(track, true, false).await.ok();
+                    }
+                }
+                if candidate.is_none() {
+                    candidate = self.resolve_youtube_ytdlp(track, false, false).await.ok();
+                }
             }
             if let Some(candidate) =
                 candidate.filter(|stream| should_upgrade_candidate(&current.badge, &stream.badge))
@@ -358,9 +395,9 @@ mod tests {
             (
                 ProviderSource::YouTubeMusic,
                 "774",
-                "aac",
+                "opus",
                 Some(256),
-                "AAC 256kbps · Extreme",
+                "OPUS 256kbps · Extreme",
             ),
             (
                 ProviderSource::YouTubeMusic,
@@ -435,6 +472,23 @@ mod tests {
         assert!(StreamResolver::needs_hifi_upgrade(
             &stream.badge,
             &stream.url
+        ));
+
+        let extreme_payload = json!({"streamingData": {"adaptiveFormats": [
+            {"itag": 140, "mimeType": "audio/mp4; codecs=\"mp4a.40.2\"", "averageBitrate": 129_500, "url": "https://rr1.googlevideo.com/videoplayback?itag=140"},
+            {"itag": 251, "mimeType": "audio/webm; codecs=\"opus\"", "averageBitrate": 160_000, "url": "https://rr1.googlevideo.com/videoplayback?itag=251"},
+            {"itag": 141, "mimeType": "audio/mp4; codecs=\"mp4a.40.2\"", "averageBitrate": 256_000, "url": "https://rr1.googlevideo.com/videoplayback?itag=141"},
+            {"itag": 774, "mimeType": "audio/webm; codecs=\"opus\"", "averageBitrate": 256_400, "url": "https://rr1.googlevideo.com/videoplayback?itag=774"}
+        ]}});
+        let extreme = parse_innertube_best_audio(&extreme_payload).expect("774 audio");
+        assert_eq!(
+            extreme.url,
+            "https://rr1.googlevideo.com/videoplayback?itag=774"
+        );
+        assert_eq!(extreme.badge, "OPUS 256kbps · Extreme");
+        assert!(!StreamResolver::needs_hifi_upgrade(
+            &extreme.badge,
+            &extreme.url
         ));
     }
 

@@ -14,6 +14,7 @@ use ratatui::widgets::{
 use ratatui::Frame;
 use sonata_core::config::AppConfig;
 use sonata_core::hyprland;
+use sonata_core::updater::CURRENT_VERSION;
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
     match &app.modal {
@@ -245,6 +246,17 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
         "Solid (100% · Locked)".to_string()
     };
 
+    let update_label = match &app.update_info {
+        Some(info) if info.update_available => {
+            format!(
+                "v{CURRENT_VERSION} · Update v{} available",
+                info.latest_version
+            )
+        }
+        Some(_) => format!("v{CURRENT_VERSION} · Up to date"),
+        None => format!("v{CURRENT_VERSION} · Press (u) to check"),
+    };
+
     let rows = [
         (
             "Music Providers",
@@ -274,6 +286,7 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
         ),
         ("Color Theme", app.base_theme.name.clone(), true),
         ("Browser Session", app.browser_label.clone(), false),
+        ("Sonata Updates", update_label, true),
     ];
 
     let popup = settings_popup_rect(area, rows.len());
@@ -391,10 +404,10 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
     }
 
     if let Some(hint_area) = layout_areas.get(rows.len() + 2) {
-        let hint = if hint_area.width >= 50 {
-            "↑/↓: Navigate   ←/→/Enter: Change   Esc/S: Close"
+        let hint = if hint_area.width >= 58 {
+            "↑/↓: Navigate   ←/→/Enter: Change   u: Check Updates   Esc/S: Close"
         } else {
-            "↑/↓ Nav  ←/→ Change  Esc Close"
+            "↑/↓ Nav  ←/→ Change  u Updates  Esc Close"
         };
         frame.render_widget(
             Paragraph::new(Span::styled(hint, Style::default().fg(app.theme.muted)))

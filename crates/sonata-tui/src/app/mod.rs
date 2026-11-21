@@ -31,6 +31,7 @@ use sonata_core::providers::spotify::SpotifyClient;
 use sonata_core::providers::ytmusic::YtMusicClient;
 use sonata_core::providers::{build_http_client, Playlist, ProviderSource, Track};
 use sonata_core::theme::Theme;
+use sonata_core::updater::{check_for_updates, UpdateCheckResult};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -76,6 +77,7 @@ pub struct App {
     pub search_query: String,
     pub status_line: String,
     pub browser_label: String,
+    pub update_info: Option<UpdateCheckResult>,
     pub should_quit: bool,
 
     pub http: Client,
@@ -192,6 +194,7 @@ impl App {
             search_query: String::new(),
             status_line: "Scanning browser cookies...".to_string(),
             browser_label: "Scanning...".to_string(),
+            update_info: None,
             should_quit: false,
             http,
             cookies,
@@ -232,6 +235,8 @@ impl App {
         tokio::spawn(async move {
             resolver.warm().await;
         });
+
+        Self::spawn_update_check(self.http.clone(), self.tx.clone());
 
         let tx = self.tx.clone();
         let pref_browser = self.config.preferred_browser.clone();
@@ -600,10 +605,39 @@ impl App {
                 }
                 self.rebuild_sidebar();
             }
+            AppEvent::UpdateChecked(info) => {
+                if info.update_available {
+                    self.status_line = format!(
+                        "Update v{} available (current v{}) — {}",
+                        info.latest_version, info.current_version, info.release_url
+                    );
+                } else if self.status_line == "Checking for updates..." {
+                    self.status_line = format!("Sonata v{} is up to date", info.current_version);
+                }
+                self.update_info = Some(info);
+            }
             AppEvent::StatusMessage(msg) => {
                 self.status_line = msg;
             }
         }
+    }
+
+    pub fn check_for_updates(&mut self) {
+        self.status_line = "Checking for updates...".to_string();
+        Self::spawn_update_check(self.http.clone(), self.tx.clone());
+    }
+
+    fn spawn_update_check(http: Client, tx: mpsc::UnboundedSender<AppEvent>) {
+        tokio::spawn(async move {
+            match check_for_updates(&http).await {
+                Ok(info) => {
+                    let _ = tx.send(AppEvent::UpdateChecked(info));
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "tui update check failed");
+                }
+            }
+        });
     }
 
     pub fn tick_playback(&mut self) -> bool {

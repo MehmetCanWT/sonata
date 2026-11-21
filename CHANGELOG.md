@@ -6,38 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-21
+
 ### Added
 
-- Standalone Desktop GUI one-line installer ([`install-desktop.sh`](install-desktop.sh)) that installs runtime/Wayland/Vulkan dependencies, builds `sonata-desktop` using `nproc - 2` jobs, and registers the Moonlight Sonata SVG icon and `.desktop` launcher.
-- Separate TUI and Desktop built-in themes with authentic **Sonata Glass**, **Spotify**, and **YouTube Music** skins in `sonata-desktop`.
-- Multi-page personalized YouTube Music Home feed with continuation pagination, personal mixes (`watchPlaylistEndpoint` / `next` fallback), and interactive *Find your mood* / *Moods & genres* chips.
-- In-RAM `MotionCover` animated Apple Music album artwork pipeline (`768x768` H.264 HLS segment cache + direct `ffmpeg` raw RGBA8 pipe) for smooth looping playback in both `sonata-desktop` (24 fps GPU textures) and `sonata-tui` (20 fps Kitty Graphics GPU frame swapping).
-- Android architecture & research plan ([`docs/android-research.md`](docs/android-research.md)) targeting **Kotlin (Jetpack Compose) + UniFFI** (Coming Soon).
-- Word-synced and dual-voice lyrics pipeline: TTML (`lyrics-api.binimum.org`) with `Lead`/`Counter` voice alignment, KuGou `.krc` word-level timing, NetEase `.yrc`, and QQ Music base64 LRC support, queried concurrently and ranked via `score_synced_lyrics`.
-- High-resolution artwork upscaling and fallback lookup (`Deezer`, `iTunes`, Spotify/YouTube Music URL rewriting).
-- Waybar/Hyprlock-ready fields (`track_id`, `is_playing`, `is_paused`, `liked`, `progress_ratio`, `progress_percent`, `remaining_secs`, `remaining`, `text`, `alt`, `class`, `tooltip`) in `now_playing.json`.
-- Standalone POSIX TUI installer ([`install.sh`](install.sh)) and updated [`PKGBUILD`](PKGBUILD) / [`PKGBUILD.desktop`](PKGBUILD.desktop) that automatically install all required runtime tools (`mpv`, `yt-dlp`, `ffmpeg`, `nodejs`), MIT [`LICENSE`](LICENSE), project documentation ([`docs/`](docs/architecture.md)), [`PRIVACY.md`](PRIVACY.md), [`CONTRIBUTING.md`](CONTRIBUTING.md), and [`CLAUDE.md`](CLAUDE.md) / [`AGENTS.md`](AGENTS.md).
-- Embedded `Inter` font family in `sonata-desktop` with dev-profile optimizations (`opt-level = 3`) for `image`, `cosmic-text`, and `swash`.
+- **Android Client (`Sonata` Mobile & Tablet)**: Native Jetpack Compose + Media3 ExoPlayer client powered by `sonata-core` via UniFFI (`crates/sonata-android`), featuring full-bleed adaptive portrait Now Playing, two-column tablet landscape Now Playing with persistent media controls, multi-column tablet Explore/Library grids, interactive YouTube Music sign-in, and an offscreen V8 WebView JS cipher bridge.
+- **Native Extreme Audio (`itag=774` / `itag=141`)**: Authenticated `TVHTML5` (`tv_samsung` `5.20260707`) InnerTube client and zero-AST `base.js` cipher hook (`crates/sonata-core/src/providers/hifi/cipher.rs`) that unlocks YouTube Music Premium **`itag=774` (~256–321 kbps Opus Extreme)**, **`itag=141` (256 kbps AAC Extreme)**, and age-restricted streams across Android, Desktop, and TUI.
+- **High-Precision Word-Synced & Duet Lyrics**: Concurrent `lrc.red` (ISRC-keyed Apple Music TTML), BetterLyrics, LyricsPlus v2, and LRCLIB/KuGou/NetEase/QQ lookup with strict version-word isolation (`Extended`, `Remix`, `Slowed`, `Live`, etc.), tight `<= 3.5s` duration matching, duet `Lead`/`Counter` alignment, nested TTML leaf-span parsing, and a steered monotonic karaoke clock.
+- **Built-in Update Notifications (Desktop, TUI & Android)**: Cross-platform GitHub Releases update checker (`crates/sonata-core/src/updater.rs`) that checks automatically on startup and surfaces update banners/pills in `sonata-desktop` (header pill + clickable release link in Settings), `sonata` TUI (player bar `[Update vX.Y.Z]` badge + status notification + Settings check), and Android Settings.
+- **Automated GitHub Release Builds (`.github/workflows/release-builds.yml`)**: Pushing a `vX.Y.Z` tag automatically builds and publishes versioned **Linux `x86_64` AppImage** (`Sonata-vX.Y.Z-x86_64.AppImage`), **Android `arm64-v8a` APK** (`Sonata-vX.Y.Z-arm64.apk`), and `SHA256SUMS.txt`.
+- **Unified Moonlight Crescent Brand Identity**: New minimalist crescent moon emblem (`assets/sonata-logo.svg` / `assets/sonata-desktop.svg`) shared across README, Linux AppImage, desktop `.desktop` entry, and Android adaptive launcher icon.
+- **Desktop GUI Skins & Personalized Home Feed**: Selectable **Sonata Glass**, **Spotify**, and **YouTube Music** skins in `sonata-desktop`, multi-page personalized YouTube Music Home feed with continuation pagination, personal mixes, and interactive *Find your mood* pills.
+- **Animated Motion Covers**: In-RAM Apple Music `768x768` H.264 HLS animated album artwork pipeline for smooth looping playback in both `sonata-desktop` (24 fps GPU textures) and `sonata-tui` (20 fps Kitty Graphics GPU frame swapping).
+- **One-Line Installers & Arch Packaging**: Standalone POSIX installers ([`install.sh`](install.sh), [`install-desktop.sh`](install-desktop.sh)) and updated [`PKGBUILD`](PKGBUILD) / [`PKGBUILD.desktop`](PKGBUILD.desktop) targeting `1.0.0`.
+- **Waybar / Hyprlock Rich Telemetry**: Extended `now_playing.json` fields (`track_id`, `is_playing`, `is_paused`, `liked`, `progress_ratio`, `progress_percent`, `remaining_secs`, `remaining`, `text`, `alt`, `class`, `tooltip`).
 
 ### Changed
 
-- Promoted `sonata-desktop` to daily-use status in [`README.md`](README.md) and [`PKGBUILD.desktop`](PKGBUILD.desktop), and tuned `.cargo/config.toml` build parallelism (`jobs = 10` on 12-thread hosts, leaving 2 threads for system responsiveness).
-- Reorganized oversized source modules in `sonata-core`, `sonata-tui`, and `sonata-desktop` into focused submodules (`backend/`, `app/`, `views/root/`, `views/fullscreen/`, `views/fullscreen_fx/`, `providers/ytmusic/`, `providers/spotify/`).
-- Redesigned the `sonata-tui` Settings modal so labels never truncate, added 3-tier responsive Mini Player auto-activation (`< 90x20` in TUI, `< 760x460` in Desktop), and improved `sonata-desktop` fullscreen playback (controls under album artwork, alpha-invariant `BlurredLyricCache` with pre-warming, `1.2s` fast return from manual scroll, `50%` vertical dead-center active lyric anchoring).
+- Adopted Semantic Versioning starting at **`1.0.0`** across Cargo workspace crates, Android `versionName` / `versionCode` (`MAJOR * 10000 + MINOR * 100 + PATCH`), AUR `PKGBUILD`s, and GitHub Release artifacts.
+- Bumped SQLite cache schema (`PRAGMA user_version = 3`) with automatic one-time invalidation of legacy durationless lyrics cache entries and unified `clear_lyrics_cache()` support.
+- Reorganized `sonata-core`, `sonata-tui`, and `sonata-desktop` into modular submodules and improved 3-tier responsive Mini Player auto-activation and fullscreen playback ergonomics.
 
 ### Fixed
 
-- Fixed blank track lists in `sonata-desktop` playlist/queue views caused by a missing flex column layout on the `uniform_list` container, and tightened the bottom player bar Like button placement next to the track title.
-- Fixed premature EOF track-skipping when seeking forward on uncached fast-start `googlevideo.com` streams by enabling `mpv` HTTP reconnection (`--force-seekable=yes`, `--stream-lavf-o=reconnect=1,...`) and recovering at the seeked timestamp in both `sonata-tui` and `sonata-desktop`.
-- Fixed Hyprland `0.57.2` window opacity control (`hyprctl eval` Lua `set_prop` primary with `hyprctl --batch` fallback) and locked opacity settings to Solid outside Hyprland.
-- Fixed `sonata-desktop` Wayland/Hyprland fullscreen and top-gap geometry desync (`WindowDecorations::Server` + `titlebar: None`, `280x110` min size) and `sonata-tui` resize/Kitty placement artifacts.
-- Added `libxkbcommon-x11-dev` and `libxcb1-dev` to `.github/workflows/ci.yml` to fix `sonata-desktop` linking on CI.
-- Restricted browser cookie storage (`0o600` on creation) and private runtime/cache directories (`0o700`) to avoid permission races.
-- Fixed `sonata-desktop` config save dirty-flag handling, blocking shutdown polling (replaced with `sync_channel::recv_timeout`), and added warning logs for tray/MPRIS/window setup failures.
-
-### Removed
-
-- Removed the unused `crates/sonata-desktop-makepad` prototype from the workspace.
+- Fixed blank track lists in `sonata-desktop` playlist/queue views and tightened player bar Like button placement.
+- Fixed premature EOF track-skipping when seeking forward on uncached `googlevideo.com` streams via `mpv` HTTP reconnection and timestamp recovery.
+- Fixed Hyprland `0.57.2` window opacity control, Wayland fullscreen geometry desync, and TUI resize/Kitty placement artifacts.
+- Fixed Android lyric startup/buffering drift, stale SQLite lyrics cache persistence, and cross-version lyrics mismatches.
+- Enforced `0o600` cookie file permissions and `0o700` private cache/runtime directories on creation.
 
 ## [0.1.0] - 2026-11-20
 
@@ -47,8 +43,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Browser cookie authentication for YouTube Music and Spotify (`sp_dc`), two-way YouTube Music library sync, and public Spotify playlist import.
 - Fast-start `mpv` JSON-IPC playback with background Hi-Fi upgrade, lookahead precaching, DSP presets, and shared bounded SQLite/media cache.
 - Terminal UI (`sonata`) with Kitty/Sixel/Halfblock artwork, mouse-resizable panes, synced lyrics, Mini Mode, and TOML themes.
-- Experimental GPUI Wayland desktop client (`sonata-desktop`) with ambient glass shaders, MPRIS2, System Tray, and `$XDG_RUNTIME_DIR/sonata/now_playing.json` export.
+- Initial GPUI Wayland desktop client (`sonata-desktop`) with ambient glass shaders, MPRIS2, System Tray, and `now_playing.json` export.
 - Arch Linux `PKGBUILD` and `PKGBUILD.desktop` packaging.
 
-[Unreleased]: https://github.com/MehmetCanWT/sonata/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/MehmetCanWT/sonata/releases/tag/v0.1.0
+[Unreleased]: https://github.com/MehmetCanWT/sonata/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/MehmetCanWT/sonata/releases/tag/v1.0.0

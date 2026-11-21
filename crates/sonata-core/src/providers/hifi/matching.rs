@@ -59,7 +59,7 @@ pub(super) fn audio_quality_badge(
     let quality = match source {
         ProviderSource::YouTubeMusic => match format_id {
             "774" | "141" => "Extreme",
-            "251" => "HQ",
+            "251" | "328" | "380" => "HQ",
             "140" => "Standard",
             _ if average_kbps.is_some_and(|kbps| kbps <= 128) => "Standard",
             _ => "HQ",
@@ -75,11 +75,34 @@ pub(super) fn audio_quality_badge(
 }
 
 pub(super) fn extract_badge_kbps(badge: &str) -> Option<u32> {
-    badge
-        .split(|character: char| !character.is_ascii_digit())
-        .filter(|value| !value.is_empty())
-        .filter_map(|value| value.parse::<u32>().ok())
-        .find(|&value| value >= 48)
+    if let Some(kbps) = badge.split_whitespace().find_map(|token| {
+        let lower = token.to_ascii_lowercase();
+        lower
+            .strip_suffix("kbps")
+            .and_then(|digits| digits.parse::<u32>().ok())
+    }) {
+        return Some(kbps);
+    }
+    let mut prev_was_itag = false;
+    for token in badge.split(|character: char| !character.is_ascii_alphanumeric()) {
+        if token.is_empty() {
+            continue;
+        }
+        if prev_was_itag {
+            prev_was_itag = false;
+            continue;
+        }
+        if token.eq_ignore_ascii_case("itag") {
+            prev_was_itag = true;
+            continue;
+        }
+        if let Ok(value) = token.parse::<u32>() {
+            if value >= 48 {
+                return Some(value);
+            }
+        }
+    }
+    None
 }
 
 pub(super) fn should_upgrade_candidate(current_badge: &str, candidate_badge: &str) -> bool {

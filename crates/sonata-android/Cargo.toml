@@ -3,10 +3,26 @@ name = "sonata-android"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Reserved package for the future Sonata Android client"
+description = "UniFFI Android bridge for the Sonata music player engine"
 
 [lib]
+name = "sonata_android"
+crate-type = ["cdylib", "rlib"]
 path = "src/lib.rs"
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+[dependencies]
+sonata-core = { path = "../sonata-core" }
+anyhow.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror = "2"
+tokio.workspace = true
+uniffi = { version = "0.29", features = ["cli", "tokio"] }
 
 [lints]
 workspace = true

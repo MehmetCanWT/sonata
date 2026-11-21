@@ -70,8 +70,11 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('S') => {
                     app.modal = ActiveModal::None;
                 }
-                KeyCode::Down | KeyCode::Char('j') => *sel = (*sel + 1) % 8,
-                KeyCode::Up | KeyCode::Char('k') => *sel = (*sel + 7) % 8,
+                KeyCode::Char('u') => {
+                    app.check_for_updates();
+                }
+                KeyCode::Down | KeyCode::Char('j') => *sel = (*sel + 1) % 9,
+                KeyCode::Up | KeyCode::Char('k') => *sel = (*sel + 8) % 9,
                 KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter | KeyCode::Char(' ') => {
                     match *sel {
                         0 => app.cycle_provider_mode(true),
@@ -81,6 +84,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                         4 => app.cycle_hyprland_opacity(true),
                         5 => app.step_cache_limit(true),
                         6 => app.cycle_theme(true),
+                        8 => app.check_for_updates(),
                         _ => {}
                     }
                 }

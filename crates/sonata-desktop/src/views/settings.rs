@@ -8,6 +8,7 @@ use gpui_kit::{
 };
 use sonata_core::config::AppConfig;
 use sonata_core::hyprland;
+use sonata_core::updater::CURRENT_VERSION;
 
 fn section_card(title: &str, p: &GlassPalette) -> gpui_kit::Div {
     div()
@@ -567,6 +568,102 @@ pub fn render_settings_page(
             )
         });
 
+    let update_subtitle = if snap.checking_updates {
+        "Checking GitHub Releases for updates...".to_string()
+    } else if let Some(info) = &snap.update_info {
+        if info.update_available {
+            format!(
+                "Update v{} available — {}",
+                info.latest_version, info.release_url
+            )
+        } else {
+            format!("Up to date (latest: v{})", info.latest_version)
+        }
+    } else {
+        "Check GitHub Releases for newer desktop builds".to_string()
+    };
+    let mut updates_card = section_card("UPDATES & ABOUT", p).child(setting_row(
+        &format!("Sonata Desktop v{CURRENT_VERSION}"),
+        &update_subtitle,
+        render_pill_button(
+            "set-check-updates",
+            if snap.checking_updates {
+                "Checking...".to_string()
+            } else {
+                "Check for Updates".to_string()
+            },
+            snap.update_info
+                .as_ref()
+                .is_some_and(|info| info.update_available),
+            p,
+            |this, _, _| this.backend.send(BackendCmd::CheckForUpdates),
+            cx,
+        ),
+        p,
+    ));
+    if let Some(info) = snap
+        .update_info
+        .as_ref()
+        .filter(|info| info.update_available)
+    {
+        let download_url = info
+            .appimage_download_url
+            .clone()
+            .unwrap_or_else(|| info.release_url.clone());
+        let release_url = info.release_url.clone();
+        updates_card = updates_card.child(
+            div()
+                .px_3()
+                .py_2()
+                .rounded_lg()
+                .bg(p.accent_soft)
+                .border_1()
+                .border_color(p.accent)
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(p.accent)
+                                .child(format!(
+                                    "New release available: v{} → v{}",
+                                    info.current_version, info.latest_version
+                                )),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(p.muted)
+                                .child(release_url.clone()),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("set-open-release-url")
+                        .px_3()
+                        .py_1()
+                        .rounded_md()
+                        .bg(p.accent)
+                        .text_xs()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(p.cta_fg)
+                        .cursor_pointer()
+                        .on_click(move |_, _, cx| {
+                            cx.open_url(&download_url);
+                        })
+                        .child("Download Update ↗"),
+                ),
+        );
+    }
+
     div()
         .id("settings-page-scroll")
         .size_full()
@@ -596,5 +693,6 @@ pub fn render_settings_page(
         .child(cache_card)
         .child(appearance_card)
         .child(spotify_card)
+        .child(updates_card)
         .into_any_element()
 }

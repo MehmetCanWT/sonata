@@ -96,6 +96,9 @@ impl CacheDb {
             );
             return None;
         }
+        let prev_user_version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap_or(0);
         if let Err(error) = conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
@@ -136,7 +139,7 @@ impl CacheDb {
              CREATE INDEX IF NOT EXISTS stream_cache_expiry_idx ON stream_cache(expires_at);
              CREATE INDEX IF NOT EXISTS playlist_cache_updated_idx ON playlist_cache(updated_at);
              CREATE INDEX IF NOT EXISTS track_enrichment_lyrics_idx ON track_enrichment(lyrics_status, updated_at);
-             PRAGMA user_version = 2;
+             PRAGMA user_version = 3;
              COMMIT;",
         ) {
             tracing::warn!(
@@ -144,6 +147,14 @@ impl CacheDb {
                 path.display()
             );
             return None;
+        }
+        if prev_user_version > 0 && prev_user_version < 3 {
+            // One-time invalidation of legacy durationless / pre-lrc.red cached lyrics.
+            let _ = conn.execute(
+                "UPDATE track_enrichment SET synced_lyrics = NULL, plain_lyrics = NULL, lyrics_status = 'NONE'",
+                [],
+            );
+            let _ = std::fs::remove_dir_all(AppConfig::lyrics_cache_dir());
         }
         let now = now_secs() as i64;
         if let Err(error) = conn.execute(
@@ -214,6 +225,18 @@ impl CacheDb {
         ) {
             tracing::warn!("[sonata:cache] clear failed error={error}");
         }
+    }
+
+    /// Clears all persisted synced/plain lyrics from SQLite enrichment and on-disk `.lrc`/`.txt` files.
+    pub fn clear_lyrics_cache(&self) {
+        let guard = self.lock_conn();
+        if let Err(error) = guard.execute(
+            "UPDATE track_enrichment SET synced_lyrics = NULL, plain_lyrics = NULL, lyrics_status = 'NONE'",
+            [],
+        ) {
+            tracing::warn!("[sonata:cache] lyrics-clear failed error={error}");
+        }
+        let _ = std::fs::remove_dir_all(AppConfig::lyrics_cache_dir());
     }
 
     pub fn invalidate_stream(&self, track_id: &str) {

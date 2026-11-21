@@ -501,8 +501,13 @@ fn collect_home_shelves(val: &Value, out: &mut Vec<HomeShelf>) {
                 }
                 return;
             }
-            for v in map.values() {
-                collect_home_shelves(v, out);
+            if let Some(header) = map.get("header") {
+                collect_home_shelves(header, out);
+            }
+            for (k, v) in map {
+                if k != "header" {
+                    collect_home_shelves(v, out);
+                }
             }
         }
         Value::Array(arr) => {
