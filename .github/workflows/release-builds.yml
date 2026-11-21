@@ -172,7 +172,7 @@ jobs:
           EOF
           chmod +x Sonata.AppDir/AppRun
 
-          cat <<'EOF' > Sonata.AppDir/sonata.desktop
+          cat <<'EOF' > Sonata.AppDir/dev.sonata.desktop.desktop
           [Desktop Entry]
           Type=Application
           Name=Sonata
@@ -183,7 +183,7 @@ jobs:
           Terminal=false
           StartupWMClass=sonata-desktop
           EOF
-          cp Sonata.AppDir/sonata.desktop Sonata.AppDir/usr/share/applications/sonata.desktop
+          cp Sonata.AppDir/dev.sonata.desktop.desktop Sonata.AppDir/usr/share/applications/dev.sonata.desktop.desktop
 
           cat <<EOF > Sonata.AppDir/usr/share/metainfo/dev.sonata.desktop.appdata.xml
           <?xml version="1.0" encoding="UTF-8"?>
@@ -199,7 +199,7 @@ jobs:
             <description>
               <p>Sonata is a fast, native Wayland/Hyprland music player built in Rust with Extreme audio playback, word-synced karaoke lyrics, animated motion covers, MPRIS2, and system tray support.</p>
             </description>
-            <launchable type="desktop-id">sonata.desktop</launchable>
+            <launchable type="desktop-id">dev.sonata.desktop.desktop</launchable>
             <url type="homepage">https://github.com/MehmetCanWT/sonata</url>
             <content_rating type="oars-1.1" />
             <releases>
