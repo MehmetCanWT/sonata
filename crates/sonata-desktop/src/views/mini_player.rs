@@ -5,18 +5,20 @@
 //! 3. **Animated Artwork & Controls**: displays `active_cover_art_path()` with a `MOTION` pill when animated frames are active, plus progress, transport, volume, and clean expand-to-workspace handling.
 
 use super::{
-    render_cover_art, render_icon_button, render_progress_slider, render_volume_slider, ui_icon,
-    FluentDivExt, SonataDesktopView,
+    render_cover_surface, render_icon_button, render_progress_slider, render_volume_slider,
+    ui_icon, FluentDivExt, SonataDesktopView,
 };
 use crate::backend::BackendCmd;
 use crate::theme_bridge::GlassPalette;
 use gpui_kit::assets::IconName;
 use gpui_kit::{
     div, linear_color_stop, linear_gradient, px, relative, AnyElement, Context, FontWeight,
-    InteractiveElement, IntoElement, MouseButton, ParentElement, SharedString, Styled, Window,
+    InteractiveElement, IntoElement, MouseButton, ParentElement, RenderImage, SharedString, Styled,
+    Window,
 };
 use sonata_core::lyrics::{LyricLine, LyricsState};
 use sonata_core::player::RepeatMode;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MiniTier {
@@ -65,8 +67,9 @@ pub fn render_mini_player(
     } else {
         IconName::Repeat
     };
-    let has_motion = view.has_animated_cover();
-    let cover_path = view.active_cover_art_path().cloned();
+    let motion_tex = view.active_motion_texture();
+    let has_motion = motion_tex.is_some();
+    let cover_path = view.snapshot.art_path.clone();
 
     let inner = match tier {
         MiniTier::UltraCompact => {
@@ -79,6 +82,7 @@ pub fn render_mini_player(
             &artist,
             play_icon,
             cover_path.as_ref(),
+            motion_tex,
             has_motion,
             vh,
             cx,
@@ -91,6 +95,7 @@ pub fn render_mini_player(
             play_icon,
             repeat_icon,
             cover_path.as_ref(),
+            motion_tex,
             has_motion,
             cx,
         ),
@@ -261,6 +266,7 @@ fn render_medium_compact(
     artist: &str,
     play_icon: IconName,
     cover_path: Option<&std::path::PathBuf>,
+    motion_tex: Option<Arc<RenderImage>>,
     has_motion: bool,
     vh: f32,
     cx: &mut Context<SonataDesktopView>,
@@ -278,7 +284,7 @@ fn render_medium_compact(
                 .flex()
                 .items_center()
                 .gap_3()
-                .child(render_cover_art(cover_path, 56.0, 10.0, p))
+                .child(render_cover_surface(cover_path, motion_tex, 56.0, 10.0, p))
                 .child(
                     div()
                         .flex_1()
@@ -366,6 +372,7 @@ fn render_expanded_mini(
     play_icon: IconName,
     repeat_icon: IconName,
     cover_path: Option<&std::path::PathBuf>,
+    motion_tex: Option<Arc<RenderImage>>,
     has_motion: bool,
     cx: &mut Context<SonataDesktopView>,
 ) -> AnyElement {
@@ -393,7 +400,7 @@ fn render_expanded_mini(
                         .flex_col()
                         .items_center()
                         .gap_2()
-                        .child(render_cover_art(cover_path, 112.0, 14.0, p)),
+                        .child(render_cover_surface(cover_path, motion_tex, 112.0, 14.0, p)),
                 )
                 .child(
                     div()

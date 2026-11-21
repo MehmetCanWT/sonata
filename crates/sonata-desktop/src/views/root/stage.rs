@@ -5,11 +5,12 @@
 //! 3. **Queue Drawer**: `render_queue_drawer` shows the scrollable "Up Next" list on the right edge.
 
 use super::super::{
-    artist, cached_thumb_path, fullscreen, home, render_cover_art, render_icon_button,
-    render_track_row, search, settings, ui_icon, CenterMode, FluentDivExt, SonataDesktopView,
+    artist, cached_thumb_path, fullscreen, home, render_cover_art, render_cover_surface,
+    render_icon_button, render_track_row, search, settings, ui_icon, CenterMode, FluentDivExt,
+    SonataDesktopView,
 };
 use crate::backend::{BackendCmd, NavTarget};
-use crate::theme_bridge::GlassPalette;
+use crate::theme_bridge::{DesktopSkin, GlassPalette};
 use gpui_kit::assets::IconName;
 use gpui_kit::{
     div, linear_color_stop, linear_gradient, px, uniform_list, AnyElement, Context, FontWeight,
@@ -39,17 +40,65 @@ pub(super) fn render_center_stage(
         },
     };
 
-    div()
-        .flex_1()
-        .min_w_0()
-        .h_full()
-        .rounded_2xl()
-        .bg(p.panel_bg)
-        .border_1()
-        .border_color(p.border_subtle)
-        .overflow_hidden()
-        .child(inner)
-        .into_any_element()
+    match p.skin {
+        DesktopSkin::Spotify => div()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .h_full()
+            .rounded_xl()
+            .bg(p.panel_bg)
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .size_full()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .bg(linear_gradient(
+                        180.0,
+                        linear_color_stop(p.ambient_top, 0.0),
+                        linear_color_stop(p.panel_bg, 0.32),
+                    ))
+                    .child(inner),
+            )
+            .into_any_element(),
+        DesktopSkin::YouTubeMusic => div()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .h_full()
+            .bg(p.panel_bg)
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .size_full()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .bg(linear_gradient(
+                        180.0,
+                        linear_color_stop(p.ambient_top, 0.0),
+                        linear_color_stop(p.panel_bg, 0.28),
+                    ))
+                    .child(inner),
+            )
+            .into_any_element(),
+        DesktopSkin::Sonata => div()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .h_full()
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .child(inner)
+            .into_any_element(),
+    }
 }
 
 fn render_collection_stage(
@@ -176,33 +225,93 @@ fn render_collection_stage(
         )
         .track_scroll(&view.track_scroll)
         .flex_1()
+        .min_h_0()
         .w_full()
         .into_any_element()
     };
 
+    let play_cta = if p.skin == DesktopSkin::Spotify {
+        // Spotify's signature 48px circular green Play button.
+        div()
+            .id("hero-play-btn")
+            .size(px(48.0))
+            .rounded_full()
+            .bg(p.accent)
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_click(cx.listener(move |this, _, _, _| {
+                this.backend.send(BackendCmd::PlayTracks {
+                    tracks: (*tracks_for_play).clone(),
+                    start_index: 0,
+                    shuffle: false,
+                });
+            }))
+            .child(ui_icon(IconName::Play, 20.0, p.accent_fg))
+            .into_any_element()
+    } else {
+        div()
+            .id("hero-play-btn")
+            .px_5()
+            .py(px(9.0))
+            .rounded_full()
+            .bg(p.cta_bg)
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .gap_2()
+            .on_click(cx.listener(move |this, _, _, _| {
+                this.backend.send(BackendCmd::PlayTracks {
+                    tracks: (*tracks_for_play).clone(),
+                    start_index: 0,
+                    shuffle: false,
+                });
+            }))
+            .child(ui_icon(IconName::Play, 14.0, p.cta_fg))
+            .child(
+                div()
+                    .text_xs()
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(p.cta_fg)
+                    .child(if p.skin == DesktopSkin::YouTubeMusic {
+                        "Play all"
+                    } else {
+                        "Play"
+                    }),
+            )
+            .into_any_element()
+    };
+
     div()
         .size_full()
-        .p_5()
         .flex()
         .flex_col()
-        .gap_4()
         .child(
-            // Highlight the selected collection with its artwork and title.
+            // Borderless full-bleed collection hero header.
             div()
                 .w_full()
-                .p_4()
-                .rounded_2xl()
+                .px_6()
+                .pt_6()
+                .pb_5()
                 .bg(linear_gradient(
-                    130.0,
-                    linear_color_stop(p.accent_soft, 0.0),
-                    linear_color_stop(p.card_bg, 0.88),
+                    180.0,
+                    linear_color_stop(p.ambient_top, 0.0),
+                    linear_color_stop(gpui_kit::transparent_black(), 1.0),
                 ))
-                .border_1()
-                .border_color(p.border_subtle)
                 .flex()
-                .items_center()
-                .gap_5()
-                .child(render_cover_art(cover_art.as_ref(), 132.0, 14.0, p))
+                .items_end()
+                .gap_6()
+                .child(render_cover_art(
+                    cover_art.as_ref(),
+                    156.0,
+                    if p.skin == DesktopSkin::Sonata {
+                        14.0
+                    } else {
+                        8.0
+                    },
+                    p,
+                ))
                 .child(
                     div()
                         .flex_1()
@@ -214,12 +323,16 @@ fn render_collection_stage(
                             div()
                                 .text_xs()
                                 .font_weight(FontWeight::BOLD)
-                                .text_color(p.accent)
+                                .text_color(if p.skin == DesktopSkin::Sonata {
+                                    p.accent
+                                } else {
+                                    p.muted
+                                })
                                 .child(eyebrow),
                         )
                         .child(
                             div()
-                                .text_2xl()
+                                .text_3xl()
                                 .font_weight(FontWeight::BOLD)
                                 .text_color(p.highlight_fg)
                                 .truncate()
@@ -228,43 +341,16 @@ fn render_collection_stage(
                         .child(div().text_xs().text_color(p.muted).child(subtitle))
                         .child(
                             div()
-                                .pt_1()
+                                .pt_2()
                                 .flex()
                                 .items_center()
-                                .gap_2()
+                                .gap_3()
                                 .when(count > 0, |el| {
-                                    el.child(
-                                        div()
-                                            .id("hero-play-btn")
-                                            .px_4()
-                                            .py(px(7.0))
-                                            .rounded_full()
-                                            .bg(p.accent)
-                                            .cursor_pointer()
-                                            .flex()
-                                            .items_center()
-                                            .gap_2()
-                                            .on_click(cx.listener(move |this, _, _, _| {
-                                                this.backend.send(BackendCmd::PlayTracks {
-                                                    tracks: (*tracks_for_play).clone(),
-                                                    start_index: 0,
-                                                    shuffle: false,
-                                                });
-                                            }))
-                                            .child(ui_icon(IconName::Play, 14.0, p.accent_fg))
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .font_weight(FontWeight::BOLD)
-                                                    .text_color(p.accent_fg)
-                                                    .child("Play"),
-                                            ),
-                                    )
-                                    .child(
+                                    el.child(play_cta).child(
                                         div()
                                             .id("hero-shuffle-btn")
-                                            .px_3()
-                                            .py(px(7.0))
+                                            .px_4()
+                                            .py(px(8.0))
                                             .rounded_full()
                                             .bg(p.pill_bg)
                                             .border_1()
@@ -296,8 +382,8 @@ fn render_collection_stage(
                                         "hero-refresh-btn",
                                         IconName::RefreshCw,
                                         15.0,
-                                        32.0,
-                                        p.text,
+                                        34.0,
+                                        p.muted,
                                         p.pill_bg,
                                         p.card_hover,
                                         |this, _, _| {
@@ -309,7 +395,65 @@ fn render_collection_stage(
                         ),
                 ),
         )
-        .child(body)
+        .child(
+            // Subtle table column header
+            div()
+                .w_full()
+                .px_6()
+                .pb_2()
+                .border_b_1()
+                .border_color(p.divider)
+                .flex()
+                .items_center()
+                .gap_3()
+                .child(
+                    div()
+                        .w(px(24.0))
+                        .flex()
+                        .justify_center()
+                        .text_xs()
+                        .text_color(p.muted)
+                        .child("#"),
+                )
+                .child(div().w(px(40.0)))
+                .child(
+                    div()
+                        .flex_1()
+                        .text_xs()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(p.muted)
+                        .child("Title"),
+                )
+                .child(
+                    div()
+                        .w(px(190.0))
+                        .text_xs()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(p.muted)
+                        .child("Album"),
+                )
+                .child(div().w(px(64.0)))
+                .child(
+                    div()
+                        .w(px(46.0))
+                        .flex()
+                        .justify_end()
+                        .text_xs()
+                        .text_color(p.muted)
+                        .child("Time"),
+                ),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .px_3()
+                .pt_2()
+                .flex()
+                .flex_col()
+                .child(body),
+        )
         .into_any_element()
 }
 
@@ -510,8 +654,9 @@ fn render_lyrics_stage(
                 .items_center()
                 .justify_center()
                 .gap_4()
-                .child(render_cover_art(
-                    view.active_cover_art_path(),
+                .child(render_cover_surface(
+                    snap.art_path.as_ref(),
+                    view.active_motion_texture(),
                     280.0,
                     20.0,
                     p,
@@ -577,6 +722,7 @@ fn render_lyrics_stage(
             div()
                 .flex_1()
                 .min_w_0()
+                .min_h_0()
                 .h_full()
                 .flex()
                 .flex_col()
@@ -689,15 +835,25 @@ pub(super) fn render_queue_drawer(
         .into_any_element()
     };
 
-    div()
-        .w(px(274.0))
-        .flex_shrink_0()
-        .h_full()
-        .rounded_2xl()
-        .bg(p.sidebar_bg)
-        .border_1()
-        .border_color(p.border_subtle)
-        .p_3()
+    let drawer = match p.skin {
+        DesktopSkin::Spotify => div()
+            .w(px(284.0))
+            .flex_shrink_0()
+            .h_full()
+            .rounded_xl()
+            .bg(p.sidebar_bg)
+            .p_3(),
+        DesktopSkin::Sonata | DesktopSkin::YouTubeMusic => div()
+            .w(px(284.0))
+            .flex_shrink_0()
+            .h_full()
+            .bg(p.sidebar_bg)
+            .border_l_1()
+            .border_color(p.divider)
+            .p_4(),
+    };
+
+    drawer
         .flex()
         .flex_col()
         .gap_3()

@@ -9,6 +9,7 @@ use super::BackendEngine;
 use crate::integrations::mpris::MprisUpdate;
 use sonata_core::lyrics::{active_line_index, lrclib, LyricsState};
 use sonata_core::media;
+use sonata_core::motion;
 use sonata_core::player::coordinator::{PlaybackCommand, PlaybackCoordinator, PlaybackTransition};
 use sonata_core::player::{MpvEvent, PlaybackTask};
 use sonata_core::providers::hifi::{ResolvedStream, StreamResolver};
@@ -130,13 +131,13 @@ impl BackendEngine {
             });
         });
         self.playback_tasks.spawn(async move {
-            if let Some(frames) =
-                media::resolve_animated_cover_frames(&anim_http, &anim_track).await
+            if let Some(cover) =
+                motion::resolve_motion_cover(&anim_http, &anim_track, 768, 24.0, 96).await
             {
                 let _ = anim_tx.send(InternalEvent::AnimatedArtworkReady {
                     play_seq,
                     track_id: anim_track.id,
-                    frames,
+                    cover: Arc::new(cover),
                 });
             }
         });
@@ -227,7 +228,7 @@ impl BackendEngine {
         self.retried_play_seq = 0;
         self.upgrade_started_play_seq = None;
         self.lyrics = LyricsState::Loading;
-        self.animated_art_frames = Arc::new(Vec::new());
+        self.motion_cover = None;
 
         if let Some(url) = track
             .thumbnail_url
@@ -624,14 +625,12 @@ impl BackendEngine {
                 self.start_cover_enrichment();
             }
             MpvEvent::TrackEnded => {
+                let pos = self.interpolated_position();
                 self.pos_anchor = None;
                 if Self::should_ignore_stale_playback_error(
                     self.playback.loading_track,
                     self.stream_loaded_at,
                     Duration::from_millis(750),
-                ) || !Self::is_natural_track_end(
-                    self.interpolated_position(),
-                    self.playback.duration_secs,
                 ) {
                     tracing::debug!(
                         event = "stale_track_end",
@@ -641,6 +640,37 @@ impl BackendEngine {
                         stream_loaded = self.stream_loaded_at.is_some(),
                         "ignored stale track-end event"
                     );
+                    return;
+                }
+                if !Self::is_natural_track_end(pos, self.playback.duration_secs) {
+                    let is_remote = self
+                        .playback
+                        .active_stream
+                        .as_ref()
+                        .is_some_and(|s| s.url.starts_with("http"));
+                    tracing::warn!(
+                        event = "premature_track_end",
+                        client = "desktop",
+                        track_id = self
+                            .playback
+                            .current_track()
+                            .map(|t| t.id.as_str())
+                            .unwrap_or("-"),
+                        play_seq = self.play_seq,
+                        position_secs = pos,
+                        duration_secs = self.playback.duration_secs,
+                        remote = is_remote,
+                        "mpv reported premature EOF before track end; recovering at current position"
+                    );
+                    if is_remote && self.playback.duration_secs > 0.0 {
+                        self.playback.position_secs = pos;
+                        let active_url =
+                            self.playback.active_stream.as_ref().map(|s| s.url.clone());
+                        self.handle_mpv_event(MpvEvent::PlaybackError {
+                            error: "stream interrupted while seeking".to_string(),
+                            file: active_url,
+                        });
+                    }
                     return;
                 }
                 if let Some(track) = self.playback.current_track() {

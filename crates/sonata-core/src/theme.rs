@@ -266,83 +266,104 @@ impl Theme {
         }
     }
 
-    pub fn spotify_inspired_dark() -> Self {
+    pub fn sonata_glass() -> Self {
         Self {
-            name: "Spotify Inspired Dark".into(),
-            transparent_bg: None,
+            name: "Sonata Glass".into(),
+            transparent_bg: Some(true),
             hyprland_opacity: None,
-            bg: RgbColor::Rgb(0x12, 0x12, 0x12),
-            surface: RgbColor::Rgb(0x18, 0x18, 0x18),
+            bg: RgbColor::Rgb(0x0d, 0x0e, 0x12),
+            surface: RgbColor::Rgb(0x14, 0x15, 0x1b),
+            fg: RgbColor::Rgb(0xf2, 0xf4, 0xf8),
+            muted: RgbColor::Rgb(0x8e, 0x92, 0xa4),
+            accent: RgbColor::Rgb(0xfa, 0x2d, 0x48),
+            border: RgbColor::Rgb(0x2a, 0x2c, 0x36),
+            highlight_bg: RgbColor::Rgb(0x22, 0x24, 0x2e),
+            highlight_fg: RgbColor::Rgb(0xff, 0xff, 0xff),
+            lyrics_active: RgbColor::Rgb(0xff, 0xff, 0xff),
+            lyrics_inactive: RgbColor::Rgb(0x7c, 0x80, 0x92),
+            success: RgbColor::Rgb(0x30, 0xd1, 0x58),
+            warning: RgbColor::Rgb(0xff, 0xd6, 0x0a),
+            error: RgbColor::Rgb(0xff, 0x45, 0x3a),
+        }
+    }
+
+    pub fn spotify_desktop() -> Self {
+        Self {
+            name: "Spotify".into(),
+            transparent_bg: Some(false),
+            hyprland_opacity: None,
+            bg: RgbColor::Rgb(0x00, 0x00, 0x00),
+            surface: RgbColor::Rgb(0x12, 0x12, 0x12),
             fg: RgbColor::Rgb(0xff, 0xff, 0xff),
             muted: RgbColor::Rgb(0xb3, 0xb3, 0xb3),
             accent: RgbColor::Rgb(0x1e, 0xd7, 0x60),
-            border: RgbColor::Rgb(0x30, 0x30, 0x30),
-            highlight_bg: RgbColor::Rgb(0x28, 0x28, 0x28),
+            border: RgbColor::Rgb(0x28, 0x28, 0x28),
+            highlight_bg: RgbColor::Rgb(0x2a, 0x2a, 0x2a),
             highlight_fg: RgbColor::Rgb(0xff, 0xff, 0xff),
             lyrics_active: RgbColor::Rgb(0x1e, 0xd7, 0x60),
             lyrics_inactive: RgbColor::Rgb(0x72, 0x72, 0x72),
             success: RgbColor::Rgb(0x1e, 0xd7, 0x60),
             warning: RgbColor::Rgb(0xf9, 0xab, 0x00),
-            error: RgbColor::Rgb(0xff, 0x6b, 0x6b),
+            error: RgbColor::Rgb(0xf1, 0x5e, 0x6c),
         }
     }
 
-    pub fn spotify_inspired_light() -> Self {
+    pub fn spotify_light() -> Self {
         Self {
-            name: "Spotify Inspired Light".into(),
+            name: "Spotify Light".into(),
             transparent_bg: Some(false),
             hyprland_opacity: None,
-            bg: RgbColor::Rgb(0xf6, 0xf7, 0xf6),
+            bg: RgbColor::Rgb(0xf2, 0xf4, 0xf2),
             surface: RgbColor::Rgb(0xff, 0xff, 0xff),
             fg: RgbColor::Rgb(0x12, 0x12, 0x12),
             muted: RgbColor::Rgb(0x5f, 0x63, 0x68),
-            accent: RgbColor::Rgb(0x13, 0x7d, 0x35),
+            accent: RgbColor::Rgb(0x16, 0x9c, 0x46),
             border: RgbColor::Rgb(0xd8, 0xdd, 0xd9),
             highlight_bg: RgbColor::Rgb(0xe4, 0xf3, 0xe9),
             highlight_fg: RgbColor::Rgb(0x0e, 0x28, 0x17),
-            lyrics_active: RgbColor::Rgb(0x13, 0x7d, 0x35),
+            lyrics_active: RgbColor::Rgb(0x16, 0x9c, 0x46),
             lyrics_inactive: RgbColor::Rgb(0x6b, 0x72, 0x6e),
-            success: RgbColor::Rgb(0x13, 0x7d, 0x35),
+            success: RgbColor::Rgb(0x16, 0x9c, 0x46),
             warning: RgbColor::Rgb(0x8a, 0x4b, 0x00),
             error: RgbColor::Rgb(0xb3, 0x26, 0x1e),
         }
     }
 
-    pub fn youtube_music_inspired_dark() -> Self {
+    pub fn youtube_music_desktop() -> Self {
         Self {
-            name: "YouTube Music Inspired Dark".into(),
-            transparent_bg: None,
+            name: "YouTube Music".into(),
+            transparent_bg: Some(false),
             hyprland_opacity: None,
-            bg: RgbColor::Rgb(0x0f, 0x0f, 0x0f),
-            surface: RgbColor::Rgb(0x18, 0x18, 0x18),
+            bg: RgbColor::Rgb(0x03, 0x03, 0x03),
+            surface: RgbColor::Rgb(0x0f, 0x0f, 0x0f),
             fg: RgbColor::Rgb(0xff, 0xff, 0xff),
             muted: RgbColor::Rgb(0xaa, 0xaa, 0xaa),
-            accent: RgbColor::Rgb(0xff, 0x33, 0x55),
-            border: RgbColor::Rgb(0x30, 0x30, 0x30),
-            highlight_bg: RgbColor::Rgb(0x32, 0x18, 0x20),
+            accent: RgbColor::Rgb(0xff, 0x00, 0x33),
+            border: RgbColor::Rgb(0x27, 0x27, 0x27),
+            highlight_bg: RgbColor::Rgb(0x21, 0x21, 0x21),
             highlight_fg: RgbColor::Rgb(0xff, 0xff, 0xff),
-            lyrics_active: RgbColor::Rgb(0xff, 0x4d, 0x6d),
-            lyrics_inactive: RgbColor::Rgb(0x77, 0x77, 0x77),
+            lyrics_active: RgbColor::Rgb(0xff, 0xff, 0xff),
+            lyrics_inactive: RgbColor::Rgb(0x71, 0x71, 0x71),
             success: RgbColor::Rgb(0x3d, 0xdc, 0x84),
             warning: RgbColor::Rgb(0xf9, 0xab, 0x00),
-            error: RgbColor::Rgb(0xff, 0x6b, 0x6b),
+            error: RgbColor::Rgb(0xff, 0x4e, 0x45),
         }
     }
 
-    pub fn youtube_music_inspired_light() -> Self {
+    pub fn youtube_music_light() -> Self {
         Self {
-            name: "YouTube Music Inspired Light".into(),
+            name: "YouTube Music Light".into(),
             transparent_bg: Some(false),
             hyprland_opacity: None,
-            bg: RgbColor::Rgb(0xf8, 0xf8, 0xf8),
+            bg: RgbColor::Rgb(0xf9, 0xf9, 0xf9),
             surface: RgbColor::Rgb(0xff, 0xff, 0xff),
-            fg: RgbColor::Rgb(0x18, 0x18, 0x18),
+            fg: RgbColor::Rgb(0x0f, 0x0f, 0x0f),
             muted: RgbColor::Rgb(0x60, 0x60, 0x60),
-            accent: RgbColor::Rgb(0xc0, 0x00, 0x2b),
-            border: RgbColor::Rgb(0xdd, 0xdd, 0xdd),
-            highlight_bg: RgbColor::Rgb(0xfb, 0xe8, 0xed),
-            highlight_fg: RgbColor::Rgb(0x3a, 0x07, 0x12),
-            lyrics_active: RgbColor::Rgb(0xc0, 0x00, 0x2b),
+            accent: RgbColor::Rgb(0xcc, 0x00, 0x2b),
+            border: RgbColor::Rgb(0xde, 0xde, 0xde),
+            highlight_bg: RgbColor::Rgb(0xee, 0xee, 0xee),
+            highlight_fg: RgbColor::Rgb(0x0f, 0x0f, 0x0f),
+            lyrics_active: RgbColor::Rgb(0xcc, 0x00, 0x2b),
             lyrics_inactive: RgbColor::Rgb(0x70, 0x70, 0x70),
             success: RgbColor::Rgb(0x13, 0x7d, 0x35),
             warning: RgbColor::Rgb(0x8a, 0x4b, 0x00),
@@ -350,7 +371,8 @@ impl Theme {
         }
     }
 
-    pub fn builtins() -> Vec<Self> {
+    /// Built-in terminal themes tailored for `sonata` (TUI).
+    pub fn tui_builtins() -> Vec<Self> {
         vec![
             Self::catppuccin_mocha(),
             Self::ghostty_dark(),
@@ -358,11 +380,24 @@ impl Theme {
             Self::gruvbox_dark(),
             Self::rose_pine(),
             Self::nord(),
-            Self::spotify_inspired_dark(),
-            Self::spotify_inspired_light(),
-            Self::youtube_music_inspired_dark(),
-            Self::youtube_music_inspired_light(),
         ]
+    }
+
+    /// Built-in desktop themes tailored for `sonata-desktop`.
+    pub fn desktop_builtins() -> Vec<Self> {
+        vec![
+            Self::sonata_glass(),
+            Self::spotify_desktop(),
+            Self::youtube_music_desktop(),
+            Self::spotify_light(),
+            Self::youtube_music_light(),
+        ]
+    }
+
+    pub fn builtins() -> Vec<Self> {
+        let mut all = Self::tui_builtins();
+        all.extend(Self::desktop_builtins());
+        all
     }
 
     pub fn with_transparency(&self, transparent: bool) -> Self {
@@ -408,8 +443,7 @@ impl Theme {
         })
     }
 
-    pub fn load_all(themes_dir: &Path) -> Vec<Self> {
-        let mut themes = Self::builtins();
+    fn append_custom_themes(themes: &mut Vec<Self>, themes_dir: &Path) {
         if let Ok(entries) = fs::read_dir(themes_dir) {
             let mut custom_paths: Vec<_> = entries
                 .flatten()
@@ -432,6 +466,23 @@ impl Theme {
                 }
             }
         }
+    }
+
+    pub fn load_for_tui(themes_dir: &Path) -> Vec<Self> {
+        let mut themes = Self::tui_builtins();
+        Self::append_custom_themes(&mut themes, themes_dir);
+        themes
+    }
+
+    pub fn load_for_desktop(themes_dir: &Path) -> Vec<Self> {
+        let mut themes = Self::desktop_builtins();
+        Self::append_custom_themes(&mut themes, themes_dir);
+        themes
+    }
+
+    pub fn load_all(themes_dir: &Path) -> Vec<Self> {
+        let mut themes = Self::builtins();
+        Self::append_custom_themes(&mut themes, themes_dir);
         themes
     }
 }
@@ -504,14 +555,24 @@ mod tests {
     }
 
     #[test]
-    fn includes_brand_inspired_dark_and_light_themes() {
-        let names: Vec<_> = Theme::builtins()
+    fn separates_tui_and_desktop_builtin_themes() {
+        let tui_names: Vec<_> = Theme::tui_builtins()
             .into_iter()
             .map(|theme| theme.name)
             .collect();
-        assert!(names.contains(&"Spotify Inspired Dark".to_string()));
-        assert!(names.contains(&"Spotify Inspired Light".to_string()));
-        assert!(names.contains(&"YouTube Music Inspired Dark".to_string()));
-        assert!(names.contains(&"YouTube Music Inspired Light".to_string()));
+        assert!(tui_names.contains(&"Catppuccin Mocha".to_string()));
+        assert!(!tui_names.contains(&"Spotify".to_string()));
+        assert!(!tui_names.contains(&"YouTube Music".to_string()));
+
+        let desktop_names: Vec<_> = Theme::desktop_builtins()
+            .into_iter()
+            .map(|theme| theme.name)
+            .collect();
+        assert!(desktop_names.contains(&"Sonata Glass".to_string()));
+        assert!(desktop_names.contains(&"Spotify".to_string()));
+        assert!(desktop_names.contains(&"YouTube Music".to_string()));
+        assert!(desktop_names.contains(&"Spotify Light".to_string()));
+        assert!(desktop_names.contains(&"YouTube Music Light".to_string()));
+        assert!(!desktop_names.contains(&"Catppuccin Mocha".to_string()));
     }
 }

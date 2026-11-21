@@ -8,6 +8,7 @@
 use sonata_core::auth::{BrowserOption, ExtractedCookies};
 use sonata_core::config::{AppConfig, EnhancerMode};
 use sonata_core::lyrics::{active_line_index, LyricsState};
+use sonata_core::motion::MotionCover;
 use sonata_core::player::RepeatMode;
 use sonata_core::providers::hifi::ResolvedStream;
 use sonata_core::providers::ytmusic::{ArtistPage, HomeShelf, YtAccountProfile};
@@ -137,7 +138,7 @@ pub struct DesktopSnapshot {
     pub stream_badge: String,
     pub lyrics: LyricsState,
     pub art_path: Option<PathBuf>,
-    pub animated_art_frames: Arc<Vec<PathBuf>>,
+    pub motion_cover: Option<Arc<MotionCover>>,
     pub ambient_rgb: (u8, u8, u8),
     pub spotify_notice: Option<String>,
 }
@@ -308,7 +309,7 @@ pub(super) enum InternalEvent {
     AnimatedArtworkReady {
         play_seq: u64,
         track_id: String,
-        frames: Vec<PathBuf>,
+        cover: Arc<MotionCover>,
     },
     ThumbnailsReady,
     PlaylistCreated(Playlist),

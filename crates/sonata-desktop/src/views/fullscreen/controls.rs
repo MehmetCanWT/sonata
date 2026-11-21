@@ -5,7 +5,7 @@
 //! 3. **Layout Stability**: a fixed-height `CONTROLS_DOCK_HEIGHT` container prevents artwork jumping when controls auto-hide.
 
 use super::super::{
-    render_cover_art, render_icon_button, render_progress_slider, render_volume_slider,
+    render_cover_surface, render_icon_button, render_progress_slider, render_volume_slider,
     FluentDivExt, SonataDesktopView,
 };
 use crate::backend::BackendCmd;
@@ -13,8 +13,9 @@ use crate::theme_bridge::{rgb_hsla, GlassPalette};
 use gpui_kit::assets::IconName;
 use gpui_kit::{
     div, point, px, AnyElement, BoxShadow, Context, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, SharedString, StatefulInteractiveElement, Styled,
+    ParentElement, RenderImage, SharedString, StatefulInteractiveElement, Styled,
 };
+use std::sync::Arc;
 
 const CONTROLS_DOCK_HEIGHT: f32 = 84.0;
 
@@ -163,6 +164,7 @@ fn render_left_controls(
 pub(super) fn render_cover_column(
     view: &SonataDesktopView,
     art_path: Option<&std::path::PathBuf>,
+    motion_tex: Option<Arc<RenderImage>>,
     has_motion: bool,
     cover_size: f32,
     cover_radius: f32,
@@ -225,7 +227,13 @@ pub(super) fn render_cover_column(
                         inset: false,
                     },
                 ])
-                .child(render_cover_art(art_path, cover_size, cover_radius, p))
+                .child(render_cover_surface(
+                    art_path,
+                    motion_tex,
+                    cover_size,
+                    cover_radius,
+                    p,
+                ))
                 .when(has_motion, |el| {
                     el.child(
                         div()

@@ -1,41 +1,52 @@
 # Sonata
 
-A fast, modular Rust music player workspace (**Terminal UI + experimental Wayland/Hyprland GPUI Desktop**) for **YouTube Music** and **Spotify** with browser cookie authentication, fast playback with background Hi-Fi upgrades, HD album artwork, synced lyrics, a shared bounded cache, MPRIS2, and `now_playing.json` integration.
+A fast, modular Rust music player workspace (**Terminal UI + Native Wayland/Hyprland GPUI Desktop**) for **YouTube Music** and **Spotify** with browser cookie authentication, fast playback with background Hi-Fi upgrades, HD & animated Apple Music album artwork, word-synced karaoke lyrics, a shared bounded cache, MPRIS2, and `now_playing.json` integration.
 
 ![Sonata Main Player](assets/main-player.png)
 
-> [!WARNING]
+> [!NOTE]
 > **Client Status**
-> - **`sonata` (TUI)** — **Stable, feature-complete, and recommended for daily use.**
-> - **`sonata-desktop` (GPUI Desktop GUI)** — **Broken / experimental (under active development).** Expect incomplete features, rough edges, and instability; it is not ready for daily use yet.
+> - **`sonata` (TUI)** — **Stable & ready for daily use.** Fast Ratatui terminal client with Kitty Graphics animated album art, mouse-resizable panes, synced lyrics, and full library management.
+> - **`sonata-desktop` (GPUI Desktop GUI)** — **Available & ready for daily use.** Native Wayland/Hyprland desktop client with selectable **Sonata Glass**, **Spotify**, and **YouTube Music** skins, personalized YouTube Music Home feed, animated album art, fullscreen karaoke lyrics, Mini Player, MPRIS2, and System Tray.
+> - **`sonata-android` (Android)** — **Coming Soon.** Planned with **Kotlin (Jetpack Compose) + UniFFI** over `sonata-core` (see [`docs/android-research.md`](docs/android-research.md)).
 
-## One-Line TUI Install (No Clone Required)
+## One-Line Install (No Clone Required)
 
-Install **`sonata` (TUI)** without manually cloning the repository:
+### Terminal Client (`sonata`)
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/MehmetCanWT/sonata/main/install.sh | sh
 ```
 
-The [`install.sh`](install.sh) script automatically installs all required runtime tools (`mpv`, `yt-dlp`, `ffmpeg`, `nodejs`, plus `curl`, `git`, and a C toolchain) via `pacman`, `apt-get` (with standalone `yt-dlp` fallback), `dnf`, `zypper`, or `brew`, installs Rust via `rustup` if missing, builds `sonata-tui` cleanly without leaving a persistent repository checkout behind, and ensures `~/.local/bin` and `~/.cargo/bin` are in `~/.profile`.
+### Desktop GUI Client (`sonata-desktop`)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/MehmetCanWT/sonata/main/install-desktop.sh | sh
+```
+
+Both [`install.sh`](install.sh) and [`install-desktop.sh`](install-desktop.sh) automatically install all required runtime and build dependencies (`mpv`, `yt-dlp`, `ffmpeg`, `nodejs`, plus Wayland/Vulkan/XKB/ALSA/D-Bus libraries for Desktop) via `pacman`, `apt-get`, `dnf`, `zypper`, or `brew`, install Rust via `rustup` if missing, compile cleanly while leaving 2 CPU threads free for your system, install the Moonlight Sonata app icon & `.desktop` launcher (for Desktop), and ensure `~/.local/bin` and `~/.cargo/bin` are in `~/.profile`.
 
 ### Direct Cargo Git Install
 
 If you already have Rust, `mpv`, `yt-dlp`, `ffmpeg`, and `nodejs` installed:
 
 ```sh
+# Terminal client
 cargo install --git https://github.com/MehmetCanWT/sonata.git --locked sonata-tui
+
+# Desktop GUI client
+cargo install --git https://github.com/MehmetCanWT/sonata.git --locked sonata-desktop
 ```
 
 ### Arch Linux / AUR (`makepkg`)
 
-Install the stable terminal client (`PKGBUILD`):
+Install the terminal client (`PKGBUILD`):
 
 ```sh
 makepkg -si
 ```
 
-Install the experimental desktop client (`PKGBUILD.desktop`):
+Install the desktop GUI client (`PKGBUILD.desktop`):
 
 ```sh
 makepkg -p PKGBUILD.desktop -si
@@ -46,6 +57,7 @@ makepkg -p PKGBUILD.desktop -si
 - [`docs/architecture.md`](docs/architecture.md) — Workspace crate map, runtime threading & IPC model, and shared filesystem layout.
 - [`docs/how-it-works.md`](docs/how-it-works.md) — Browser cookie auth, fast-start + Hi-Fi upgrade pipeline, synced lyrics resolution, and fullscreen visual effects.
 - [`docs/codebase-analysis.md`](docs/codebase-analysis.md) — Module size breakdown, cross-crate refactoring opportunities, and concurrency/security analysis.
+- [`docs/android-research.md`](docs/android-research.md) — Planned Android client architecture (**Kotlin (Jetpack Compose) + UniFFI** — Coming Soon).
 - [`PRIVACY.md`](PRIVACY.md) — Local-only cookie handling, direct third-party requests, and cache/log storage policy.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) & [`CLAUDE.md`](CLAUDE.md) — Contributor workflow, module header conventions, and verification commands.
 - [`CHANGELOG.md`](CHANGELOG.md) — Release history and unreleased changes.
@@ -54,10 +66,10 @@ makepkg -p PKGBUILD.desktop -si
 
 Sonata is organized as a 4-crate Cargo workspace so clients share the same streaming, caching, authentication, lyrics, and audio core:
 
-- `crates/sonata-core` — Shared Rust engine for browser cookie auth, YouTube Music & Spotify providers, `mpv` IPC playback, multi-source lyrics, themes, SQLite cache, and bounded media cache.
+- `crates/sonata-core` — Shared Rust engine for browser cookie auth, YouTube Music & Spotify providers, `mpv` IPC playback, multi-source lyrics, animated motion covers, themes, SQLite cache, and bounded media cache.
 - `crates/sonata-tui` — **`sonata`** (stable): Ratatui terminal client with Kitty/Sixel/Halfblock album art, mouse-resizable panes, synced lyrics, and full library management.
-- `crates/sonata-desktop` — **`sonata-desktop`** (experimental / under active development): Native Wayland GUI built with GPUI (`gpui-kit`), MPRIS2, and system tray support.
-- `crates/sonata-android` — Reserved placeholder crate for a future Android client.
+- `crates/sonata-desktop` — **`sonata-desktop`** (available): Native Wayland/Hyprland GUI built with GPUI (`gpui-kit`), selectable skins (Sonata, Spotify, YouTube Music), MPRIS2, and system tray support.
+- `crates/sonata-android` — **Coming Soon**: Reserved UniFFI bridge crate for the upcoming **Kotlin (Jetpack Compose)** Android client.
 
 `sonata-tui` and `sonata-desktop` build independently against `sonata-core` using workspace aliases (`cargo build-tui` or `cargo build-desktop`) and share `~/.config/sonata/` and `~/.cache/sonata/`.
 
@@ -111,13 +123,11 @@ Sonata is organized as a 4-crate Cargo workspace so clients share the same strea
 
 **Mouse**: Drag panel borders or the Album Art/Lyrics divider to resize; click or drag the `0–100%` volume slider and progress bar; click tracks/playlists/controls; double-click Album Art for Mini Mode; scroll lists, player bar volume, and inside Theme/Settings/Playlist modals.
 
-## Desktop GUI (`sonata-desktop` — Experimental)
+## Desktop GUI (`sonata-desktop`)
 
-> [!NOTE]
-> `sonata-desktop` is under active development and currently unstable. Features listed below reflect work-in-progress capabilities in `crates/sonata-desktop`.
-
-- **YouTube Music Home & Public Feed**: Launches into a discovery view with Trending tracks, New Albums & Singles, and Community Playlists, plus browser-based YTM sign-in.
-- **Modern Glass & Fullscreen Lyrics View**: Translucent Wayland surfaces tinted from the active album cover, with procedural wave background shaders, Gaussian depth-of-field lyric rendering, click-to-seek timestamps, and a compact Mini Player (`Ctrl+M`).
+- **Selectable Desktop Skins**: Switch live between **Sonata Glass**, **Spotify**, and **YouTube Music** desktop layouts and themes in Settings.
+- **Personalized YouTube Music Home Feed**: Loads multi-page personalized shelves (*Listen again*, *Quick picks / Top picks for you*, *Mixed for you*, *Find your mood* pills, *Recommended albums*, *New albums & singles*) with one-click browser sign-in.
+- **Animated Motion Covers & Fullscreen Karaoke Lyrics**: Smooth 24 fps Apple Music animated album artwork, procedural wave background shaders, Gaussian depth-of-field word-synced lyrics with click-to-seek timestamps, and a 3-tier responsive Mini Player (`Ctrl+M`).
 - **MPRIS2 & System Tray**: Exposes `org.mpris.MediaPlayer2.sonata` and a StatusNotifierItem tray menu.
 
 ### Desktop Shortcuts
@@ -188,7 +198,7 @@ All required runtime tools (`mpv`, `yt-dlp`, `ffmpeg`, and `nodejs`) are install
 - `yt-dlp` and `nodejs` (stream resolution)
 - `ffmpeg` (animated Apple Music motion cover frame extraction)
 - A terminal with Kitty Graphics Protocol support (such as **Ghostty**, **Kitty**, or **WezTerm**) for HD and animated album art in `sonata`
-- Wayland + Vulkan/OpenGL drivers (`libxkbcommon`, `libxkbcommon-x11`, `libxcb`, `fontconfig`, `alsa-lib`, `dbus`) for experimental `sonata-desktop`
+- Wayland + Vulkan/OpenGL drivers (`libxkbcommon`, `libxkbcommon-x11`, `libxcb`, `fontconfig`, `alsa-lib`, `dbus`) for `sonata-desktop`
 
 ## Building from Source
 
@@ -196,16 +206,17 @@ All required runtime tools (`mpv`, `yt-dlp`, `ffmpeg`, and `nodejs`) are install
 git clone https://github.com/MehmetCanWT/sonata.git
 cd sonata
 
-# Check or build only the stable TUI client
+# Check or build the TUI client
 cargo check-tui
 cargo build-tui
 
 # Install the TUI binary locally
 cargo install --locked --path crates/sonata-tui
 
-# Or build the experimental desktop client
+# Or check, build, and install the desktop GUI client
 cargo check-desktop
 cargo build-desktop
+cargo install --locked --path crates/sonata-desktop
 ```
 
 ## License

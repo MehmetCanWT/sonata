@@ -124,6 +124,41 @@ impl App {
             }
             MpvEvent::TrackEnded => {
                 if !self.playback.loading_track {
+                    let pos = self.interpolated_position();
+                    let dur = self.playback.duration_secs;
+                    let is_natural_end = dur <= 0.0 || pos >= (dur - 2.5).max(0.0);
+                    let is_remote = self
+                        .playback
+                        .active_stream
+                        .as_ref()
+                        .is_some_and(|s| s.url.starts_with("http"));
+                    if !is_natural_end {
+                        tracing::warn!(
+                            event = "premature_track_end",
+                            client = "tui",
+                            track_id = self
+                                .playback
+                                .current_track()
+                                .map(|t| t.id.as_str())
+                                .unwrap_or("-"),
+                            play_seq = self.play_seq,
+                            position_secs = pos,
+                            duration_secs = dur,
+                            remote = is_remote,
+                            "mpv reported premature EOF before track end; recovering at current position"
+                        );
+                        self.playback.position_secs = pos;
+                        self.pos_anchor = None;
+                        if is_remote {
+                            let active_url =
+                                self.playback.active_stream.as_ref().map(|s| s.url.clone());
+                            self.handle_mpv_event(MpvEvent::PlaybackError {
+                                error: "stream interrupted while seeking".to_string(),
+                                file: active_url,
+                            });
+                        }
+                        return;
+                    }
                     if let Some(track) = self.playback.current_track() {
                         tracing::info!(
                             event = "track_ended",
@@ -378,9 +413,12 @@ impl App {
     pub fn clear_kitty_images(&mut self) {
         if self.picker.protocol_type() == ProtocolType::Kitty {
             let mut out = std::io::stdout();
-            let _ = out.write_all(b"\x1b_Ga=d,d=i,i=1,q=2\x1b\\");
+            let _ = out.write_all(b"\x1b_Ga=d,d=A,q=2\x1b\\");
             let _ = out.flush();
             self.kitty_drawn_track = None;
+            self.kitty_motion_uploaded_track = None;
+            self.kitty_motion_count = 0;
+            self.kitty_motion_last_drawn = None;
         }
     }
 
@@ -389,21 +427,79 @@ impl App {
             return;
         }
         if self.modal != ActiveModal::None {
-            if self.kitty_drawn_track.is_some() {
+            if self.kitty_drawn_track.is_some() || self.kitty_motion_last_drawn.is_some() {
                 self.clear_kitty_images();
             }
             return;
         }
-        let (Some(track_id), Some(rect), Some(png)) = (
-            self.album_art_track_id.clone(),
-            self.last_art_rect,
-            self.kitty_art_png.as_ref(),
-        ) else {
+        let (Some(track_id), Some(rect)) = (self.album_art_track_id.clone(), self.last_art_rect)
+        else {
             return;
         };
         if rect.width == 0 || rect.height == 0 {
             return;
         }
+
+        if !self.anim_art_frames.is_empty() && !self.config.reduce_motion {
+            if self.kitty_motion_uploaded_track.as_deref() != Some(track_id.as_str()) {
+                self.clear_kitty_images();
+                let mut out = std::io::stdout();
+                let mut uploaded = 0usize;
+                for (idx, (_, png)) in self.anim_art_frames.iter().enumerate() {
+                    if png.is_empty() {
+                        continue;
+                    }
+                    let img_id = 2001 + idx;
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(png);
+                    let chunks: Vec<&[u8]> = b64.as_bytes().chunks(4096).collect();
+                    for (c_idx, chunk) in chunks.iter().enumerate() {
+                        let more = usize::from(c_idx + 1 < chunks.len());
+                        if c_idx == 0 {
+                            let _ = write!(out, "\x1b_Ga=t,f=100,i={img_id},q=2,m={more};");
+                        } else {
+                            let _ = write!(out, "\x1b_Gm={more};");
+                        }
+                        let _ = out.write_all(chunk);
+                        let _ = out.write_all(b"\x1b\\");
+                    }
+                    uploaded += 1;
+                }
+                let _ = out.flush();
+                self.kitty_motion_uploaded_track = Some(track_id);
+                self.kitty_motion_count = uploaded;
+            }
+            if self.kitty_motion_count == 0 {
+                return;
+            }
+            let idx = self.anim_art_idx % self.kitty_motion_count;
+            if self.kitty_motion_last_drawn == Some((idx, rect)) {
+                return;
+            }
+            let prev_id = self
+                .kitty_motion_last_drawn
+                .map(|(prev_idx, _)| 2001 + prev_idx);
+            let new_id = 2001 + idx;
+            let mut out = std::io::stdout();
+            let _ = write!(
+                out,
+                "\x1b[s\x1b[{};{}H\x1b_Ga=p,i={},p=1,c={},r={},C=1,q=2\x1b\\\x1b[u",
+                rect.y + 1,
+                rect.x + 1,
+                new_id,
+                rect.width,
+                rect.height
+            );
+            if let Some(old_id) = prev_id.filter(|&old| old != new_id) {
+                let _ = write!(out, "\x1b_Ga=d,d=i,i={old_id},p=1,q=2\x1b\\");
+            }
+            let _ = out.flush();
+            self.kitty_motion_last_drawn = Some((idx, rect));
+            return;
+        }
+
+        let Some(png) = self.kitty_art_png.as_ref() else {
+            return;
+        };
         let target = (track_id, rect);
         if self.kitty_drawn_track.as_ref() == Some(&target) {
             return;
@@ -412,9 +508,7 @@ impl App {
         let b64 = base64::engine::general_purpose::STANDARD.encode(png);
         let bytes = b64.as_bytes();
         let mut out = std::io::stdout();
-        if self.anim_art_frames.is_empty() || self.config.reduce_motion {
-            let _ = out.write_all(b"\x1b_Ga=d,d=i,i=1,q=2\x1b\\");
-        }
+        let _ = out.write_all(b"\x1b_Ga=d,d=i,i=1,q=2\x1b\\");
         let _ = write!(out, "\x1b[s\x1b[{};{}H", rect.y + 1, rect.x + 1);
 
         let chunks: Vec<&[u8]> = bytes.chunks(4096).collect();
@@ -610,22 +704,54 @@ impl App {
             let anim_http = http.clone();
             let anim_track = track.clone();
             let picker = self.picker.clone();
+            let need_kitty_png = picker.protocol_type() == ProtocolType::Kitty;
             self.playback_tasks.spawn(async move {
-                let Some(paths) =
-                    media::resolve_animated_cover_frames(&anim_http, &anim_track).await
+                let Some(motion) = sonata_core::motion::resolve_motion_cover(
+                    &anim_http,
+                    &anim_track,
+                    640,
+                    20.0,
+                    60,
+                )
+                .await
                 else {
                     return;
                 };
+                let fps = motion.fps;
                 let frames = tokio::task::spawn_blocking(move || {
-                    let mut decoded = Vec::with_capacity(paths.len());
-                    for path in paths {
-                        let Ok(png_bytes) = std::fs::read(&path) else {
-                            continue;
-                        };
-                        let Ok(img) = image::load_from_memory(&png_bytes) else {
-                            continue;
-                        };
-                        decoded.push((picker.new_resize_protocol(img), png_bytes));
+                    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+                    use image::ImageEncoder as _;
+
+                    let mut decoded = Vec::with_capacity(motion.frames_rgba.len());
+                    for rgba in motion.frames_rgba {
+                        if need_kitty_png {
+                            let mut buf = Vec::new();
+                            let encoder = PngEncoder::new_with_quality(
+                                &mut buf,
+                                CompressionType::Fast,
+                                FilterType::Sub,
+                            );
+                            if encoder
+                                .write_image(
+                                    &rgba,
+                                    motion.width,
+                                    motion.height,
+                                    image::ExtendedColorType::Rgba8,
+                                )
+                                .is_err()
+                            {
+                                continue;
+                            }
+                            decoded.push((None, buf));
+                        } else {
+                            let Some(img_buf) =
+                                image::RgbaImage::from_raw(motion.width, motion.height, rgba)
+                            else {
+                                continue;
+                            };
+                            let dyn_img = image::DynamicImage::ImageRgba8(img_buf);
+                            decoded.push((Some(picker.new_resize_protocol(dyn_img)), Vec::new()));
+                        }
                     }
                     decoded
                 })
@@ -635,6 +761,7 @@ impl App {
                     let _ = anim_tx.send(AppEvent::AnimatedArtworkReady {
                         play_seq,
                         track_id: anim_track.id,
+                        fps,
                         frames,
                     });
                 }

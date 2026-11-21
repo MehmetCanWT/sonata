@@ -132,7 +132,8 @@ pub enum AppEvent {
     AnimatedArtworkReady {
         play_seq: u64,
         track_id: String,
-        frames: Vec<(StatefulProtocol, Vec<u8>)>,
+        fps: f32,
+        frames: Vec<(Option<StatefulProtocol>, Vec<u8>)>,
     },
     Mpv(MpvEvent),
     PlaylistCreated(Playlist),

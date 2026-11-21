@@ -1,3 +1,8 @@
+//! Personalized YouTube Music Home feed view for the desktop client.
+//!
+//! 1. **Home Feed**: `render_home_page` displays the user greeting, refresh/sign-in actions, and personalized shelves.
+//! 2. **Shelves & Moods**: `render_shelf` renders mood/genre pill rows (`HomeCardKind::Mood`), album/playlist/mix cards, and playable track grids.
+
 use super::{
     cached_thumb_path, render_cover_art, render_icon_button, ui_icon, FluentDivExt,
     SonataDesktopView,
@@ -197,20 +202,36 @@ fn render_shelf(
     );
 
     if !shelf.cards.is_empty() {
-        let cards_row = div().w_full().flex().flex_wrap().gap_4().children(
-            shelf
-                .cards
-                .iter()
-                .enumerate()
-                .take(12)
-                .map(|(c_idx, card)| render_home_card(s_idx, c_idx, card, cur_id, p, cx)),
-        );
-        container = container.child(cards_row);
+        let all_moods = shelf
+            .cards
+            .iter()
+            .all(|card| card.kind == HomeCardKind::Mood);
+        if all_moods {
+            let chips_row = div().w_full().flex().flex_wrap().gap_2().children(
+                shelf
+                    .cards
+                    .iter()
+                    .enumerate()
+                    .take(18)
+                    .map(|(c_idx, card)| render_mood_chip(s_idx, c_idx, card, p, cx)),
+            );
+            container = container.child(chips_row);
+        } else {
+            let cards_row = div().w_full().flex().flex_wrap().gap_4().children(
+                shelf
+                    .cards
+                    .iter()
+                    .enumerate()
+                    .take(16)
+                    .map(|(c_idx, card)| render_home_card(s_idx, c_idx, card, cur_id, p, cx)),
+            );
+            container = container.child(cards_row);
+        }
     }
 
     if !shelf.tracks.is_empty() {
         let mut grid = div().w_full().flex().flex_wrap().gap_2();
-        for (t_idx, track) in shelf.tracks.iter().enumerate().take(12) {
+        for (t_idx, track) in shelf.tracks.iter().enumerate().take(16) {
             let is_playing = cur_id == Some(track.id.as_str());
             let art = cached_thumb_path(track.thumbnail_url.as_deref());
             let tracks_clone = shelf_tracks.clone();
@@ -274,6 +295,48 @@ fn render_shelf(
     container.into_any_element()
 }
 
+fn render_mood_chip(
+    s_idx: usize,
+    c_idx: usize,
+    card: &HomeCard,
+    p: &GlassPalette,
+    cx: &mut Context<SonataDesktopView>,
+) -> AnyElement {
+    let mood_label = card.title.clone();
+    let mood_query = format!("{} music", card.title);
+    div()
+        .id(SharedString::from(format!("hmood-{s_idx}-{c_idx}")))
+        .px_4()
+        .py(px(8.0))
+        .rounded_full()
+        .bg(p.pill_bg)
+        .border_1()
+        .border_color(p.border_subtle)
+        .hover(|s| s.bg(p.card_hover).border_color(p.accent))
+        .cursor_pointer()
+        .flex()
+        .items_center()
+        .gap_2()
+        .on_click(cx.listener(move |this, _, window, cx| {
+            let query = mood_query.clone();
+            this.center_mode = super::CenterMode::Page;
+            this.search_input.update(cx, |input, cx| {
+                input.set_value(&query, window, cx);
+            });
+            this.backend.send(BackendCmd::Search(query));
+            cx.notify();
+        }))
+        .child(div().size(px(6.0)).rounded_full().bg(p.accent))
+        .child(
+            div()
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(p.text)
+                .child(mood_label),
+        )
+        .into_any_element()
+}
+
 fn render_home_card(
     s_idx: usize,
     c_idx: usize,
@@ -294,6 +357,7 @@ fn render_home_card(
         HomeCardKind::Song => "Song",
         HomeCardKind::Video => "Video",
         HomeCardKind::Artist => "Artist",
+        HomeCardKind::Mood => "Mood",
     };
 
     div()
@@ -317,34 +381,45 @@ fn render_home_card(
         .flex()
         .flex_col()
         .gap_2()
-        .on_click(cx.listener(move |this, _, _, cx| match card_clone.kind {
-            HomeCardKind::Playlist | HomeCardKind::Album => {
-                this.center_mode = super::CenterMode::Page;
-                this.backend.send(BackendCmd::OpenCollection {
-                    id: card_clone.id.clone(),
-                    title: card_clone.title.clone(),
-                    subtitle: card_clone.subtitle.clone(),
-                    thumbnail_url: card_clone.thumbnail_url.clone(),
-                    editable: false,
-                });
-                cx.notify();
-            }
-            HomeCardKind::Artist => {
-                this.center_mode = super::CenterMode::Page;
-                this.backend
-                    .send(BackendCmd::OpenArtist(card_clone.id.clone()));
-                cx.notify();
-            }
-            HomeCardKind::Song | HomeCardKind::Video => {
-                if let Some(track) = card_clone.track.clone() {
-                    this.backend.send(BackendCmd::PlayTracks {
-                        tracks: vec![track],
-                        start_index: 0,
-                        shuffle: false,
+        .on_click(
+            cx.listener(move |this, _, window, cx| match card_clone.kind {
+                HomeCardKind::Playlist | HomeCardKind::Album => {
+                    this.center_mode = super::CenterMode::Page;
+                    this.backend.send(BackendCmd::OpenCollection {
+                        id: card_clone.id.clone(),
+                        title: card_clone.title.clone(),
+                        subtitle: card_clone.subtitle.clone(),
+                        thumbnail_url: card_clone.thumbnail_url.clone(),
+                        editable: false,
                     });
+                    cx.notify();
                 }
-            }
-        }))
+                HomeCardKind::Artist => {
+                    this.center_mode = super::CenterMode::Page;
+                    this.backend
+                        .send(BackendCmd::OpenArtist(card_clone.id.clone()));
+                    cx.notify();
+                }
+                HomeCardKind::Mood => {
+                    let query = format!("{} music", card_clone.title);
+                    this.center_mode = super::CenterMode::Page;
+                    this.search_input.update(cx, |input, cx| {
+                        input.set_value(&query, window, cx);
+                    });
+                    this.backend.send(BackendCmd::Search(query));
+                    cx.notify();
+                }
+                HomeCardKind::Song | HomeCardKind::Video => {
+                    if let Some(track) = card_clone.track.clone() {
+                        this.backend.send(BackendCmd::PlayTracks {
+                            tracks: vec![track],
+                            start_index: 0,
+                            shuffle: false,
+                        });
+                    }
+                }
+            }),
+        )
         .child(
             div()
                 .relative()

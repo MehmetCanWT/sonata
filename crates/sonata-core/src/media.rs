@@ -196,7 +196,7 @@ pub async fn resolve_track_cover(
     Some((url, source.to_string()))
 }
 
-fn motion_cache_dir(track: &Track) -> PathBuf {
+pub(crate) fn motion_cache_key_hex(track: &Track) -> String {
     let clean_title = clean_cover_title(&track.title);
     let mut hasher = Sha1::new();
     hasher.update(
@@ -204,11 +204,15 @@ fn motion_cache_dir(track: &Track) -> PathBuf {
             .to_lowercase()
             .as_bytes(),
     );
-    let hex: String = hasher
+    hasher
         .finalize()
         .iter()
         .map(|b| format!("{b:02x}"))
-        .collect();
+        .collect()
+}
+
+fn motion_cache_dir(track: &Track) -> PathBuf {
+    let hex = motion_cache_key_hex(track);
     AppConfig::art_cache_dir().join(format!("motion_{hex}"))
 }
 
@@ -329,7 +333,7 @@ fn parse_m3u8_resolution(inf: &str) -> Option<(u32, u32)> {
     Some((w_str.parse().ok()?, h_str.parse().ok()?))
 }
 
-async fn fetch_apple_album_urls(http: &Client, track: &Track) -> Vec<String> {
+pub(crate) async fn fetch_apple_album_urls(http: &Client, track: &Track) -> Vec<String> {
     let clean_title = clean_cover_title(&track.title);
     let query = format!("{} {clean_title}", track.artist.trim());
     let Ok(response) = http

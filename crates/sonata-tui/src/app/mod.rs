@@ -45,11 +45,15 @@ pub struct App {
     pub album_art: Option<StatefulProtocol>,
     pub album_art_track_id: Option<String>,
     pub kitty_art_png: Option<Vec<u8>>,
-    pub anim_art_frames: Vec<(StatefulProtocol, Vec<u8>)>,
+    pub anim_art_frames: Vec<(Option<StatefulProtocol>, Vec<u8>)>,
     pub anim_art_idx: usize,
+    pub anim_fps: f32,
     pub last_anim_step: Instant,
     pub last_art_rect: Option<Rect>,
     pub kitty_drawn_track: Option<(String, Rect)>,
+    pub kitty_motion_uploaded_track: Option<String>,
+    pub kitty_motion_count: usize,
+    pub kitty_motion_last_drawn: Option<(usize, Rect)>,
     pub lyrics: LyricsState,
     pub playback: PlaybackState,
     pub focus: FocusPane,
@@ -101,12 +105,12 @@ pub struct App {
 
 impl App {
     pub fn new(config: AppConfig, picker: Picker, tx: mpsc::UnboundedSender<AppEvent>) -> Self {
-        let themes = Theme::load_all(&AppConfig::themes_dir());
+        let themes = Theme::load_for_tui(&AppConfig::themes_dir());
         let base_theme = themes
             .iter()
             .find(|t| t.name.eq_ignore_ascii_case(&config.theme))
             .cloned()
-            .unwrap_or_default();
+            .unwrap_or_else(Theme::catppuccin_mocha);
         let hyprland_window = hyprland::find_terminal_window_address();
 
         let show_warning =
@@ -159,9 +163,13 @@ impl App {
             kitty_art_png: None,
             anim_art_frames: Vec::new(),
             anim_art_idx: 0,
+            anim_fps: 16.0,
             last_anim_step: Instant::now(),
             last_art_rect: None,
             kitty_drawn_track: None,
+            kitty_motion_uploaded_track: None,
+            kitty_motion_count: 0,
+            kitty_motion_last_drawn: None,
             lyrics: LyricsState::Idle,
             playback,
             focus: FocusPane::Sidebar,
@@ -559,6 +567,7 @@ impl App {
             AppEvent::AnimatedArtworkReady {
                 play_seq,
                 track_id,
+                fps,
                 frames,
             } => {
                 if play_seq != self.play_seq {
@@ -572,11 +581,11 @@ impl App {
                 {
                     self.anim_art_frames = frames;
                     self.anim_art_idx = 0;
+                    self.anim_fps = fps.clamp(8.0, 24.0);
                     self.last_anim_step = Instant::now();
-                    if let Some((_, png_bytes)) = self.anim_art_frames.first() {
-                        self.kitty_art_png = Some(png_bytes.clone());
-                        self.kitty_drawn_track = None;
-                    }
+                    self.kitty_motion_uploaded_track = None;
+                    self.kitty_motion_count = 0;
+                    self.kitty_motion_last_drawn = None;
                     self.album_art_track_id = Some(track_id);
                 }
             }
@@ -605,16 +614,14 @@ impl App {
             return false;
         }
         self.playback.position_secs = self.interpolated_position();
+        let step_interval =
+            std::time::Duration::from_secs_f32(1.0 / self.anim_fps.clamp(8.0, 24.0));
         if !self.anim_art_frames.is_empty()
             && !self.config.reduce_motion
-            && self.last_anim_step.elapsed() >= std::time::Duration::from_millis(125)
+            && self.last_anim_step.elapsed() >= step_interval
         {
             self.anim_art_idx = (self.anim_art_idx + 1) % self.anim_art_frames.len();
             self.last_anim_step = Instant::now();
-            if let Some((_, png_bytes)) = self.anim_art_frames.get(self.anim_art_idx) {
-                self.kitty_art_png = Some(png_bytes.clone());
-                self.kitty_drawn_track = None;
-            }
         }
         self.poll_adopted_precache();
         self.maybe_precache_next();

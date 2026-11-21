@@ -182,12 +182,13 @@ pub fn render_fullscreen_workspace(
         cx,
     );
 
-    let cover_art_path = view.active_cover_art_path().cloned();
-    let has_motion = view.has_animated_cover();
+    let motion_tex = view.active_motion_texture();
+    let has_motion = motion_tex.is_some();
 
     let left_column = controls::render_cover_column(
         view,
-        cover_art_path.as_ref(),
+        art_path.as_ref(),
+        motion_tex,
         has_motion,
         cover_size,
         cover_radius,

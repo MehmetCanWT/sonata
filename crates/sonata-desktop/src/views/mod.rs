@@ -23,9 +23,9 @@ use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::{
     div, img, px, relative, svg, AnyElement, App, AppContext, Bounds, Context, Entity, FocusHandle,
     Focusable, FontWeight, Hsla, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
-    MouseDownEvent, MouseMoveEvent, ObjectFit, ParentElement, Pixels, Render, ScrollStrategy,
-    SharedString, StatefulInteractiveElement, Styled, StyledImage, Subscription, Svg,
-    UniformListScrollHandle, Window,
+    MouseDownEvent, MouseMoveEvent, ObjectFit, ParentElement, Pixels, Render, RenderImage,
+    ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, StyledImage, Subscription,
+    Svg, UniformListScrollHandle, Window,
 };
 use sonata_core::media::{art_cache_path, format_mm_ss};
 use sonata_core::providers::{format_duration, Track};
@@ -75,6 +75,11 @@ pub struct SonataDesktopView {
     pub fullscreen_last_activity: Instant,
     pub anim_epoch: Instant,
     pub last_anim_track_id: Option<String>,
+    pub motion_textures: Vec<Arc<RenderImage>>,
+    pub motion_fps: f32,
+    pub motion_source_ptr: Option<usize>,
+    pub last_motion_frame_idx: usize,
+    pub motion_timer_active: bool,
     pub last_transparent: bool,
     pub fullscreen: fullscreen::FullscreenState,
     _subscriptions: Vec<Subscription>,
@@ -127,8 +132,8 @@ impl SonataDesktopView {
                     let just_signed_in = !view.snapshot.is_signed_in() && next_snap.is_signed_in();
                     let next_track_id = next_snap.current_track().map(|t| t.id.clone());
                     if next_track_id != view.last_anim_track_id
-                        || (view.snapshot.animated_art_frames.is_empty()
-                            && !next_snap.animated_art_frames.is_empty())
+                        || (view.snapshot.motion_cover.is_none()
+                            && next_snap.motion_cover.is_some())
                     {
                         view.last_anim_track_id = next_track_id;
                         view.anim_epoch = Instant::now();
@@ -182,6 +187,11 @@ impl SonataDesktopView {
             fullscreen_last_activity: Instant::now(),
             anim_epoch: Instant::now(),
             last_anim_track_id: None,
+            motion_textures: Vec::new(),
+            motion_fps: 24.0,
+            motion_source_ptr: None,
+            last_motion_frame_idx: 0,
+            motion_timer_active: false,
             last_transparent: initial_transparent,
             fullscreen: fullscreen::FullscreenState::default(),
             _subscriptions: subscriptions,
@@ -230,20 +240,70 @@ impl SonataDesktopView {
     }
 
     pub fn has_animated_cover(&self) -> bool {
-        !self.snapshot.animated_art_frames.is_empty() && !self.snapshot.config.reduce_motion
+        !self.motion_textures.is_empty() && !self.snapshot.config.reduce_motion
     }
 
-    pub fn active_cover_art_path(&self) -> Option<&PathBuf> {
-        let frames = &self.snapshot.animated_art_frames;
-        if !frames.is_empty() && !self.snapshot.config.reduce_motion {
-            let frame_idx = ((Instant::now().duration_since(self.anim_epoch).as_millis() / 125)
-                as usize)
-                % frames.len();
-            if let Some(path) = frames.get(frame_idx) {
-                return Some(path);
+    pub fn active_motion_texture(&self) -> Option<Arc<RenderImage>> {
+        if self.motion_textures.is_empty() || self.snapshot.config.reduce_motion {
+            return None;
+        }
+        let fps = self.motion_fps.max(1.0);
+        let frame_idx =
+            ((self.anim_epoch.elapsed().as_secs_f32() * fps) as usize) % self.motion_textures.len();
+        self.motion_textures.get(frame_idx).cloned()
+    }
+
+    fn sync_motion_textures(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let next_ptr = self
+            .snapshot
+            .motion_cover
+            .as_ref()
+            .map(|arc| Arc::as_ptr(arc) as usize);
+        if next_ptr != self.motion_source_ptr {
+            for old in self.motion_textures.drain(..) {
+                let _ = window.drop_image(old);
+            }
+            self.motion_source_ptr = next_ptr;
+            self.last_motion_frame_idx = 0;
+            self.anim_epoch = Instant::now();
+            if let Some(cover) = &self.snapshot.motion_cover {
+                self.motion_fps = cover.fps.clamp(1.0, 60.0);
+                self.motion_textures = cover
+                    .frames_rgba
+                    .iter()
+                    .filter_map(|frame| rgba_to_render_image(cover.width, cover.height, frame))
+                    .collect();
+            } else {
+                self.motion_fps = 24.0;
             }
         }
-        self.snapshot.art_path.as_ref()
+
+        if self.has_animated_cover() && !self.motion_timer_active {
+            self.motion_timer_active = true;
+            let mut tick = Duration::from_secs_f32(1.0 / self.motion_fps.clamp(12.0, 30.0));
+            cx.spawn(async move |this, cx| loop {
+                cx.background_executor().timer(tick).await;
+                let keep_running = this.update(cx, |view, cx| {
+                    if !view.has_animated_cover() {
+                        view.motion_timer_active = false;
+                        return false;
+                    }
+                    let fps = view.motion_fps.clamp(12.0, 30.0);
+                    tick = Duration::from_secs_f32(1.0 / fps);
+                    let next_idx = ((view.anim_epoch.elapsed().as_secs_f32() * fps) as usize)
+                        % view.motion_textures.len();
+                    if next_idx != view.last_motion_frame_idx {
+                        view.last_motion_frame_idx = next_idx;
+                        cx.notify();
+                    }
+                    true
+                });
+                if !matches!(keep_running, Ok(true)) {
+                    break;
+                }
+            })
+            .detach();
+        }
     }
 
     pub fn toggle_fullscreen_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -491,15 +551,12 @@ impl Render for SonataDesktopView {
                 gpui_kit::WindowBackgroundAppearance::Opaque
             });
         }
+        self.sync_motion_textures(window, cx);
         let palette = self.palette();
         let viewport = window.viewport_size();
         let vw: f32 = viewport.width.into();
         let vh: f32 = viewport.height.into();
         let compact_viewport = self.mini_mode || is_compact_viewport(vw, vh);
-
-        if self.has_animated_cover() {
-            window.request_animation_frame();
-        }
 
         let root_content = if compact_viewport {
             mini_player::render_mini_player(self, &palette, window, cx)
@@ -564,6 +621,55 @@ pub fn ui_icon(icon: IconName, size_px: f32, color: Hsla) -> Svg {
 
 pub fn cached_thumb_path(url: Option<&str>) -> Option<PathBuf> {
     url.map(art_cache_path).filter(|p| p.exists())
+}
+
+fn rgba_to_render_image(width: u32, height: u32, rgba: &[u8]) -> Option<Arc<RenderImage>> {
+    let expected = (width as usize)
+        .checked_mul(height as usize)?
+        .checked_mul(4)?;
+    if rgba.len() != expected {
+        return None;
+    }
+    let mut bgra = vec![0u8; expected];
+    for (dst, src) in bgra
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(rgba.as_chunks::<4>().0.iter())
+    {
+        dst[0] = src[2];
+        dst[1] = src[1];
+        dst[2] = src[0];
+        dst[3] = src[3];
+    }
+    let img_buf = image::RgbaImage::from_raw(width, height, bgra)?;
+    Some(Arc::new(RenderImage::new([image::Frame::new(img_buf)])))
+}
+
+pub fn render_cover_surface(
+    art_path: Option<&PathBuf>,
+    motion_tex: Option<Arc<RenderImage>>,
+    size_px: f32,
+    radius_px: f32,
+    p: &GlassPalette,
+) -> AnyElement {
+    if let Some(tex) = motion_tex {
+        return div()
+            .flex_shrink_0()
+            .size(px(size_px))
+            .rounded(px(radius_px))
+            .overflow_hidden()
+            .border_1()
+            .border_color(p.border_subtle)
+            .child(
+                img(tex)
+                    .size(px(size_px))
+                    .rounded(px(radius_px))
+                    .object_fit(ObjectFit::Cover),
+            )
+            .into_any_element();
+    }
+    render_cover_art(art_path, size_px, radius_px, p)
 }
 
 pub fn render_cover_art(
@@ -732,19 +838,13 @@ pub fn render_track_row(
     div()
         .id(SharedString::from(row_id.clone()))
         .w_full()
-        .h(px(56.0))
+        .h(px(54.0))
         .px_3()
-        .rounded_xl()
+        .rounded_lg()
         .bg(if is_playing {
             p.accent_soft
         } else if is_hovered {
             p.card_hover
-        } else {
-            gpui_kit::transparent_black()
-        })
-        .border_1()
-        .border_color(if is_playing {
-            p.border
         } else {
             gpui_kit::transparent_black()
         })
@@ -1062,4 +1162,17 @@ pub fn render_volume_slider(
                 .child(format!("{eff_vol}%")),
         )
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rgba_to_render_image_swaps_to_bgra_and_validates_len() {
+        assert!(rgba_to_render_image(2, 2, &[1, 2, 3]).is_none());
+        let tex = rgba_to_render_image(1, 1, &[10, 20, 30, 255]).expect("valid 1x1 texture");
+        let bytes = tex.as_bytes(0).expect("bgra bytes");
+        assert_eq!(bytes, &[30, 20, 10, 255]);
+    }
 }

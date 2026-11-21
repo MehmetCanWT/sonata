@@ -99,15 +99,26 @@ ensure_rust() {
 
 install_sonata_tui() {
     export PATH="${install_root}/bin:${HOME}/.cargo/bin:${PATH}"
+    cpus=4
+    if command -v nproc >/dev/null 2>&1; then
+        cpus="$(nproc)"
+    elif command -v getconf >/dev/null 2>&1; then
+        cpus="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+    fi
+    if [ "${cpus}" -gt 2 ]; then
+        jobs="$((cpus - 2))"
+    else
+        jobs=1
+    fi
 
-    if cargo install --git "${repo_url}" --locked --root "${install_root}" --force sonata-tui; then
+    if cargo install --git "${repo_url}" --locked -j "${jobs}" --root "${install_root}" --force sonata-tui; then
         return 0
     fi
 
     echo "Direct cargo git install failed; falling back to temporary shallow clone..." >&2
     tmp_dir="$(mktemp -d)"
     git clone --depth=1 "${repo_url}" "${tmp_dir}/sonata"
-    cargo install --locked --path "${tmp_dir}/sonata/crates/sonata-tui" --root "${install_root}" --force
+    cargo install --locked -j "${jobs}" --path "${tmp_dir}/sonata/crates/sonata-tui" --root "${install_root}" --force
 }
 
 ensure_profile_path() {

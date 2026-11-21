@@ -24,7 +24,7 @@ mod parsers;
 
 use parsers::{
     collect_playlists, collect_tracks, find_description_text, find_header_thumbnail,
-    find_mplyt_browse_id, find_shelf_continuation, merge_home_shelves,
+    find_home_continuation, find_mplyt_browse_id, find_shelf_continuation, merge_home_shelves,
 };
 pub use parsers::{parse_account_profile_json, parse_artist_page_json, parse_home_shelves_json};
 const INNERTUBE_BASE: &str = "https://music.youtube.com/youtubei/v1";
@@ -44,6 +44,7 @@ pub enum HomeCardKind {
     Artist,
     Song,
     Video,
+    Mood,
 }
 
 #[derive(Debug, Clone)]
@@ -218,11 +219,36 @@ impl YtMusicClient {
 
         let mut body = Self::base_context();
         body["browseId"] = json!(browse_id);
-        let data = self.post("browse", body).await?;
-        let header_thumb = find_header_thumbnail(&data);
+        let browse_res = self.post("browse", body).await;
 
+        let mut header_thumb = None;
         let mut page1 = Vec::new();
-        collect_tracks(&data, &mut page1);
+        let mut cont = None;
+
+        if let Ok(data) = browse_res {
+            header_thumb = find_header_thumbnail(&data);
+            collect_tracks(&data, &mut page1);
+            cont = find_shelf_continuation(&data);
+        }
+
+        // Personal mixes / radio playlists (e.g. RDTMAK*, RDAMVM*, RDCLAK*, OLAK*) often
+        // resolve via the `next` watch-playlist endpoint rather than `browse`.
+        if page1.is_empty() {
+            let raw_playlist_id = browse_id.strip_prefix("VL").unwrap_or(&browse_id);
+            let mut next_body = Self::base_context();
+            next_body["playlistId"] = json!(raw_playlist_id);
+            if let Ok(next_data) = self.post("next", next_body).await {
+                collect_tracks(&next_data, &mut page1);
+                cont = find_shelf_continuation(&next_data);
+            }
+        }
+
+        if page1.is_empty() && cont.is_none() {
+            return Err(anyhow!(
+                "YouTube Music returned no tracks for collection {browse_id}"
+            ));
+        }
+
         for t in &mut page1 {
             if browse_id == "VLLM" {
                 t.liked = true;
@@ -234,7 +260,6 @@ impl YtMusicClient {
         on_batch(page1.clone(), true);
 
         let mut all_tracks = page1;
-        let mut cont = find_shelf_continuation(&data);
         for _ in 0..20 {
             let Some(token) = cont else { break };
             let mut next_body = Self::base_context();
@@ -282,45 +307,56 @@ impl YtMusicClient {
     }
 
     pub async fn fetch_home_feed(&self) -> Result<Vec<HomeShelf>> {
-        if self.is_authenticated() {
-            let mut home_body = Self::base_context();
-            home_body["browseId"] = json!("FEmusic_home");
-            let mut shelves = match self.post("browse", home_body).await {
-                Ok(data) => parse_home_shelves_json(&data),
-                Err(_) => Vec::new(),
-            };
-            if shelves.len() < 3 {
-                let mut exp_body = Self::base_context();
-                exp_body["browseId"] = json!("FEmusic_explore");
-                if let Ok(exp_data) = self.post("browse", exp_body).await {
-                    merge_home_shelves(&mut shelves, parse_home_shelves_json(&exp_data));
-                }
-            }
-            if shelves.is_empty() {
-                return Err(anyhow!("YouTube Music home feed returned no shelves"));
-            }
-            Ok(shelves)
-        } else {
-            let mut exp_body = Self::base_context();
-            exp_body["browseId"] = json!("FEmusic_explore");
-            let mut home_body = Self::base_context();
-            home_body["browseId"] = json!("FEmusic_home");
-            let (exp_res, home_res) = tokio::join!(
-                self.post("browse", exp_body),
-                self.post("browse", home_body)
-            );
-            let mut shelves = Vec::new();
-            if let Ok(exp_data) = exp_res {
-                merge_home_shelves(&mut shelves, parse_home_shelves_json(&exp_data));
-            }
-            if let Ok(home_data) = home_res {
-                merge_home_shelves(&mut shelves, parse_home_shelves_json(&home_data));
-            }
-            if shelves.is_empty() {
-                return Err(anyhow!("Failed to load public YouTube Music feed"));
-            }
-            Ok(shelves)
+        let mut home_body = Self::base_context();
+        home_body["browseId"] = json!("FEmusic_home");
+        let mut exp_body = Self::base_context();
+        exp_body["browseId"] = json!("FEmusic_explore");
+
+        let (home_res, exp_res) = tokio::join!(
+            self.post("browse", home_body),
+            self.post("browse", exp_body)
+        );
+
+        let mut shelves = Vec::new();
+        let mut cont = None;
+
+        if let Ok(home_data) = home_res {
+            merge_home_shelves(&mut shelves, parse_home_shelves_json(&home_data));
+            cont = find_home_continuation(&home_data);
         }
+
+        // Follow up to 4 Home continuation pages so personalized YouTube Music shelves
+        // (Listen again, Quick picks / Top picks for you, Mixed for you, Forgotten favorites,
+        // Recommended albums, New albums & singles, etc.) are all populated.
+        for _ in 0..4 {
+            if shelves.len() >= 12 {
+                break;
+            }
+            let Some(token) = cont.take() else { break };
+            let mut next_body = Self::base_context();
+            next_body["continuation"] = json!(token);
+            let Ok(page) = self.post("browse", next_body).await else {
+                break;
+            };
+            let before = shelves.len();
+            merge_home_shelves(&mut shelves, parse_home_shelves_json(&page));
+            let next_cont = find_home_continuation(&page);
+            if next_cont.as_deref() == Some(token.as_str()) || shelves.len() == before {
+                break;
+            }
+            cont = next_cont;
+        }
+
+        // Merge discovery shelves from Explore (e.g. New albums & singles, Moods & genres)
+        // without duplicating titles already returned by the personalized Home feed.
+        if let Ok(exp_data) = exp_res {
+            merge_home_shelves(&mut shelves, parse_home_shelves_json(&exp_data));
+        }
+
+        if shelves.is_empty() {
+            return Err(anyhow!("YouTube Music home feed returned no shelves"));
+        }
+        Ok(shelves)
     }
 
     /// Fetch an artist only when YouTube Music supplied a concrete browse ID.

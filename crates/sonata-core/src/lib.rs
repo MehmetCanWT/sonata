@@ -15,6 +15,7 @@ pub mod config;
 pub mod hyprland;
 pub mod lyrics;
 pub mod media;
+pub mod motion;
 pub mod player;
 pub mod providers;
 pub mod telemetry;

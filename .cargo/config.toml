@@ -1,5 +1,5 @@
 [build]
-jobs = 6
+jobs = 10
 
 [alias]
 check-tui = "check --package sonata-tui --message-format=short"

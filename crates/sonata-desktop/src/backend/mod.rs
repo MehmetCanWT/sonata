@@ -39,12 +39,12 @@ use types::{ExportFingerprint, InternalEvent};
 
 pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Result<BackendHandle> {
     let config = AppConfig::load();
-    let themes = Theme::load_all(&AppConfig::themes_dir());
+    let themes = Theme::load_for_desktop(&AppConfig::themes_dir());
     let base_theme = themes
         .iter()
-        .find(|t| t.name.eq_ignore_ascii_case(&config.theme))
+        .find(|t| t.name.eq_ignore_ascii_case(&config.desktop_theme))
         .cloned()
-        .unwrap_or_default();
+        .unwrap_or_else(Theme::sonata_glass);
     let available_browsers = list_supported_browsers();
 
     let cache_db = CacheDb::open_default();
@@ -104,7 +104,7 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
         stream_badge: "Idle".to_string(),
         lyrics: LyricsState::Idle,
         art_path: None,
-        animated_art_frames: Arc::new(Vec::new()),
+        motion_cover: None,
         ambient_rgb: (110, 90, 170),
         spotify_notice: None,
     });
@@ -196,7 +196,7 @@ struct BackendEngine {
     pub(super) muted: bool,
     pub(super) lyrics: LyricsState,
     pub(super) art_path: Option<PathBuf>,
-    pub(super) animated_art_frames: Arc<Vec<PathBuf>>,
+    pub(super) motion_cover: Option<Arc<sonata_core::motion::MotionCover>>,
     pub(super) ambient_rgb: (u8, u8, u8),
     pub(super) spotify_notice: Option<String>,
     pub(super) pos_anchor: Option<(f64, Instant)>,
@@ -310,7 +310,7 @@ async fn run_backend_loop(
         muted: false,
         lyrics: LyricsState::Idle,
         art_path: None,
-        animated_art_frames: Arc::new(Vec::new()),
+        motion_cover: None,
         ambient_rgb: (110, 90, 170),
         spotify_notice: None,
         pos_anchor: None,
@@ -947,7 +947,7 @@ impl BackendEngine {
                 self.stream_loaded_at = Some(Instant::now());
                 self.status_line = format!("Starting: {} — {}", track.title, track.artist);
                 if let Some(mpv) = &self.mpv {
-                    if resume_at >= 0.35 {
+                    if resume_at >= 0.05 {
                         mpv.load_stream_at(&stream, resume_at);
                     } else {
                         mpv.load_stream(&stream);
@@ -1137,16 +1137,16 @@ impl BackendEngine {
             InternalEvent::AnimatedArtworkReady {
                 play_seq,
                 track_id,
-                frames,
+                cover,
             } => {
                 if play_seq == self.play_seq
-                    && !frames.is_empty()
+                    && !cover.frames_rgba.is_empty()
                     && self
                         .playback
                         .current_track()
                         .is_some_and(|track| track.id == track_id)
                 {
-                    self.animated_art_frames = Arc::new(frames);
+                    self.motion_cover = Some(cover);
                 }
             }
             InternalEvent::ThumbnailsReady => {}
@@ -1214,7 +1214,7 @@ impl BackendEngine {
             stream_badge: self.playback.stream_badge.clone(),
             lyrics: self.lyrics.clone(),
             art_path: self.art_path.clone(),
-            animated_art_frames: self.animated_art_frames.clone(),
+            motion_cover: self.motion_cover.clone(),
             ambient_rgb: self.ambient_rgb,
             spotify_notice: self.spotify_notice.clone(),
         });
@@ -1349,7 +1349,7 @@ mod tests {
             stream_badge: String::new(),
             lyrics: LyricsState::Idle,
             art_path: None,
-            animated_art_frames: Arc::new(Vec::new()),
+            motion_cover: None,
             ambient_rgb: (0, 0, 0),
             spotify_notice: None,
         }));

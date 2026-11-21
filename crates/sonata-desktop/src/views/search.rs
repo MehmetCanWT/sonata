@@ -136,6 +136,7 @@ pub fn render_search_page(
         )
         .track_scroll(&view.search_scroll)
         .flex_1()
+        .min_h_0()
         .w_full()
         .into_any_element()
     };

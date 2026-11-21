@@ -78,6 +78,8 @@ impl MpvController {
             "--cache-secs=30",
             "--demuxer-max-bytes=64M",
             "--network-timeout=8",
+            "--force-seekable=yes",
+            "--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_delay_max=2",
             &format!("--volume={volume}"),
             &format!("--input-ipc-server={}", sock_path.display()),
         ]);

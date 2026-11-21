@@ -419,7 +419,7 @@ impl BackendEngine {
             .cloned()
         {
             self.base_theme = t;
-            self.config.theme = self.base_theme.name.clone();
+            self.config.desktop_theme = self.base_theme.name.clone();
             let _ = self.config.save();
             self.sync_hyprland_opacity();
             self.status_line = format!("Theme: {}", self.base_theme.name);

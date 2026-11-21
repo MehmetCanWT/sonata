@@ -1,6 +1,6 @@
 use super::{render_avatar, render_pill_button, ui_icon, FluentDivExt, SonataDesktopView};
 use crate::backend::BackendCmd;
-use crate::theme_bridge::{rgb_hsla, GlassPalette};
+use crate::theme_bridge::{rgb_hsla, DesktopSkin, GlassPalette};
 use gpui_kit::assets::IconName;
 use gpui_kit::{
     div, px, AnyElement, Context, FontWeight, InteractiveElement, IntoElement, ParentElement,
@@ -355,25 +355,29 @@ pub fn render_settings_page(
             .into_any_element()
     };
 
-    let mut theme_chips = div().w_full().flex().flex_wrap().gap_2();
+    let mut theme_chips = div().w_full().flex().flex_wrap().gap_3();
     for (idx, t) in snap.themes.iter().enumerate() {
         let selected = t.name.eq_ignore_ascii_case(&snap.base_theme.name);
-        let swatch = rgb_hsla(t.accent.to_rgb((0xcb, 0xa6, 0xf7)), 1.0);
+        let bg_swatch = rgb_hsla(t.bg.to_rgb((0x12, 0x12, 0x16)), 1.0);
+        let surface_swatch = rgb_hsla(t.surface.to_rgb((0x1c, 0x1c, 0x22)), 1.0);
+        let accent_swatch = rgb_hsla(t.accent.to_rgb((0xfa, 0x2d, 0x48)), 1.0);
+        let skin_badge = DesktopSkin::from_theme_name(&t.name).badge_label();
         let t_name = t.name.clone();
         let t_transparent = t.transparent_bg;
         theme_chips = theme_chips.child(
             div()
                 .id(SharedString::from(format!("set-theme-{idx}")))
+                .min_w(px(172.0))
                 .px_3()
-                .py(px(6.0))
-                .rounded_lg()
+                .py(px(10.0))
+                .rounded_xl()
                 .bg(if selected { p.accent_soft } else { p.pill_bg })
                 .border_1()
                 .border_color(if selected { p.accent } else { p.border_subtle })
                 .hover(|s| s.bg(p.card_hover))
                 .cursor_pointer()
                 .flex()
-                .items_center()
+                .flex_col()
                 .gap_2()
                 .on_click(cx.listener(move |this, _, window, _| {
                     let next_transparent =
@@ -385,14 +389,53 @@ pub fn render_settings_page(
                     });
                     this.backend.send(BackendCmd::SelectTheme(t_name.clone()));
                 }))
-                .child(div().size(px(10.0)).rounded_full().bg(swatch))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(4.0))
+                                .child(
+                                    div()
+                                        .size(px(12.0))
+                                        .rounded_full()
+                                        .bg(bg_swatch)
+                                        .border_1()
+                                        .border_color(p.border_subtle),
+                                )
+                                .child(
+                                    div()
+                                        .size(px(12.0))
+                                        .rounded_full()
+                                        .bg(surface_swatch)
+                                        .border_1()
+                                        .border_color(p.border_subtle),
+                                )
+                                .child(div().size(px(12.0)).rounded_full().bg(accent_swatch)),
+                        )
+                        .child(
+                            div()
+                                .px_2()
+                                .py(px(1.0))
+                                .rounded_full()
+                                .bg(p.card_bg)
+                                .text_xs()
+                                .text_color(if selected { p.accent } else { p.muted })
+                                .child(skin_badge),
+                        ),
+                )
                 .child(
                     div()
                         .text_xs()
                         .font_weight(if selected {
-                            FontWeight::SEMIBOLD
+                            FontWeight::BOLD
                         } else {
-                            FontWeight::NORMAL
+                            FontWeight::MEDIUM
                         })
                         .text_color(if selected { p.highlight_fg } else { p.text })
                         .child(t.name.clone()),
@@ -464,7 +507,7 @@ pub fn render_settings_page(
                         .text_xs()
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(p.muted)
-                        .child("Color Theme (shared with TUI)"),
+                        .child("Desktop Theme & Skin (independent from TUI)"),
                 )
                 .child(theme_chips),
         );

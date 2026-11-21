@@ -105,6 +105,7 @@ impl ProviderMode {
 #[serde(default)]
 pub struct AppConfig {
     pub theme: String,
+    pub desktop_theme: String,
     pub volume: u8,
     pub shuffle: bool,
     pub repeat_mode: RepeatMode,
@@ -129,6 +130,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             theme: "Catppuccin Mocha".to_string(),
+            desktop_theme: "Sonata Glass".to_string(),
             volume: 85,
             shuffle: false,
             repeat_mode: RepeatMode::Off,

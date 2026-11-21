@@ -95,7 +95,9 @@ pub fn render_artwork(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         let font_size = app.picker.font_size();
         let art_state = if has_motion {
             let idx = app.anim_art_idx % app.anim_art_frames.len();
-            app.anim_art_frames.get_mut(idx).map(|(proto, _)| proto)
+            app.anim_art_frames
+                .get_mut(idx)
+                .and_then(|(proto, _)| proto.as_mut())
         } else {
             app.album_art.as_mut()
         };
