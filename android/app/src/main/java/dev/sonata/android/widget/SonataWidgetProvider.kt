@@ -131,24 +131,24 @@ object SonataWidgetUpdater {
         durationMs: Long,
     ) {
         val appContext = context.applicationContext
-        appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
-            .putString(KEY_TITLE, title)
-            .putString(KEY_ARTIST, artist)
-            .putString(KEY_ARTWORK_URL, artworkUrl.orEmpty())
-            .putBoolean(KEY_IS_PLAYING, isPlaying)
-            .putLong(KEY_POS_MS, positionMs.coerceAtLeast(0L))
-            .putLong(KEY_DUR_MS, durationMs.coerceAtLeast(0L))
-            .apply()
+        scope.launch {
+            appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+                .putString(KEY_TITLE, title)
+                .putString(KEY_ARTIST, artist)
+                .putString(KEY_ARTWORK_URL, artworkUrl.orEmpty())
+                .putBoolean(KEY_IS_PLAYING, isPlaying)
+                .putLong(KEY_POS_MS, positionMs.coerceAtLeast(0L))
+                .putLong(KEY_DUR_MS, durationMs.coerceAtLeast(0L))
+                .apply()
 
-        val manager = AppWidgetManager.getInstance(appContext)
-        val ids = manager.getAppWidgetIds(ComponentName(appContext, SonataWidgetProvider::class.java))
-        if (ids.isEmpty()) return
+            val manager = AppWidgetManager.getInstance(appContext)
+            val ids = manager.getAppWidgetIds(ComponentName(appContext, SonataWidgetProvider::class.java))
+            if (ids.isEmpty()) return@launch
 
-        renderAll(appContext, manager, ids)
+            renderAll(appContext, manager, ids)
 
-        val cleanUrl = artworkUrl?.takeIf { it.startsWith("http") }
-        if (cleanUrl != null && cleanUrl != cachedArtworkUrl) {
-            scope.launch {
+            val cleanUrl = artworkUrl?.takeIf { it.startsWith("http") }
+            if (cleanUrl != null && cleanUrl != cachedArtworkUrl) {
                 val bmp = fetchRoundedArtwork(cleanUrl, sizePx = 144)
                 if (bmp != null) {
                     cachedArtworkUrl = cleanUrl
@@ -166,17 +166,19 @@ object SonataWidgetUpdater {
         durationMs: Long,
     ) {
         val appContext = context.applicationContext
-        val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit()
-            .putBoolean(KEY_IS_PLAYING, isPlaying)
-            .putLong(KEY_POS_MS, positionMs.coerceAtLeast(0L))
-            .putLong(KEY_DUR_MS, durationMs.coerceAtLeast(0L))
-            .apply()
+        scope.launch {
+            val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            prefs.edit()
+                .putBoolean(KEY_IS_PLAYING, isPlaying)
+                .putLong(KEY_POS_MS, positionMs.coerceAtLeast(0L))
+                .putLong(KEY_DUR_MS, durationMs.coerceAtLeast(0L))
+                .apply()
 
-        val manager = AppWidgetManager.getInstance(appContext)
-        val ids = manager.getAppWidgetIds(ComponentName(appContext, SonataWidgetProvider::class.java))
-        if (ids.isEmpty()) return
-        renderAll(appContext, manager, ids)
+            val manager = AppWidgetManager.getInstance(appContext)
+            val ids = manager.getAppWidgetIds(ComponentName(appContext, SonataWidgetProvider::class.java))
+            if (ids.isEmpty()) return@launch
+            renderAll(appContext, manager, ids)
+        }
     }
 
     internal fun renderAll(

@@ -70,6 +70,7 @@ import dev.sonata.android.ui.TopPickMood
 import dev.sonata.android.ui.artworkAt
 import dev.sonata.android.ui.components.SonataEditorialCard
 import dev.sonata.android.ui.rememberArtworkRequest
+import dev.sonata.android.ui.rememberLayoutBoundsHolder
 import dev.sonata.android.ui.theme.LocalLunariaColors
 import dev.sonata.android.ui.theme.SonataRadioWavesIcon
 import uniffi.sonata_android.AndroidHomeCard
@@ -429,7 +430,7 @@ private fun FeaturedMixCoverCard(
 ) {
     val themeTokens = LocalLunariaColors.current
     val haptics = LocalHapticFeedback.current
-    var cardBounds by remember { mutableStateOf<Rect?>(null) }
+    val cardBounds = rememberLayoutBoundsHolder()
     val coverReq = rememberArtworkRequest(
         url = card.thumbnailUrl.artworkAt(HEADER_ART_PX),
         widthPx = HEADER_ART_PX,
@@ -444,13 +445,13 @@ private fun FeaturedMixCoverCard(
             .clip(shape)
             .background(themeTokens.eclipseCard)
             .border(0.75.dp, themeTokens.cardStroke, shape)
-            .onGloballyPositioned { cardBounds = it.boundsInRoot() }
+            .onGloballyPositioned { cardBounds.coordinates = it }
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick?.let { callback ->
                     {
                         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                        callback(cardBounds)
+                        callback(cardBounds.boundsInRoot())
                     }
                 },
             ),

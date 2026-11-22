@@ -496,7 +496,7 @@ pub(super) fn render_fullscreen_lyrics_column(
                         align_right,
                         is_background,
                     )
-                } else if blur_sigma >= 0.5 {
+                } else if blur_sigma >= 0.5 && distance <= 8 {
                     if let Some(blurred) = view.fullscreen.blur_cache.get_or_render(
                         &line.text,
                         content_w,

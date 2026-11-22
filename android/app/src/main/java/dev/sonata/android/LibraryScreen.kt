@@ -237,6 +237,7 @@ import dev.sonata.android.ui.feedSkeleton
 import dev.sonata.android.ui.recentlyPlayedSkeleton
 import dev.sonata.android.ui.rememberArtworkPalette
 import dev.sonata.android.ui.rememberArtworkRequest
+import dev.sonata.android.ui.rememberLayoutBoundsHolder
 import dev.sonata.android.ui.rememberSmoothLyricClock
 import dev.sonata.android.ui.toMeshPalette
 import dev.sonata.android.ui.topPicksSkeleton
@@ -564,20 +565,20 @@ internal fun PlaylistGridCard(
     onLongClick: ((Rect?) -> Unit)? = null,
 ) {
     val haptics = LocalHapticFeedback.current
-    var cardBounds by remember { mutableStateOf<Rect?>(null) }
+    val cardBounds = rememberLayoutBoundsHolder()
     val isDownloadsPlaylist = playlist.id == SonataViewModel.DOWNLOADS_PLAYLIST_ID
     val isLikedPlaylist = !isDownloadsPlaylist && (playlist.id == "LM" || playlist.name.contains("Liked", ignoreCase = true))
     val cover = remember(playlist.thumbnailUrl) { playlist.thumbnailUrl.artworkAt(CARD_ART_PX) }
     val coverRequest = rememberArtworkRequest(cover, 360, 360)
     Column(
         modifier = modifier
-            .onGloballyPositioned { cardBounds = it.boundsInRoot() }
+            .onGloballyPositioned { cardBounds.coordinates = it }
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick?.let { callback ->
                     {
                         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                        callback(cardBounds)
+                        callback(cardBounds.boundsInRoot())
                     }
                 },
             ),

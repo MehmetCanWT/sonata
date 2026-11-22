@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha1::Sha1;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
@@ -606,10 +606,24 @@ pub fn compute_totp(codes: &[u32], epoch_ms: u128) -> String {
     format!("{:06}", bin % 1_000_000)
 }
 
+static CLIENT_VERSION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"<script id="appServerConfig" type="text/plain">([^<]+)</script>"#)
+        .expect("valid Spotify client version regex")
+});
+static BUNDLE_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"https://open\.spotifycdn\.com/cdn/build/web-player/web-player\.[0-9a-f]+\.js"#)
+        .expect("valid Spotify bundle URL regex")
+});
+static SEARCH_CHUNK_ID_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(\d+):"xpui-routes-search""#).expect("valid Spotify search chunk regex")
+});
+static NEWEST_SECRET_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"\{secret:(?:'((?:\\.|[^'\\])*)'|"((?:\\.|[^"\\])*)"),version:(\d+)\}"#)
+        .expect("valid Spotify secret regex")
+});
+
 fn extract_client_version(html: &str) -> Option<String> {
-    let re =
-        Regex::new(r#"<script id="appServerConfig" type="text/plain">([^<]+)</script>"#).ok()?;
-    let b64 = re.captures(html)?.get(1)?.as_str();
+    let b64 = CLIENT_VERSION_RE.captures(html)?.get(1)?.as_str();
     let decoded = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
     let val: Value = serde_json::from_slice(&decoded).ok()?;
     val.get("clientVersion")
@@ -618,21 +632,37 @@ fn extract_client_version(html: &str) -> Option<String> {
 }
 
 fn extract_bundle_url(html: &str) -> Option<String> {
-    let re = Regex::new(
-        r#"https://open\.spotifycdn\.com/cdn/build/web-player/web-player\.[0-9a-f]+\.js"#,
-    )
-    .ok()?;
-    re.find(html).map(|m| m.as_str().to_string())
+    BUNDLE_URL_RE.find(html).map(|m| m.as_str().to_string())
 }
 
 fn extract_search_chunk_url(bundle: &str) -> Option<String> {
-    let id_re = Regex::new(r#"(\d+):"xpui-routes-search""#).ok()?;
-    let id = id_re.captures(bundle)?.get(1)?.as_str();
-    let hash_re = Regex::new(&format!(r#"\b{id}:"([0-9a-f]{{8}})""#)).ok()?;
-    let part = hash_re.captures(bundle)?.get(1)?.as_str();
-    Some(format!(
-        "https://open.spotifycdn.com/cdn/build/web-player/xpui-routes-search.{part}.js"
-    ))
+    let id = SEARCH_CHUNK_ID_RE.captures(bundle)?.get(1)?.as_str();
+    let needle = format!("{id}:\"");
+    let bytes = bundle.as_bytes();
+    for (idx, _) in bundle.match_indices(&needle) {
+        if idx > 0 {
+            let prev = bytes[idx - 1];
+            if prev.is_ascii_alphanumeric() || prev == b'_' {
+                continue;
+            }
+        }
+        let hash_start = idx + needle.len();
+        let hash_end = hash_start + 8;
+        let Some(part_bytes) = bytes.get(hash_start..hash_end) else {
+            continue;
+        };
+        if bytes.get(hash_end) == Some(&b'"')
+            && part_bytes
+                .iter()
+                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        {
+            let part = &bundle[hash_start..hash_end];
+            return Some(format!(
+                "https://open.spotifycdn.com/cdn/build/web-player/xpui-routes-search.{part}.js"
+            ));
+        }
+    }
+    None
 }
 
 fn unescape_js_literal(raw: &str) -> Vec<u32> {
@@ -673,10 +703,8 @@ fn unescape_js_literal(raw: &str) -> Vec<u32> {
 }
 
 fn extract_newest_secret(js: &str) -> Option<(u32, Vec<u32>)> {
-    let re = Regex::new(r#"\{secret:(?:'((?:\\.|[^'\\])*)'|"((?:\\.|[^"\\])*)"),version:(\d+)\}"#)
-        .ok()?;
     let mut best: Option<(u32, Vec<u32>)> = None;
-    for cap in re.captures_iter(js) {
+    for cap in NEWEST_SECRET_RE.captures_iter(js) {
         let ver: u32 = cap[3].parse().ok()?;
         let body = cap.get(1).or_else(|| cap.get(2))?.as_str();
         let codes = unescape_js_literal(body);
@@ -688,13 +716,65 @@ fn extract_newest_secret(js: &str) -> Option<(u32, Vec<u32>)> {
 }
 
 fn extract_query_hash(js: &str, op: &str) -> Option<String> {
-    let re = Regex::new(&format!(
-        r#"["']{op}["']\s*,\s*["']query["']\s*,\s*["']([0-9a-f]{{64}})["']"#
-    ))
-    .ok()?;
-    re.captures(js)
-        .and_then(|c| c.get(1))
-        .map(|m| m.as_str().to_string())
+    let bytes = js.as_bytes();
+    let is_quote = |b: u8| b == b'"' || b == b'\'';
+    let skip_ws = |mut pos: usize| -> usize {
+        while let Some(&b) = bytes.get(pos) {
+            if b.is_ascii_whitespace() {
+                pos += 1;
+            } else {
+                break;
+            }
+        }
+        pos
+    };
+
+    for (idx, _) in js.match_indices(op) {
+        if idx == 0 || !is_quote(*bytes.get(idx - 1)?) {
+            continue;
+        }
+        let after_op = idx + op.len();
+        if !bytes.get(after_op).copied().is_some_and(is_quote) {
+            continue;
+        }
+        let mut pos = skip_ws(after_op + 1);
+        if bytes.get(pos) != Some(&b',') {
+            continue;
+        }
+        pos = skip_ws(pos + 1);
+        if !bytes.get(pos).copied().is_some_and(is_quote) {
+            continue;
+        }
+        pos += 1;
+        if bytes.get(pos..pos + 5) != Some(b"query") {
+            continue;
+        }
+        pos += 5;
+        if !bytes.get(pos).copied().is_some_and(is_quote) {
+            continue;
+        }
+        pos = skip_ws(pos + 1);
+        if bytes.get(pos) != Some(&b',') {
+            continue;
+        }
+        pos = skip_ws(pos + 1);
+        if !bytes.get(pos).copied().is_some_and(is_quote) {
+            continue;
+        }
+        let hash_start = pos + 1;
+        let hash_end = hash_start + 64;
+        let Some(hash_bytes) = bytes.get(hash_start..hash_end) else {
+            continue;
+        };
+        if bytes.get(hash_end).copied().is_some_and(is_quote)
+            && hash_bytes
+                .iter()
+                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        {
+            return Some(js[hash_start..hash_end].to_string());
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -707,5 +787,23 @@ mod tests {
         let code = compute_totp(&codes, 1_700_000_000_000);
         assert_eq!(code.len(), 6);
         assert!(code.chars().all(|c| c.is_ascii_digit()));
+    }
+
+    #[test]
+    fn extracts_search_chunk_url_and_query_hash() {
+        let bundle =
+            r#"{1242:"other-chunk",42:"xpui-routes-search"},{942:"11111111",42:"deadbeef"}"#;
+        assert_eq!(
+            extract_search_chunk_url(bundle).as_deref(),
+            Some("https://open.spotifycdn.com/cdn/build/web-player/xpui-routes-search.deadbeef.js")
+        );
+
+        let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let js = format!(r#"define("searchTracks", "query", "{hash}")"#);
+        assert_eq!(
+            extract_query_hash(&js, "searchTracks").as_deref(),
+            Some(hash)
+        );
+        assert_eq!(extract_query_hash(&js, "libraryV3"), None);
     }
 }

@@ -13,7 +13,7 @@ use crate::config::AppConfig;
 use crate::providers::{Playlist, Track};
 use rusqlite::{params, Connection};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -24,11 +24,12 @@ pub use media::{
     prune_active_media_cache_async, prune_media_cache, start_media_cache_maintenance,
 };
 
-const CACHE_SCHEMA_VERSION: i64 = 2;
+const CACHE_SCHEMA_VERSION: i64 = 3;
 const MAX_CACHE_DB_PAGES: i64 = 32_768;
 const MAX_CACHED_STREAMS: i64 = 2_048;
 const MAX_CACHED_PLAYLISTS: i64 = 500;
 const MAX_PLAYLIST_JSON_BYTES: usize = 16 * 1024 * 1024;
+const PRUNE_WRITE_INTERVAL: usize = 32;
 
 #[derive(Debug, Clone, Default)]
 pub struct TrackEnrichment {
@@ -46,6 +47,7 @@ pub struct TrackEnrichment {
 pub struct CacheDb {
     conn: Arc<Mutex<Connection>>,
     enabled: Arc<AtomicBool>,
+    write_ops: Arc<AtomicUsize>,
 }
 
 impl CacheDb {
@@ -96,15 +98,14 @@ impl CacheDb {
             );
             return None;
         }
-        let prev_user_version: i64 = conn
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .unwrap_or(0);
+        let prev_user_version = schema_version;
         if let Err(error) = conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
              PRAGMA foreign_keys = ON;
              PRAGMA temp_store = MEMORY;
              PRAGMA cache_size = -8192;
+             PRAGMA mmap_size = 67108864;
              PRAGMA wal_autocheckpoint = 1000;
              PRAGMA journal_size_limit = 16777216;
              PRAGMA max_page_count = 32768;
@@ -181,6 +182,7 @@ impl CacheDb {
         Some(Self {
             conn: Arc::new(Mutex::new(conn)),
             enabled: Arc::new(AtomicBool::new(true)),
+            write_ops: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -262,24 +264,24 @@ impl CacheDb {
             return None;
         }
         let guard = self.lock_conn();
-        guard
-            .query_row(
+        let mut stmt = guard
+            .prepare_cached(
                 "SELECT cover_url, cover_source, synced_lyrics, plain_lyrics, lyrics_status, average_bitrate, updated_at
                  FROM track_enrichment WHERE track_id = ?1",
-                params![track_id],
-                |row| {
-                    Ok(TrackEnrichment {
-                        cover_url: row.get(0)?,
-                        cover_source: row.get(1)?,
-                        synced_lyrics: row.get(2)?,
-                        plain_lyrics: row.get(3)?,
-                        lyrics_status: row.get(4)?,
-                        average_bitrate: row.get::<_, i64>(5)?.max(0) as u32,
-                        updated_at: row.get(6)?,
-                    })
-                },
             )
-            .ok()
+            .ok()?;
+        stmt.query_row(params![track_id], |row| {
+            Ok(TrackEnrichment {
+                cover_url: row.get(0)?,
+                cover_source: row.get(1)?,
+                synced_lyrics: row.get(2)?,
+                plain_lyrics: row.get(3)?,
+                lyrics_status: row.get(4)?,
+                average_bitrate: row.get::<_, i64>(5)?.max(0) as u32,
+                updated_at: row.get(6)?,
+            })
+        })
+        .ok()
     }
 
     pub fn set_track_cover(&self, track_id: &str, url: &str, source: &str) {
@@ -289,12 +291,14 @@ impl CacheDb {
             return;
         }
         let conn = self.lock_conn();
-        if let Err(error) = conn.execute(
-            "INSERT INTO track_enrichment (track_id, cover_url, cover_source)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT(track_id) DO UPDATE SET cover_url = excluded.cover_url, cover_source = excluded.cover_source",
-            params![track_id, url, source],
-        ) {
+        if let Err(error) = conn
+            .prepare_cached(
+                "INSERT INTO track_enrichment (track_id, cover_url, cover_source)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(track_id) DO UPDATE SET cover_url = excluded.cover_url, cover_source = excluded.cover_source",
+            )
+            .and_then(|mut stmt| stmt.execute(params![track_id, url, source]))
+        {
             tracing::warn!("[sonata:cache] cover-write failed track_id={track_id} error={error}");
         }
     }
@@ -311,14 +315,16 @@ impl CacheDb {
             return;
         }
         let conn = self.lock_conn();
-        if let Err(error) = conn.execute(
-            "INSERT INTO track_enrichment (track_id, synced_lyrics, plain_lyrics, lyrics_status, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(track_id) DO UPDATE SET synced_lyrics = excluded.synced_lyrics,
-                 plain_lyrics = excluded.plain_lyrics, lyrics_status = excluded.lyrics_status,
-                 updated_at = excluded.updated_at",
-            params![track_id, synced, plain, status, updated_at],
-        ) {
+        if let Err(error) = conn
+            .prepare_cached(
+                "INSERT INTO track_enrichment (track_id, synced_lyrics, plain_lyrics, lyrics_status, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(track_id) DO UPDATE SET synced_lyrics = excluded.synced_lyrics,
+                     plain_lyrics = excluded.plain_lyrics, lyrics_status = excluded.lyrics_status,
+                     updated_at = excluded.updated_at",
+            )
+            .and_then(|mut stmt| stmt.execute(params![track_id, synced, plain, status, updated_at]))
+        {
             tracing::warn!("[sonata:cache] lyrics-write failed track_id={track_id} error={error}");
         }
     }
@@ -328,12 +334,14 @@ impl CacheDb {
             return;
         }
         let conn = self.lock_conn();
-        if let Err(error) = conn.execute(
-            "INSERT INTO track_enrichment (track_id, average_bitrate)
-             VALUES (?1, ?2)
-             ON CONFLICT(track_id) DO UPDATE SET average_bitrate = excluded.average_bitrate",
-            params![track_id, bitrate],
-        ) {
+        if let Err(error) = conn
+            .prepare_cached(
+                "INSERT INTO track_enrichment (track_id, average_bitrate)
+                 VALUES (?1, ?2)
+                 ON CONFLICT(track_id) DO UPDATE SET average_bitrate = excluded.average_bitrate",
+            )
+            .and_then(|mut stmt| stmt.execute(params![track_id, bitrate]))
+        {
             tracing::warn!("[sonata:cache] bitrate-write failed track_id={track_id} error={error}");
         }
     }
@@ -344,24 +352,22 @@ impl CacheDb {
         }
         let now = now_secs() as i64;
         let guard = self.lock_conn();
-        guard
-            .query_row(
-                "SELECT url, badge, expires_at FROM stream_cache WHERE cache_key = ?1",
-                params![key],
-                |row| {
-                    let url: String = row.get(0)?;
-                    let badge: String = row.get(1)?;
-                    let exp: i64 = row.get(2)?;
-                    Ok((url, badge, exp))
-                },
-            )
-            .ok()
-            .and_then(|(url, badge, exp)| if exp > now { Some((url, badge)) } else { None })
+        let mut stmt = guard
+            .prepare_cached("SELECT url, badge, expires_at FROM stream_cache WHERE cache_key = ?1")
+            .ok()?;
+        stmt.query_row(params![key], |row| {
+            let url: String = row.get(0)?;
+            let badge: String = row.get(1)?;
+            let exp: i64 = row.get(2)?;
+            Ok((url, badge, exp))
+        })
+        .ok()
+        .and_then(|(url, badge, exp)| if exp > now { Some((url, badge)) } else { None })
     }
 
     pub fn put_stream(&self, key: &str, url: &str, badge: &str) {
         if !self.enabled.load(Ordering::Relaxed)
-            || url.to_ascii_lowercase().contains("googlevideo.com")
+            || contains_ignore_ascii_case(url, b"googlevideo.com")
         {
             return;
         }
@@ -374,18 +380,28 @@ impl CacheDb {
             return;
         }
         let guard = self.lock_conn();
-        if let Err(error) = guard.execute(
-            "INSERT INTO stream_cache (cache_key, url, badge, expires_at) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(cache_key) DO UPDATE SET url = excluded.url, badge = excluded.badge, expires_at = excluded.expires_at",
-            params![key, url, badge, expires_at],
-        ) {
+        if let Err(error) = guard
+            .prepare_cached(
+                "INSERT INTO stream_cache (cache_key, url, badge, expires_at) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(cache_key) DO UPDATE SET url = excluded.url, badge = excluded.badge, expires_at = excluded.expires_at",
+            )
+            .and_then(|mut stmt| stmt.execute(params![key, url, badge, expires_at]))
+        {
             tracing::warn!("[sonata:cache] stream-write failed error={error}");
-        } else if let Err(error) = guard.execute(
-            "DELETE FROM stream_cache WHERE cache_key IN
-             (SELECT cache_key FROM stream_cache ORDER BY expires_at DESC LIMIT -1 OFFSET ?1)",
-            params![MAX_CACHED_STREAMS],
-        ) {
-            tracing::warn!("[sonata:cache] stream-prune failed error={error}");
+        } else if self
+            .write_ops
+            .fetch_add(1, Ordering::Relaxed)
+            .is_multiple_of(PRUNE_WRITE_INTERVAL)
+        {
+            if let Err(error) = guard
+                .prepare_cached(
+                    "DELETE FROM stream_cache WHERE cache_key IN
+                     (SELECT cache_key FROM stream_cache ORDER BY expires_at DESC LIMIT -1 OFFSET ?1)",
+                )
+                .and_then(|mut stmt| stmt.execute(params![MAX_CACHED_STREAMS]))
+            {
+                tracing::warn!("[sonata:cache] stream-prune failed error={error}");
+            }
         }
     }
 
@@ -397,11 +413,13 @@ impl CacheDb {
         let now = now_secs() as i64;
         let guard = self.lock_conn();
         let (name, json, updated_at): (String, String, i64) = guard
-            .query_row(
+            .prepare_cached(
                 "SELECT name, tracks_json, updated_at FROM playlist_cache WHERE playlist_key = ?1",
-                params![key],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
+            .ok()?
+            .query_row(params![key], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
             .ok()?;
         drop(guard);
         let tracks: Vec<Track> = match serde_json::from_str(&json) {
@@ -435,18 +453,28 @@ impl CacheDb {
         }
         let now = now_secs() as i64;
         let guard = self.lock_conn();
-        if let Err(error) = guard.execute(
-            "INSERT INTO playlist_cache (playlist_key, name, tracks_json, updated_at) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(playlist_key) DO UPDATE SET name = excluded.name, tracks_json = excluded.tracks_json, updated_at = excluded.updated_at",
-            params![key, name, json, now],
-        ) {
+        if let Err(error) = guard
+            .prepare_cached(
+                "INSERT INTO playlist_cache (playlist_key, name, tracks_json, updated_at) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(playlist_key) DO UPDATE SET name = excluded.name, tracks_json = excluded.tracks_json, updated_at = excluded.updated_at",
+            )
+            .and_then(|mut stmt| stmt.execute(params![key, name, json, now]))
+        {
             tracing::warn!("[sonata:cache] playlist-write failed key={key} error={error}");
-        } else if let Err(error) = guard.execute(
-            "DELETE FROM playlist_cache WHERE playlist_key IN
-             (SELECT playlist_key FROM playlist_cache ORDER BY updated_at DESC LIMIT -1 OFFSET ?1)",
-            params![MAX_CACHED_PLAYLISTS],
-        ) {
-            tracing::warn!("[sonata:cache] playlist-prune failed error={error}");
+        } else if self
+            .write_ops
+            .fetch_add(1, Ordering::Relaxed)
+            .is_multiple_of(PRUNE_WRITE_INTERVAL)
+        {
+            if let Err(error) = guard
+                .prepare_cached(
+                    "DELETE FROM playlist_cache WHERE playlist_key IN
+                     (SELECT playlist_key FROM playlist_cache ORDER BY updated_at DESC LIMIT -1 OFFSET ?1)",
+                )
+                .and_then(|mut stmt| stmt.execute(params![MAX_CACHED_PLAYLISTS]))
+            {
+                tracing::warn!("[sonata:cache] playlist-prune failed error={error}");
+            }
         }
     }
 
@@ -470,11 +498,9 @@ impl CacheDb {
         }
         let guard = self.lock_conn();
         let json: String = guard
-            .query_row(
-                "SELECT playlists_json FROM library_cache WHERE library_key = ?1",
-                params![key],
-                |row| row.get(0),
-            )
+            .prepare_cached("SELECT playlists_json FROM library_cache WHERE library_key = ?1")
+            .ok()?
+            .query_row(params![key], |row| row.get(0))
             .ok()?;
         match serde_json::from_str(&json) {
             Ok(playlists) => Some(playlists),
@@ -504,11 +530,13 @@ impl CacheDb {
         }
         let now = now_secs() as i64;
         let guard = self.lock_conn();
-        if let Err(error) = guard.execute(
-            "INSERT INTO library_cache (library_key, playlists_json, updated_at) VALUES (?1, ?2, ?3)
-             ON CONFLICT(library_key) DO UPDATE SET playlists_json = excluded.playlists_json, updated_at = excluded.updated_at",
-            params![key, json, now],
-        ) {
+        if let Err(error) = guard
+            .prepare_cached(
+                "INSERT INTO library_cache (library_key, playlists_json, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(library_key) DO UPDATE SET playlists_json = excluded.playlists_json, updated_at = excluded.updated_at",
+            )
+            .and_then(|mut stmt| stmt.execute(params![key, json, now]))
+        {
             tracing::warn!("[sonata:cache] library-write failed key={key} error={error}");
         }
     }
@@ -592,9 +620,15 @@ fn invalidate_legacy_covers(conn: &Connection) {
     }
 }
 
+fn contains_ignore_ascii_case(haystack: &str, needle: &[u8]) -> bool {
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
+}
+
 fn is_legacy_cover_url(url: &str) -> bool {
-    let lower = url.to_ascii_lowercase();
-    lower.contains("saavncdn") || lower.contains("jiosaavn")
+    contains_ignore_ascii_case(url, b"saavncdn") || contains_ignore_ascii_case(url, b"jiosaavn")
 }
 
 fn now_secs() -> u64 {
@@ -607,8 +641,8 @@ fn now_secs() -> u64 {
 pub fn extract_url_expire(url: &str) -> Option<u64> {
     let idx = url.find("expire=")?;
     let rest = &url[idx + "expire=".len()..];
-    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-    digits.parse::<u64>().ok()
+    let len = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
+    rest.get(..len)?.parse::<u64>().ok()
 }
 
 pub fn is_stream_url_fresh(url: &str) -> bool {
@@ -690,6 +724,20 @@ mod tests {
             "OPUS 263kbps",
         );
         assert!(db.get_stream("yt:123").is_none());
+        cleanup_test_db(&tmp);
+    }
+
+    #[test]
+    fn reopens_existing_v3_database() {
+        let tmp = unique_test_db_path("reopen_v3");
+        {
+            let db = CacheDb::open_at(&tmp).expect("initial open");
+            db.put_stream("yt:abc", "https://example.com/a.m4a", "AAC 256kbps");
+        }
+        let reopened = CacheDb::open_at(&tmp).expect("reopen v3 cache");
+        let got = reopened.get_stream("yt:abc").expect("persisted stream");
+        assert_eq!(got.0, "https://example.com/a.m4a");
+        assert_eq!(got.1, "AAC 256kbps");
         cleanup_test_db(&tmp);
     }
 }

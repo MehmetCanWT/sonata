@@ -203,6 +203,12 @@ class PlaybackClockState {
     ) {
         val safePos = positionMs.coerceAtLeast(0L)
         val safeDur = durationMs.coerceAtLeast(0L)
+        if (kotlin.math.abs(safePos - this.positionMs) < 15L &&
+            (safeDur <= 0L || this.durationMs == safeDur) &&
+            sampledAtNanos - this.sampledAtNanos < 150_000_000L
+        ) {
+            return
+        }
         Snapshot.withMutableSnapshot {
             this.positionMs = safePos
             this.sampledAtNanos = sampledAtNanos
@@ -582,21 +588,6 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private fun extractPrimaryArtistName(rawArtist: String): String {
-        val clean = rawArtist
-            .replace(PAREN_FEAT_REGEX, " ")
-            .replace(BRACKET_TAG_REGEX, " ")
-            .replace(INLINE_FEAT_REGEX, " ")
-            .trim()
-        if (clean.isBlank()) return ""
-        val lower = clean.lowercase()
-        if (lower.startsWith("tyler, the creator") || lower.startsWith("earth, wind")) {
-            return clean
-        }
-        val first = clean.split(Regex("\\s*,\\s*|\\s+&\\s+"), limit = 2).firstOrNull()?.trim().orEmpty()
-        return first.ifBlank { clean }
-    }
-
     private fun seedArtistCardsFromShelves(shelves: List<AndroidHomeShelf>) {
         shelves.asSequence()
             .flatMap { it.cards.asSequence() }
@@ -673,41 +664,6 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                 inFlightArtistLookups.remove(key)
             }
         }
-    }
-
-    private fun canonicalTrackKey(track: AndroidTrack): String {
-        val cleanTitle = track.title
-            .lowercase()
-            .replace(PAREN_FEAT_REGEX, " ")
-            .replace(BRACKET_TAG_REGEX, " ")
-            .replace(INLINE_FEAT_REGEX, " ")
-            .replace(NON_ALNUM_REGEX, " ")
-            .trim()
-        val cleanArtist = track.artist
-            .lowercase()
-            .replace(PAREN_FEAT_REGEX, " ")
-            .replace(BRACKET_TAG_REGEX, " ")
-            .split(ARTIST_SPLIT_REGEX, limit = 2)
-            .firstOrNull()
-            .orEmpty()
-            .replace(NON_ALNUM_REGEX, " ")
-            .trim()
-        return if (cleanTitle.isEmpty()) track.id else "$cleanTitle|$cleanArtist"
-    }
-
-    private fun deduplicateTracks(tracks: List<AndroidTrack>): List<AndroidTrack> {
-        if (tracks.size <= 1) return tracks.filter { it.id.isNotBlank() }
-        val seenIds = HashSet<String>(tracks.size)
-        val seenKeys = HashSet<String>(tracks.size)
-        val out = ArrayList<AndroidTrack>(tracks.size)
-        for (t in tracks) {
-            if (t.id.isBlank()) continue
-            val key = canonicalTrackKey(t)
-            if (seenIds.add(t.id) && seenKeys.add(key)) {
-                out.add(t)
-            }
-        }
-        return out
     }
 
     private fun loadLocalLastPlayedHistory(): List<AndroidTrack> = synchronized(historyLock) {
@@ -1183,37 +1139,6 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
             delay(1_800L)
             resolvePrefetchList(engine, candidates.distinctBy { it.id }.take(2))
         }
-    }
-
-    private fun normalizeAndMergeHomeShelves(rawShelves: List<AndroidHomeShelf>): List<AndroidHomeShelf> {
-        val visible = rawShelves
-            .filterNot { isExcludedShelfTitle(it.title) }
-            .map { shelf ->
-                if (shelf.tracks.size > 1) {
-                    val deduped = deduplicateTracks(shelf.tracks)
-                    if (deduped.size == shelf.tracks.size) shelf else shelf.copy(tracks = deduped)
-                } else {
-                    shelf
-                }
-            }
-        return mergeNewReleaseShelves(visible)
-    }
-
-    private fun normalizeRadioMixShelves(rawMixes: List<AndroidHomeShelf>): List<AndroidHomeShelf> {
-        val seenIds = HashSet<String>()
-        val seenKeys = HashSet<String>()
-        return rawMixes
-            .filterNot { isExcludedShelfTitle(it.title) }
-            .mapNotNull { shelf ->
-                val uniqueCards = shelf.cards.filter { card ->
-                    val cid = card.id.removePrefix("VL").trim()
-                    val key = card.dedupeContentKey()
-                    val idFresh = cid.isBlank() || seenIds.add(cid)
-                    val keyFresh = key == "|" || seenKeys.add(key)
-                    idFresh && keyFresh
-                }
-                if (uniqueCards.isEmpty()) null else shelf.copy(cards = uniqueCards)
-            }
     }
 
     private fun handleRateLimitIfNeeded(err: Throwable) {
@@ -1894,21 +1819,6 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
             _uiState.update { it.copy(status = msg, addToPlaylistStatus = msg) }
         }
     }
-
-    private fun stripRangeQueryParam(url: String): String {
-        if (!url.contains("range=", ignoreCase = true)) return url
-        return url
-            .replace(Regex("([?&])range=[^&]*&?"), "$1")
-            .trimEnd('&', '?')
-    }
-
-    private fun parseBitrateKbps(badge: String): Int =
-        Regex("(\\d{2,4})\\s*kbps", RegexOption.IGNORE_CASE)
-            .find(badge)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.toIntOrNull()
-            ?: 0
 
     fun cancelDownload(videoId: String) {
         downloadManager.cancelDownload(videoId)
@@ -3402,27 +3312,6 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private fun shouldUpgradeStreamBadge(badge: String, signedIn: Boolean): Boolean {
-        val lower = badge.lowercase()
-        if (lower.contains("extreme") ||
-            lower.contains("hi-res") ||
-            lower.contains("hifi") ||
-            lower.contains("flac") ||
-            lower.contains("alac")
-        ) {
-            return false
-        }
-        val kbps = KBPS_REGEX.find(lower)?.groupValues?.getOrNull(1)?.toIntOrNull()
-        if (signedIn && (kbps == null || kbps < 240)) {
-            return true
-        }
-        if (lower.contains("opus") || lower.contains("hq")) {
-            return false
-        }
-        if (kbps != null) return kbps < 160
-        return lower.contains("standard")
-    }
-
     fun nextTrack() {
         val state = _uiState.value
         val queue = state.queue
@@ -3713,48 +3602,6 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         super.onCleared()
     }
 
-    private fun backfillCollectionTracks(
-        rawTracks: List<AndroidTrack>,
-        id: String,
-        title: String,
-        subtitle: String?,
-        coverUrl: String?,
-    ): List<AndroidTrack> {
-        val fallbackArtist = parseArtistFromCollectionSubtitle(subtitle)
-        val fallbackCover = coverUrl ?: rawTracks.firstOrNull { !it.thumbnailUrl.isNullOrBlank() }?.thumbnailUrl
-        val albumBrowseId = id.takeIf {
-            it.startsWith("MPRE") || it.startsWith("OLAK") || it.startsWith("VLOLAK")
-        }?.removePrefix("VL")
-        return rawTracks.map { track ->
-            val resolvedArtist = if (
-                (track.artist.isBlank() || track.artist.equals("Unknown Artist", ignoreCase = true)) &&
-                fallbackArtist != null
-            ) {
-                fallbackArtist
-            } else {
-                track.artist
-            }
-            val resolvedThumb = track.thumbnailUrl?.takeIf { it.isNotBlank() } ?: fallbackCover
-            val resolvedAlbum = track.album.takeIf { it.isNotBlank() } ?: title
-            val resolvedAlbumId = track.albumId ?: albumBrowseId
-            if (
-                resolvedArtist == track.artist &&
-                resolvedThumb == track.thumbnailUrl &&
-                resolvedAlbum == track.album &&
-                resolvedAlbumId == track.albumId
-            ) {
-                track
-            } else {
-                track.copy(
-                    artist = resolvedArtist,
-                    thumbnailUrl = resolvedThumb,
-                    album = resolvedAlbum,
-                    albumId = resolvedAlbumId,
-                )
-            }
-        }
-    }
-
     companion object {
         const val DOWNLOADS_PLAYLIST_ID = "local:downloads"
         private const val LOCAL_PLAYLISTS_PREFS_NAME = "sonata_local_playlists"
@@ -3780,12 +3627,93 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         private val ARTIST_SPLIT_REGEX = Regex("\\s*(?:,|&|\\bfeat\\.?\\b|\\bft\\.?\\b|\\bfeaturing\\b|•)\\s*")
         private val NON_ALNUM_REGEX = Regex("[^\\p{L}\\p{N}]+")
 
-        private fun isExcludedShelfTitle(title: String): Boolean {
+        internal fun extractPrimaryArtistName(rawArtist: String): String {
+            val clean = rawArtist
+                .replace(PAREN_FEAT_REGEX, " ")
+                .replace(BRACKET_TAG_REGEX, " ")
+                .replace(INLINE_FEAT_REGEX, " ")
+                .trim()
+            if (clean.isBlank()) return ""
+            val lower = clean.lowercase()
+            if (lower.startsWith("tyler, the creator") || lower.startsWith("earth, wind")) {
+                return clean
+            }
+            val first = clean.split(Regex("\\s*,\\s*|\\s+&\\s+"), limit = 2).firstOrNull()?.trim().orEmpty()
+            return first.ifBlank { clean }
+        }
+
+        internal fun canonicalTrackKey(track: AndroidTrack): String {
+            val cleanTitle = track.title
+                .lowercase()
+                .replace(PAREN_FEAT_REGEX, " ")
+                .replace(BRACKET_TAG_REGEX, " ")
+                .replace(INLINE_FEAT_REGEX, " ")
+                .replace(NON_ALNUM_REGEX, " ")
+                .trim()
+            val cleanArtist = track.artist
+                .lowercase()
+                .replace(PAREN_FEAT_REGEX, " ")
+                .replace(BRACKET_TAG_REGEX, " ")
+                .split(ARTIST_SPLIT_REGEX, limit = 2)
+                .firstOrNull()
+                .orEmpty()
+                .replace(NON_ALNUM_REGEX, " ")
+                .trim()
+            return if (cleanTitle.isEmpty()) track.id else "$cleanTitle|$cleanArtist"
+        }
+
+        internal fun deduplicateTracks(tracks: List<AndroidTrack>): List<AndroidTrack> {
+            if (tracks.size <= 1) return tracks.filter { it.id.isNotBlank() }
+            val seenIds = HashSet<String>(tracks.size)
+            val seenKeys = HashSet<String>(tracks.size)
+            val out = ArrayList<AndroidTrack>(tracks.size)
+            for (t in tracks) {
+                if (t.id.isBlank()) continue
+                val key = canonicalTrackKey(t)
+                if (seenIds.add(t.id) && seenKeys.add(key)) {
+                    out.add(t)
+                }
+            }
+            return out
+        }
+
+        internal fun isExcludedShelfTitle(title: String): Boolean {
             val lower = title.trim().lowercase()
             return "forgotten favorite" in lower || "unutulan favori" in lower
         }
 
-        private fun parseArtistFromCollectionSubtitle(subtitle: String?): String? {
+        internal fun normalizeAndMergeHomeShelves(rawShelves: List<AndroidHomeShelf>): List<AndroidHomeShelf> {
+            val visible = rawShelves
+                .filterNot { isExcludedShelfTitle(it.title) }
+                .map { shelf ->
+                    if (shelf.tracks.size > 1) {
+                        val deduped = deduplicateTracks(shelf.tracks)
+                        if (deduped.size == shelf.tracks.size) shelf else shelf.copy(tracks = deduped)
+                    } else {
+                        shelf
+                    }
+                }
+            return mergeNewReleaseShelves(visible)
+        }
+
+        internal fun normalizeRadioMixShelves(rawMixes: List<AndroidHomeShelf>): List<AndroidHomeShelf> {
+            val seenIds = HashSet<String>()
+            val seenKeys = HashSet<String>()
+            return rawMixes
+                .filterNot { isExcludedShelfTitle(it.title) }
+                .mapNotNull { shelf ->
+                    val uniqueCards = shelf.cards.filter { card ->
+                        val cid = card.id.removePrefix("VL").trim()
+                        val key = card.dedupeContentKey()
+                        val idFresh = cid.isBlank() || seenIds.add(cid)
+                        val keyFresh = key == "|" || seenKeys.add(key)
+                        idFresh && keyFresh
+                    }
+                    if (uniqueCards.isEmpty()) null else shelf.copy(cards = uniqueCards)
+                }
+        }
+
+        internal fun parseArtistFromCollectionSubtitle(subtitle: String?): String? {
             val raw = subtitle?.trim()?.takeIf { it.isNotEmpty() } ?: return null
             val parts = raw.split('•', '·')
                 .map { it.trim() }
@@ -3798,6 +3726,84 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                         !YEAR_REGEX.matches(part)
                 }
             return parts.firstOrNull()
+        }
+
+        internal fun backfillCollectionTracks(
+            rawTracks: List<AndroidTrack>,
+            id: String,
+            title: String,
+            subtitle: String?,
+            coverUrl: String?,
+        ): List<AndroidTrack> {
+            val fallbackArtist = parseArtistFromCollectionSubtitle(subtitle)
+            val fallbackCover = coverUrl ?: rawTracks.firstOrNull { !it.thumbnailUrl.isNullOrBlank() }?.thumbnailUrl
+            val albumBrowseId = id.takeIf {
+                it.startsWith("MPRE") || it.startsWith("OLAK") || it.startsWith("VLOLAK")
+            }?.removePrefix("VL")
+            return rawTracks.map { track ->
+                val resolvedArtist = if (
+                    (track.artist.isBlank() || track.artist.equals("Unknown Artist", ignoreCase = true)) &&
+                    fallbackArtist != null
+                ) {
+                    fallbackArtist
+                } else {
+                    track.artist
+                }
+                val resolvedThumb = track.thumbnailUrl?.takeIf { it.isNotBlank() } ?: fallbackCover
+                val resolvedAlbum = track.album.takeIf { it.isNotBlank() } ?: title
+                val resolvedAlbumId = track.albumId ?: albumBrowseId
+                if (
+                    resolvedArtist == track.artist &&
+                    resolvedThumb == track.thumbnailUrl &&
+                    resolvedAlbum == track.album &&
+                    resolvedAlbumId == track.albumId
+                ) {
+                    track
+                } else {
+                    track.copy(
+                        artist = resolvedArtist,
+                        thumbnailUrl = resolvedThumb,
+                        album = resolvedAlbum,
+                        albumId = resolvedAlbumId,
+                    )
+                }
+            }
+        }
+
+        internal fun stripRangeQueryParam(url: String): String {
+            if (!url.contains("range=", ignoreCase = true)) return url
+            return url
+                .replace(Regex("([?&])range=[^&]*&?"), "$1")
+                .trimEnd('&', '?')
+        }
+
+        internal fun parseBitrateKbps(badge: String): Int =
+            Regex("(\\d{2,4})\\s*kbps", RegexOption.IGNORE_CASE)
+                .find(badge)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.toIntOrNull()
+                ?: 0
+
+        internal fun shouldUpgradeStreamBadge(badge: String, signedIn: Boolean): Boolean {
+            val lower = badge.lowercase()
+            if (lower.contains("extreme") ||
+                lower.contains("hi-res") ||
+                lower.contains("hifi") ||
+                lower.contains("flac") ||
+                lower.contains("alac")
+            ) {
+                return false
+            }
+            val kbps = KBPS_REGEX.find(lower)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            if (signedIn && (kbps == null || kbps < 240)) {
+                return true
+            }
+            if (lower.contains("opus") || lower.contains("hq")) {
+                return false
+            }
+            if (kbps != null) return kbps < 160
+            return lower.contains("standard")
         }
     }
 }

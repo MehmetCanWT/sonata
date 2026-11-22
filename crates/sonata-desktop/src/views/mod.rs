@@ -291,6 +291,9 @@ impl SonataDesktopView {
                     }
                     let fps = view.motion_fps.clamp(12.0, 30.0);
                     tick = Duration::from_secs_f32(1.0 / fps);
+                    if view.snapshot.paused {
+                        return true;
+                    }
                     let next_idx = ((view.anim_epoch.elapsed().as_secs_f32() * fps) as usize)
                         % view.motion_textures.len();
                     if next_idx != view.last_motion_frame_idx {

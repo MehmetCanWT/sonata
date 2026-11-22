@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-11-22
+
+### Performance
+
+- **Release Profile & `sonata-core`**: Enabled thin LTO (`lto = "thin"`) and single codegen unit (`codegen-units = 1`) for release builds; fixed `CACHE_SCHEMA_VERSION` (`3`) so existing SQLite caches reopen properly, enabled 64 MiB `mmap_size`, switched hot queries to `prepare_cached`, amortized `stream_cache`/`playlist_cache` pruning to every 32 writes, eliminated per-call heap allocations in URL helpers and `fetch_and_decode_art`, cached Spotify bundle regexes in `LazyLock` and replaced dynamic regexes with slice scanning, tuned `reqwest` connection pooling, parallelized `StreamResolver::warm` with `tokio::join!`, and gated `MpvController` debug payload redaction behind `tracing::enabled!(DEBUG)`.
+- **`sonata-android` UniFFI Bridge**: Added owned `From<T>` conversions to move playlists, tracks, home shelves, and artist pages across FFI without deep cloning, and released the `loaded_hash` mutex before calling the Android WebView JS cipher solver.
+- **`sonata-tui` & `sonata-desktop`**: Short-circuited `export_now_playing()` when playback state is unchanged and reused cached artwork paths to eliminate 30 Hz `stat()` syscalls; eliminated per-word `String` allocations in `render_active_tui_lyric_line`; gated `sonata-desktop` motion cover frame ticks on `!paused`; upgraded `BlurredLyricCache` to refresh LRU recency on hit and bounded Gaussian blur rasterization to nearby verses (`distance <= 8`).
+- **Android Compose UI, Data & R8**: Deferred `ThinSlider` sheen and `MeshGradientBackground` color/brush animations to draw-phase reads with cached radial gradient brushes; removed duplicate `drawThemeAtmosphericBackdrop` overdraw in `MainActivity`; cached `VioletTheme`/`MoonflowerTheme` atmospheric `Path`/`Brush`/`Stroke` objects across scroll frames; deferred `boundsInRoot()` calculations via `LayoutBoundsHolder` until long-press/options menu open; memoized `GlassSelectionPill` effect lambdas with `0.5f` lens backdrop scale; added `contentType`, hoisted scroll state, and remembered `TextStyle` in `EnhancedLyricsPanel`; short-circuited no-op `PlaybackClockState.sync` ticks; offloaded `SonataWidgetUpdater` and backup file I/O to `Dispatchers.IO`; guarded `POST_NOTIFICATIONS` launcher checks on cold start; and tightened `proguard-rules.pro` keep rules to enable full R8 shrinking and optimization across Media3, Coil 3, and app classes.
+
 ## [1.0.2] - 2026-11-22
 
 ### Added
@@ -44,7 +53,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **In-App Downloads Playlist & Offline Playback (`DownloadManager.kt`, `DownloadsScreen.kt`)**: Added permanent offline track/collection downloads surfaced as a first-class in-app **Downloads** playlist inside Library with offline-first playback and cache eviction (`Remove from Cache`).
 - **Animated Album Art (Canvas) & Procedural Animated Covers (`CanvasResolver.kt`, `CanvasVideoPlayer.kt`, `SonataAnimatedArtworks.kt`)**: Multi-provider Canvas video resolver (Apple Music HLS, Tidal, Community MP4 with local `CanvasClipFileCache` for non-faststart MP4s) plus 14 original centered, bounds-clipped animated covers for Personal/Discovery Stations and Find Your Mood.
 - **Now Playing Options Menu, Audio Pipeline & Full-Screen Categorized Settings (`NowPlayingOptionsMenu.kt`, `AudioPipelineModal.kt`, `CategorizedSettingsSheet.kt`, `UserMenuSheet.kt`)**: Added Liquid Glass Now Playing `⋯` options popover (housing Audio Controls, Sleep Timer, Lyrics Offset, Romanize, Translate, Download, Open Album/Artist), 4-stage Audio Signal Chain inspector, Liquid Glass Account menu, and clean neutral full-screen Settings with **60 / 90 / 120 FPS** hardware refresh rate support.
-- **Liquid Glass Reference Guide ([`liquidglass.md`](liquidglass.md))**: Documented Sonata's optical refraction shader parameters, surface rules, and `LayerBackdrop` sibling guardrails.
+- **Liquid Glass Reference Guide (`research/liquidglass.md`)**: Documented Sonata's optical refraction shader parameters, surface rules, and `LayerBackdrop` sibling guardrails.
 
 ### Changed
 

@@ -2,10 +2,12 @@ package dev.sonata.android
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
+import androidx.core.content.ContextCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -110,6 +112,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -234,6 +237,7 @@ import dev.sonata.android.ui.feedSkeleton
 import dev.sonata.android.ui.recentlyPlayedSkeleton
 import dev.sonata.android.ui.rememberArtworkPalette
 import dev.sonata.android.ui.rememberArtworkRequest
+import dev.sonata.android.ui.rememberSafeTopInset
 import dev.sonata.android.ui.rememberSmoothLyricClock
 import dev.sonata.android.ui.toMeshPalette
 import dev.sonata.android.ui.topPicksSkeleton
@@ -279,8 +283,10 @@ import dev.sonata.android.ui.screens.SonataSettingsScreen
 import dev.sonata.android.ui.theme.SonataRadioWavesIcon
 import dev.sonata.android.ui.theme.SonataTabIconSize
 import dev.sonata.android.ui.trackColumnWidth
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
 import uniffi.sonata_android.AndroidAccountProfile
 import uniffi.sonata_android.AndroidArtistPage
 import uniffi.sonata_android.AndroidHomeCard
@@ -338,7 +344,10 @@ class MainActivity : ComponentActivity() {
                 .build()
         }
         enableEdgeToEdge()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
             notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         setContent {
@@ -483,13 +492,16 @@ private fun SonataAppContent(
         vm.selectTab(target)
     }
 
+    val ioScope = rememberCoroutineScope()
     val exportBackupLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json"),
     ) { uri ->
         if (uri != null) {
-            runCatching {
-                context.contentResolver.openOutputStream(uri)?.use { out ->
-                    out.write(vm.exportSettingsBackup().toByteArray(Charsets.UTF_8))
+            ioScope.launch(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openOutputStream(uri)?.use { out ->
+                        out.write(vm.exportSettingsBackup().toByteArray(Charsets.UTF_8))
+                    }
                 }
             }
         }
@@ -498,10 +510,12 @@ private fun SonataAppContent(
         ActivityResultContracts.OpenDocument(),
     ) { uri ->
         if (uri != null) {
-            runCatching {
-                val json = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                if (!json.isNullOrBlank()) {
-                    vm.importSettingsBackup(json)
+            ioScope.launch(Dispatchers.IO) {
+                runCatching {
+                    val json = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                    if (!json.isNullOrBlank()) {
+                        vm.importSettingsBackup(json)
+                    }
                 }
             }
         }
@@ -520,7 +534,7 @@ private fun SonataAppContent(
         inlineBehavior = FloatingTabBarInlineBehavior.OnScrollDown,
     )
 
-    val statusTopPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val statusTopPadding = rememberSafeTopInset() + 8.dp
     val topBarHeight = statusTopPadding + TopBarContentHeight
     // Fixed bottom inset keyed only on activeTrack presence so FloatingTabBar collapse/expand
     // never triggers full LazyColumn relayout mid-fling.
@@ -748,10 +762,15 @@ private fun SonataAppContent(
     }
 
     val openTrackHeldMenu: (AndroidTrack, Int?, Rect?) -> Unit = { track, trackNumber, bounds ->
+        val resolvedTrack = if (track.thumbnailUrl.isNullOrBlank() && !state.collectionCoverUrl.isNullOrBlank()) {
+            track.copy(thumbnailUrl = state.collectionCoverUrl)
+        } else {
+            track
+        }
         heldContextTarget = HeldContextTarget.TrackRow(
-            track = track,
+            track = resolvedTrack,
             trackNumber = trackNumber,
-            isExplicit = track.isExplicit,
+            isExplicit = resolvedTrack.isExplicit,
             anchorBounds = bounds,
         )
     }
@@ -788,22 +807,12 @@ private fun SonataAppContent(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .drawBehind {
-                    drawThemeAtmosphericBackdrop(
-                        designTheme = themeTokens.designTheme,
-                        isDark = themeTokens.isDark,
-                        accent = themeTokens.petalLavender,
-                        mist = themeTokens.lunarMist,
-                    )
-                }
                 .layerBackdrop(appBackdrop),
         ) {
-            val topPad = if (state.activeTab == AndroidTab.Search && state.collectionTitle == null && !showAllMoods) {
-                topBarHeight + 10.dp
-            } else if (state.collectionTitle != null) {
-                0.dp
-            } else {
-                statusTopPadding + 14.dp
+            val topPad = when {
+                state.collectionTitle != null -> topBarHeight + 8.dp
+                state.activeTab == AndroidTab.Search && !showAllMoods && !showListeningHistory -> topBarHeight + 10.dp
+                else -> statusTopPadding + 8.dp
             }
             val contentPadding = PaddingValues(top = topPad, bottom = bottomBarInset)
 

@@ -107,6 +107,8 @@ import dev.sonata.android.ui.artworkAt
 import dev.sonata.android.ui.components.ScrollActivityTracker
 import dev.sonata.android.ui.rememberArtworkPalette
 import dev.sonata.android.ui.rememberArtworkRequest
+import dev.sonata.android.ui.rememberLayoutBoundsHolder
+import dev.sonata.android.ui.rememberSafeTopInset
 import dev.sonata.android.ui.theme.LocalLunariaColors
 import dev.sonata.android.ui.theme.LunariaColors
 import dev.sonata.android.ui.theme.sonataGlassSurface
@@ -188,7 +190,7 @@ fun ArtistScreen(
     backdrop: LayerBackdrop? = null,
     modifier: Modifier = Modifier,
 ) {
-    val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val statusTop = rememberSafeTopInset()
     val themeTokens = LocalLunariaColors.current
     val resolvedHeroUrl = remember(artist) {
         artist?.avatarUrl?.takeIf { it.isNotBlank() }
@@ -841,7 +843,7 @@ private fun LatestReleaseCard(
         heightPx = CARD_ART_PX,
     )
     val haptics = LocalHapticFeedback.current
-    var cardBounds by remember { mutableStateOf<Rect?>(null) }
+    val cardBounds = rememberLayoutBoundsHolder()
     val cardShape = remember { RoundedCornerShape(26.dp) }
     val cardSurface = MaterialTheme.colorScheme.surface
     val cardVariant = MaterialTheme.colorScheme.surfaceVariant
@@ -855,20 +857,20 @@ private fun LatestReleaseCard(
     val containerModifier = if (themeTokens.isViolet) {
         // Violet editorial open layout (`violet artist.png`): no boxed card around the double-sleeve stack.
         modifier
-            .onGloballyPositioned { cardBounds = it.boundsInRoot() }
+            .onGloballyPositioned { cardBounds.coordinates = it }
             .clip(cardShape)
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = {
                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onLongClick(cardBounds)
+                    onLongClick(cardBounds.boundsInRoot())
                 },
             )
             .padding(horizontal = 4.dp, vertical = 8.dp)
     } else {
         // Moonflower frosted petal card container.
         modifier
-            .onGloballyPositioned { cardBounds = it.boundsInRoot() }
+            .onGloballyPositioned { cardBounds.coordinates = it }
             .clip(cardShape)
             .background(cardBg)
             .border(0.75.dp, themeTokens.cardStroke, cardShape)
@@ -876,7 +878,7 @@ private fun LatestReleaseCard(
                 onClick = onClick,
                 onLongClick = {
                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onLongClick(cardBounds)
+                    onLongClick(cardBounds.boundsInRoot())
                 },
             )
             .padding(horizontal = 16.dp, vertical = 14.dp)
@@ -1049,8 +1051,8 @@ private fun ArtistSongRow(
 ) {
     val track = item.track
     val haptics = LocalHapticFeedback.current
-    var rowBounds by remember { mutableStateOf<Rect?>(null) }
-    var optionsBounds by remember { mutableStateOf<Rect?>(null) }
+    val rowBounds = rememberLayoutBoundsHolder()
+    val optionsBounds = rememberLayoutBoundsHolder()
     val artReq = rememberArtworkRequest(
         url = track.thumbnailUrl.artworkAt(ROW_ART_PX),
         widthPx = ROW_ART_PX,
@@ -1060,14 +1062,14 @@ private fun ArtistSongRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .onGloballyPositioned { rowBounds = it.boundsInRoot() }
+            .onGloballyPositioned { rowBounds.coordinates = it }
             .clip(RoundedCornerShape(10.dp))
             .background(if (isActive) MaterialTheme.colorScheme.onBackground.copy(alpha = 0.08f) else Color.Transparent)
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = {
                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onLongClick(rowBounds)
+                    onLongClick(rowBounds.boundsInRoot())
                 },
             )
             .padding(vertical = 6.dp, horizontal = 4.dp),
@@ -1168,10 +1170,10 @@ private fun ArtistSongRow(
         }
 
         IconButton(
-            onClick = { onOptionsClick(optionsBounds) },
+            onClick = { onOptionsClick(optionsBounds.boundsInRoot()) },
             modifier = Modifier
                 .size(36.dp)
-                .onGloballyPositioned { optionsBounds = it.boundsInRoot() },
+                .onGloballyPositioned { optionsBounds.coordinates = it },
         ) {
             Icon(
                 imageVector = SonataIcons.MoreVert,
@@ -1205,16 +1207,16 @@ private fun ReleaseHorizontalShelf(
                 widthPx = 360,
                 heightPx = 360,
             )
-            var cardBounds by remember { mutableStateOf<Rect?>(null) }
+            val cardBounds = rememberLayoutBoundsHolder()
             Column(
                 modifier = Modifier
                     .width(146.dp)
-                    .onGloballyPositioned { cardBounds = it.boundsInRoot() }
+                    .onGloballyPositioned { cardBounds.coordinates = it }
                     .combinedClickable(
                         onClick = { onReleaseClick(release) },
                         onLongClick = {
                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onReleaseLongClick(release, cardBounds)
+                            onReleaseLongClick(release, cardBounds.boundsInRoot())
                         },
                     ),
             ) {

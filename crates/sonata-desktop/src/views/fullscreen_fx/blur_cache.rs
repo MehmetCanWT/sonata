@@ -115,8 +115,12 @@ impl BlurredLyricCache {
             scale_factor,
         );
 
-        if let Some(hit) = self.entries.get(&key) {
-            return Some(hit.clone());
+        if let Some(hit) = self.entries.get(&key).cloned() {
+            if self.lru.back() != Some(&key) {
+                self.lru.retain(|k| k != &key);
+                self.lru.push_back(key);
+            }
+            return Some(hit);
         }
 
         let actual_scale = f32::from(key.scale_tenths) / 10.0;

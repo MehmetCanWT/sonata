@@ -237,6 +237,7 @@ import dev.sonata.android.ui.feedSkeleton
 import dev.sonata.android.ui.recentlyPlayedSkeleton
 import dev.sonata.android.ui.rememberArtworkPalette
 import dev.sonata.android.ui.rememberArtworkRequest
+import dev.sonata.android.ui.rememberLayoutBoundsHolder
 import dev.sonata.android.ui.rememberSmoothLyricClock
 import dev.sonata.android.ui.toMeshPalette
 import dev.sonata.android.ui.topPicksSkeleton
@@ -724,7 +725,7 @@ internal fun ExploreEditorialHeroCard(
 ) {
     val tokens = LocalLunariaColors.current
     val haptics = LocalHapticFeedback.current
-    var cardBounds by remember { mutableStateOf<Rect?>(null) }
+    val cardBounds = rememberLayoutBoundsHolder()
     val heroShape = tokens.cardShape
     val sizedUrl = remember(artworkUrl) { artworkUrl.artworkAt(HEADER_ART_PX) }
     val artRequest = rememberArtworkRequest(sizedUrl, HEADER_ART_PX, HEADER_ART_PX)
@@ -740,12 +741,12 @@ internal fun ExploreEditorialHeroCard(
     Column(
         modifier = Modifier
             .width(cardWidth)
-            .onGloballyPositioned { cardBounds = it.boundsInRoot() }
+            .onGloballyPositioned { cardBounds.coordinates = it }
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = {
                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onLongClick(cardBounds)
+                    onLongClick(cardBounds.boundsInRoot())
                 },
             ),
     ) {
@@ -834,8 +835,8 @@ internal fun ExploreViralHitRow(
     onLongClick: (Rect?) -> Unit,
 ) {
     val haptics = LocalHapticFeedback.current
-    var rowBounds by remember { mutableStateOf<Rect?>(null) }
-    var optionsBounds by remember { mutableStateOf<Rect?>(null) }
+    val rowBounds = rememberLayoutBoundsHolder()
+    val optionsBounds = rememberLayoutBoundsHolder()
     val thumbShape = remember { RoundedCornerShape(8.dp) }
     val thumb = remember(track.thumbnailUrl) { track.thumbnailUrl.artworkAt(ROW_ART_PX) }
     val thumbReq = rememberArtworkRequest(thumb, ROW_ART_PX, ROW_ART_PX)
@@ -845,12 +846,12 @@ internal fun ExploreViralHitRow(
         modifier = Modifier
             .fillMaxWidth()
             .clip(Shape10)
-            .onGloballyPositioned { rowBounds = it.boundsInRoot() }
+            .onGloballyPositioned { rowBounds.coordinates = it }
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = {
                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onLongClick(rowBounds)
+                    onLongClick(rowBounds.boundsInRoot())
                 },
             )
             .padding(vertical = 7.dp),
@@ -969,8 +970,8 @@ internal fun ExploreViralHitRow(
             modifier = Modifier
                 .size(32.dp)
                 .clip(CircleShape)
-                .onGloballyPositioned { optionsBounds = it.boundsInRoot() }
-                .clickable { onOptionsClick(optionsBounds) },
+                .onGloballyPositioned { optionsBounds.coordinates = it }
+                .clickable { onOptionsClick(optionsBounds.boundsInRoot()) },
             contentAlignment = Alignment.Center,
         ) {
             Icon(

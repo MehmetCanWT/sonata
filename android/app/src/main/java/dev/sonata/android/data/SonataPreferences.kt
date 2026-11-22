@@ -469,66 +469,6 @@ class SonataPreferences(context: Context) {
             .apply()
     }
 
-    private fun encodeTrackOffsets(offsets: Map<String, Long>): String {
-        val obj = JSONObject()
-        offsets.forEach { (id, offset) ->
-            if (id.isNotBlank() && offset != 0L) {
-                obj.put(id, offset.coerceIn(MIN_LYRIC_OFFSET_MS, MAX_LYRIC_OFFSET_MS))
-            }
-        }
-        return obj.toString()
-    }
-
-    private fun sanitize(state: SonataSettingsState): SonataSettingsState {
-        val normalizedBands = List(EQ_BAND_COUNT) { index ->
-            val raw = state.eqBandsDb.getOrElse(index) { 0f }
-            if (raw.isFinite()) raw.coerceIn(MIN_EQ_DB, MAX_EQ_DB) else 0f
-        }
-        val normalizedSpeed = if (state.playbackSpeed.isFinite()) {
-            state.playbackSpeed.coerceIn(MIN_SPEED, MAX_SPEED)
-        } else {
-            1.0f
-        }
-        val normalizedFps = when {
-            state.fpsLimit <= 60 -> 60
-            state.fpsLimit <= 90 -> 90
-            else -> 120
-        }
-        return state.copy(
-            fpsLimit = normalizedFps,
-            crossfadeSeconds = state.crossfadeSeconds.coerceIn(MIN_CROSSFADE_SEC, MAX_CROSSFADE_SEC),
-            playbackSpeed = normalizedSpeed,
-            eqPreset = state.eqPreset.trim().ifEmpty { "Flat" },
-            eqBandsDb = normalizedBands,
-            lyricsTranslationLang = state.lyricsTranslationLang.trim().lowercase().ifEmpty { "en" },
-            lyricsOffsetMs = state.lyricsOffsetMs.coerceIn(MIN_LYRIC_OFFSET_MS, MAX_LYRIC_OFFSET_MS),
-        )
-    }
-
-    private fun encodeBands(bands: List<Float>): String =
-        JSONArray().apply { bands.forEach { put(it.toDouble()) } }.toString()
-
-    private fun parseBands(raw: String?, fallback: List<Float>): List<Float> {
-        if (raw.isNullOrBlank()) return fallback
-        return runCatching {
-            val array = JSONArray(raw)
-            List(EQ_BAND_COUNT) { index ->
-                if (index < array.length()) array.optDouble(index, 0.0).toFloat() else 0f
-            }
-        }.getOrDefault(fallback)
-    }
-
-    private fun parseThemeMode(raw: String?, fallback: ThemeMode): ThemeMode {
-        val normalized = raw?.trim()?.uppercase() ?: return fallback
-        return when (normalized) {
-            "DARK" -> ThemeMode.MOONFLOWER_DARK
-            "LIGHT" -> ThemeMode.MOONFLOWER_LIGHT
-            "ELECTRIC_LAVENDER" -> ThemeMode.VIOLET_DARK
-            "IMPERIAL_VIOLET" -> ThemeMode.VIOLET_LIGHT
-            else -> runCatching { ThemeMode.valueOf(normalized) }.getOrDefault(fallback)
-        }
-    }
-
     private inline fun <reified T : Enum<T>> parseEnum(raw: String?, fallback: T): T {
         if (raw.isNullOrBlank()) return fallback
         return runCatching { enumValueOf<T>(raw.trim().uppercase()) }.getOrDefault(fallback)
@@ -536,6 +476,66 @@ class SonataPreferences(context: Context) {
 
     companion object {
         private const val PREFS_NAME = "sonata_preferences"
+
+        internal fun encodeTrackOffsets(offsets: Map<String, Long>): String {
+            val obj = JSONObject()
+            offsets.forEach { (id, offset) ->
+                if (id.isNotBlank() && offset != 0L) {
+                    obj.put(id, offset.coerceIn(MIN_LYRIC_OFFSET_MS, MAX_LYRIC_OFFSET_MS))
+                }
+            }
+            return obj.toString()
+        }
+
+        internal fun sanitize(state: SonataSettingsState): SonataSettingsState {
+            val normalizedBands = List(EQ_BAND_COUNT) { index ->
+                val raw = state.eqBandsDb.getOrElse(index) { 0f }
+                if (raw.isFinite()) raw.coerceIn(MIN_EQ_DB, MAX_EQ_DB) else 0f
+            }
+            val normalizedSpeed = if (state.playbackSpeed.isFinite()) {
+                state.playbackSpeed.coerceIn(MIN_SPEED, MAX_SPEED)
+            } else {
+                1.0f
+            }
+            val normalizedFps = when {
+                state.fpsLimit <= 60 -> 60
+                state.fpsLimit <= 90 -> 90
+                else -> 120
+            }
+            return state.copy(
+                fpsLimit = normalizedFps,
+                crossfadeSeconds = state.crossfadeSeconds.coerceIn(MIN_CROSSFADE_SEC, MAX_CROSSFADE_SEC),
+                playbackSpeed = normalizedSpeed,
+                eqPreset = state.eqPreset.trim().ifEmpty { "Flat" },
+                eqBandsDb = normalizedBands,
+                lyricsTranslationLang = state.lyricsTranslationLang.trim().lowercase().ifEmpty { "en" },
+                lyricsOffsetMs = state.lyricsOffsetMs.coerceIn(MIN_LYRIC_OFFSET_MS, MAX_LYRIC_OFFSET_MS),
+            )
+        }
+
+        internal fun encodeBands(bands: List<Float>): String =
+            JSONArray().apply { bands.forEach { put(it.toDouble()) } }.toString()
+
+        internal fun parseBands(raw: String?, fallback: List<Float>): List<Float> {
+            if (raw.isNullOrBlank()) return fallback
+            return runCatching {
+                val array = JSONArray(raw)
+                List(EQ_BAND_COUNT) { index ->
+                    if (index < array.length()) array.optDouble(index, 0.0).toFloat() else 0f
+                }
+            }.getOrDefault(fallback)
+        }
+
+        internal fun parseThemeMode(raw: String?, fallback: ThemeMode): ThemeMode {
+            val normalized = raw?.trim()?.uppercase() ?: return fallback
+            return when (normalized) {
+                "DARK" -> ThemeMode.MOONFLOWER_DARK
+                "LIGHT" -> ThemeMode.MOONFLOWER_LIGHT
+                "ELECTRIC_LAVENDER" -> ThemeMode.VIOLET_DARK
+                "IMPERIAL_VIOLET" -> ThemeMode.VIOLET_LIGHT
+                else -> runCatching { ThemeMode.valueOf(normalized) }.getOrDefault(fallback)
+            }
+        }
 
         private const val EQ_BAND_COUNT = 5
         private const val MIN_EQ_DB = -12f

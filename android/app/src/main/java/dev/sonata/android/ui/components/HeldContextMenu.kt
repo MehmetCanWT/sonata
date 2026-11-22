@@ -198,8 +198,7 @@ fun HeldContextMenu(
                     onClick = onDismiss,
                 )
                 .statusBarsPadding()
-                .navigationBarsPadding()
-                .padding(horizontal = 20.dp, vertical = 14.dp),
+                .navigationBarsPadding(),
         ) {
             val maxWidthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
             val maxHeightPx = constraints.maxHeight.toFloat().coerceAtLeast(1f)
@@ -214,8 +213,9 @@ fun HeldContextMenu(
                 modifier = Modifier
                     .align(Alignment.Center)
                     .fillMaxWidth()
-                    .widthIn(max = 500.dp)
-                    .verticalScroll(rememberScrollState()),
+                    .widthIn(max = 556.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 28.dp, vertical = 38.dp),
                 horizontalAlignment = columnAlignment,
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
@@ -334,43 +334,33 @@ private fun HeldLiftedPreviewCard(target: HeldContextTarget) {
                     .padding(horizontal = 14.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (target.trackNumber != null) {
-                    Text(
-                        text = target.trackNumber.toString(),
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
-                        color = themeTokens.onSurfaceSecondary,
-                        modifier = Modifier.width(24.dp),
-                    )
-                    Spacer(Modifier.width(8.dp))
-                } else {
-                    val thumbUrl = remember(track.thumbnailUrl) { track.thumbnailUrl.artworkAt(ROW_ART_PX) }
-                    val thumbRequest = rememberArtworkRequest(thumbUrl, ROW_ART_PX, ROW_ART_PX)
-                    Box(
-                        modifier = Modifier
-                            .size(46.dp)
-                            .clip(RoundedCornerShape(9.dp))
-                            .background(themeTokens.eclipseCard)
-                            .border(0.5.dp, themeTokens.cardStroke, RoundedCornerShape(9.dp)),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        if (thumbRequest != null) {
-                            AsyncImage(
-                                model = thumbRequest,
-                                contentDescription = track.title,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize(),
-                            )
-                        } else {
-                            Icon(
-                                imageVector = SonataIcons.MusicNote,
-                                contentDescription = null,
-                                tint = themeTokens.onSurfaceSecondary,
-                                modifier = Modifier.size(20.dp),
-                            )
-                        }
+                val thumbUrl = remember(track.thumbnailUrl) { track.thumbnailUrl.artworkAt(ROW_ART_PX) }
+                val thumbRequest = rememberArtworkRequest(thumbUrl, ROW_ART_PX, ROW_ART_PX)
+                Box(
+                    modifier = Modifier
+                        .size(46.dp)
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(themeTokens.eclipseCard)
+                        .border(0.5.dp, themeTokens.cardStroke, RoundedCornerShape(9.dp)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (thumbRequest != null) {
+                        AsyncImage(
+                            model = thumbRequest,
+                            contentDescription = track.title,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    } else {
+                        Icon(
+                            imageVector = SonataIcons.MusicNote,
+                            contentDescription = null,
+                            tint = themeTokens.onSurfaceSecondary,
+                            modifier = Modifier.size(20.dp),
+                        )
                     }
-                    Spacer(Modifier.width(12.dp))
                 }
+                Spacer(Modifier.width(12.dp))
 
                 Column(modifier = Modifier.weight(1f)) {
                     Row(

@@ -556,24 +556,24 @@ fun MeshGradientBackground(
     }
     val dimmedBase = remember(tuned) { tuned.first().meshDimmed() }
 
-    val c0: Color
-    val c1: Color
-    val c2: Color
-    val c3: Color
-    val baseColor: Color
+    val c0State: State<Color>
+    val c1State: State<Color>
+    val c2State: State<Color>
+    val c3State: State<Color>
+    val baseColorState: State<Color>
     if (reduceAnimation || !animated) {
-        c0 = tuned[0]
-        c1 = tuned[1]
-        c2 = tuned[2]
-        c3 = tuned[3]
-        baseColor = dimmedBase
+        c0State = rememberUpdatedState(tuned[0])
+        c1State = rememberUpdatedState(tuned[1])
+        c2State = rememberUpdatedState(tuned[2])
+        c3State = rememberUpdatedState(tuned[3])
+        baseColorState = rememberUpdatedState(dimmedBase)
     } else {
         val colorSpec: AnimationSpec<Color> = tween(colorFadeMillis)
-        c0 = animateColorAsState(tuned[0], colorSpec, label = "meshColor0").value
-        c1 = animateColorAsState(tuned[1], colorSpec, label = "meshColor1").value
-        c2 = animateColorAsState(tuned[2], colorSpec, label = "meshColor2").value
-        c3 = animateColorAsState(tuned[3], colorSpec, label = "meshColor3").value
-        baseColor = animateColorAsState(dimmedBase, colorSpec, label = "meshBase").value
+        c0State = animateColorAsState(tuned[0], colorSpec, label = "meshColor0")
+        c1State = animateColorAsState(tuned[1], colorSpec, label = "meshColor1")
+        c2State = animateColorAsState(tuned[2], colorSpec, label = "meshColor2")
+        c3State = animateColorAsState(tuned[3], colorSpec, label = "meshColor3")
+        baseColorState = animateColorAsState(dimmedBase, colorSpec, label = "meshBase")
     }
 
     val phase = remember { Animatable(0f) }
@@ -602,31 +602,49 @@ fun MeshGradientBackground(
                 scaleX = 1.3f
                 scaleY = 1.3f
             }
-            .background(baseColor)
             .drawWithCache {
-                val radius = (size.maxDimension * 0.62f).coerceAtLeast(1f)
-                val colors = arrayOf(c0, c1, c2, c3)
-                val brushes = Array(4) { idx ->
-                    val col = colors[idx]
-                    val stops = Array(FADE_CURVE_STOPS + 1) { i ->
-                        (i / FADE_CURVE_STOPS.toFloat()) to col.copy(alpha = MeshSmoothAlphaSteps[i])
-                    }
-                    Brush.radialGradient(
-                        colorStops = stops,
-                        center = Offset.Zero,
-                        radius = radius,
-                    )
-                }
+                var cachedRadius = -1f
+                val cachedColors = Array(4) { Color.Unspecified }
+                val cachedBrushes = arrayOfNulls<Brush>(4)
                 onDrawBehind {
+                    drawRect(color = baseColorState.value)
+                    val radius = (size.maxDimension * 0.62f).coerceAtLeast(1f)
+                    val radiusChanged = cachedRadius != radius
+                    if (radiusChanged) {
+                        cachedRadius = radius
+                    }
+                    val c0 = c0State.value
+                    val c1 = c1State.value
+                    val c2 = c2State.value
+                    val c3 = c3State.value
                     val drift = phase.value
                     for (index in 0 until 4) {
+                        val col = when (index) {
+                            0 -> c0
+                            1 -> c1
+                            2 -> c2
+                            else -> c3
+                        }
+                        var brush = cachedBrushes[index]
+                        if (brush == null || radiusChanged || cachedColors[index] != col) {
+                            cachedColors[index] = col
+                            val stops = Array(FADE_CURVE_STOPS + 1) { i ->
+                                (i / FADE_CURVE_STOPS.toFloat()) to col.copy(alpha = MeshSmoothAlphaSteps[i])
+                            }
+                            brush = Brush.radialGradient(
+                                colorStops = stops,
+                                center = Offset.Zero,
+                                radius = radius,
+                            )
+                            cachedBrushes[index] = brush
+                        }
                         val anchor = MeshAnchors[index]
                         val speed = MeshSpeeds[index]
                         val cx = (anchor.x + 0.16f * cos(drift * speed + index * 1.7f)) * size.width
                         val cy = (anchor.y + 0.16f * sin(drift * speed * 0.9f + index * 2.3f)) * size.height
                         translate(left = cx, top = cy) {
                             drawCircle(
-                                brush = brushes[index],
+                                brush = brush,
                                 radius = radius,
                                 center = Offset.Zero,
                             )

@@ -237,6 +237,7 @@ import dev.sonata.android.ui.feedSkeleton
 import dev.sonata.android.ui.recentlyPlayedSkeleton
 import dev.sonata.android.ui.rememberArtworkPalette
 import dev.sonata.android.ui.rememberArtworkRequest
+import dev.sonata.android.ui.rememberLayoutBoundsHolder
 import dev.sonata.android.ui.rememberSmoothLyricClock
 import dev.sonata.android.ui.toMeshPalette
 import dev.sonata.android.ui.topPicksSkeleton
@@ -309,8 +310,8 @@ internal fun CompactTrackRow(
     onLongClick: ((Rect?) -> Unit)? = null,
 ) {
     val haptics = LocalHapticFeedback.current
-    var rowBounds by remember { mutableStateOf<Rect?>(null) }
-    var optionsBounds by remember { mutableStateOf<Rect?>(null) }
+    val rowBounds = rememberLayoutBoundsHolder()
+    val optionsBounds = rememberLayoutBoundsHolder()
     val primaryInk = if (onArtworkWash) Color.White else MaterialTheme.colorScheme.onBackground
     val secondaryInk = if (onArtworkWash) Color.White.copy(alpha = 0.72f) else MaterialTheme.colorScheme.onSurfaceVariant
     val thumbBorder = if (onArtworkWash) Color.White.copy(alpha = 0.16f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
@@ -318,13 +319,13 @@ internal fun CompactTrackRow(
         modifier = Modifier
             .fillMaxWidth()
             .clip(Shape10)
-            .onGloballyPositioned { rowBounds = it.boundsInRoot() }
+            .onGloballyPositioned { rowBounds.coordinates = it }
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick?.let { callback ->
                     {
                         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                        callback(rowBounds)
+                        callback(rowBounds.boundsInRoot())
                     }
                 },
             )
@@ -414,9 +415,9 @@ internal fun CompactTrackRow(
             modifier = Modifier
                 .size(32.dp)
                 .clip(CircleShape)
-                .onGloballyPositioned { optionsBounds = it.boundsInRoot() }
+                .onGloballyPositioned { optionsBounds.coordinates = it }
                 .then(
-                    if (onOptionsClick != null) Modifier.clickable { onOptionsClick(optionsBounds) } else Modifier,
+                    if (onOptionsClick != null) Modifier.clickable { onOptionsClick(optionsBounds.boundsInRoot()) } else Modifier,
                 ),
             contentAlignment = Alignment.Center,
         ) {
@@ -441,16 +442,16 @@ internal fun ShelfCard(
     modifier: Modifier = Modifier.width(SHELF_CARD_WIDTH),
 ) {
     val haptics = LocalHapticFeedback.current
-    var cardBounds by remember { mutableStateOf<Rect?>(null) }
+    val cardBounds = rememberLayoutBoundsHolder()
     Column(
         modifier = modifier
-            .onGloballyPositioned { cardBounds = it.boundsInRoot() }
+            .onGloballyPositioned { cardBounds.coordinates = it }
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick?.let { callback ->
                     {
                         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                        callback(cardBounds)
+                        callback(cardBounds.boundsInRoot())
                     }
                 },
             ),
@@ -531,16 +532,16 @@ internal fun VideoShelfCard(
     modifier: Modifier = Modifier.width(248.dp),
 ) {
     val haptics = LocalHapticFeedback.current
-    var cardBounds by remember { mutableStateOf<Rect?>(null) }
+    val cardBounds = rememberLayoutBoundsHolder()
     Column(
         modifier = modifier
-            .onGloballyPositioned { cardBounds = it.boundsInRoot() }
+            .onGloballyPositioned { cardBounds.coordinates = it }
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick?.let { callback ->
                     {
                         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                        callback(cardBounds)
+                        callback(cardBounds.boundsInRoot())
                     }
                 },
             ),

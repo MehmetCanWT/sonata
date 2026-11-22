@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import dev.sonata.android.LocalGlassPerformance
 import dev.sonata.android.LocalAppBackdrop
 import dev.sonata.android.backdrop.Backdrop
+import dev.sonata.android.backdrop.BackdropEffectScope
 import dev.sonata.android.backdrop.backdrops.LayerBackdrop
 import dev.sonata.android.backdrop.drawBackdrop
 import dev.sonata.android.backdrop.effects.lens
@@ -576,27 +577,38 @@ internal fun GlassSelectionPill(
             else fillColor.copy(alpha = fillColor.alpha * (1f - motion.material * 0.68f))
         }
     }
+    val shapeBlock: () -> Shape = remember(shape) { { shape } }
+    val effectsBlock: BackdropEffectScope.() -> Unit = remember(motion, glassPerformance) {
+        {
+            if (!glassPerformance && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                lens(
+                    refractionHeight = LENS_HEIGHT.toPx() * motion.glassPresence * PILL_BACKDROP_SCALE,
+                    refractionAmount = LENS_AMOUNT.toPx() * motion.material * PILL_BACKDROP_SCALE,
+                    chromaticAberration = true,
+                )
+            }
+        }
+    }
+    val highlightBlock: () -> Highlight? = remember(motion) {
+        {
+            val alpha = motion.material * rimOf(motion.glassPresence)
+            if (alpha > 0f) Highlight.Default.copy(alpha = alpha) else null
+        }
+    }
+    val shadowBlock: () -> Shadow? = remember(motion) {
+        {
+            val alpha = motion.material * rimOf(motion.glassPresence)
+            if (alpha > 0f) PILL_SHADOW.copy(alpha = alpha) else null
+        }
+    }
     Box(
         modifier.drawBackdrop(
             backdrop = backdrop,
-            shape = { shape },
-            effects = {
-                if (!glassPerformance && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    lens(
-                        refractionHeight = LENS_HEIGHT.toPx() * motion.glassPresence,
-                        refractionAmount = LENS_AMOUNT.toPx() * motion.material,
-                        chromaticAberration = true,
-                    )
-                }
-            },
-            highlight = {
-                val alpha = motion.material * rimOf(motion.glassPresence)
-                if (alpha > 0f) Highlight.Default.copy(alpha = alpha) else null
-            },
-            shadow = {
-                val alpha = motion.material * rimOf(motion.glassPresence)
-                if (alpha > 0f) PILL_SHADOW.copy(alpha = alpha) else null
-            },
+            shape = shapeBlock,
+            effects = effectsBlock,
+            highlight = highlightBlock,
+            shadow = shadowBlock,
+            backdropScale = PILL_BACKDROP_SCALE,
         ),
     )
 }
@@ -604,6 +616,7 @@ internal fun GlassSelectionPill(
 /** The rim and its shadow are gone by the time the hand-off is 55% through. */
 private fun rimOf(presence: Float): Float = ((presence - 0.45f) / 0.55f).coerceIn(0f, 1f)
 
+private const val PILL_BACKDROP_SCALE = 0.5f
 private val LENS_HEIGHT = 12.dp
 private val LENS_AMOUNT = 14.dp
 

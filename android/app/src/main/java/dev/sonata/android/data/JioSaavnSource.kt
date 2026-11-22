@@ -192,7 +192,7 @@ object JioSaavnSource {
         )
     }
 
-    private fun decryptUrl(encryptedBase64: String): String? = runCatching {
+    internal fun decryptUrl(encryptedBase64: String): String? = runCatching {
         val keySpec = SecretKeySpec(DES_KEY.toByteArray(Charsets.UTF_8), "DES")
         val cipher = Cipher.getInstance("DES/ECB/PKCS5Padding")
         cipher.init(Cipher.DECRYPT_MODE, keySpec)
@@ -201,7 +201,7 @@ object JioSaavnSource {
         plain.replace("http://", "https://")
     }.getOrNull()
 
-    private fun selectBestStreamUrl(url: String, supports320: Boolean): Pair<String, Int> {
+    internal fun selectBestStreamUrl(url: String, supports320: Boolean): Pair<String, Int> {
         val match = bitrateRegex.find(url)
         val offeredKbps = match?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 160
         if (supports320 && match != null) {
@@ -249,7 +249,7 @@ object JioSaavnSource {
         return decodeHtml(item.optString("subtitle").substringBefore(" - ").trim())
     }
 
-    private fun upgradeArtwork(raw: String): String? {
+    internal fun upgradeArtwork(raw: String): String? {
         val trimmed = raw.trim()
         if (trimmed.isBlank()) return null
         return trimmed
@@ -258,7 +258,7 @@ object JioSaavnSource {
             .replace("50x50", "500x500")
     }
 
-    private fun decodeHtml(raw: String): String = raw
+    internal fun decodeHtml(raw: String): String = raw
         .replace("&quot;", "\"")
         .replace("&#039;", "'")
         .replace("&apos;", "'")
@@ -267,25 +267,25 @@ object JioSaavnSource {
         .replace("&gt;", ">")
         .trim()
 
-    private fun cleanTitleForMatch(title: String): String {
+    internal fun cleanTitleForMatch(title: String): String {
         var s = parensFeatRegex.replace(title, " ")
         s = bracketNoiseRegex.replace(s, " ")
         return s.trim()
     }
 
-    private fun normalizeCore(text: String): String {
+    internal fun normalizeCore(text: String): String {
         val nfd = Normalizer.normalize(text.lowercase(Locale.ROOT), Normalizer.Form.NFD)
         val noMarks = nfd.replace(Regex("\\p{Mn}+"), "").replace('ı', 'i')
         return nonAlnumRegex.replace(noMarks, " ").trim()
     }
 
-    private fun primaryArtistOf(artist: String): String =
+    internal fun primaryArtistOf(artist: String): String =
         artist.split(",", "&", "feat.", "ft.", "featuring", ignoreCase = true)
             .firstOrNull()
             ?.trim()
             .orEmpty()
 
-    private fun artistsOverlap(a: String, b: String): Boolean {
+    internal fun artistsOverlap(a: String, b: String): Boolean {
         val setA = a.split(",", "&", "feat.", "ft.", "featuring", ignoreCase = true)
             .map { normalizeCore(it) }
             .filter { it.length >= 2 }

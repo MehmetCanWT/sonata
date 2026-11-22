@@ -263,7 +263,7 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &App) {
     }
 }
 
-pub fn active_karaoke_line(app: &App) -> Option<Line<'static>> {
+pub fn active_karaoke_line(app: &App) -> Option<Line<'_>> {
     let pos = app.interpolated_position();
     match &app.lyrics {
         LyricsState::Synced(lines) if !lines.is_empty() => {
@@ -286,7 +286,7 @@ pub fn active_karaoke_line(app: &App) -> Option<Line<'static>> {
                 return None;
             }
             Some(Line::from(Span::styled(
-                text.to_string(),
+                text,
                 Style::default().fg(app.theme.muted),
             )))
         }
@@ -312,7 +312,7 @@ fn render_active_tui_lyric_line(
     next_time_secs: Option<f64>,
     position_secs: f64,
     theme_accent: Color,
-) -> Line<'static> {
+) -> Line<'_> {
     let accent = if is_color_too_white(theme_accent) {
         Color::Rgb(120, 220, 255)
     } else {
@@ -352,7 +352,7 @@ fn render_active_tui_lyric_line(
         })
         .unwrap_or_else(|| item.time_secs + estimate_tui_sung_duration(&item.text));
 
-    let word_shares: Vec<(String, f64)> = if !item.words.is_empty() {
+    let word_shares: Vec<(&str, f64)> = if !item.words.is_empty() {
         item.words
             .iter()
             .enumerate()
@@ -370,7 +370,7 @@ fn render_active_tui_lyric_line(
                 };
                 let share =
                     ((sweep_pos - w.start_secs) / (end - w.start_secs).max(0.12)).clamp(0.0, 1.0);
-                (w.text.clone(), share)
+                (w.text.as_str(), share)
             })
             .collect()
     } else {
@@ -391,7 +391,7 @@ fn render_active_tui_lyric_line(
                 } else {
                     1.0
                 };
-                (w.to_string(), share)
+                (w, share)
             })
             .collect()
     };

@@ -13,28 +13,15 @@
 -dontwarn com.sun.jna.**
 -dontwarn java.awt.**
 
-# App entry points, ViewModels, WebView JS bridge & data models
--keep class dev.sonata.android.MainActivity { *; }
--keep class dev.sonata.android.PlaybackService { *; }
--keep class dev.sonata.android.SonataViewModel { *; }
+# WebView JS bridge
 -keep class dev.sonata.android.SonataViewModel$WebViewJsCipherSolver { *; }
--keep class dev.sonata.android.YtMusicLoginSheetKt** { *; }
--keep class dev.sonata.android.data.** { *; }
--keepclassmembers class dev.sonata.android.data.** { *; }
 -keepclassmembers class * {
     @android.webkit.JavascriptInterface <methods>;
 }
 
-# Jetpack ProfileInstaller
--keep class androidx.profileinstaller.** { *; }
+# Third-party warnings suppressed for R8
 -dontwarn androidx.profileinstaller.**
-
-# Media3 / ExoPlayer
--keep class androidx.media3.** { *; }
 -dontwarn androidx.media3.**
-
-# Coil 3 & OkHttp
--keep class coil3.** { *; }
 -dontwarn coil3.**
 -dontwarn okhttp3.**
 -dontwarn okio.**

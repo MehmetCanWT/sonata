@@ -237,6 +237,7 @@ import dev.sonata.android.ui.feedSkeleton
 import dev.sonata.android.ui.recentlyPlayedSkeleton
 import dev.sonata.android.ui.rememberArtworkPalette
 import dev.sonata.android.ui.rememberArtworkRequest
+import dev.sonata.android.ui.rememberSafeTopInset
 import dev.sonata.android.ui.rememberSmoothLyricClock
 import dev.sonata.android.ui.toMeshPalette
 import dev.sonata.android.ui.topPicksSkeleton
@@ -363,11 +364,12 @@ internal fun FloatingTopChrome(
     val glassInk = glassContentColor()
     val backIconTint = glassInk
     val context = LocalContext.current
+    val safeTop = rememberSafeTopInset() + 8.dp
 
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .statusBarsPadding()
+            .padding(top = safeTop)
             .height(TopBarContentHeight)
             .padding(horizontal = PAGE_GUTTER),
         verticalAlignment = Alignment.CenterVertically,

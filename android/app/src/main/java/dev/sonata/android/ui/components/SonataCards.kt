@@ -35,6 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.BlurredEdgeTreatment
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
@@ -51,6 +52,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -71,6 +73,7 @@ import dev.sonata.android.ui.SonataAccent
 import dev.sonata.android.ui.SonataIcons
 import dev.sonata.android.ui.artworkAt
 import dev.sonata.android.ui.rememberArtworkRequest
+import dev.sonata.android.ui.rememberLayoutBoundsHolder
 import dev.sonata.android.ui.theme.LocalLunariaColors
 import dev.sonata.android.ui.theme.sonataGlassSurface
 import uniffi.sonata_android.AndroidTrack
@@ -194,18 +197,18 @@ fun SonataLastPlayedSquareCard(
     val sizedUrl = remember(artworkUrl) { artworkUrl.artworkAt(CARD_ART_PX) }
     val request = rememberArtworkRequest(sizedUrl, 360, 360)
     val haptics = LocalHapticFeedback.current
-    var cardBounds by remember { mutableStateOf<Rect?>(null) }
+    val cardBounds = rememberLayoutBoundsHolder()
 
     Column(
         modifier = modifier
             .width(cardSize)
-            .onGloballyPositioned { cardBounds = it.boundsInRoot() }
+            .onGloballyPositioned { cardBounds.coordinates = it }
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = if (onLongClick != null) {
                     {
                         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onLongClick(cardBounds)
+                        onLongClick(cardBounds.boundsInRoot())
                     }
                 } else {
                     null
@@ -290,18 +293,18 @@ fun SonataEditorialCard(
     val cardShape = themeTokens.cardShape
     val sizedUrl = remember(artworkUrl) { artworkUrl.artworkAt(CARD_ART_PX) }
     val request = rememberArtworkRequest(sizedUrl, 360, 360)
-    var cardBounds by remember { mutableStateOf<Rect?>(null) }
+    val cardBounds = rememberLayoutBoundsHolder()
 
     Column(
         modifier = modifier
             .width(width)
-            .onGloballyPositioned { cardBounds = it.boundsInRoot() }
+            .onGloballyPositioned { cardBounds.coordinates = it }
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick?.let { callback ->
                     {
                         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                        callback(cardBounds)
+                        callback(cardBounds.boundsInRoot())
                     }
                 },
             ),
@@ -494,96 +497,47 @@ fun SonataSplitHeroHeader(
         Color.White.copy(alpha = 0.78f)
     }
     val playFallbackBg = if (themeTokens.isDark) themeTokens.eclipseCard else Color.White
-    val useFramedStackLayout = themeTokens.isMoonflower || request == null
-    val violetHeroHeight = 290.dp + topInset
+    val screenWidthDp = LocalConfiguration.current.screenWidthDp
+    val coverSize = if (screenWidthDp >= 600) 236.dp else 216.dp
+    val artShape = RoundedCornerShape(if (themeTokens.isMoonflower) 24.dp else 18.dp)
 
     Box(
         modifier = modifier.fillMaxWidth(),
     ) {
-        if (!useFramedStackLayout) {
-            // Violet full-bleed hero with soft blurred lower dissolve above the metadata stack.
+        if (request != null) {
+            // Soft blurred ambient artwork aura spanning the full header and fading smoothly to 0% alpha.
             Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(violetHeroHeight)
+                    .matchParentSize()
                     .layerBackdrop(heroBackdrop),
             ) {
-                Box(
+                AsyncImage(
+                    model = request,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
                     modifier = Modifier
                         .fillMaxSize()
+                        .alpha(if (themeTokens.isDark) 0.34f else 0.24f)
                         .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
                         .drawWithCache {
-                            val dissolveMask = Brush.verticalGradient(
+                            val auraMask = Brush.verticalGradient(
                                 0.0f to Color.Black,
-                                0.44f to Color.Black,
-                                0.76f to Color.Black.copy(alpha = 0.34f),
-                                0.96f to Color.Transparent,
+                                0.30f to Color.Black.copy(alpha = 0.86f),
+                                0.58f to Color.Black.copy(alpha = 0.45f),
+                                0.78f to Color.Black.copy(alpha = 0.14f),
+                                0.92f to Color.Transparent,
                                 1.0f to Color.Transparent,
                             )
                             onDrawWithContent {
                                 drawContent()
-                                drawRect(brush = dissolveMask, blendMode = BlendMode.DstIn)
+                                drawRect(brush = auraMask, blendMode = BlendMode.DstIn)
                             }
-                        },
-                ) {
-                    AsyncImage(
-                        model = request,
-                        contentDescription = title,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                    AsyncImage(
-                        model = request,
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .blur(26.dp, BlurredEdgeTreatment.Unbounded)
-                            .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
-                            .drawWithCache {
-                                val blurMask = Brush.verticalGradient(
-                                    0.0f to Color.Transparent,
-                                    0.38f to Color.Transparent,
-                                    0.64f to Color.Black.copy(alpha = 0.85f),
-                                    0.92f to Color.Black,
-                                    1.0f to Color.Transparent,
-                                )
-                                onDrawWithContent {
-                                    drawContent()
-                                    drawRect(brush = blurMask, blendMode = BlendMode.DstIn)
-                                }
-                            },
-                    )
-                }
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(92.dp)
-                        .align(Alignment.TopCenter)
-                        .background(
-                            Brush.verticalGradient(
-                                0.0f to Color.Black.copy(alpha = 0.28f),
-                                0.6f to Color.Black.copy(alpha = 0.08f),
-                                1.0f to Color.Transparent,
-                            ),
-                        ),
-                )
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(128.dp)
-                        .align(Alignment.BottomCenter)
-                        .background(
-                            Brush.verticalGradient(
-                                0.0f to Color.Transparent,
-                                0.55f to washColor.copy(alpha = 0.58f),
-                                1.0f to washColor.copy(alpha = 0.92f),
-                            ),
-                        ),
+                        }
+                        .blur(52.dp, BlurredEdgeTreatment.Unbounded),
                 )
             }
         } else {
-            // Soft ambient halo backdrop for Moonflower & placeholder/Downloads headers.
+            // Soft ambient halo backdrop for Offline Library / Downloads and collections without cover art.
             Box(
                 modifier = Modifier
                     .matchParentSize()
@@ -600,12 +554,12 @@ fun SonataSplitHeroHeader(
             )
         }
 
-        // Strict non-overlapping Column layout: cover box sits ABOVE metadata + action buttons.
+        // Centered non-overlapping Column: cover card strictly below the top bar, above metadata + action pills.
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(
-                    top = if (useFramedStackLayout) topInset + 14.dp else 238.dp + topInset,
+                    top = topInset + 10.dp,
                     start = PAGE_GUTTER,
                     end = PAGE_GUTTER,
                     bottom = 22.dp,
@@ -613,53 +567,50 @@ fun SonataSplitHeroHeader(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(5.dp),
         ) {
-            if (useFramedStackLayout) {
-                val artShape = RoundedCornerShape(if (themeTokens.isMoonflower) 24.dp else 18.dp)
-                val placeholderBrush = Brush.linearGradient(
-                    listOf(
-                        themeTokens.eclipseCard,
-                        accentColor.copy(alpha = if (themeTokens.isDark) 0.42f else 0.34f),
-                    ),
-                )
-                Box(
-                    modifier = Modifier
-                        .size(204.dp)
-                        .shadow(
-                            elevation = 20.dp,
-                            shape = artShape,
-                            clip = false,
-                            ambientColor = themeTokens.glassShadowColor,
-                            spotColor = themeTokens.glassShadowColor,
-                        )
-                        .clip(artShape)
-                        .then(
-                            if (request != null) {
-                                Modifier.background(washColor)
-                            } else {
-                                Modifier.background(placeholderBrush)
-                            },
-                        )
-                        .border(0.9.dp, themeTokens.glassRimTopLeft, artShape),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    if (request != null) {
-                        AsyncImage(
-                            model = request,
-                            contentDescription = title,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                    } else {
-                        Icon(
-                            imageVector = if (isOfflineLibrary) SonataIcons.Download else SonataIcons.MusicNote,
-                            contentDescription = null,
-                            tint = themeTokens.onSurfacePrimary.copy(alpha = 0.78f),
-                            modifier = Modifier.size(56.dp),
-                        )
-                    }
+            val placeholderBrush = Brush.linearGradient(
+                listOf(
+                    themeTokens.eclipseCard,
+                    accentColor.copy(alpha = if (themeTokens.isDark) 0.42f else 0.34f),
+                ),
+            )
+            Box(
+                modifier = Modifier
+                    .size(coverSize)
+                    .shadow(
+                        elevation = 22.dp,
+                        shape = artShape,
+                        clip = false,
+                        ambientColor = themeTokens.glassShadowColor,
+                        spotColor = themeTokens.glassShadowColor,
+                    )
+                    .clip(artShape)
+                    .then(
+                        if (request != null) {
+                            Modifier.background(washColor)
+                        } else {
+                            Modifier.background(placeholderBrush)
+                        },
+                    )
+                    .border(0.9.dp, themeTokens.glassRimTopLeft, artShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (request != null) {
+                    AsyncImage(
+                        model = request,
+                        contentDescription = title,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } else {
+                    Icon(
+                        imageVector = if (isOfflineLibrary) SonataIcons.Download else SonataIcons.MusicNote,
+                        contentDescription = null,
+                        tint = themeTokens.onSurfacePrimary.copy(alpha = 0.78f),
+                        modifier = Modifier.size(56.dp),
+                    )
                 }
-                Spacer(Modifier.height(14.dp))
             }
+            Spacer(Modifier.height(14.dp))
 
             Text(
                 text = title,

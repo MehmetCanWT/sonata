@@ -148,18 +148,20 @@ impl MpvController {
                 let id = req_id;
                 req_id = req_id.wrapping_add(1);
                 let payload = format!("{}\n", json!({ "command": command, "request_id": id }));
-                let safe_command = sanitize_payload(&json!({ "command": command }));
-                tracing::debug!(
-                    event = "mpv_ipc_send",
-                    request_id = id,
-                    command = %safe_command
-                        .get("command")
-                        .map(|v| serde_json::to_string(v)
-                            .unwrap_or_else(|_| "[invalid]".to_string()))
-                        .unwrap_or_else(|| "[invalid]".to_string())
-                        .replace(&json!(null).to_string(), "[null]"),
-                    "sending mpv command"
-                );
+                if tracing::enabled!(tracing::Level::DEBUG) {
+                    let safe_command = sanitize_payload(&json!({ "command": command }));
+                    tracing::debug!(
+                        event = "mpv_ipc_send",
+                        request_id = id,
+                        command = %safe_command
+                            .get("command")
+                            .map(|v| serde_json::to_string(v)
+                                .unwrap_or_else(|_| "[invalid]".to_string()))
+                            .unwrap_or_else(|| "[invalid]".to_string())
+                            .replace(&json!(null).to_string(), "[null]"),
+                        "sending mpv command"
+                    );
+                }
                 if write_half.write_all(payload.as_bytes()).await.is_err() {
                     break;
                 }

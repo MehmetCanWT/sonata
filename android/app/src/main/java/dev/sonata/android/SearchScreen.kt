@@ -237,6 +237,7 @@ import dev.sonata.android.ui.feedSkeleton
 import dev.sonata.android.ui.recentlyPlayedSkeleton
 import dev.sonata.android.ui.rememberArtworkPalette
 import dev.sonata.android.ui.rememberArtworkRequest
+import dev.sonata.android.ui.rememberLayoutBoundsHolder
 import dev.sonata.android.ui.rememberSmoothLyricClock
 import dev.sonata.android.ui.toMeshPalette
 import dev.sonata.android.ui.topPicksSkeleton
@@ -728,19 +729,19 @@ internal fun SearchRecentSquareCard(
 ) {
     val tokens = LocalLunariaColors.current
     val haptics = LocalHapticFeedback.current
-    var cardBounds by remember { mutableStateOf<Rect?>(null) }
+    val cardBounds = rememberLayoutBoundsHolder()
     val artShape = tokens.cardShape
     val sizedUrl = remember(track.thumbnailUrl) { track.thumbnailUrl.artworkAt(CARD_ART_PX) }
     val artReq = rememberArtworkRequest(sizedUrl, CARD_ART_PX, CARD_ART_PX)
 
     Column(
         modifier = modifier
-            .onGloballyPositioned { cardBounds = it.boundsInRoot() }
+            .onGloballyPositioned { cardBounds.coordinates = it }
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = {
                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onLongClick(cardBounds)
+                    onLongClick(cardBounds.boundsInRoot())
                 },
             ),
     ) {
@@ -816,7 +817,7 @@ internal fun SearchSamplePortraitCard(
     modifier: Modifier = Modifier,
 ) {
     val haptics = LocalHapticFeedback.current
-    var cardBounds by remember { mutableStateOf<Rect?>(null) }
+    val cardBounds = rememberLayoutBoundsHolder()
     val cardShape = remember { RoundedCornerShape(24.dp) }
     val sizedUrl = remember(track.thumbnailUrl) { track.thumbnailUrl.artworkAt(HEADER_ART_PX) }
     val artReq = rememberArtworkRequest(sizedUrl, HEADER_ART_PX, HEADER_ART_PX)
@@ -833,7 +834,7 @@ internal fun SearchSamplePortraitCard(
         modifier = modifier
             .fillMaxWidth()
             .aspectRatio(0.68f)
-            .onGloballyPositioned { cardBounds = it.boundsInRoot() }
+            .onGloballyPositioned { cardBounds.coordinates = it }
             .clip(cardShape)
             .background(LocalLunariaColors.current.eclipseCard)
             .border(0.75.dp, LocalLunariaColors.current.cardStroke, cardShape)
@@ -841,7 +842,7 @@ internal fun SearchSamplePortraitCard(
                 onClick = onClick,
                 onLongClick = {
                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onLongClick(cardBounds)
+                    onLongClick(cardBounds.boundsInRoot())
                 },
             ),
     ) {

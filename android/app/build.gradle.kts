@@ -11,8 +11,8 @@ android {
     compileSdk = 35
     ndkVersion = "27.2.12479018"
 
-    val appVersionName = (project.findProperty("sonataVersion") as String?)?.trim().takeIf { !it.isNullOrEmpty() } ?: "1.0.2"
-    val appVersionCode = (project.findProperty("sonataVersionCode") as String?)?.toIntOrNull() ?: 10002
+    val appVersionName = (project.findProperty("sonataVersion") as String?)?.trim().takeIf { !it.isNullOrEmpty() } ?: "1.0.3"
+    val appVersionCode = (project.findProperty("sonataVersionCode") as String?)?.toIntOrNull() ?: 10003
 
     defaultConfig {
         applicationId = "dev.sonata.android"
@@ -97,6 +97,10 @@ android {
         includeInApk = false
         includeInBundle = false
     }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 composeCompiler {
@@ -132,4 +136,7 @@ dependencies {
 
     implementation("net.java.dev.jna:jna:5.17.0@aar")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }

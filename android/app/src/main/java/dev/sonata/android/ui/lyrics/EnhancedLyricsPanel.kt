@@ -206,6 +206,11 @@ fun EnhancedLyricsPanel(
         ((panelHeightPx * 0.56f).roundToInt().coerceAtLeast(1)).toDp()
     }.coerceAtLeast(180.dp)
 
+    val isScrolling by remember(listState) {
+        derivedStateOf { listState.isScrollInProgress }
+    }
+    val headlineStyle = MaterialTheme.typography.headlineMedium
+
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val isWidePane = maxWidth >= 460.dp
         val horizontalPad = if (isWidePane) 28.dp else 20.dp
@@ -250,6 +255,7 @@ fun EnhancedLyricsPanel(
                     itemsIndexed(
                         items = lyrics,
                         key = { idx, line -> "${idx}_${line.timeSecs}" },
+                        contentType = { _, _ -> "lyric_line" },
                     ) { index, line ->
                         val dist = abs(index - activeIndex)
                         val rawTrimmed = line.text.trim()
@@ -329,7 +335,7 @@ fun EnhancedLyricsPanel(
                             animationSpec = tween(280),
                             label = "lyricAlpha",
                         )
-                        val blurDp = if (effectiveBlur && !isActive && !listState.isScrollInProgress) {
+                        val blurDp = if (effectiveBlur && !isActive && !isScrolling) {
                             when (dist) {
                                 1 -> 1.2.dp
                                 2 -> 2.2.dp
@@ -339,13 +345,23 @@ fun EnhancedLyricsPanel(
                             0.dp
                         }
 
-                        val baseStyle = MaterialTheme.typography.headlineMedium.copy(
-                            fontSize = if (isBackground) bgFontSp else mainFontSp,
-                            lineHeight = if (isBackground) bgLineHeightSp else mainLineHeightSp,
-                            fontWeight = if (isBackground) FontWeight.SemiBold else FontWeight.Bold,
-                            textAlign = if (isCounter) TextAlign.End else TextAlign.Start,
-                            textDirection = TextDirection.Content,
-                        )
+                        val baseStyle = remember(
+                            isBackground,
+                            isCounter,
+                            bgFontSp,
+                            mainFontSp,
+                            bgLineHeightSp,
+                            mainLineHeightSp,
+                            headlineStyle,
+                        ) {
+                            headlineStyle.copy(
+                                fontSize = if (isBackground) bgFontSp else mainFontSp,
+                                lineHeight = if (isBackground) bgLineHeightSp else mainLineHeightSp,
+                                fontWeight = if (isBackground) FontWeight.SemiBold else FontWeight.Bold,
+                                textAlign = if (isCounter) TextAlign.End else TextAlign.Start,
+                                textDirection = TextDirection.Content,
+                            )
+                        }
 
                         Column(
                             modifier = Modifier

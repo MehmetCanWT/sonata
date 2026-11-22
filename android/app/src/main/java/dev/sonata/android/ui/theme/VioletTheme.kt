@@ -38,6 +38,26 @@ object VioletDesignMetrics {
     val tabPillShape: RoundedCornerShape = RoundedCornerShape(tabPillCornerRadius)
 }
 
+private class VioletBackdropCache(
+    val width: Float,
+    val height: Float,
+    val isDark: Boolean,
+    val accent: Color,
+    val mist: Color,
+    val primaryCenter: Offset,
+    val primaryRadius: Float,
+    val primaryBrush: Brush,
+    val secondaryCenter: Offset,
+    val secondaryRadius: Float,
+    val secondaryBrush: Brush,
+    val lightCenter: Offset,
+    val lightRadius: Float,
+    val lightBrush: Brush?,
+)
+
+@Volatile
+private var cachedVioletBackdrop: VioletBackdropCache? = null
+
 /** Draws the Violet signature Figma Layer-Blur radiant orchid glow orbs across the upper canvas. */
 fun DrawScope.drawVioletAtmosphericBackdrop(
     isDark: Boolean,
@@ -48,49 +68,86 @@ fun DrawScope.drawVioletAtmosphericBackdrop(
     val h = size.height
     if (w <= 0f || h <= 0f) return
 
-    val primaryGlow = if (isDark) accent else Color(0xFF9B5DE5)
-    val secondaryGlow = if (isDark) mist else Color(0xFFD59BF6)
-    val magentaAura = if (isDark) Color(0xFF9146D4) else Color(0xFFE29AF7)
-    val orbAlpha = if (isDark) 0.36f else 0.48f
+    val cached = cachedVioletBackdrop?.takeIf {
+        it.width == w && it.height == h && it.isDark == isDark && it.accent == accent && it.mist == mist
+    } ?: run {
+        val primaryGlow = if (isDark) accent else Color(0xFF9B5DE5)
+        val secondaryGlow = if (isDark) mist else Color(0xFFD59BF6)
+        val magentaAura = if (isDark) Color(0xFF9146D4) else Color(0xFFE29AF7)
+        val orbAlpha = if (isDark) 0.36f else 0.48f
 
-    drawCircle(
-        brush = Brush.radialGradient(
+        val primaryCenter = Offset(w * 0.20f, h * 0.08f)
+        val primaryRadius = w * 0.86f
+        val primaryBrush = Brush.radialGradient(
             colors = listOf(
                 primaryGlow.copy(alpha = orbAlpha),
                 secondaryGlow.copy(alpha = orbAlpha * 0.56f),
                 Color.Transparent,
             ),
-            center = Offset(w * 0.20f, h * 0.08f),
-            radius = w * 0.86f,
-        ),
-        radius = w * 0.86f,
-        center = Offset(w * 0.20f, h * 0.08f),
-    )
-    drawCircle(
-        brush = Brush.radialGradient(
+            center = primaryCenter,
+            radius = primaryRadius,
+        )
+
+        val secondaryCenter = Offset(w * 0.88f, h * 0.17f)
+        val secondaryRadius = w * 0.68f
+        val secondaryBrush = Brush.radialGradient(
             colors = listOf(
                 magentaAura.copy(alpha = orbAlpha * 0.78f),
                 primaryGlow.copy(alpha = orbAlpha * 0.28f),
                 Color.Transparent,
             ),
-            center = Offset(w * 0.88f, h * 0.17f),
-            radius = w * 0.68f,
-        ),
-        radius = w * 0.68f,
-        center = Offset(w * 0.88f, h * 0.17f),
-    )
-    if (!isDark) {
-        drawCircle(
-            brush = Brush.radialGradient(
+            center = secondaryCenter,
+            radius = secondaryRadius,
+        )
+
+        val lightCenter = Offset(w * 0.52f, h * 0.38f)
+        val lightRadius = w * 0.72f
+        val lightBrush = if (!isDark) {
+            Brush.radialGradient(
                 colors = listOf(
                     Color(0xFFC38EF5).copy(alpha = 0.26f),
                     Color.Transparent,
                 ),
-                center = Offset(w * 0.52f, h * 0.38f),
-                radius = w * 0.72f,
-            ),
-            radius = w * 0.72f,
-            center = Offset(w * 0.52f, h * 0.38f),
+                center = lightCenter,
+                radius = lightRadius,
+            )
+        } else {
+            null
+        }
+
+        VioletBackdropCache(
+            width = w,
+            height = h,
+            isDark = isDark,
+            accent = accent,
+            mist = mist,
+            primaryCenter = primaryCenter,
+            primaryRadius = primaryRadius,
+            primaryBrush = primaryBrush,
+            secondaryCenter = secondaryCenter,
+            secondaryRadius = secondaryRadius,
+            secondaryBrush = secondaryBrush,
+            lightCenter = lightCenter,
+            lightRadius = lightRadius,
+            lightBrush = lightBrush,
+        ).also { cachedVioletBackdrop = it }
+    }
+
+    drawCircle(
+        brush = cached.primaryBrush,
+        radius = cached.primaryRadius,
+        center = cached.primaryCenter,
+    )
+    drawCircle(
+        brush = cached.secondaryBrush,
+        radius = cached.secondaryRadius,
+        center = cached.secondaryCenter,
+    )
+    cached.lightBrush?.let { lightBrush ->
+        drawCircle(
+            brush = lightBrush,
+            radius = cached.lightRadius,
+            center = cached.lightCenter,
         )
     }
 }

@@ -494,7 +494,7 @@ fun SonataDiscoveryStationArt(
     )
 }
 
-private enum class MoodTheme {
+internal enum class MoodTheme {
     CHILL,
     ENERGY,
     FOCUS,
@@ -1379,7 +1379,7 @@ private fun DrawScope.drawSynthwaveSunsetOrb(
     }
 }
 
-private fun resolveMoodTheme(moodTitle: String, moodIndex: Int): MoodTheme {
+internal fun resolveMoodTheme(moodTitle: String, moodIndex: Int): MoodTheme {
     val lower = moodTitle.lowercase(Locale.ROOT)
     return when {
         "heartbreak" in lower || "breakup" in lower || "break-up" in lower || "broken" in lower ->

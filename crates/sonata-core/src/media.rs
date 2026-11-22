@@ -722,9 +722,15 @@ pub fn upscale_artwork_url(url: &str) -> String {
     url.to_string()
 }
 
+fn contains_ignore_ascii_case(haystack: &str, needle: &[u8]) -> bool {
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
+}
+
 fn is_legacy_cover(url: &str) -> bool {
-    let lower = url.to_ascii_lowercase();
-    lower.contains("saavncdn") || lower.contains("jiosaavn")
+    contains_ignore_ascii_case(url, b"saavncdn") || contains_ignore_ascii_case(url, b"jiosaavn")
 }
 
 pub async fn fetch_and_decode_art(http: &Client, url: &str) -> Option<(DynamicImage, Vec<u8>)> {
@@ -733,10 +739,12 @@ pub async fn fetch_and_decode_art(http: &Client, url: &str) -> Option<(DynamicIm
 
     if cache_enabled {
         if let Ok(disk_bytes) = tokio::fs::read(&cache_path).await {
-            let bytes_clone = disk_bytes.clone();
-            if let Ok(Some(img)) =
-                tokio::task::spawn_blocking(move || image::load_from_memory(&bytes_clone).ok())
-                    .await
+            if let Ok(Some((img, disk_bytes))) = tokio::task::spawn_blocking(move || {
+                image::load_from_memory(&disk_bytes)
+                    .ok()
+                    .map(|img| (img, disk_bytes))
+            })
+            .await
             {
                 return Some((img, disk_bytes));
             }

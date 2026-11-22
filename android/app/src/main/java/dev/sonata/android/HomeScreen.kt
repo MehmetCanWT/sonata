@@ -237,6 +237,7 @@ import dev.sonata.android.ui.feedSkeleton
 import dev.sonata.android.ui.recentlyPlayedSkeleton
 import dev.sonata.android.ui.rememberArtworkPalette
 import dev.sonata.android.ui.rememberArtworkRequest
+import dev.sonata.android.ui.rememberLayoutBoundsHolder
 import dev.sonata.android.ui.rememberSmoothLyricClock
 import dev.sonata.android.ui.toMeshPalette
 import dev.sonata.android.ui.topPicksSkeleton
@@ -530,7 +531,7 @@ internal fun HomeTabContent(
         screenWidthDp >= 600 -> 3
         else -> 2
     }
-    val topPickSpacing = 14.dp
+    val topPickSpacing = PAGE_GUTTER
     val topPickCardWidth = (availableWidth - topPickSpacing * (topPickCols - 1)) / topPickCols
     val topPickCardHeight = if (tokens.isMoonflower) {
         (topPickCardWidth * 1.28f).coerceIn(240.dp, 356.dp)
@@ -545,7 +546,7 @@ internal fun HomeTabContent(
         screenWidthDp >= 600 -> 4
         else -> 2
     }
-    val moodSpacing = 14.dp
+    val moodSpacing = PAGE_GUTTER
     val moodTileWidth = (availableWidth - moodSpacing * (moodCols - 1)) / moodCols
     val moodTileHeight = if (screenWidthDp >= 600) 144.dp else 134.dp
     val moodRowState = rememberLazyListState()
@@ -591,18 +592,15 @@ internal fun HomeTabContent(
                         }
                     }
 
-                    // Shelf 1: Top Picks for You (exact-fit portrait cards, zero right-edge overflow)
+                    // Shelf 1: Top Picks for You (exact-fit portrait cards, edge-to-edge scrolling)
                     item(key = "top_picks_shelf", contentType = "top_picks_shelf") {
                         Column(Modifier.padding(bottom = 26.dp)) {
                             SectionHeader(title = "Top Picks for You")
                             LazyRow(
                                 state = topPicksRowState,
                                 flingBehavior = topPicksSnap,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = PAGE_GUTTER)
-                                    .clipToBounds(),
-                                contentPadding = PaddingValues(0.dp),
+                                modifier = Modifier.fillMaxWidth(),
+                                contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
                                 horizontalArrangement = Arrangement.spacedBy(topPickSpacing),
                             ) {
                                 items(
@@ -638,7 +636,7 @@ internal fun HomeTabContent(
                                             } else {
                                                 "FEATURED PLAYLIST"
                                             }
-                                            var cardBounds by remember { mutableStateOf<Rect?>(null) }
+                                            val cardBounds = rememberLayoutBoundsHolder()
                                             ReleaseArt(
                                                 artworkUrl = artUrl,
                                                 title = pick.card.title,
@@ -650,12 +648,12 @@ internal fun HomeTabContent(
                                                 cardWidth = topPickCardWidth,
                                                 cardHeight = topPickCardHeight,
                                                 modifier = Modifier
-                                                    .onGloballyPositioned { cardBounds = it.boundsInRoot() }
+                                                    .onGloballyPositioned { cardBounds.coordinates = it }
                                                     .combinedClickable(
                                                         onClick = { onOpenCard(pick.card, pick.shelfTracks) },
                                                         onLongClick = {
                                                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                            onCardLongClick(pick.card, eyebrow, true, cardBounds)
+                                                            onCardLongClick(pick.card, eyebrow, true, cardBounds.boundsInRoot())
                                                         },
                                                     ),
                                             )
@@ -665,7 +663,7 @@ internal fun HomeTabContent(
                                             val sizedPortraits = remember(pick.portraits) {
                                                 pick.portraits.mapNotNull { it.artworkAt(CARD_ART_PX) }
                                             }
-                                            var cardBounds by remember { mutableStateOf<Rect?>(null) }
+                                            val cardBounds = rememberLayoutBoundsHolder()
                                             ArtistCollageArt(
                                                 images = sizedPortraits,
                                                 title = pick.card.title,
@@ -673,12 +671,12 @@ internal fun HomeTabContent(
                                                 cardWidth = topPickCardWidth,
                                                 cardHeight = topPickCardHeight,
                                                 modifier = Modifier
-                                                    .onGloballyPositioned { cardBounds = it.boundsInRoot() }
+                                                    .onGloballyPositioned { cardBounds.coordinates = it }
                                                     .combinedClickable(
                                                         onClick = { onOpenCard(pick.card, emptyList()) },
                                                         onLongClick = {
                                                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                            onCardLongClick(pick.card, "MIX", true, cardBounds)
+                                                            onCardLongClick(pick.card, "MIX", true, cardBounds.boundsInRoot())
                                                         },
                                                     ),
                                             )
@@ -983,11 +981,8 @@ internal fun HomeTabContent(
                             LazyRow(
                                 state = moodRowState,
                                 flingBehavior = moodSnap,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = PAGE_GUTTER)
-                                    .clipToBounds(),
-                                contentPadding = PaddingValues(0.dp),
+                                modifier = Modifier.fillMaxWidth(),
+                                contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
                                 horizontalArrangement = Arrangement.spacedBy(moodSpacing),
                             ) {
                                 items(

@@ -1060,7 +1060,7 @@ impl App {
             Some(_) if self.playback.paused => "Paused",
             Some(_) => "Playing",
         };
-        let track_id = track.map(|t| t.id.clone()).unwrap_or_default();
+        let track_id = track.map(|t| t.id.as_str()).unwrap_or("");
         let cur_pos = self.interpolated_position();
         let pos_secs = cur_pos.max(0.0).floor() as u64;
         let dur_secs = self.playback.duration_secs.max(0.0).floor() as u64;
@@ -1068,22 +1068,44 @@ impl App {
         let active_lyric = match &self.lyrics {
             LyricsState::Synced(lines) => active_line_index(lines, cur_pos)
                 .and_then(|idx| lines.get(idx))
-                .map(|l| l.text.clone())
+                .map(|l| l.text.as_str())
                 .filter(|s| !s.is_empty()),
             _ => None,
         };
 
-        let art_url = track.and_then(|t| t.thumbnail_url.clone());
-        let art_path = art_url
-            .as_deref()
-            .map(media::art_cache_path)
-            .filter(|p| p.exists())
-            .map(|p| p.to_string_lossy().into_owned());
+        if let Some(prev) = self.last_exported_state.as_ref() {
+            if prev.track_id == track_id
+                && prev.status == status
+                && prev.pos_secs == pos_secs
+                && prev.dur_secs == dur_secs
+                && prev.lyric.as_deref() == active_lyric
+                && (prev.art_path.is_some() || self.album_art_track_id.as_deref() != Some(track_id))
+            {
+                return;
+            }
+        }
 
+        let cached_art_path = self.last_exported_state.as_ref().and_then(|prev| {
+            if prev.track_id == track_id {
+                prev.art_path.clone()
+            } else {
+                None
+            }
+        });
+
+        let art_url = track.and_then(|t| t.thumbnail_url.as_deref());
+        let art_path = cached_art_path.or_else(|| {
+            art_url
+                .map(media::art_cache_path)
+                .filter(|p| p.exists())
+                .map(|p| p.to_string_lossy().into_owned())
+        });
+
+        let active_lyric_owned = active_lyric.map(str::to_string);
         let fingerprint = ExportFingerprint {
-            track_id,
+            track_id: track_id.to_string(),
             status: status.to_string(),
-            lyric: active_lyric.clone(),
+            lyric: active_lyric_owned.clone(),
             art_path: art_path.clone(),
             pos_secs,
             dur_secs,
@@ -1099,9 +1121,9 @@ impl App {
             &self.playback.stream_badge,
             pos_secs,
             dur_secs,
-            active_lyric.as_deref(),
+            active_lyric,
             art_path.as_deref(),
-            art_url.as_deref(),
+            art_url,
         );
         media::write_now_playing_json(&payload);
     }

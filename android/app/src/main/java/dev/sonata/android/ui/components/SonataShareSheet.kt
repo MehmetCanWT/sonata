@@ -103,6 +103,7 @@ import dev.sonata.android.DetailShareIcon
 import dev.sonata.android.R
 import dev.sonata.android.backdrop.Backdrop
 import dev.sonata.android.buildShareUrlForCollection
+import dev.sonata.android.encodeUrlQuery
 import dev.sonata.android.shareYouTubeMusicUrl
 import dev.sonata.android.ui.ArtworkPalette
 import dev.sonata.android.ui.HEADER_ART_PX
@@ -145,7 +146,7 @@ sealed interface SonataShareTarget {
                 "https://music.youtube.com/watch?v=${track.id}"
             } else {
                 val query = listOf(track.title, track.artist).filter { it.isNotBlank() }.joinToString(" ")
-                "https://music.youtube.com/search?q=${Uri.encode(query)}"
+                "https://music.youtube.com/search?q=${encodeUrlQuery(query)}"
             }
     }
 
@@ -186,7 +187,7 @@ sealed interface SonataShareTarget {
             get() = if (artistId.startsWith("UC")) {
                 "https://music.youtube.com/channel/$artistId"
             } else {
-                "https://music.youtube.com/search?q=${Uri.encode(artistName)}"
+                "https://music.youtube.com/search?q=${encodeUrlQuery(artistName)}"
             }
     }
 }

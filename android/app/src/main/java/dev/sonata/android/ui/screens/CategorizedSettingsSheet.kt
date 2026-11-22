@@ -79,6 +79,7 @@ import dev.sonata.android.ui.PAGE_GUTTER
 import dev.sonata.android.ui.PillSegmentedControl
 import dev.sonata.android.ui.SonataIcons
 import dev.sonata.android.ui.rememberArtworkRequest
+import dev.sonata.android.ui.rememberSafeTopInset
 import dev.sonata.android.ui.theme.LocalLunariaColors
 import uniffi.sonata_android.AndroidAccountProfile
 import uniffi.sonata_android.AndroidUpdateInfo
@@ -167,7 +168,7 @@ fun SonataSettingsScreen(
     modifier: Modifier = Modifier,
 ) {
     val tokens = LocalLunariaColors.current
-    val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val statusTop = rememberSafeTopInset()
     var activeCategory by remember { mutableStateOf<SettingsCategory?>(null) }
 
     BackHandler(enabled = activeCategory != null) {

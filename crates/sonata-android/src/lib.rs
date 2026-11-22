@@ -139,6 +139,16 @@ impl From<&Playlist> for AndroidPlaylist {
     }
 }
 
+impl From<Playlist> for AndroidPlaylist {
+    fn from(p: Playlist) -> Self {
+        Self {
+            id: p.id,
+            name: p.name,
+            thumbnail_url: p.thumbnail_url,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct AndroidTrack {
     pub id: String,
@@ -167,6 +177,22 @@ impl From<&Track> for AndroidTrack {
             thumbnail_url: t.thumbnail_url.clone(),
             liked: t.liked,
             album_id: t.album_id.clone(),
+            is_explicit: t.is_explicit,
+        }
+    }
+}
+
+impl From<Track> for AndroidTrack {
+    fn from(t: Track) -> Self {
+        Self {
+            id: t.id,
+            title: t.title,
+            artist: t.artist,
+            album: t.album,
+            duration_secs: t.duration_secs,
+            thumbnail_url: t.thumbnail_url,
+            liked: t.liked,
+            album_id: t.album_id,
             is_explicit: t.is_explicit,
         }
     }
@@ -237,6 +263,19 @@ impl From<&HomeCard> for AndroidHomeCard {
     }
 }
 
+impl From<HomeCard> for AndroidHomeCard {
+    fn from(c: HomeCard) -> Self {
+        Self {
+            kind: c.kind.into(),
+            id: c.id,
+            title: c.title,
+            subtitle: c.subtitle,
+            thumbnail_url: c.thumbnail_url,
+            track: c.track.map(AndroidTrack::from),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct AndroidHomeShelf {
     pub title: String,
@@ -250,6 +289,16 @@ impl From<&HomeShelf> for AndroidHomeShelf {
             title: s.title.clone(),
             tracks: s.tracks.iter().map(AndroidTrack::from).collect(),
             cards: s.cards.iter().map(AndroidHomeCard::from).collect(),
+        }
+    }
+}
+
+impl From<HomeShelf> for AndroidHomeShelf {
+    fn from(s: HomeShelf) -> Self {
+        Self {
+            title: s.title,
+            tracks: s.tracks.into_iter().map(AndroidTrack::from).collect(),
+            cards: s.cards.into_iter().map(AndroidHomeCard::from).collect(),
         }
     }
 }
@@ -293,6 +342,34 @@ impl From<&ArtistPage> for AndroidArtistPage {
             related_artists: a
                 .related_artists
                 .iter()
+                .map(AndroidHomeCard::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<ArtistPage> for AndroidArtistPage {
+    fn from(a: ArtistPage) -> Self {
+        Self {
+            id: a.id,
+            name: a.name,
+            subtitle: a.subtitle,
+            description: a.description,
+            subscribers: a.subscribers,
+            monthly_listeners: a.monthly_listeners,
+            thumbnail_url: a.thumbnail_url,
+            shuffle_playlist_id: a.shuffle_playlist_id,
+            radio_playlist_id: a.radio_playlist_id,
+            latest_release: a.latest_release.map(AndroidHomeCard::from),
+            popular_tracks: a
+                .popular_tracks
+                .into_iter()
+                .map(AndroidTrack::from)
+                .collect(),
+            releases: a.releases.into_iter().map(AndroidHomeCard::from).collect(),
+            related_artists: a
+                .related_artists
+                .into_iter()
                 .map(AndroidHomeCard::from)
                 .collect(),
         }
@@ -383,17 +460,23 @@ struct AndroidCipherBridgeAdapter {
 
 impl JsCipherBridge for AndroidCipherBridgeAdapter {
     fn ensure_loaded(&self, player_hash: &str, hooked_script: &str) -> bool {
-        let mut guard = self
-            .loaded_hash
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if guard.as_deref() == Some(player_hash) {
-            return true;
+        {
+            let guard = self
+                .loaded_hash
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if guard.as_deref() == Some(player_hash) {
+                return true;
+            }
         }
         let ok = self
             .solver
             .ensure_loaded(player_hash.to_string(), hooked_script.to_string());
         if ok {
+            let mut guard = self
+                .loaded_hash
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             *guard = Some(player_hash.to_string());
         }
         ok
@@ -611,7 +694,7 @@ impl SonataAndroidEngine {
         let playlists = self
             .rt
             .block_on(async move { ytm.fetch_library_playlists().await })?;
-        let out: Vec<AndroidPlaylist> = playlists.iter().map(AndroidPlaylist::from).collect();
+        let out: Vec<AndroidPlaylist> = playlists.into_iter().map(AndroidPlaylist::from).collect();
         save_cached_json(CACHE_PLAYLISTS_FILE, &out);
         Ok(out)
     }
@@ -622,7 +705,7 @@ impl SonataAndroidEngine {
         let shelves = self
             .rt
             .block_on(async move { ytm.fetch_home_feed().await })?;
-        Ok(shelves.iter().map(AndroidHomeShelf::from).collect())
+        Ok(shelves.into_iter().map(AndroidHomeShelf::from).collect())
     }
 
     /// Searches YouTube Music songs for the given query.
@@ -631,7 +714,7 @@ impl SonataAndroidEngine {
         let tracks = self
             .rt
             .block_on(async move { ytm.search_songs(&query).await })?;
-        Ok(tracks.iter().map(AndroidTrack::from).collect())
+        Ok(tracks.into_iter().map(AndroidTrack::from).collect())
     }
 
     /// Fetches all tracks for a YouTube Music playlist, album, or mix browse ID.
@@ -648,7 +731,7 @@ impl SonataAndroidEngine {
             .await?;
             Ok::<_, anyhow::Error>(out)
         })?;
-        Ok(tracks.iter().map(AndroidTrack::from).collect())
+        Ok(tracks.into_iter().map(AndroidTrack::from).collect())
     }
 
     /// Fetches a full YouTube Music artist page (hero, subscribers, top tracks, releases, similar artists).
@@ -660,7 +743,7 @@ impl SonataAndroidEngine {
         let page = self
             .rt
             .block_on(async move { ytm.fetch_artist_page(&browse_id).await })?;
-        Ok(AndroidArtistPage::from(&page))
+        Ok(AndroidArtistPage::from(page))
     }
 
     /// Resolves an artist name (e.g. `"The Weeknd"` or `"The Weeknd, Daft Punk"`) to its `UC...` browse ID.
@@ -684,7 +767,7 @@ impl SonataAndroidEngine {
         let page = self
             .rt
             .block_on(async move { ytm.fetch_artist_by_name(&name).await })?;
-        Ok(AndroidArtistPage::from(&page))
+        Ok(AndroidArtistPage::from(page))
     }
 
     /// Resolves an album title + artist name to its `MPRE...` / `OLAK...` browse ID.
@@ -706,7 +789,7 @@ impl SonataAndroidEngine {
         let shelves = self
             .rt
             .block_on(async move { ytm.fetch_radio_mixes().await })?;
-        Ok(shelves.iter().map(AndroidHomeShelf::from).collect())
+        Ok(shelves.into_iter().map(AndroidHomeShelf::from).collect())
     }
 
     /// Fetches the signed-in user's reverse-chronological YTM listening history (`FEmusic_history`).
@@ -715,7 +798,7 @@ impl SonataAndroidEngine {
         let tracks = self
             .rt
             .block_on(async move { ytm.fetch_listening_history().await })?;
-        Ok(tracks.iter().map(AndroidTrack::from).collect())
+        Ok(tracks.into_iter().map(AndroidTrack::from).collect())
     }
 
     /// Finds an explicit counterpart track when `track` is unbadged or clean/edited.
@@ -724,7 +807,6 @@ impl SonataAndroidEngine {
         let core_track: Track = track.into();
         self.rt
             .block_on(async move { ytm.resolve_explicit_counterpart(&core_track).await })
-            .as_ref()
             .map(AndroidTrack::from)
     }
 
@@ -737,7 +819,7 @@ impl SonataAndroidEngine {
         let tracks = self
             .rt
             .block_on(async move { ytm.fetch_radio_queue(&video_id).await })?;
-        Ok(tracks.iter().map(AndroidTrack::from).collect())
+        Ok(tracks.into_iter().map(AndroidTrack::from).collect())
     }
 
     /// Persists like/unlike status for a YouTube Music track.
@@ -999,5 +1081,333 @@ mod tests {
         assert!(load_cached_json_from::<AndroidAccountProfile>(&dir, CACHE_PROFILE_FILE).is_none());
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn track_card_and_shelf_conversions_preserve_all_fields() {
+        let track = Track {
+            id: "vid_123".to_string(),
+            title: "Starboy".to_string(),
+            artist: "The Weeknd".to_string(),
+            album: "Starboy".to_string(),
+            duration_secs: Some(230),
+            thumbnail_url: Some("https://example.com/thumb.jpg".to_string()),
+            source: ProviderSource::YouTubeMusic,
+            audio_badge: Some("256kbps".to_string()),
+            set_video_id: Some("set_9".to_string()),
+            liked: true,
+            album_id: Some("MPREb_123".to_string()),
+            is_explicit: true,
+        };
+
+        let android_track = AndroidTrack::from(&track);
+        assert_eq!(android_track.id, "vid_123");
+        assert_eq!(android_track.title, "Starboy");
+        assert_eq!(android_track.artist, "The Weeknd");
+        assert_eq!(android_track.album, "Starboy");
+        assert_eq!(android_track.duration_secs, Some(230));
+        assert_eq!(
+            android_track.thumbnail_url.as_deref(),
+            Some("https://example.com/thumb.jpg")
+        );
+        assert!(android_track.liked);
+        assert_eq!(android_track.album_id.as_deref(), Some("MPREb_123"));
+        assert!(android_track.is_explicit);
+
+        let roundtrip_track = Track::from(android_track.clone());
+        assert_eq!(roundtrip_track.id, track.id);
+        assert_eq!(roundtrip_track.title, track.title);
+        assert_eq!(roundtrip_track.artist, track.artist);
+        assert_eq!(roundtrip_track.album, track.album);
+        assert_eq!(roundtrip_track.duration_secs, track.duration_secs);
+        assert_eq!(roundtrip_track.thumbnail_url, track.thumbnail_url);
+        assert_eq!(roundtrip_track.liked, track.liked);
+        assert_eq!(roundtrip_track.album_id, track.album_id);
+        assert_eq!(roundtrip_track.is_explicit, track.is_explicit);
+
+        let playlist = Playlist {
+            id: "PL_42".to_string(),
+            name: "Night Mix".to_string(),
+            source: ProviderSource::YouTubeMusic,
+            track_count: Some(12),
+            thumbnail_url: Some("https://example.com/pl.jpg".to_string()),
+        };
+        let android_pl = AndroidPlaylist::from(&playlist);
+        assert_eq!(android_pl.id, "PL_42");
+        assert_eq!(android_pl.name, "Night Mix");
+        assert_eq!(
+            android_pl.thumbnail_url.as_deref(),
+            Some("https://example.com/pl.jpg")
+        );
+
+        assert_eq!(
+            AndroidHomeCardKind::from(HomeCardKind::Playlist),
+            AndroidHomeCardKind::Playlist
+        );
+        assert_eq!(
+            AndroidHomeCardKind::from(HomeCardKind::Album),
+            AndroidHomeCardKind::Album
+        );
+        assert_eq!(
+            AndroidHomeCardKind::from(HomeCardKind::Artist),
+            AndroidHomeCardKind::Artist
+        );
+        assert_eq!(
+            AndroidHomeCardKind::from(HomeCardKind::Song),
+            AndroidHomeCardKind::Song
+        );
+        assert_eq!(
+            AndroidHomeCardKind::from(HomeCardKind::Video),
+            AndroidHomeCardKind::Video
+        );
+        assert_eq!(
+            AndroidHomeCardKind::from(HomeCardKind::Mood),
+            AndroidHomeCardKind::Mood
+        );
+
+        let home_card = HomeCard {
+            kind: HomeCardKind::Song,
+            id: "vid_123".to_string(),
+            title: "Starboy".to_string(),
+            subtitle: "The Weeknd".to_string(),
+            thumbnail_url: Some("https://example.com/card.jpg".to_string()),
+            track: Some(track.clone()),
+        };
+        let shelf = HomeShelf {
+            title: "Quick picks".to_string(),
+            tracks: vec![track],
+            cards: vec![home_card],
+        };
+        let android_shelf = AndroidHomeShelf::from(&shelf);
+        assert_eq!(android_shelf.title, "Quick picks");
+        assert_eq!(android_shelf.tracks.len(), 1);
+        assert_eq!(android_shelf.cards.len(), 1);
+        assert_eq!(android_shelf.cards[0].kind, AndroidHomeCardKind::Song);
+        assert_eq!(
+            android_shelf.cards[0].track.as_ref().map(|t| t.id.as_str()),
+            Some("vid_123")
+        );
+    }
+
+    #[test]
+    fn artist_page_stream_and_update_info_conversions() {
+        let artist_page = ArtistPage {
+            id: "UC12345".to_string(),
+            name: "The Weeknd".to_string(),
+            subtitle: "Artist".to_string(),
+            description: Some("Bio".to_string()),
+            subscribers: Some("36M subscribers".to_string()),
+            monthly_listeners: Some("110M monthly listeners".to_string()),
+            thumbnail_url: Some("https://example.com/artist.jpg".to_string()),
+            shuffle_playlist_id: Some("RDAM_1".to_string()),
+            radio_playlist_id: Some("RD_1".to_string()),
+            latest_release: Some(HomeCard {
+                kind: HomeCardKind::Album,
+                id: "MPREb_1".to_string(),
+                title: "Hurry Up Tomorrow".to_string(),
+                subtitle: "2025".to_string(),
+                thumbnail_url: None,
+                track: None,
+            }),
+            popular_tracks: Vec::new(),
+            releases: Vec::new(),
+            related_artists: Vec::new(),
+        };
+        let android_artist = AndroidArtistPage::from(&artist_page);
+        assert_eq!(android_artist.id, "UC12345");
+        assert_eq!(android_artist.name, "The Weeknd");
+        assert_eq!(android_artist.description.as_deref(), Some("Bio"));
+        assert_eq!(
+            android_artist.monthly_listeners.as_deref(),
+            Some("110M monthly listeners")
+        );
+        assert_eq!(
+            android_artist
+                .latest_release
+                .as_ref()
+                .map(|c| c.title.as_str()),
+            Some("Hurry Up Tomorrow")
+        );
+
+        let stream = ResolvedStream {
+            url: "https://example.com/audio.webm".to_string(),
+            badge: "Opus 251 · Extreme".to_string(),
+            headers: vec![("User-Agent".to_string(), "SonataTest/1.0".to_string())],
+        };
+        let android_stream = AndroidResolvedStream::from(stream);
+        assert_eq!(android_stream.url, "https://example.com/audio.webm");
+        assert_eq!(android_stream.badge, "Opus 251 · Extreme");
+        assert_eq!(android_stream.headers.len(), 1);
+        assert_eq!(android_stream.headers[0].name, "User-Agent");
+        assert_eq!(android_stream.headers[0].value, "SonataTest/1.0");
+
+        let update = sonata_core::updater::UpdateCheckResult {
+            current_version: "1.0.1".to_string(),
+            latest_version: "1.0.2".to_string(),
+            update_available: true,
+            release_url: "https://github.com/MehmetCanWT/sonata/releases/tag/v1.0.2".to_string(),
+            apk_download_url: Some(
+                "https://github.com/MehmetCanWT/sonata/releases/download/v1.0.2/Sonata-v1.0.2-arm64.apk"
+                    .to_string(),
+            ),
+            appimage_download_url: None,
+            release_notes: "## Highlights".to_string(),
+        };
+        let android_update = AndroidUpdateInfo::from(update);
+        assert!(android_update.update_available);
+        assert_eq!(android_update.current_version, "1.0.1");
+        assert_eq!(android_update.latest_version, "1.0.2");
+        assert!(android_update
+            .apk_download_url
+            .as_deref()
+            .unwrap()
+            .contains("Sonata-v1.0.2-arm64.apk"));
+
+        let err = SonataAndroidError::from(anyhow::anyhow!("boom"));
+        assert_eq!(err.to_string(), "boom");
+    }
+
+    struct MockJsCipherSolver {
+        load_calls: std::sync::atomic::AtomicUsize,
+        fail_next_load: std::sync::atomic::AtomicBool,
+    }
+
+    impl AndroidJsCipherSolver for MockJsCipherSolver {
+        fn ensure_loaded(&self, _player_hash: String, _hooked_script: String) -> bool {
+            self.load_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            !self
+                .fail_next_load
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn solve(
+            &self,
+            player_hash: String,
+            sig: String,
+            n: String,
+        ) -> Option<AndroidSolvedCipher> {
+            if player_hash == "hash_a" {
+                Some(AndroidSolvedCipher {
+                    sig: Some(format!("decoded_{sig}")),
+                    n: Some(format!("transformed_{n}")),
+                })
+            } else {
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn cipher_bridge_adapter_caches_loaded_hash_and_delegates_solve() {
+        let solver = Arc::new(MockJsCipherSolver {
+            load_calls: std::sync::atomic::AtomicUsize::new(0),
+            fail_next_load: std::sync::atomic::AtomicBool::new(true),
+        });
+
+        struct SharedSolver(Arc<MockJsCipherSolver>);
+        impl AndroidJsCipherSolver for SharedSolver {
+            fn ensure_loaded(&self, player_hash: String, hooked_script: String) -> bool {
+                self.0.ensure_loaded(player_hash, hooked_script)
+            }
+            fn solve(
+                &self,
+                player_hash: String,
+                sig: String,
+                n: String,
+            ) -> Option<AndroidSolvedCipher> {
+                self.0.solve(player_hash, sig, n)
+            }
+        }
+
+        let adapter = AndroidCipherBridgeAdapter {
+            solver: Box::new(SharedSolver(Arc::clone(&solver))),
+            loaded_hash: std::sync::Mutex::new(None),
+        };
+
+        // Failed load is not cached, so the second attempt invokes ensure_loaded again.
+        assert!(!adapter.ensure_loaded("hash_a", "script_a"));
+        assert!(adapter.ensure_loaded("hash_a", "script_a"));
+        // Subsequent call with the same loaded hash hits the cache without calling ensure_loaded.
+        assert!(adapter.ensure_loaded("hash_a", "script_a"));
+        assert_eq!(
+            solver.load_calls.load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+
+        let solved = adapter
+            .solve("hash_a", "s1", "n1")
+            .expect("solve should return mapped pair");
+        assert_eq!(solved.sig.as_deref(), Some("decoded_s1"));
+        assert_eq!(solved.n.as_deref(), Some("transformed_n1"));
+
+        // Different player hash invalidates cache and triggers a fresh load.
+        assert!(adapter.ensure_loaded("hash_b", "script_b"));
+        assert_eq!(
+            solver.load_calls.load(std::sync::atomic::Ordering::SeqCst),
+            3
+        );
+        assert!(adapter.solve("hash_b", "s1", "n1").is_none());
+    }
+
+    #[test]
+    fn engine_lifecycle_auth_validation_and_sign_out() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let base_dir = std::env::temp_dir().join(format!(
+            "sonata_android_engine_test_{}_{}",
+            std::process::id(),
+            nanos
+        ));
+        let cfg_dir = base_dir.join("config");
+        let cache_dir = base_dir.join("cache");
+        let legacy_home = cache_dir.join("sonata").join(CACHE_HOME_FILE);
+        fs::create_dir_all(legacy_home.parent().unwrap()).unwrap();
+        fs::write(&legacy_home, b"[]").unwrap();
+        assert!(legacy_home.exists());
+
+        let engine = SonataAndroidEngine::new(
+            cfg_dir.to_string_lossy().into_owned(),
+            cache_dir.to_string_lossy().into_owned(),
+        )
+        .expect("engine should initialize cleanly");
+
+        // Verify legacy home cache removal on init (respecting resolved AppConfig cache dir).
+        assert!(!AppConfig::cache_dir().join(CACHE_HOME_FILE).exists());
+        assert!(!engine.is_signed_in());
+        assert!(engine.get_cached_account_profile().is_none());
+        assert!(engine.get_cached_library_playlists().is_empty());
+
+        // Seed profile and playlists cache files directly into AppConfig::cache_dir() and confirm sign_out purges them.
+        save_cached_json(
+            CACHE_PROFILE_FILE,
+            &AndroidAccountProfile {
+                name: "Cached".to_string(),
+                email: None,
+                handle: None,
+                avatar_url: None,
+            },
+        );
+        save_cached_json(
+            CACHE_PLAYLISTS_FILE,
+            &vec![AndroidPlaylist {
+                id: "PL1".to_string(),
+                name: "Mix".to_string(),
+                thumbnail_url: None,
+            }],
+        );
+        assert!(AppConfig::cache_dir().join(CACHE_PROFILE_FILE).exists());
+        assert!(AppConfig::cache_dir().join(CACHE_PLAYLISTS_FILE).exists());
+
+        let missing_auth = engine.set_ytm_cookie_header("VISITOR_INFO1_LIVE=abc".to_string());
+        assert!(missing_auth.is_err());
+
+        engine.sign_out();
+        assert!(!engine.is_signed_in());
+        assert!(!AppConfig::cache_dir().join(CACHE_PROFILE_FILE).exists());
+        assert!(!AppConfig::cache_dir().join(CACHE_PLAYLISTS_FILE).exists());
+
+        let _ = fs::remove_dir_all(&base_dir);
     }
 }

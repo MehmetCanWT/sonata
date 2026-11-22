@@ -39,6 +39,32 @@ object MoonflowerDesignMetrics {
     val tabPillShape: RoundedCornerShape = RoundedCornerShape(percent = capsuleCornerPercent)
 }
 
+private val EdgeOuterStroke = Stroke(width = 3.0f, cap = StrokeCap.Round)
+private val EdgeInnerStroke = Stroke(width = 2.0f, cap = StrokeCap.Round)
+
+private class MoonflowerBackdropCache(
+    val width: Float,
+    val height: Float,
+    val isDark: Boolean,
+    val accent: Color,
+    val mist: Color,
+    val veilBack: Path,
+    val veilBackBrush: Brush,
+    val veilPrimary: Path,
+    val veilPrimaryBrush: Brush,
+    val veilSecondary: Path,
+    val veilSecondaryBrush: Brush,
+    val veilFold: Path,
+    val veilFoldBrush: Brush,
+    val edgeCurveOuter: Path,
+    val edgeCurveOuterColor: Color,
+    val edgeCurveInner: Path,
+    val edgeCurveInnerColor: Color,
+)
+
+@Volatile
+private var cachedMoonflowerBackdrop: MoonflowerBackdropCache? = null
+
 /** Draws the Moonflower signature flowing gossamer translucent silk petal veils and luminous rim curve. */
 fun DrawScope.drawMoonflowerAtmosphericBackdrop(
     isDark: Boolean,
@@ -49,40 +75,41 @@ fun DrawScope.drawMoonflowerAtmosphericBackdrop(
     val h = size.height
     if (w <= 0f || h <= 0f) return
 
-    val roseBlush = if (isDark) Color(0xFFC682AE) else Color(0xFFF0BDD8)
-    val silkPeriwinkle = if (isDark) Color(0xFF7B7FC4) else Color(0xFFC6B7E6)
-    val petalCrease = if (isDark) Color(0xFF453668) else Color(0xFF9E86C2)
+    val cached = cachedMoonflowerBackdrop?.takeIf {
+        it.width == w && it.height == h && it.isDark == isDark && it.accent == accent && it.mist == mist
+    } ?: run {
+        val roseBlush = if (isDark) Color(0xFFC682AE) else Color(0xFFF0BDD8)
+        val silkPeriwinkle = if (isDark) Color(0xFF7B7FC4) else Color(0xFFC6B7E6)
+        val petalCrease = if (isDark) Color(0xFF453668) else Color(0xFF9E86C2)
 
-    val veilBack = Path().apply {
-        moveTo(-w * 0.04f, -h * 0.02f)
-        cubicTo(w * 0.28f, h * 0.05f, w * 0.56f, h * 0.16f, w * 1.06f, h * 0.08f)
-        lineTo(w * 1.06f, -h * 0.05f)
-        close()
-    }
-    val veilPrimary = Path().apply {
-        moveTo(w * 0.08f, -h * 0.04f)
-        cubicTo(w * 0.42f, h * 0.08f, w * 0.68f, h * 0.23f, w * 1.06f, h * 0.16f)
-        lineTo(w * 1.06f, -h * 0.05f)
-        close()
-    }
-    val veilSecondary = Path().apply {
-        moveTo(w * 0.22f, -h * 0.02f)
-        cubicTo(w * 0.52f, h * 0.14f, w * 0.78f, h * 0.28f, w * 1.06f, h * 0.23f)
-        lineTo(w * 1.06f, h * 0.09f)
-        cubicTo(w * 0.78f, h * 0.14f, w * 0.52f, h * 0.04f, w * 0.22f, -h * 0.02f)
-        close()
-    }
-    val veilFold = Path().apply {
-        moveTo(w * 0.48f, -h * 0.03f)
-        cubicTo(w * 0.68f, h * 0.11f, w * 0.84f, h * 0.20f, w * 1.06f, h * 0.18f)
-        lineTo(w * 1.06f, -h * 0.03f)
-        close()
-    }
+        val veilBack = Path().apply {
+            moveTo(-w * 0.04f, -h * 0.02f)
+            cubicTo(w * 0.28f, h * 0.05f, w * 0.56f, h * 0.16f, w * 1.06f, h * 0.08f)
+            lineTo(w * 1.06f, -h * 0.05f)
+            close()
+        }
+        val veilPrimary = Path().apply {
+            moveTo(w * 0.08f, -h * 0.04f)
+            cubicTo(w * 0.42f, h * 0.08f, w * 0.68f, h * 0.23f, w * 1.06f, h * 0.16f)
+            lineTo(w * 1.06f, -h * 0.05f)
+            close()
+        }
+        val veilSecondary = Path().apply {
+            moveTo(w * 0.22f, -h * 0.02f)
+            cubicTo(w * 0.52f, h * 0.14f, w * 0.78f, h * 0.28f, w * 1.06f, h * 0.23f)
+            lineTo(w * 1.06f, h * 0.09f)
+            cubicTo(w * 0.78f, h * 0.14f, w * 0.52f, h * 0.04f, w * 0.22f, -h * 0.02f)
+            close()
+        }
+        val veilFold = Path().apply {
+            moveTo(w * 0.48f, -h * 0.03f)
+            cubicTo(w * 0.68f, h * 0.11f, w * 0.84f, h * 0.20f, w * 1.06f, h * 0.18f)
+            lineTo(w * 1.06f, -h * 0.03f)
+            close()
+        }
 
-    val silkAlpha = if (isDark) 0.28f else 0.58f
-    drawPath(
-        path = veilBack,
-        brush = Brush.linearGradient(
+        val silkAlpha = if (isDark) 0.28f else 0.58f
+        val veilBackBrush = Brush.linearGradient(
             colors = listOf(
                 roseBlush.copy(alpha = silkAlpha * 0.45f),
                 silkPeriwinkle.copy(alpha = silkAlpha * 0.65f),
@@ -90,11 +117,8 @@ fun DrawScope.drawMoonflowerAtmosphericBackdrop(
             ),
             start = Offset(0f, 0f),
             end = Offset(w, h * 0.18f),
-        ),
-    )
-    drawPath(
-        path = veilPrimary,
-        brush = Brush.linearGradient(
+        )
+        val veilPrimaryBrush = Brush.linearGradient(
             colors = listOf(
                 roseBlush.copy(alpha = silkAlpha * 0.55f),
                 silkPeriwinkle.copy(alpha = silkAlpha * 0.85f),
@@ -102,11 +126,8 @@ fun DrawScope.drawMoonflowerAtmosphericBackdrop(
             ),
             start = Offset(w * 0.15f, 0f),
             end = Offset(w, h * 0.22f),
-        ),
-    )
-    drawPath(
-        path = veilSecondary,
-        brush = Brush.linearGradient(
+        )
+        val veilSecondaryBrush = Brush.linearGradient(
             colors = listOf(
                 Color.Transparent,
                 petalCrease.copy(alpha = silkAlpha * 0.62f),
@@ -114,11 +135,8 @@ fun DrawScope.drawMoonflowerAtmosphericBackdrop(
             ),
             start = Offset(w * 0.25f, 0f),
             end = Offset(w, h * 0.28f),
-        ),
-    )
-    drawPath(
-        path = veilFold,
-        brush = Brush.linearGradient(
+        )
+        val veilFoldBrush = Brush.linearGradient(
             colors = listOf(
                 Color.White.copy(alpha = if (isDark) 0.12f else 0.46f),
                 mist.copy(alpha = silkAlpha * 0.48f),
@@ -126,27 +144,43 @@ fun DrawScope.drawMoonflowerAtmosphericBackdrop(
             ),
             start = Offset(w * 0.50f, 0f),
             end = Offset(w, h * 0.19f),
-        ),
-    )
+        )
+        val edgeCurveOuter = Path().apply {
+            moveTo(w * 0.20f, -h * 0.01f)
+            cubicTo(w * 0.52f, h * 0.13f, w * 0.78f, h * 0.25f, w * 1.04f, h * 0.20f)
+        }
+        val edgeCurveInner = Path().apply {
+            moveTo(w * 0.44f, -h * 0.02f)
+            cubicTo(w * 0.66f, h * 0.10f, w * 0.84f, h * 0.19f, w * 1.04f, h * 0.16f)
+        }
 
-    val edgeCurveOuter = Path().apply {
-        moveTo(w * 0.20f, -h * 0.01f)
-        cubicTo(w * 0.52f, h * 0.13f, w * 0.78f, h * 0.25f, w * 1.04f, h * 0.20f)
+        MoonflowerBackdropCache(
+            width = w,
+            height = h,
+            isDark = isDark,
+            accent = accent,
+            mist = mist,
+            veilBack = veilBack,
+            veilBackBrush = veilBackBrush,
+            veilPrimary = veilPrimary,
+            veilPrimaryBrush = veilPrimaryBrush,
+            veilSecondary = veilSecondary,
+            veilSecondaryBrush = veilSecondaryBrush,
+            veilFold = veilFold,
+            veilFoldBrush = veilFoldBrush,
+            edgeCurveOuter = edgeCurveOuter,
+            edgeCurveOuterColor = Color.White.copy(alpha = if (isDark) 0.22f else 0.78f),
+            edgeCurveInner = edgeCurveInner,
+            edgeCurveInnerColor = roseBlush.copy(alpha = if (isDark) 0.26f else 0.72f),
+        ).also { cachedMoonflowerBackdrop = it }
     }
-    val edgeCurveInner = Path().apply {
-        moveTo(w * 0.44f, -h * 0.02f)
-        cubicTo(w * 0.66f, h * 0.10f, w * 0.84f, h * 0.19f, w * 1.04f, h * 0.16f)
-    }
-    drawPath(
-        path = edgeCurveOuter,
-        color = Color.White.copy(alpha = if (isDark) 0.22f else 0.78f),
-        style = Stroke(width = 3.0f, cap = StrokeCap.Round),
-    )
-    drawPath(
-        path = edgeCurveInner,
-        color = roseBlush.copy(alpha = if (isDark) 0.26f else 0.72f),
-        style = Stroke(width = 2.0f, cap = StrokeCap.Round),
-    )
+
+    drawPath(path = cached.veilBack, brush = cached.veilBackBrush)
+    drawPath(path = cached.veilPrimary, brush = cached.veilPrimaryBrush)
+    drawPath(path = cached.veilSecondary, brush = cached.veilSecondaryBrush)
+    drawPath(path = cached.veilFold, brush = cached.veilFoldBrush)
+    drawPath(path = cached.edgeCurveOuter, color = cached.edgeCurveOuterColor, style = EdgeOuterStroke)
+    drawPath(path = cached.edgeCurveInner, color = cached.edgeCurveInnerColor, style = EdgeInnerStroke)
 }
 
 /** Moonflower Light tokens (`moonflower.png`, `settings page.jpg`). */

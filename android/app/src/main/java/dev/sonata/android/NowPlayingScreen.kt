@@ -237,6 +237,7 @@ import dev.sonata.android.ui.feedSkeleton
 import dev.sonata.android.ui.recentlyPlayedSkeleton
 import dev.sonata.android.ui.rememberArtworkPalette
 import dev.sonata.android.ui.rememberArtworkRequest
+import dev.sonata.android.ui.rememberSafeTopInset
 import dev.sonata.android.ui.rememberSmoothLyricClock
 import dev.sonata.android.ui.toMeshPalette
 import dev.sonata.android.ui.topPicksSkeleton
@@ -443,7 +444,7 @@ internal fun NowPlayingScreen(
     var portraitColumnHeightPx by remember { mutableIntStateOf(0) }
     var portraitSlotHeightPx by remember { mutableIntStateOf(0) }
 
-    val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val statusBarTop = rememberSafeTopInset()
     val portraitColWidthDp = if (portraitColumnWidthPx > 0) {
         with(density) { portraitColumnWidthPx.toDp() }
     } else {
@@ -624,7 +625,7 @@ internal fun NowPlayingScreen(
                             .padding(bottom = if (compactLandscape) 8.dp else 20.dp)
                     } else {
                         Modifier
-                            .statusBarsPadding()
+                            .padding(top = statusBarTop)
                             .navigationBarsPadding()
                             .padding(horizontal = playerGutter)
                             .onSizeChanged {
@@ -2303,12 +2304,15 @@ internal fun shareYouTubeMusicUrl(context: android.content.Context, url: String,
     }
 }
 
+internal fun encodeUrlQuery(value: String): String =
+    java.net.URLEncoder.encode(value, "UTF-8").replace("+", "%20")
+
 internal fun shareTrackLink(context: android.content.Context, track: AndroidTrack) {
     val url = if (track.id.isNotBlank() && !track.id.startsWith("jiosaavn:") && !track.id.startsWith("local:")) {
         "https://music.youtube.com/watch?v=${track.id}"
     } else {
         val query = listOf(track.title, track.artist).filter { it.isNotBlank() }.joinToString(" ")
-        "https://music.youtube.com/search?q=${android.net.Uri.encode(query)}"
+        "https://music.youtube.com/search?q=${encodeUrlQuery(query)}"
     }
     val label = listOf(track.title, track.artist).filter { it.isNotBlank() }.joinToString(" — ")
     shareYouTubeMusicUrl(context, url, label)
@@ -2322,7 +2326,7 @@ internal fun buildShareUrlForCollection(browseId: String, title: String): String
             "https://music.youtube.com/playlist?list=$cleanId"
         cleanId.startsWith("MPRE") -> "https://music.youtube.com/browse/$cleanId"
         cleanId.startsWith("UC") -> "https://music.youtube.com/channel/$cleanId"
-        else -> "https://music.youtube.com/search?q=${android.net.Uri.encode(title)}"
+        else -> "https://music.youtube.com/search?q=${encodeUrlQuery(title)}"
     }
 }
 
@@ -2336,7 +2340,7 @@ internal fun shareArtistLink(context: android.content.Context, artistId: String,
     val url = if (cleanId.startsWith("UC")) {
         "https://music.youtube.com/channel/$cleanId"
     } else {
-        "https://music.youtube.com/search?q=${android.net.Uri.encode(artistName)}"
+        "https://music.youtube.com/search?q=${encodeUrlQuery(artistName)}"
     }
     shareYouTubeMusicUrl(context, url, artistName)
 }

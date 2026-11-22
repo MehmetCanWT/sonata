@@ -103,14 +103,16 @@ impl StreamResolver {
     }
 
     pub async fn warm(&self) {
-        let _ = self
+        let home_req = self
             .http
             .get("https://music.youtube.com/")
             .timeout(Duration::from_secs(3))
-            .send()
-            .await;
-        let _ = self.ensure_visitor_data().await;
-        let _ = self.ensure_prepared_player_js().await;
+            .send();
+        let (_, _, _) = tokio::join!(
+            home_req,
+            self.ensure_visitor_data(),
+            self.ensure_prepared_player_js()
+        );
         let _ = detect_js_runtime();
         tracing::info!(event = "resolver_warmed", "resolver prerequisites ready");
     }

@@ -17,7 +17,7 @@
 
 <br/>
 
-[**Download**](#download) · [**Screenshots**](#screenshots) · [**Features**](#features) · [**Build from Source**](#build-from-source) · [**Disclaimer**](#disclaimer)
+[**Download**](#download) · [**Screenshots**](#screenshots) · [**Features**](#features) · [**Build from Source**](#build-from-source) · [**Privacy**](PRIVACY.md) · [**Disclaimer**](#disclaimer)
 
 <br/>
 
@@ -38,31 +38,29 @@
 
 #### Playback & High-Fidelity Audio
 - **Native Extreme Audio** — authenticated `TVHTML5` InnerTube client + zero-AST JS cipher unlocks **`itag=774` (~256–321 kbps Opus Extreme)** and **`itag=141` (256 kbps AAC Extreme)** across Android, Desktop, and Terminal.
-- **Optional JioSaavn Module** — opt-in 320 kbps AAC source in *Settings → Modules* that searches in parallel and seamlessly upgrades playback when a strictly higher bitrate is found.
-- **Explicit Track Preference** — automatically prefers uncensored explicit versions over clean radio edits when available.
-- **Gapless Playback & Mid-Track Recovery** — bounded range streaming, lookahead precaching, and automatic stream recovery on network hiccups.
-- **Permanent Offline Downloads** — save individual tracks or entire albums/playlists into a first-class in-app **Downloads** playlist with offline-first playback and downloaded track badges.
+- **Optional JioSaavn Module** — opt-in 320 kbps AAC source in *Settings → Modules* that searches in parallel and seamlessly upgrades playback when a strictly higher bitrate is found, while still attributing playback to YouTube Music.
+- **Background Quality Upgrades (Online, Cached & Offline)** — cached and offline-downloaded tracks continue checking for higher-tier streams respecting your selected `AudioQualityTier` and seamlessly hot-swap at playback position.
+- **Explicit Track Preference & Offline Library** — prefers explicit recordings over edited versions, saves permanent offline tracks/albums/playlists in **Downloads**, and auto-recovers mid-track stream drops.
 
-#### Cross-Platform Ecosystem
-- **Android (Phone & Tablet)** — native Jetpack Compose + Media3 ExoPlayer client powered by Rust (`sonata-core` via UniFFI), adaptive portrait & landscape layouts, and **60 / 90 / 120 Hz** support.
-- **Linux Wayland Desktop (`sonata-desktop`)** — native GPU-accelerated GPUI (`gpui-kit`) client with ambient glass shaders, selectable skins, MPRIS2, System Tray, and Waybar/Hyprlock telemetry.
-- **Terminal Client (`sonata`)** — ultra-fast Ratatui TUI with Kitty/Sixel HD album art, animated motion covers, synced lyrics, mouse-resizable panes, and Mini Mode.
-- **YouTube Music & Spotify Sync** — sign in for personalized Home feeds, Mixes, Library playlists, and two-way playlist management (`Add to Playlist` / `Create Playlist`).
+#### Cross-Platform Ecosystem & Sync
+- **Android (Phone & Tablet)** — native Jetpack Compose + Media3 ExoPlayer client backed by Rust (`sonata-core` via UniFFI), adaptive portrait/landscape layouts, home-screen widget, and **60 / 90 / 120 Hz** support.
+- **Full YouTube Music Attribution & Listening History** — reports playback (`report_playback`), playlist edits, and likes across Android, Desktop, and Terminal so your YouTube Music Listening History and Annual Replay stay accurate, paired with an in-app **Listening History** page and live *Library → Artists* ranking.
+- **Linux Wayland Desktop (`sonata-desktop`)** — native GPUI (`gpui-kit`) client with ambient wave shaders, selectable skins, MPRIS2, System Tray, and Waybar/Hyprlock telemetry.
+- **Terminal Client (`sonata`)** — ultra-fast Ratatui TUI with Kitty/Sixel/Halfblock artwork, animated motion covers, word-synced lyrics, and Mini Mode.
 
     </td>
     <td width="50%" valign="top">
 
-#### Experience & Liquid Glass UI
-- **Lunaria Moonflower Design** — custom moon-inspired palette (`#B79CED` Petal Lavender, `#8F96D9` Lunar Mist) paired with bundled **Plus Jakarta Sans** typography.
-- **Optical Liquid Glass** — real-time refraction shader on floating navigation bars, mini player, Now Playing options, and anchored track menus.
-- **Animated Album Artwork (Canvas)** — motion covers from Apple Music HLS, Tidal, and community MP4s plus procedural animated covers for Stations and Moods.
-- **Word-Synced & Duet Karaoke Lyrics** — multi-provider word/syllable-level lyrics (`lrc.red`, BetterLyrics, LyricsPlus, LRCLIB, KuGou, NetEase, Genius) with simultaneous overlapping background vocal (`(hey)`) glow, romanization, translation, and per-track timing offset.
-- **Editorial Explore, Artist & Expressive Search** — full-bleed Artist pages with seamless hero dissolve, tilted *Latest Release* spotlight, numbered *Popular tracks*, editorial Explore carousel, Radio Mixes, and fitted Material 3 Expressive Search grids.
+#### Dual Design Themes & Liquid Glass UI
+- **Violet & Moonflower Themes (Light, Dark & AMOLED)** — two structurally distinct theme systems (`Violet` default + `System` appearance, or `Moonflower`) with unique backdrops, card shapes, dividers, full-bleed blurred Artist hero transitions, and **Pinkish Liquid Glass** active navigation domes (`GlassSelectionPill`).
+- **Theme-Specific Artwork & 15 Mood Animations** — custom moon & floral PNG banners on Library summary cards, small crescent badges across *Top Picks* and *Find Your Mood*, and 15 distinct seamlessly looping motion artworks (`Feeling Blue`, `Heartbreak`, `Energy`, `Focus`, etc.).
+- **Visual Share Cards (`SonataShareSheet`)** — artwork-palette and theme-matched preview cards tailored per Song, Album, Playlist, and Artist with one-tap **Share Link**, **Share Image**, and **Save Image** (`Pictures/Sonata`).
+- **Animated Album Covers (Canvas) & Karaoke Lyrics** — Apple Music HLS / Tidal / Community Canvas videos plus multi-provider word-synced & dual-voice karaoke lyrics (`lrc.red` TTML, BetterLyrics, LyricsPlus, LRCLIB, KuGou, NetEase, QQ Music, YTM, Genius) with romanization, translation, and per-track timing offsets.
 
-#### Controls, Performance & Privacy
-- **Audio Controls & Pipeline Inspector** — playback speed, loudness normalization, silence skip, sleep timer, and a 4-stage Audio Signal Chain modal.
-- **Zero Trackers & 100% FOSS** — no ads, no analytics, no Google Play Services, no Firebase, deterministic reproducible APK builds (`dependenciesInfo` disabled), and `0o600`/`0o700` private credential handling.
-- **Built-in Update Notifications** — automatic GitHub Releases update checks across Android, Desktop, and Terminal.
+#### Controls, Privacy & Security
+- **Audio Pipeline & Account Switching** — playback speed, loudness normalization, silence skip, equalizer presets, sleep timer, 4-stage Audio Pipeline modal, and clean one-tap WebView **Account Switching**.
+- **Zero Trackers & 100% FOSS** — no ads, no analytics, no Firebase or Google Play Services, reproducible APKs (`dependenciesInfo` disabled, no `REQUEST_INSTALL_PACKAGES`), and `0o600`/`0o700` private credential handling ([PRIVACY.md](PRIVACY.md)).
+- **Built-in Update Notifications** — GitHub Releases checks across Android (manual APK download handoff), Desktop, and Terminal.
 
     </td>
   </tr>
@@ -156,10 +154,10 @@
 
 | Crate / Folder | Role |
 |---|---|
-| `crates/sonata-core` | Shared Rust engine (auth, Hi-Fi cipher & stream resolution, multi-provider TTML/YRC/KRC/LRCLIB lyrics, SQLite WAL cache, `mpv` IPC, updater) |
-| `crates/sonata-android` + `android/` | UniFFI Rust bridge (`libsonata_android.so`) + Jetpack Compose / Media3 ExoPlayer Android mobile & tablet app |
-| `crates/sonata-desktop` | Native GPUI Wayland/Hyprland desktop client with MPRIS2 & system tray |
-| `crates/sonata-tui` | Ratatui terminal client with Kitty/Sixel artwork & synced lyrics |
+| `crates/sonata-core` | Shared Rust engine (auth, Hi-Fi cipher & stream resolution, YTM playback reporting, multi-provider TTML/YRC/KRC/LRCLIB lyrics, SQLite WAL cache, `mpv` IPC, updater) |
+| `crates/sonata-android` + `android/` | UniFFI Rust bridge (`libsonata_android.so`) + modular Jetpack Compose / Media3 ExoPlayer Android app (`Violet` & `Moonflower` themes, Liquid Glass, Share Sheet, Widget) |
+| `crates/sonata-desktop` | Native GPUI Wayland/Hyprland desktop client with ambient shaders, MPRIS2 & system tray |
+| `crates/sonata-tui` | Ratatui terminal client with Kitty/Sixel/Halfblock artwork & word-synced lyrics |
 
 ### Build Commands
 
@@ -178,7 +176,8 @@ cd android && ./gradlew :app:assembleRelease --console=plain
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo test --workspace --all-targets --locked
+cargo test --offline -p sonata-core -p sonata-desktop -p sonata-tui -p sonata-android
+cd android && ./gradlew testDebugUnitTest --console=plain
 ```
 
 </details>
@@ -189,11 +188,11 @@ cargo test --workspace --all-targets --locked
 
 <h1><a id="disclaimer"></a>Disclaimer & Legal Notice</h1>
 
-Sonata is an independent, community-driven third-party audio player and client. It is **not** associated with Google LLC, YouTube Music, Spotify AB, or any of their parent companies.
+Sonata is an independent, community-driven third-party audio player and client. It is **not** associated with Google LLC, YouTube Music, Spotify AB, JioSaavn, or any of their parent companies.
 
 - **No Media Hosting:** Sonata does not host, upload, or distribute copyrighted music files. It operates strictly as a client interface for local playback or streaming from public and user-authenticated APIs.
 - **Fair Use & Responsibility:** This software is provided for personal, educational, and fair-use purposes. Users are solely responsible for complying with local copyright laws and third-party platform Terms of Service.
-- **Privacy:** All session cookies and caches are stored locally on your device with restricted permissions (`0o600`/`0o700`) and are never transmitted to any third-party telemetry server.
+- **Privacy:** All session cookies and caches are stored locally on your device with restricted permissions (`0o600`/`0o700`) and are never transmitted to any third-party telemetry server. See [PRIVACY.md](PRIVACY.md).
 
 </div>
 

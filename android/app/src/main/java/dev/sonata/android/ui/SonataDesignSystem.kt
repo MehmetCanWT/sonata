@@ -45,12 +45,14 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -60,6 +62,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.statusBarsIgnoringVisibility
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyListScope
@@ -143,6 +146,8 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
@@ -283,7 +288,17 @@ fun SonataTheme(
     }
 }
 
-/** Updates system bar icon contrast and enables edge-to-edge immersive transient system bars. */
+/** Returns a consistent safe top inset across edge-to-edge status bars, cutouts, and transient bar modes. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun rememberSafeTopInset(): Dp {
+    val visibleStatus = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val ignoringVisStatus = WindowInsets.statusBarsIgnoringVisibility.asPaddingValues().calculateTopPadding()
+    val cutoutTop = WindowInsets.displayCutout.asPaddingValues().calculateTopPadding()
+    return maxOf(visibleStatus, ignoringVisStatus, cutoutTop, 28.dp)
+}
+
+/** Updates system bar icon contrast while keeping edge-to-edge status and navigation bars well-spaced. */
 @Composable
 fun SystemBarIcons(dark: Boolean) {
     val view = LocalView.current
@@ -294,7 +309,6 @@ fun SystemBarIcons(dark: Boolean) {
             isAppearanceLightStatusBars = dark
             isAppearanceLightNavigationBars = dark
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            hide(WindowInsetsCompat.Type.systemBars())
         }
     }
 }
@@ -1110,15 +1124,15 @@ fun ThinSlider(
         ),
         label = "thinSliderHeight",
     )
-    val sweep = if (loading) {
+    val sweepState: State<Float>? = if (loading) {
         rememberInfiniteTransition(label = "thinSliderSheen").animateFloat(
             initialValue = 0f,
             targetValue = 1f,
             animationSpec = infiniteRepeatable(tween(1100, easing = LinearEasing)),
             label = "sheen",
-        ).value
+        )
     } else {
-        0f
+        null
     }
 
     Box(
@@ -1156,6 +1170,7 @@ fun ThinSlider(
             val radius = CornerRadius(size.height / 2f)
             drawRoundRect(color = inactiveColor, cornerRadius = radius)
             if (loading) {
+                val sweep = sweepState?.value ?: 0f
                 val band = size.width * 0.34f
                 val startX = -band + sweep * (size.width + band * 2f)
                 drawRoundRect(
@@ -1485,7 +1500,7 @@ fun BottomFadeScrim(
 @Composable
 fun TopFadeBlur(
     pageColor: Color = MaterialTheme.colorScheme.background,
-    topHeight: Dp = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 52.dp,
+    topHeight: Dp = rememberSafeTopInset() + 56.dp,
     modifier: Modifier = Modifier,
 ) {
     val brush = remember(pageColor) {
@@ -1731,7 +1746,7 @@ fun CircleGlyph(
  * toward dated ExoPlayer readings rather than snapping or stuttering on polling jitter.
  * Explicit seeks / track changes (`discontinuity`) jump immediately.
  */
-private class SteeredLyricClock(startMs: Long) {
+internal class SteeredLyricClock(startMs: Long) {
     var displayedMs: Double = startMs.coerceAtLeast(0L).toDouble()
         private set
 
@@ -2159,3 +2174,11 @@ fun SweptKaraokeLyricText(
         )
     }
 }
+
+class LayoutBoundsHolder {
+    var coordinates: LayoutCoordinates? = null
+    fun boundsInRoot(): Rect? = coordinates?.takeIf { it.isAttached }?.boundsInRoot()
+}
+
+@Composable
+fun rememberLayoutBoundsHolder(): LayoutBoundsHolder = remember { LayoutBoundsHolder() }
