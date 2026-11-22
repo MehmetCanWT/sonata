@@ -24,14 +24,31 @@ android {
         }
     }
 
+    val localKeystorePropsFile = file("${System.getProperty("user.home")}/.config/sonata/keystore.properties")
+    val localKeystoreProps = java.util.Properties().apply {
+        if (localKeystorePropsFile.exists()) {
+            localKeystorePropsFile.inputStream().use { load(it) }
+        }
+    }
     val keystorePath = System.getenv("ANDROID_KEYSTORE_PATH")?.takeIf { it.isNotBlank() }
+        ?: localKeystoreProps.getProperty("storeFile")?.takeIf { it.isNotBlank() }
+    val keystorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")?.takeIf { it.isNotBlank() }
+        ?: localKeystoreProps.getProperty("storePassword")
+        ?: ""
+    val keystoreAlias = System.getenv("ANDROID_KEY_ALIAS")?.takeIf { it.isNotBlank() }
+        ?: localKeystoreProps.getProperty("keyAlias")
+        ?: ""
+    val keystoreKeyPassword = System.getenv("ANDROID_KEY_PASSWORD")?.takeIf { it.isNotBlank() }
+        ?: localKeystoreProps.getProperty("keyPassword")
+        ?: ""
+
     signingConfigs {
         if (keystorePath != null && file(keystorePath).exists()) {
             create("release") {
                 storeFile = file(keystorePath)
-                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: ""
-                keyAlias = System.getenv("ANDROID_KEY_ALIAS") ?: ""
-                keyPassword = System.getenv("ANDROID_KEY_PASSWORD") ?: ""
+                storePassword = keystorePassword
+                keyAlias = keystoreAlias
+                keyPassword = keystoreKeyPassword
             }
         }
     }
