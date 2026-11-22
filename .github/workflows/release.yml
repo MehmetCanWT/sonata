@@ -1,0 +1,414 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  APP_NAME: Sonata
+  CARGO_TERM_COLOR: always
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+  NDK_VERSION: "27.2.12479018"
+  APPIMAGETOOL_VERSION: "continuous"
+
+jobs:
+  check:
+    name: Check Versions & Release Assets
+    runs-on: ubuntu-latest
+    outputs:
+      dv: ${{ steps.ver.outputs.dv }}
+      av: ${{ steps.ver.outputs.av }}
+      av_code: ${{ steps.ver.outputs.av_code }}
+      build_desktop: ${{ steps.ver.outputs.build_desktop }}
+      build_android: ${{ steps.ver.outputs.build_android }}
+      any_build: ${{ steps.ver.outputs.any_build }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compare source versions against GitHub Release assets
+        id: ver
+        run: |
+          set -euo pipefail
+
+          DV="$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)"
+          AV="$(sed -n 's/.*val appVersionName = .*?: *"\([^"]*\)".*/\1/p' android/app/build.gradle.kts | head -n 1)"
+
+          if [[ -z "${DV}" || -z "${AV}" ]]; then
+            echo "Failed to parse versions (DV='${DV}', AV='${AV}')" >&2
+            exit 1
+          fi
+
+          CORE="${AV%%-*}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "${CORE}"
+          AV_CODE="$(( ${MAJOR:-1} * 10000 + ${MINOR:-0} * 100 + ${PATCH:-0} ))"
+
+          DESKTOP_ASSET="${APP_NAME}-v${DV}-x86_64.AppImage"
+          ANDROID_ASSET="${APP_NAME}-v${AV}-arm64.apk"
+
+          BUILD_DESKTOP="true"
+          if gh release view "v${DV}" --json assets --jq '.assets[].name' 2>/dev/null | grep -Fxq "${DESKTOP_ASSET}"; then
+            BUILD_DESKTOP="false"
+          fi
+
+          BUILD_ANDROID="true"
+          if gh release view "v${AV}" --json assets --jq '.assets[].name' 2>/dev/null | grep -Fxq "${ANDROID_ASSET}"; then
+            BUILD_ANDROID="false"
+          fi
+
+          ANY_BUILD="false"
+          if [[ "${BUILD_DESKTOP}" == "true" || "${BUILD_ANDROID}" == "true" ]]; then
+            ANY_BUILD="true"
+          fi
+
+          {
+            echo "dv=${DV}"
+            echo "av=${AV}"
+            echo "av_code=${AV_CODE}"
+            echo "build_desktop=${BUILD_DESKTOP}"
+            echo "build_android=${BUILD_ANDROID}"
+            echo "any_build=${ANY_BUILD}"
+          } >> "${GITHUB_OUTPUT}"
+
+          echo "Desktop v${DV} (${DESKTOP_ASSET}) -> build_desktop=${BUILD_DESKTOP}"
+          echo "Android v${AV} (code=${AV_CODE}, ${ANDROID_ASSET}) -> build_android=${BUILD_ANDROID}"
+
+  desktop:
+    name: Build Desktop AppImage (v${{ needs.check.outputs.dv }})
+    needs: check
+    if: needs.check.outputs.build_desktop == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cache and install apt packages
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: >-
+            libasound2-dev
+            libdbus-1-dev
+            libegl1-mesa-dev
+            libfontconfig1-dev
+            libwayland-dev
+            libxcb1-dev
+            libxkbcommon-dev
+            libxkbcommon-x11-dev
+            librsvg2-bin
+            pkg-config
+            file
+            zsync
+          version: 1.0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache (desktop)
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "desktop-linux-x86_64"
+
+      - name: Cache appimagetool
+        id: cache-appimagetool
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/appimagetool
+          key: appimagetool-x86_64-${{ env.APPIMAGETOOL_VERSION }}
+
+      - name: Download appimagetool on cache miss
+        if: steps.cache-appimagetool.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.cache/appimagetool
+          curl -fsSL -o ~/.cache/appimagetool/appimagetool-x86_64.AppImage \
+            "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
+          chmod +x ~/.cache/appimagetool/appimagetool-x86_64.AppImage
+
+      - name: Build release binaries
+        run: cargo build --release --locked -p sonata-desktop -p sonata-tui
+
+      - name: Package AppImage & zsync into dist/
+        env:
+          DV: ${{ needs.check.outputs.dv }}
+        run: |
+          set -euo pipefail
+          mkdir -p Sonata.AppDir/usr/bin \
+                   Sonata.AppDir/usr/share/applications \
+                   Sonata.AppDir/usr/share/metainfo \
+                   Sonata.AppDir/usr/share/icons/hicolor/256x256/apps \
+                   Sonata.AppDir/usr/share/icons/hicolor/scalable/apps \
+                   dist
+
+          cp target/release/sonata-desktop Sonata.AppDir/usr/bin/sonata-desktop
+          cp target/release/sonata Sonata.AppDir/usr/bin/sonata
+          chmod +x Sonata.AppDir/usr/bin/sonata-desktop Sonata.AppDir/usr/bin/sonata
+
+          cat <<'EOF' > Sonata.AppDir/AppRun
+          #!/usr/bin/env bash
+          set -euo pipefail
+          HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          export PATH="$HERE/usr/bin:$PATH"
+          if [[ "${1:-}" == "--tui" ]]; then
+            shift
+            exec "$HERE/usr/bin/sonata" "$@"
+          fi
+          exec "$HERE/usr/bin/sonata-desktop" "$@"
+          EOF
+          chmod +x Sonata.AppDir/AppRun
+
+          cat <<EOF > Sonata.AppDir/dev.sonata.Sonata.desktop
+          [Desktop Entry]
+          Type=Application
+          Name=Sonata
+          Comment=High-fidelity native music player for YouTube Music and Spotify
+          Exec=sonata-desktop
+          Icon=sonata
+          Categories=AudioVideo;Audio;Music;Player;
+          Terminal=false
+          StartupWMClass=sonata-desktop
+          X-AppImage-Version=${DV}
+          EOF
+          cp Sonata.AppDir/dev.sonata.Sonata.desktop Sonata.AppDir/usr/share/applications/dev.sonata.Sonata.desktop
+
+          cat <<EOF > Sonata.AppDir/usr/share/metainfo/dev.sonata.Sonata.appdata.xml
+          <?xml version="1.0" encoding="UTF-8"?>
+          <component type="desktop-application">
+            <id>dev.sonata.Sonata</id>
+            <name>Sonata</name>
+            <summary>High-fidelity native music player for YouTube Music and Spotify</summary>
+            <metadata_license>CC0-1.0</metadata_license>
+            <project_license>MIT</project_license>
+            <developer id="dev.sonata">
+              <name>MehmetCanWT</name>
+            </developer>
+            <description>
+              <p>Sonata is a fast, native Wayland/Hyprland music player built in Rust with Bit-Perfect playback, word-synced karaoke lyrics, animated motion covers, MPRIS2, and system tray support.</p>
+            </description>
+            <launchable type="desktop-id">dev.sonata.Sonata.desktop</launchable>
+            <url type="homepage">https://github.com/MehmetCanWT/sonata</url>
+            <content_rating type="oars-1.1" />
+            <releases>
+              <release version="${DV}" date="$(date -u +%Y-%m-%d)" />
+            </releases>
+          </component>
+          EOF
+
+          rsvg-convert -w 256 -h 256 assets/sonata-logo.svg -o Sonata.AppDir/sonata.png
+          cp Sonata.AppDir/sonata.png Sonata.AppDir/.DirIcon
+          cp Sonata.AppDir/sonata.png Sonata.AppDir/usr/share/icons/hicolor/256x256/apps/sonata.png
+          cp assets/sonata-logo.svg Sonata.AppDir/usr/share/icons/hicolor/scalable/apps/sonata.svg
+
+          OUT="${APP_NAME}-v${DV}-x86_64.AppImage"
+          UPDATE_INFO="gh-releases-zsync|${GITHUB_REPOSITORY_OWNER}|sonata|latest|${APP_NAME}-*-x86_64.AppImage.zsync"
+          ARCH=x86_64 ~/.cache/appimagetool/appimagetool-x86_64.AppImage --appimage-extract-and-run \
+            -u "${UPDATE_INFO}" Sonata.AppDir "dist/${OUT}"
+          chmod +x "dist/${OUT}"
+          if [[ -f "${OUT}.zsync" ]]; then
+            mv "${OUT}.zsync" "dist/${OUT}.zsync"
+          elif [[ ! -f "dist/${OUT}.zsync" ]]; then
+            (cd dist && zsyncmake -u "${OUT}" -o "${OUT}.zsync" "${OUT}")
+          fi
+          ls -lh "dist/${OUT}" "dist/${OUT}.zsync"
+
+      - name: Upload desktop artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-desktop
+          path: dist/
+          if-no-files-found: error
+
+  android:
+    name: Build Android APK (v${{ needs.check.outputs.av }})
+    needs: check
+    if: needs.check.outputs.build_android == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Cache Android NDK & SDK 35
+        id: cache-android-sdk
+        uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/lib/android/sdk/ndk/${{ env.NDK_VERSION }}
+            /usr/local/lib/android/sdk/platforms/android-35
+            /usr/local/lib/android/sdk/build-tools/35.0.0
+          key: android-sdk-35-ndk-${{ env.NDK_VERSION }}
+
+      - name: Install Android NDK & SDK 35 on cache miss
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [[ ! -d "${SDK_ROOT}/ndk/${NDK_VERSION}" || ! -d "${SDK_ROOT}/platforms/android-35" ]]; then
+            SDKMANAGER="${SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+            if [[ ! -x "${SDKMANAGER}" ]]; then
+              SDKMANAGER="$(find "${SDK_ROOT}/cmdline-tools" -maxdepth 3 -name sdkmanager -type f 2>/dev/null | sort -V | tail -n 1)"
+            fi
+            yes | "${SDKMANAGER}" --sdk_root="${SDK_ROOT}" --licenses >/dev/null || true
+            "${SDKMANAGER}" --sdk_root="${SDK_ROOT}" \
+              "ndk;${NDK_VERSION}" \
+              "platforms;android-35" \
+              "build-tools;35.0.0"
+          fi
+          {
+            echo "ANDROID_HOME=${SDK_ROOT}"
+            echo "ANDROID_SDK_ROOT=${SDK_ROOT}"
+            echo "ANDROID_NDK_HOME=${SDK_ROOT}/ndk/${NDK_VERSION}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Install Rust toolchain (aarch64-linux-android)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Rust cache (android)
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "android-aarch64"
+
+      - name: Install cargo-ndk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+
+      - name: Build Rust UniFFI shared library
+        run: cargo ndk -t arm64-v8a -P 26 -o android/app/src/main/jniLibs build -p sonata-android --release --locked
+
+      - name: Build signed Android APK into dist/
+        env:
+          AV: ${{ needs.check.outputs.av }}
+          AV_CODE: ${{ needs.check.outputs.av_code }}
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${KEYSTORE_B64}" ]]; then
+            echo "${KEYSTORE_B64}" | base64 --decode > "${RUNNER_TEMP}/sonata-release.jks"
+            export ANDROID_KEYSTORE_PATH="${RUNNER_TEMP}/sonata-release.jks"
+          fi
+          mkdir -p dist
+          (
+            cd android
+            chmod +x gradlew
+            ./gradlew :app:assembleRelease \
+              -PsonataVersion="${AV}" \
+              -PsonataVersionCode="${AV_CODE}" \
+              --console=plain
+            cp app/build/outputs/apk/release/app-release.apk "../dist/${APP_NAME}-v${AV}-arm64.apk"
+          )
+          ls -lh "dist/${APP_NAME}-v${AV}-arm64.apk"
+
+      - name: Remove temporary keystore
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/sonata-release.jks"
+
+      - name: Upload android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-android
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs:
+      - check
+      - desktop
+      - android
+    if: always() && !failure() && !cancelled() && needs.check.outputs.any_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+
+      - name: Create or update GitHub Release and regenerate SHA256SUMS.txt
+        env:
+          DV: ${{ needs.check.outputs.dv }}
+          AV: ${{ needs.check.outputs.av }}
+          BUILD_DESKTOP: ${{ needs.check.outputs.build_desktop }}
+          BUILD_ANDROID: ${{ needs.check.outputs.build_android }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          VERSIONS=()
+          [[ "${BUILD_DESKTOP}" == "true" ]] && VERSIONS+=("${DV}")
+          if [[ "${BUILD_ANDROID}" == "true" && "${AV}" != "${DV}" ]]; then
+            VERSIONS+=("${AV}")
+          elif [[ "${BUILD_ANDROID}" == "true" && "${#VERSIONS[@]}" -eq 0 ]]; then
+            VERSIONS+=("${AV}")
+          fi
+
+          for VER in "${VERSIONS[@]}"; do
+            TAG="v${VER}"
+            TITLE="${APP_NAME} ${TAG}"
+            FILES=(dist/${APP_NAME}-${TAG}-*)
+            if [[ "${#FILES[@]}" -eq 0 ]]; then
+              echo "No built files found for ${TAG}" >&2
+              exit 1
+            fi
+
+            awk -v ver="${VER}" '
+              $0 ~ "^## \\[" ver "\\]" { in_section=1; next }
+              in_section && /^## \[/ { exit }
+              in_section { print }
+            ' CHANGELOG.md | sed '/./,$!d' > "notes-${VER}.md"
+
+            if gh release view "${TAG}" >/dev/null 2>&1; then
+              echo "Release ${TAG} exists; uploading new assets with --clobber..."
+              gh release upload "${TAG}" "${FILES[@]}" --clobber
+            else
+              echo "Creating release ${TAG} (${TITLE})..."
+              if [[ -s "notes-${VER}.md" ]]; then
+                gh release create "${TAG}" "${FILES[@]}" \
+                  --target "${GITHUB_SHA}" \
+                  --title "${TITLE}" \
+                  --notes-file "notes-${VER}.md"
+              else
+                gh release create "${TAG}" "${FILES[@]}" \
+                  --target "${GITHUB_SHA}" \
+                  --title "${TITLE}" \
+                  --generate-notes
+              fi
+            fi
+
+            rm -rf "verify-${VER}"
+            mkdir -p "verify-${VER}"
+            gh release download "${TAG}" \
+              --pattern "${APP_NAME}-${TAG}-*" \
+              --dir "verify-${VER}"
+            (
+              cd "verify-${VER}"
+              sha256sum ${APP_NAME}-${TAG}-* > SHA256SUMS.txt
+              cat SHA256SUMS.txt
+              gh release upload "${TAG}" SHA256SUMS.txt --clobber
+            )
+          done
