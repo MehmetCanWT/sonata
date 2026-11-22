@@ -134,9 +134,8 @@ fn scope_matches_target(
         (UpdateTarget::Desktop, TagScope::DesktopAndTui) => true,
         (UpdateTarget::Desktop, TagScope::Unified) => has_appimage,
         (UpdateTarget::Desktop, TagScope::AndroidOnly | TagScope::TuiOnly) => false,
-        (UpdateTarget::Tui, TagScope::TuiOnly | TagScope::DesktopAndTui | TagScope::Unified) => {
-            true
-        }
+        (UpdateTarget::Tui, TagScope::TuiOnly | TagScope::DesktopAndTui) => true,
+        (UpdateTarget::Tui, TagScope::Unified) => has_appimage,
         (UpdateTarget::Tui, TagScope::AndroidOnly) => false,
     }
 }
@@ -411,6 +410,55 @@ mod tests {
         assert!(parse_releases_for_target(&payload, UpdateTarget::Tui, "1.0.0").update_available);
         assert!(
             !parse_releases_for_target(&payload, UpdateTarget::Android, "1.0.0").update_available
+        );
+    }
+
+    #[test]
+    fn unified_partial_release_notifies_only_platforms_with_assets() {
+        let appimage_only = json!([
+            {
+                "tag_name": "v1.0.4",
+                "html_url": "https://github.com/MehmetCanWT/sonata/releases/tag/v1.0.4",
+                "body": "Desktop/TUI 1.0.4",
+                "assets": [
+                    {
+                        "name": "Sonata-v1.0.4-x86_64.AppImage",
+                        "browser_download_url": "https://example.com/Sonata-v1.0.4-x86_64.AppImage"
+                    }
+                ]
+            }
+        ]);
+        assert!(
+            parse_releases_for_target(&appimage_only, UpdateTarget::Desktop, "1.0.3")
+                .update_available
+        );
+        assert!(
+            parse_releases_for_target(&appimage_only, UpdateTarget::Tui, "1.0.3").update_available
+        );
+        assert!(
+            !parse_releases_for_target(&appimage_only, UpdateTarget::Android, "1.0.3")
+                .update_available
+        );
+
+        let apk_only = json!([
+            {
+                "tag_name": "v1.0.4",
+                "html_url": "https://github.com/MehmetCanWT/sonata/releases/tag/v1.0.4",
+                "body": "Android 1.0.4",
+                "assets": [
+                    {
+                        "name": "Sonata-v1.0.4-arm64.apk",
+                        "browser_download_url": "https://example.com/Sonata-v1.0.4-arm64.apk"
+                    }
+                ]
+            }
+        ]);
+        assert!(
+            !parse_releases_for_target(&apk_only, UpdateTarget::Desktop, "1.0.3").update_available
+        );
+        assert!(!parse_releases_for_target(&apk_only, UpdateTarget::Tui, "1.0.3").update_available);
+        assert!(
+            parse_releases_for_target(&apk_only, UpdateTarget::Android, "1.0.3").update_available
         );
     }
 }

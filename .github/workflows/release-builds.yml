@@ -7,8 +7,6 @@ on:
       - master
     tags:
       - "v*"
-      - "android-v*"
-      - "desktop-v*"
   pull_request:
   workflow_dispatch:
     inputs:
@@ -33,6 +31,8 @@ jobs:
   version:
     name: Resolve Release Version & Targets
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       version: ${{ steps.ver.outputs.version }}
       version_code: ${{ steps.ver.outputs.version_code }}
@@ -46,48 +46,74 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Compute semantic version, targets, and Android versionCode
+      - name: Compute semantic version, per-platform targets, and Android versionCode
         id: ver
         env:
+          GH_TOKEN: ${{ github.token }}
           INPUT_TARGET: ${{ inputs.target || 'all' }}
         run: |
-          BUILD_DESKTOP="true"
-          BUILD_ANDROID="true"
-          IS_RELEASE="false"
-          TAG_NAME=""
+          set -euo pipefail
+          DESKTOP_VERSION="$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)"
+          ANDROID_VERSION="$(sed -n 's/.*val appVersionName = .*?: *"\([^"]*\)".*/\1/p' android/app/build.gradle.kts | head -n 1)"
 
-          if [[ "${GITHUB_REF}" == refs/tags/android-v* ]]; then
-            TAG_NAME="${GITHUB_REF#refs/tags/}"
-            VERSION="${TAG_NAME#android-v}"
-            ARTIFACT_TAG="android-v${VERSION}"
-            RELEASE_TITLE="Sonata Android v${VERSION}"
-            BUILD_DESKTOP="false"
-            BUILD_ANDROID="true"
-            IS_RELEASE="true"
-          elif [[ "${GITHUB_REF}" == refs/tags/desktop-v* ]]; then
-            TAG_NAME="${GITHUB_REF#refs/tags/}"
-            VERSION="${TAG_NAME#desktop-v}"
-            ARTIFACT_TAG="desktop-v${VERSION}"
-            RELEASE_TITLE="Sonata Desktop v${VERSION}"
-            BUILD_DESKTOP="true"
-            BUILD_ANDROID="false"
-            IS_RELEASE="true"
-          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+          if [[ -z "${DESKTOP_VERSION}" || -z "${ANDROID_VERSION}" ]]; then
+            echo "Failed to read versions (desktop='${DESKTOP_VERSION}', android='${ANDROID_VERSION}')" >&2
+            exit 1
+          fi
+
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             TAG_NAME="${GITHUB_REF#refs/tags/}"
             VERSION="${TAG_NAME#v}"
-            ARTIFACT_TAG="v${VERSION}"
-            RELEASE_TITLE="Sonata v${VERSION}"
-            BUILD_DESKTOP="true"
-            BUILD_ANDROID="true"
-            IS_RELEASE="true"
           else
-            VERSION="$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)"
-            ARTIFACT_TAG="v${VERSION}"
-            RELEASE_TITLE="Sonata v${VERSION}"
-            if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-              [[ "${INPUT_TARGET}" == "android" ]] && BUILD_DESKTOP="false"
-              [[ "${INPUT_TARGET}" == "desktop" ]] && BUILD_ANDROID="false"
+            VERSION="$(printf '%s\n%s\n' "${DESKTOP_VERSION}" "${ANDROID_VERSION}" | sort -V | tail -n 1)"
+            TAG_NAME="v${VERSION}"
+          fi
+
+          ARTIFACT_TAG="v${VERSION}"
+          RELEASE_TITLE="Sonata v${VERSION}"
+
+          HAS_APPIMAGE="false"
+          HAS_APK="false"
+          if EXISTING_ASSETS="$(gh release view "${TAG_NAME}" --repo "${GITHUB_REPOSITORY}" --json assets -q '.assets[].name' 2>/dev/null)"; then
+            if printf '%s\n' "${EXISTING_ASSETS}" | grep -qi '\.AppImage$'; then
+              HAS_APPIMAGE="true"
             fi
+            if printf '%s\n' "${EXISTING_ASSETS}" | grep -qi '\.apk$'; then
+              HAS_APK="true"
+            fi
+          fi
+
+          BUILD_DESKTOP="false"
+          BUILD_ANDROID="false"
+          IS_RELEASE="false"
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            [[ "${INPUT_TARGET}" == "all" || "${INPUT_TARGET}" == "desktop" ]] && BUILD_DESKTOP="true"
+            [[ "${INPUT_TARGET}" == "all" || "${INPUT_TARGET}" == "android" ]] && BUILD_ANDROID="true"
+          elif [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            [[ "${DESKTOP_VERSION}" == "${VERSION}" ]] && BUILD_DESKTOP="true"
+            [[ "${ANDROID_VERSION}" == "${VERSION}" ]] && BUILD_ANDROID="true"
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            if [[ "${DESKTOP_VERSION}" == "${VERSION}" && "${HAS_APPIMAGE}" != "true" ]]; then
+              BUILD_DESKTOP="true"
+            fi
+            if [[ "${ANDROID_VERSION}" == "${VERSION}" && "${HAS_APK}" != "true" ]]; then
+              BUILD_ANDROID="true"
+            fi
+            if [[ "${BUILD_DESKTOP}" != "true" && "${BUILD_ANDROID}" != "true" ]]; then
+              [[ "${DESKTOP_VERSION}" == "${VERSION}" ]] && BUILD_DESKTOP="true"
+              [[ "${ANDROID_VERSION}" == "${VERSION}" ]] && BUILD_ANDROID="true"
+            fi
+            [[ "${BUILD_DESKTOP}" == "true" || "${BUILD_ANDROID}" == "true" ]] && IS_RELEASE="true"
+          else
+            # Branch push (main / master): release whichever platform matches VERSION and is not yet published on v<VERSION>.
+            if [[ "${DESKTOP_VERSION}" == "${VERSION}" && "${HAS_APPIMAGE}" != "true" ]]; then
+              BUILD_DESKTOP="true"
+            fi
+            if [[ "${ANDROID_VERSION}" == "${VERSION}" && "${HAS_APK}" != "true" ]]; then
+              BUILD_ANDROID="true"
+            fi
+            [[ "${BUILD_DESKTOP}" == "true" || "${BUILD_ANDROID}" == "true" ]] && IS_RELEASE="true"
           fi
 
           CORE="${VERSION%%-*}"
@@ -108,7 +134,8 @@ jobs:
             echo "is_release=${IS_RELEASE}"
           } >> "$GITHUB_OUTPUT"
 
-          echo "Resolved ${RELEASE_TITLE} (version=${VERSION}, versionCode=${VERSION_CODE}, desktop=${BUILD_DESKTOP}, android=${BUILD_ANDROID}, release=${IS_RELEASE})"
+          echo "Desktop=${DESKTOP_VERSION} (has_appimage=${HAS_APPIMAGE}) Android=${ANDROID_VERSION} (has_apk=${HAS_APK})"
+          echo "Resolved ${RELEASE_TITLE} (tag=${TAG_NAME}, version=${VERSION}, versionCode=${VERSION_CODE}, desktop=${BUILD_DESKTOP}, android=${BUILD_ANDROID}, release=${IS_RELEASE})"
 
   appimage:
     name: Linux Desktop AppImage (x86_64)
@@ -338,7 +365,9 @@ jobs:
     name: Publish GitHub Release
     if: >-
       always() &&
+      needs.version.result == 'success' &&
       needs.version.outputs.is_release == 'true' &&
+      (needs.version.outputs.build_desktop == 'true' || needs.version.outputs.build_android == 'true') &&
       (needs.appimage.result == 'success' || needs.appimage.result == 'skipped') &&
       (needs.android-apk.result == 'success' || needs.android-apk.result == 'skipped')
     needs:
@@ -356,7 +385,6 @@ jobs:
         id: notes
         env:
           VERSION: ${{ needs.version.outputs.version }}
-          ARTIFACT_TAG: ${{ needs.version.outputs.artifact_tag }}
         run: |
           awk -v ver="${VERSION}" '
             $0 ~ "^## \\[" ver "\\]" { in_section=1; next }
@@ -385,40 +413,85 @@ jobs:
           name: Sonata-Android-APK
           path: release-artifacts
 
-      - name: Generate SHA256 checksums
-        run: |
-          cd release-artifacts
-          sha256sum Sonata-* > SHA256SUMS.txt
-          cat SHA256SUMS.txt
-
-      - name: Remove stale assets if re-releasing same tag
+      - name: Publish or merge assets into unified v<VERSION> GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ needs.version.outputs.tag_name }}
+          RELEASE_TITLE: ${{ needs.version.outputs.release_title }}
+          BUILD_DESKTOP: ${{ needs.version.outputs.build_desktop }}
+          BUILD_ANDROID: ${{ needs.version.outputs.build_android }}
+          HAS_NOTES: ${{ steps.notes.outputs.has_notes }}
+          COMMIT_SHA: ${{ github.sha }}
         run: |
-          if gh release view "${TAG_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            echo "Release ${TAG_NAME} already exists; purging old assets before re-uploading fresh builds..."
-            ASSETS="$(gh release view "${TAG_NAME}" --repo "${GITHUB_REPOSITORY}" --json assets -q '.assets[].name')"
-            for asset in ${ASSETS}; do
-              gh release delete-asset "${TAG_NAME}" "${asset}" --repo "${GITHUB_REPOSITORY}" --yes || true
+          set -euo pipefail
+          shopt -s nullglob
+          mkdir -p existing-artifacts checksum-staging
+
+          RELEASE_EXISTS="false"
+          if EXISTING_NAMES="$(gh release view "${TAG_NAME}" --repo "${GITHUB_REPOSITORY}" --json assets -q '.assets[].name' 2>/dev/null)"; then
+            RELEASE_EXISTS="true"
+            echo "Release ${TAG_NAME} already exists; preserving non-rebuilt platform assets..."
+            if [ "${BUILD_DESKTOP}" != "true" ]; then
+              gh release download "${TAG_NAME}" --repo "${GITHUB_REPOSITORY}" \
+                --pattern "*.AppImage" --pattern "*.AppImage.zsync" --dir existing-artifacts || true
+            fi
+            if [ "${BUILD_ANDROID}" != "true" ]; then
+              gh release download "${TAG_NAME}" --repo "${GITHUB_REPOSITORY}" \
+                --pattern "*.apk" --dir existing-artifacts || true
+            fi
+
+            for asset in ${EXISTING_NAMES}; do
+              case "${asset}" in
+                SHA256SUMS.txt)
+                  gh release delete-asset "${TAG_NAME}" "${asset}" --repo "${GITHUB_REPOSITORY}" --yes || true
+                  ;;
+                *.AppImage|*.AppImage.zsync)
+                  if [ "${BUILD_DESKTOP}" = "true" ]; then
+                    gh release delete-asset "${TAG_NAME}" "${asset}" --repo "${GITHUB_REPOSITORY}" --yes || true
+                  fi
+                  ;;
+                *.apk)
+                  if [ "${BUILD_ANDROID}" = "true" ]; then
+                    gh release delete-asset "${TAG_NAME}" "${asset}" --repo "${GITHUB_REPOSITORY}" --yes || true
+                  fi
+                  ;;
+              esac
             done
           fi
 
-      - name: Publish Release Assets (with CHANGELOG notes)
-        if: steps.notes.outputs.has_notes == 'true'
-        uses: softprops/action-gh-release@v3
-        with:
-          name: ${{ needs.version.outputs.release_title }}
-          body_path: release-notes.md
-          generate_release_notes: true
-          files: |
-            release-artifacts/*
+          NEW_ASSETS=(release-artifacts/Sonata-*)
+          if [ "${#NEW_ASSETS[@]}" -eq 0 ]; then
+            echo "No built assets found in release-artifacts/" >&2
+            exit 1
+          fi
+          cp "${NEW_ASSETS[@]}" checksum-staging/
+          EXISTING_FILES=(existing-artifacts/Sonata-*)
+          if [ "${#EXISTING_FILES[@]}" -gt 0 ]; then
+            cp "${EXISTING_FILES[@]}" checksum-staging/
+          fi
+          (
+            cd checksum-staging
+            sha256sum Sonata-* > ../release-artifacts/SHA256SUMS.txt
+          )
+          cat release-artifacts/SHA256SUMS.txt
 
-      - name: Publish Release Assets (auto-generated notes fallback)
-        if: steps.notes.outputs.has_notes != 'true'
-        uses: softprops/action-gh-release@v3
-        with:
-          name: ${{ needs.version.outputs.release_title }}
-          generate_release_notes: true
-          files: |
-            release-artifacts/*
+          if [ "${RELEASE_EXISTS}" = "true" ]; then
+            gh release upload "${TAG_NAME}" release-artifacts/* --repo "${GITHUB_REPOSITORY}" --clobber
+            if [ "${HAS_NOTES}" = "true" ]; then
+              gh release edit "${TAG_NAME}" --repo "${GITHUB_REPOSITORY}" --title "${RELEASE_TITLE}" --notes-file release-notes.md
+            fi
+          else
+            if [ "${HAS_NOTES}" = "true" ]; then
+              gh release create "${TAG_NAME}" release-artifacts/* \
+                --repo "${GITHUB_REPOSITORY}" \
+                --target "${COMMIT_SHA}" \
+                --title "${RELEASE_TITLE}" \
+                --notes-file release-notes.md
+            else
+              gh release create "${TAG_NAME}" release-artifacts/* \
+                --repo "${GITHUB_REPOSITORY}" \
+                --target "${COMMIT_SHA}" \
+                --title "${RELEASE_TITLE}" \
+                --generate-notes
+            fi
+          fi
