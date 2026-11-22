@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -25,7 +27,7 @@ android {
     }
 
     val localKeystorePropsFile = file("${System.getProperty("user.home")}/.config/sonata/keystore.properties")
-    val localKeystoreProps = java.util.Properties().apply {
+    val localKeystoreProps = Properties().apply {
         if (localKeystorePropsFile.exists()) {
             localKeystorePropsFile.inputStream().use { load(it) }
         }
