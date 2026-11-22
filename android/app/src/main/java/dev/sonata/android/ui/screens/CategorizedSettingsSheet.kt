@@ -60,6 +60,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -591,6 +592,57 @@ private fun SettingsOverviewContent(
                             imageVector = SonataIcons.ChevronRight,
                             contentDescription = null,
                             tint = Color.White.copy(alpha = 0.4f),
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+            }
+        }
+
+        if (searchQuery.isBlank() || "sponsor".contains(searchQuery, ignoreCase = true) || "support".contains(searchQuery, ignoreCase = true) || "github".contains(searchQuery, ignoreCase = true)) {
+            item(key = "overview_sponsor") {
+                val context = LocalContext.current
+                SettingsFlatCard(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { openGitHubSponsors(context) }
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(Color.White.copy(alpha = 0.08f)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                imageVector = SonataIcons.Heart,
+                                contentDescription = null,
+                                tint = SonataSettingsTokens.TextSecondary,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                text = "Support Sonata",
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                                color = SonataSettingsTokens.TextPrimary,
+                            )
+                            Text(
+                                text = "GitHub Sponsors",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = SonataSettingsTokens.TextSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        Icon(
+                            imageVector = SonataIcons.ChevronRight,
+                            contentDescription = null,
+                            tint = SonataSettingsTokens.TextSecondary,
                             modifier = Modifier.size(18.dp),
                         )
                     }
@@ -1176,6 +1228,29 @@ private fun AccountUpdatesSettingsPage(
                 }
             }
         }
+
+        item(key = "ac_support") {
+            val context = LocalContext.current
+            SettingsSection("SUPPORT") {
+                SettingsActionRow(
+                    title = "GitHub Sponsors",
+                    subtitle = "Support Sonata development on GitHub",
+                    onClick = { openGitHubSponsors(context) },
+                )
+            }
+        }
+    }
+}
+
+private const val GITHUB_SPONSORS_URL = "https://github.com/sponsors/MehmetCanWT"
+
+private fun openGitHubSponsors(context: android.content.Context) {
+    runCatching {
+        val intent = android.content.Intent(
+            android.content.Intent.ACTION_VIEW,
+            android.net.Uri.parse(GITHUB_SPONSORS_URL),
+        )
+        context.startActivity(intent)
     }
 }
 

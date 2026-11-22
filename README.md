@@ -3,10 +3,11 @@
   <h1>Sonata</h1>
   <p><strong>A fast, modular Rust music player ecosystem for Linux Terminal, Wayland Desktop, and Android (Mobile &amp; Tablet).</strong></p>
   <p>
-    <a href="https://github.com/MehmetCanWT/sonata/releases/latest"><img src="https://img.shields.io/badge/version-v1.0.0-818cf8?style=flat-square" alt="Version v1.0.0" /></a>
+    <a href="https://github.com/MehmetCanWT/sonata/releases/latest"><img src="https://img.shields.io/badge/version-v1.0.1-818cf8?style=flat-square" alt="Version v1.0.1" /></a>
     <a href="https://github.com/MehmetCanWT/sonata/actions/workflows/release-builds.yml"><img src="https://img.shields.io/badge/builds-AppImage%20%7C%20Android%20APK-38bdf8?style=flat-square" alt="Release Builds" /></a>
     <img src="https://img.shields.io/badge/engine-Rust%20%2B%20UniFFI-f97316?style=flat-square" alt="Rust + UniFFI" />
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22c55e?style=flat-square" alt="MIT License" /></a>
+    <a href="https://github.com/sponsors/MehmetCanWT"><img src="https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ea4aaa?style=flat-square&logo=githubsponsors&logoColor=white" alt="GitHub Sponsors" /></a>
   </p>
 </div>
 
