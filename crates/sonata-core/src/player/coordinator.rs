@@ -19,6 +19,7 @@ pub enum PlaybackCommand {
     QueueChanged(Vec<Track>),
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum PlaybackTransition {
     Play {
@@ -117,6 +118,8 @@ mod tests {
             audio_badge: None,
             set_video_id: None,
             liked: false,
+            album_id: None,
+            is_explicit: false,
         }
     }
 

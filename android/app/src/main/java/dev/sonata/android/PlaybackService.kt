@@ -2,13 +2,19 @@ package dev.sonata.android
 
 import android.content.Context
 import android.content.Intent
+import android.media.audiofx.Equalizer
+import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
+import android.os.Handler
 import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.Format
 import androidx.media3.common.ForwardingPlayer
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
+import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DataSource
@@ -20,15 +26,24 @@ import androidx.media3.datasource.cache.CacheDataSink
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
+import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import dev.sonata.android.data.AudioPipelineBus
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import java.io.File
 import java.io.InterruptedIOException
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.roundToInt
 
 internal object PlaybackQueueBridge {
     @Volatile
@@ -47,12 +62,100 @@ internal object PlaybackQueueBridge {
     var onPlayFromEmpty: () -> Unit = {}
 }
 
+/**
+ * Thread-safe bridge for applying live audio processing settings (speed, skip silence,
+ * loudness normalization, and 5-band equalizer) onto the active [PlaybackService].
+ */
+object PlaybackAudioBridge {
+    @Volatile
+    internal var activeService: PlaybackService? = null
+
+    @Volatile
+    private var playbackSpeed: Float = 1.0f
+
+    @Volatile
+    private var skipSilenceEnabled: Boolean = false
+
+    @Volatile
+    private var loudnessNormEnabled: Boolean = false
+
+    @Volatile
+    private var eqEnabled: Boolean = false
+
+    @Volatile
+    private var eqBandsDb: List<Float> = listOf(0f, 0f, 0f, 0f, 0f)
+
+    fun applyPlaybackSpeed(speed: Float) {
+        val clamped = speed.coerceIn(0.5f, 2.0f)
+        playbackSpeed = clamped
+        AudioPipelineBus.update { it.copy(playbackSpeed = clamped) }
+        activeService?.applyPlaybackSpeedInternal(clamped)
+    }
+
+    fun applySkipSilence(enabled: Boolean) {
+        skipSilenceEnabled = enabled
+        AudioPipelineBus.update { it.copy(skipSilenceActive = enabled) }
+        activeService?.applySkipSilenceInternal(enabled)
+    }
+
+    fun applyLoudnessNormalization(enabled: Boolean) {
+        loudnessNormEnabled = enabled
+        AudioPipelineBus.update { it.copy(loudnessActive = enabled) }
+        activeService?.applyLoudnessInternal(enabled)
+    }
+
+    fun applyEqualizer(enabled: Boolean, bandsDb: List<Float>) {
+        val sanitized = List(5) { idx -> bandsDb.getOrElse(idx) { 0f }.coerceIn(-6f, 6f) }
+        eqEnabled = enabled
+        eqBandsDb = sanitized
+        AudioPipelineBus.update { it.copy(eqActive = enabled) }
+        activeService?.applyEqualizerInternal(enabled, sanitized)
+    }
+
+    internal fun syncAllTo(service: PlaybackService) {
+        AudioPipelineBus.update { current ->
+            val next = current.copy(
+                playbackSpeed = playbackSpeed,
+                skipSilenceActive = skipSilenceEnabled,
+                loudnessActive = loudnessNormEnabled,
+                eqActive = eqEnabled,
+            )
+            if (next == current) current else next
+        }
+        if (playbackSpeed != 1.0f) {
+            service.applyPlaybackSpeedInternal(playbackSpeed)
+        }
+        if (skipSilenceEnabled) {
+            service.applySkipSilenceInternal(true)
+        }
+        if (loudnessNormEnabled) {
+            service.applyLoudnessInternal(true)
+        }
+        if (eqEnabled) {
+            service.applyEqualizerInternal(true, eqBandsDb)
+        }
+    }
+}
+
 class PlaybackService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
+    private var exoPlayerInstance: ExoPlayer? = null
+    private var playerHandler: Handler? = null
+    private var loudnessEnhancer: LoudnessEnhancer? = null
+    private var equalizer: Equalizer? = null
+    private var boundAudioSessionId: Int = C.AUDIO_SESSION_ID_UNSET
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Volatile
+    private var lastCacheCheckKey: String? = null
+    @Volatile
+    private var lastCacheCheckResult: Boolean = false
+    @Volatile
+    private var isServiceDestroyed: Boolean = false
 
     @OptIn(UnstableApi::class)
     override fun onCreate() {
         super.onCreate()
+        isServiceDestroyed = false
         val chunkedHttpFactory = ChunkedDataSource.Factory(
             upstream = ClientAwareHttpDataSourceFactory(),
             chunkBytes = GOOGLEVIDEO_CHUNK_BYTES,
@@ -91,9 +194,279 @@ class PlaybackService : MediaSessionService() {
             .setHandleAudioBecomingNoisy(true)
             .build()
         exoPlayer.repeatMode = Player.REPEAT_MODE_OFF
+        exoPlayer.addAnalyticsListener(createPipelineAnalyticsListener(exoPlayer, simpleCache))
+
+        exoPlayerInstance = exoPlayer
+        playerHandler = Handler(exoPlayer.applicationLooper)
+        PlaybackAudioBridge.activeService = this
+        PlaybackAudioBridge.syncAllTo(this)
 
         val sessionPlayer = QueueAwarePlayer(exoPlayer)
         mediaSession = MediaSession.Builder(this, sessionPlayer).build()
+    }
+
+    @OptIn(UnstableApi::class)
+    private fun createPipelineAnalyticsListener(
+        exoPlayer: ExoPlayer,
+        simpleCache: SimpleCache,
+    ): AnalyticsListener = object : AnalyticsListener {
+        override fun onAudioInputFormatChanged(
+            eventTime: AnalyticsListener.EventTime,
+            format: Format,
+            decoderReuseEvaluation: DecoderReuseEvaluation?,
+        ) {
+            publishFormatTelemetry(exoPlayer, simpleCache, format)
+        }
+
+        override fun onTracksChanged(
+            eventTime: AnalyticsListener.EventTime,
+            tracks: Tracks,
+        ) {
+            val activeFormat = tracks.groups
+                .asSequence()
+                .filter { it.type == C.TRACK_TYPE_AUDIO && it.isSelected }
+                .mapNotNull { group ->
+                    (0 until group.length)
+                        .firstOrNull { group.isTrackSelected(it) }
+                        ?.let { group.getTrackFormat(it) }
+                }
+                .firstOrNull()
+            if (activeFormat != null) {
+                publishFormatTelemetry(exoPlayer, simpleCache, activeFormat)
+            } else {
+                publishSourceOnly(exoPlayer, simpleCache)
+            }
+        }
+
+        override fun onIsPlayingChanged(
+            eventTime: AnalyticsListener.EventTime,
+            isPlaying: Boolean,
+        ) {
+            publishSourceOnly(exoPlayer, simpleCache)
+        }
+
+        override fun onAudioSessionIdChanged(
+            eventTime: AnalyticsListener.EventTime,
+            audioSessionId: Int,
+        ) {
+            if (audioSessionId != boundAudioSessionId && audioSessionId != C.AUDIO_SESSION_ID_UNSET && audioSessionId > 0) {
+                releaseAudioEffects()
+                PlaybackAudioBridge.syncAllTo(this@PlaybackService)
+            }
+        }
+    }
+
+    @OptIn(UnstableApi::class)
+    private fun queryCacheStatusAsync(
+        simpleCache: SimpleCache,
+        cacheKey: String?,
+        isOffline: Boolean,
+    ): Boolean {
+        if (isOffline || cacheKey.isNullOrBlank()) return false
+        if (cacheKey == lastCacheCheckKey) return lastCacheCheckResult
+        serviceScope.launch {
+            val cached = runCatching {
+                simpleCache.getCachedBytes(cacheKey, 0L, 1L) > 0L
+            }.getOrDefault(false)
+            lastCacheCheckKey = cacheKey
+            lastCacheCheckResult = cached
+            AudioPipelineBus.update { current ->
+                if (current.fromOfflineDownload || current.fromCache == cached) {
+                    current
+                } else {
+                    current.copy(fromCache = cached)
+                }
+            }
+        }
+        return false
+    }
+
+    @OptIn(UnstableApi::class)
+    private fun publishFormatTelemetry(
+        exoPlayer: ExoPlayer,
+        simpleCache: SimpleCache,
+        format: Format,
+    ) {
+        val uriString = exoPlayer.currentMediaItem?.localConfiguration?.uri?.toString().orEmpty()
+        val isOffline = uriString.startsWith("file://") || uriString.startsWith("content://")
+        val cacheKey = exoPlayer.currentMediaItem?.localConfiguration?.customCacheKey
+            ?: uriString.takeIf { it.isNotBlank() }
+        val isCached = queryCacheStatusAsync(simpleCache, cacheKey, isOffline)
+        val sourceLabel = when {
+            isOffline -> "Offline Download"
+            uriString.contains("googlevideo.com", ignoreCase = true) -> "YouTube Music"
+            uriString.isNotBlank() -> "Audio Stream"
+            else -> "Idle"
+        }
+        val bitrate = when {
+            format.averageBitrate > 0 -> format.averageBitrate / 1000
+            format.bitrate > 0 -> format.bitrate / 1000
+            else -> 0
+        }
+        val codecLabel = formatCodecLabel(format)
+        AudioPipelineBus.update { current ->
+            val next = current.copy(
+                sourceLabel = sourceLabel,
+                codec = codecLabel,
+                bitrateKbps = bitrate,
+                sampleRateHz = format.sampleRate.takeIf { it > 0 } ?: current.sampleRateHz,
+                channelCount = format.channelCount.takeIf { it > 0 } ?: current.channelCount,
+                fromCache = isCached,
+                fromOfflineDownload = isOffline,
+            )
+            if (next == current) current else next
+        }
+    }
+
+    @OptIn(UnstableApi::class)
+    private fun publishSourceOnly(
+        exoPlayer: ExoPlayer,
+        simpleCache: SimpleCache,
+    ) {
+        val uriString = exoPlayer.currentMediaItem?.localConfiguration?.uri?.toString().orEmpty()
+        val isOffline = uriString.startsWith("file://") || uriString.startsWith("content://")
+        val cacheKey = exoPlayer.currentMediaItem?.localConfiguration?.customCacheKey
+            ?: uriString.takeIf { it.isNotBlank() }
+        val isCached = queryCacheStatusAsync(simpleCache, cacheKey, isOffline)
+        val sourceLabel = when {
+            isOffline -> "Offline Download"
+            uriString.contains("googlevideo.com", ignoreCase = true) -> "YouTube Music"
+            uriString.isNotBlank() -> "Audio Stream"
+            else -> "Idle"
+        }
+        AudioPipelineBus.update { current ->
+            val next = current.copy(
+                sourceLabel = sourceLabel,
+                fromCache = isCached,
+                fromOfflineDownload = isOffline,
+            )
+            if (next == current) current else next
+        }
+    }
+
+    private fun formatCodecLabel(format: Format): String {
+        val mime = format.sampleMimeType.orEmpty()
+        val codecs = format.codecs.orEmpty().lowercase(Locale.ROOT)
+        return when {
+            mime == MimeTypes.AUDIO_OPUS || "opus" in codecs -> "Opus"
+            mime == MimeTypes.AUDIO_FLAC || "flac" in codecs -> "FLAC"
+            mime == MimeTypes.AUDIO_ALAC || "alac" in codecs -> "ALAC"
+            mime == MimeTypes.AUDIO_AAC || "mp4a" in codecs -> "AAC"
+            mime == MimeTypes.AUDIO_MPEG -> "MP3"
+            mime == MimeTypes.AUDIO_VORBIS -> "Vorbis"
+            mime.startsWith("audio/") -> mime.removePrefix("audio/").uppercase(Locale.ROOT)
+            codecs.isNotBlank() -> codecs.uppercase(Locale.ROOT)
+            else -> "PCM"
+        }
+    }
+
+    internal fun applyPlaybackSpeedInternal(speed: Float) {
+        val player = exoPlayerInstance ?: return
+        postOnPlayer {
+            runCatching { player.setPlaybackSpeed(speed.coerceIn(0.5f, 2.0f)) }
+        }
+    }
+
+    @OptIn(UnstableApi::class)
+    internal fun applySkipSilenceInternal(enabled: Boolean) {
+        val player = exoPlayerInstance ?: return
+        postOnPlayer {
+            runCatching { player.skipSilenceEnabled = enabled }
+        }
+    }
+
+    @OptIn(UnstableApi::class)
+    internal fun applyLoudnessInternal(enabled: Boolean) {
+        val player = exoPlayerInstance ?: return
+        postOnPlayer {
+            runCatching {
+                if (!enabled) {
+                    runCatching { loudnessEnhancer?.enabled = false }
+                    runCatching { loudnessEnhancer?.release() }
+                    loudnessEnhancer = null
+                    return@runCatching
+                }
+                val sessionId = player.audioSessionId
+                if (sessionId == C.AUDIO_SESSION_ID_UNSET || sessionId <= 0) return@runCatching
+                if (boundAudioSessionId != sessionId) {
+                    releaseAudioEffects()
+                    boundAudioSessionId = sessionId
+                }
+                val enhancer = loudnessEnhancer ?: LoudnessEnhancer(sessionId).also {
+                    loudnessEnhancer = it
+                }
+                enhancer.setTargetGain(LOUDNESS_NORM_TARGET_MB)
+                enhancer.enabled = true
+            }.onFailure { err ->
+                Log.w(TAG, "LoudnessEnhancer update failed: ${err.message}")
+            }
+        }
+    }
+
+    @OptIn(UnstableApi::class)
+    internal fun applyEqualizerInternal(enabled: Boolean, bandsDb: List<Float>) {
+        val player = exoPlayerInstance ?: return
+        postOnPlayer {
+            runCatching {
+                if (!enabled) {
+                    runCatching { equalizer?.enabled = false }
+                    runCatching { equalizer?.release() }
+                    equalizer = null
+                    return@runCatching
+                }
+                val sessionId = player.audioSessionId
+                if (sessionId == C.AUDIO_SESSION_ID_UNSET || sessionId <= 0) return@runCatching
+                if (boundAudioSessionId != sessionId) {
+                    releaseAudioEffects()
+                    boundAudioSessionId = sessionId
+                }
+                val eq = equalizer ?: Equalizer(0, sessionId).also { equalizer = it }
+                val bandCount = eq.numberOfBands.toInt()
+                val range = eq.bandLevelRange
+                val minMb = range.getOrNull(0)?.toInt() ?: -1500
+                val maxMb = range.getOrNull(1)?.toInt() ?: 1500
+                for (band in 0 until bandCount) {
+                    val uiIdx = if (bandCount <= 1) {
+                        0
+                    } else {
+                        ((band.toFloat() / (bandCount - 1)) * (bandsDb.size - 1))
+                            .roundToInt()
+                            .coerceIn(0, bandsDb.lastIndex)
+                    }
+                    val targetMb = (bandsDb[uiIdx] * 100f).roundToInt().coerceIn(minMb, maxMb)
+                    eq.setBandLevel(band.toShort(), targetMb.toShort())
+                }
+                eq.enabled = true
+            }.onFailure { err ->
+                Log.w(TAG, "Equalizer update failed: ${err.message}")
+            }
+        }
+    }
+
+    private fun postOnPlayer(block: () -> Unit) {
+        if (isServiceDestroyed) return
+        val handler = playerHandler ?: return
+        if (handler.looper.isCurrentThread) {
+            if (!isServiceDestroyed && exoPlayerInstance != null) {
+                runCatching { block() }
+            }
+        } else {
+            handler.post {
+                if (!isServiceDestroyed && exoPlayerInstance != null) {
+                    runCatching { block() }
+                }
+            }
+        }
+    }
+
+    private fun releaseAudioEffects() {
+        runCatching { loudnessEnhancer?.enabled = false }
+        runCatching { loudnessEnhancer?.release() }
+        loudnessEnhancer = null
+        runCatching { equalizer?.enabled = false }
+        runCatching { equalizer?.release() }
+        equalizer = null
+        boundAudioSessionId = C.AUDIO_SESSION_ID_UNSET
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
@@ -108,9 +481,18 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        isServiceDestroyed = true
+        serviceScope.cancel()
+        if (PlaybackAudioBridge.activeService === this) {
+            PlaybackAudioBridge.activeService = null
+        }
+        playerHandler?.removeCallbacksAndMessages(null)
+        playerHandler = null
+        exoPlayerInstance = null
+        releaseAudioEffects()
         mediaSession?.run {
-            player.release()
-            release()
+            runCatching { player.release() }
+            runCatching { release() }
         }
         mediaSession = null
         super.onDestroy()
@@ -210,8 +592,8 @@ class PlaybackService : MediaSessionService() {
             val factory = httpFactoriesByUa.getOrPut(profile.userAgent) {
                 DefaultHttpDataSource.Factory()
                     .setAllowCrossProtocolRedirects(true)
-                    .setConnectTimeoutMs(6_000)
-                    .setReadTimeoutMs(10_000)
+                    .setConnectTimeoutMs(8_000)
+                    .setReadTimeoutMs(15_000)
                     .setUserAgent(profile.userAgent)
             }
 
@@ -340,6 +722,7 @@ class PlaybackService : MediaSessionService() {
         private var chunkRemaining = 0L
         private var chunkOpen = false
         private var passthrough = false
+        private var effectiveChunkBytes = chunkBytes
 
         override fun addTransferListener(transferListener: TransferListener) {
             upstream.addTransferListener(transferListener)
@@ -358,6 +741,12 @@ class PlaybackService : MediaSessionService() {
             }
 
             passthrough = false
+            val client = dataSpec.uri.getQueryParameter("c")?.uppercase(Locale.ROOT).orEmpty()
+            effectiveChunkBytes = if (client == "ANDROID_VR" || client.startsWith("TVHTML5_SIMPLY")) {
+                minOf(chunkBytes, NARROW_RANGE_BYTES)
+            } else {
+                chunkBytes
+            }
             val end = if (dataSpec.length == C.LENGTH_UNSET.toLong()) {
                 total
             } else {
@@ -371,22 +760,45 @@ class PlaybackService : MediaSessionService() {
         }
 
         private fun openChunk() {
-            val length = minOf(chunkBytes, bytesRemaining)
+            val length = minOf(effectiveChunkBytes, bytesRemaining)
             val spec = requireNotNull(baseSpec).buildUpon()
                 .setPosition(position)
                 .setLength(length)
                 .build()
-            try {
-                upstream.open(spec)
-            } catch (e: Exception) {
-                if (e !is InterruptedIOException) {
+            var lastError: Exception? = null
+            for (attempt in 0..MAX_TRANSIENT_CHUNK_RETRIES) {
+                try {
+                    upstream.open(spec)
+                    chunkRemaining = length
+                    chunkOpen = true
+                    return
+                } catch (e: InterruptedIOException) {
+                    throw e
+                } catch (e: androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException) {
+                    val code = e.responseCode
                     val client = spec.uri.getQueryParameter("c") ?: "unknown"
-                    Log.w(TAG, "Chunk $position-${position + length - 1} failed for $client: ${e.message}")
+                    Log.w(TAG, "Chunk $position-${position + length - 1} HTTP $code for $client")
+                    if (code !in 500..599 || attempt == MAX_TRANSIENT_CHUNK_RETRIES) {
+                        throw e
+                    }
+                    lastError = e
+                } catch (e: Exception) {
+                    val client = spec.uri.getQueryParameter("c") ?: "unknown"
+                    Log.w(TAG, "Chunk $position-${position + length - 1} attempt ${attempt + 1} failed for $client: ${e.message}")
+                    if (attempt == MAX_TRANSIENT_CHUNK_RETRIES) {
+                        throw e
+                    }
+                    lastError = e
                 }
-                throw e
+                runCatching { upstream.close() }
+                try {
+                    Thread.sleep(if (attempt == 0) 150L else 400L)
+                } catch (ie: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    throw InterruptedIOException("Interrupted during chunk retry").apply { initCause(ie) }
+                }
             }
-            chunkRemaining = length
-            chunkOpen = true
+            throw (lastError ?: java.io.IOException("Failed to open chunk at $position"))
         }
 
         override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
@@ -408,7 +820,7 @@ class PlaybackService : MediaSessionService() {
                 }
                 chunkRemaining = 0L
             }
-            return C.RESULT_END_OF_INPUT
+            throw java.io.IOException("Stream truncated at $position ($bytesRemaining bytes remaining)")
         }
 
         private fun closeChunk() {
@@ -446,8 +858,11 @@ class PlaybackService : MediaSessionService() {
 
     companion object {
         private const val TAG = "SonataPlayback"
-        private const val MAX_EMPTY_RANGES = 3
+        private const val LOUDNESS_NORM_TARGET_MB = 150
+        private const val MAX_EMPTY_RANGES = 5
+        private const val MAX_TRANSIENT_CHUNK_RETRIES = 2
         private const val GOOGLEVIDEO_CHUNK_BYTES = 1024L * 1024L
+        private const val NARROW_RANGE_BYTES = 512L * 1024L
         private const val EXO_CACHE_BYTES = 512L * 1024L * 1024L
         private const val VISIONOS_USER_AGENT =
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 " +
@@ -474,6 +889,12 @@ class PlaybackService : MediaSessionService() {
                     StandaloneDatabaseProvider(context.applicationContext),
                 ).also { sharedCache = it }
             }
+        }
+
+        @OptIn(UnstableApi::class)
+        fun evictCacheKey(cacheKey: String) {
+            val active = sharedCache ?: return
+            runCatching { active.removeResource(cacheKey) }
         }
 
         @OptIn(UnstableApi::class)

@@ -35,8 +35,8 @@ private class LayerBackdropElement(
         if (node.backdrop != backdrop) {
             node.backdrop.layerCoordinates = null
             node.backdrop = backdrop
+            node.invalidateDraw()
         }
-        node.invalidateDraw()
     }
 
     override fun InspectorInfo.inspectableProperties() {

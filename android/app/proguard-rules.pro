@@ -13,10 +13,21 @@
 -dontwarn com.sun.jna.**
 -dontwarn java.awt.**
 
-# App entry points and ViewModels
+# App entry points, ViewModels, WebView JS bridge & data models
 -keep class dev.sonata.android.MainActivity { *; }
 -keep class dev.sonata.android.PlaybackService { *; }
 -keep class dev.sonata.android.SonataViewModel { *; }
+-keep class dev.sonata.android.SonataViewModel$WebViewJsCipherSolver { *; }
+-keep class dev.sonata.android.YtMusicLoginSheetKt** { *; }
+-keep class dev.sonata.android.data.** { *; }
+-keepclassmembers class dev.sonata.android.data.** { *; }
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}
+
+# Jetpack ProfileInstaller
+-keep class androidx.profileinstaller.** { *; }
+-dontwarn androidx.profileinstaller.**
 
 # Media3 / ExoPlayer
 -keep class androidx.media3.** { *; }

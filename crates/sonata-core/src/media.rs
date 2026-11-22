@@ -855,6 +855,8 @@ mod tests {
             audio_badge: None,
             liked: false,
             set_video_id: None,
+            album_id: None,
+            is_explicit: false,
         };
         let v = build_now_playing_json(
             "Playing",
@@ -926,6 +928,8 @@ mod tests {
             audio_badge: None,
             liked: true,
             set_video_id: None,
+            album_id: None,
+            is_explicit: false,
         };
         let v = build_now_playing_json(
             "Playing",

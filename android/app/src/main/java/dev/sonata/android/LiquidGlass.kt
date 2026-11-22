@@ -82,7 +82,7 @@ private const val LENS_MAX_DP = 48f
 private const val SURFACE_OPACITY = 0.4f
 
 /** Resolution fraction the glass surface records and processes its backdrop at. */
-private const val GLASS_RESOLUTION_SCALE = 0.33f
+private const val GLASS_RESOLUTION_SCALE = 0.20f
 
 /** Blur radius and resolution under [LocalGlassPerformance] (no lens refraction). */
 private const val FROST_BLUR_RADIUS_DP = 16f
@@ -184,6 +184,7 @@ fun Modifier.liquidGlass(
     shape: CornerBasedShape,
     /** Drawn over the glass in place of the theme's default tint, when set. */
     surfaceTint: Color? = null,
+    chromaticAberration: Boolean = true,
 ): Modifier {
     if (!isGlassSupported()) return this
     if (LocalReduceDynamicBlur.current) {
@@ -212,6 +213,7 @@ fun Modifier.liquidGlass(
         blurPx,
         lensHeightPx,
         lensAmountPx,
+        chromaticAberration,
     ) {
         {
             colorControls(saturation = 1f + 0.5f * VIBRANCY)
@@ -221,7 +223,7 @@ fun Modifier.liquidGlass(
                     refractionHeight = lensHeightPx,
                     refractionAmount = lensAmountPx,
                     depthEffect = true,
-                    chromaticAberration = false,
+                    chromaticAberration = chromaticAberration,
                 )
             }
         }

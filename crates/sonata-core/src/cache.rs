@@ -249,6 +249,14 @@ impl CacheDb {
         }
     }
 
+    /// Purges all cached stream URLs (for example on sign-in / sign-out transitions).
+    pub fn clear_stream_cache(&self) {
+        let guard = self.lock_conn();
+        if let Err(error) = guard.execute("DELETE FROM stream_cache", []) {
+            tracing::warn!("[sonata:cache] stream-clear failed error={error}");
+        }
+    }
+
     pub fn get_track_enrichment(&self, track_id: &str) -> Option<TrackEnrichment> {
         if !self.enabled.load(Ordering::Relaxed) {
             return None;
@@ -660,6 +668,8 @@ mod tests {
             audio_badge: None,
             set_video_id: None,
             liked: false,
+            album_id: None,
+            is_explicit: false,
         }];
         db.put_playlist("ytm:VLLM", "Liked Music", &tracks);
         let (name, loaded, fresh) = db.get_playlist("ytm:VLLM").expect("cached playlist");

@@ -193,6 +193,11 @@ private class DrawBackdropElement(
     }
 
     override fun update(node: DrawBackdropNode) {
+        val effectInputsChanged =
+            node.backdrop != backdrop ||
+                node.shapeProvider != shapeProvider ||
+                node.effects != effects ||
+                node.backdropScale != backdropScale
         node.backdrop = backdrop
         node.shapeProvider = shapeProvider
         node.effects = effects
@@ -206,7 +211,9 @@ private class DrawBackdropElement(
         node.onDrawSurface = onDrawSurface
         node.onDrawFront = onDrawFront
         node.backdropScale = backdropScale
-        node.invalidateDrawCache()
+        if (effectInputsChanged) {
+            node.invalidateDrawCache()
+        }
     }
 
     override fun InspectorInfo.inspectableProperties() {

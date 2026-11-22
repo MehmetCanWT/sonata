@@ -232,6 +232,8 @@ mod tests {
             audio_badge: None,
             set_video_id: None,
             liked: false,
+            album_id: None,
+            is_explicit: false,
         }
     }
 

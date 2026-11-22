@@ -104,17 +104,34 @@ impl ExtractedCookies {
         self.ytm_cookies
             .get("SAPISID")
             .or_else(|| self.ytm_cookies.get("__Secure-3PAPISID"))
+            .or_else(|| self.ytm_cookies.get("__Secure-1PAPISID"))
             .map(String::as_str)
     }
 
     pub fn ytm_sapisidhash(&self) -> Option<String> {
-        let sapisid = self.ytm_sapisid()?;
-        Some(compute_sapisidhash(sapisid, "https://music.youtube.com"))
+        self.ytm_sapisidhash_for_origin("https://music.youtube.com")
     }
 
     pub fn ytm_sapisidhash_for_origin(&self, origin: &str) -> Option<String> {
-        let sapisid = self.ytm_sapisid()?;
-        Some(compute_sapisidhash_triple(sapisid, origin))
+        let fallback = self.ytm_sapisid()?;
+        let sapisid = self
+            .ytm_cookies
+            .get("SAPISID")
+            .map(String::as_str)
+            .unwrap_or(fallback);
+        let one_p = self
+            .ytm_cookies
+            .get("__Secure-1PAPISID")
+            .map(String::as_str)
+            .unwrap_or(fallback);
+        let three_p = self
+            .ytm_cookies
+            .get("__Secure-3PAPISID")
+            .map(String::as_str)
+            .unwrap_or(fallback);
+        Some(compute_sapisidhash_variants(
+            sapisid, one_p, three_p, origin,
+        ))
     }
 
     pub fn has_ytm_auth(&self) -> bool {
@@ -180,15 +197,34 @@ pub fn compute_sapisidhash(sapisid: &str, origin: &str) -> String {
 }
 
 pub fn compute_sapisidhash_triple(sapisid: &str, origin: &str) -> String {
+    compute_sapisidhash_variants(sapisid, sapisid, sapisid, origin)
+}
+
+pub fn compute_sapisidhash_variants(
+    sapisid: &str,
+    one_p_sapisid: &str,
+    three_p_sapisid: &str,
+    origin: &str,
+) -> String {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let mut hasher = Sha1::new();
-    hasher.update(format!("{ts} {sapisid} {origin}").as_bytes());
-    let digest = hasher.finalize();
-    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
-    format!("SAPISIDHASH {ts}_{hex} SAPISID1PHASH {ts}_{hex} SAPISID3PHASH {ts}_{hex}")
+    let hash_for = |secret: &str| {
+        let mut hasher = Sha1::new();
+        hasher.update(format!("{ts} {secret} {origin}").as_bytes());
+        let digest = hasher.finalize();
+        digest
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    format!(
+        "SAPISIDHASH {ts}_{} SAPISID1PHASH {ts}_{} SAPISID3PHASH {ts}_{}",
+        hash_for(sapisid),
+        hash_for(one_p_sapisid),
+        hash_for(three_p_sapisid)
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -678,6 +714,17 @@ mod tests {
         let parts: Vec<_> = header.split('_').collect();
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[1].len(), 40);
+
+        let extracted = ExtractedCookies::from_ytm_cookie_header(
+            "__Secure-1PAPISID=one_p; __Secure-3PAPISID=three_p",
+        );
+        assert!(extracted.has_ytm_auth());
+        let triple = extracted
+            .ytm_sapisidhash_for_origin("https://music.youtube.com")
+            .expect("triple auth header");
+        assert!(triple.contains("SAPISIDHASH "));
+        assert!(triple.contains("SAPISID1PHASH "));
+        assert!(triple.contains("SAPISID3PHASH "));
     }
 
     #[test]

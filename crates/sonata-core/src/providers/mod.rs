@@ -36,6 +36,12 @@ pub struct Track {
     pub set_video_id: Option<String>,
     #[serde(default)]
     pub liked: bool,
+    /// YouTube Music album browse ID (e.g. `MPREb_...`) when supplied by the source item.
+    #[serde(default)]
+    pub album_id: Option<String>,
+    /// Whether YouTube Music marks this track with `MUSIC_EXPLICIT_BADGE`.
+    #[serde(default)]
+    pub is_explicit: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

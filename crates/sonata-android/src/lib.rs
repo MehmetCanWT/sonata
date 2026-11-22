@@ -20,7 +20,7 @@ use sonata_core::providers::hifi::{
     JsCipherBridge, ResolvedStream, SolvedCipherPair, StreamResolver,
 };
 use sonata_core::providers::ytmusic::{
-    HomeCard, HomeCardKind, HomeShelf, YtAccountProfile, YtMusicClient,
+    ArtistPage, HomeCard, HomeCardKind, HomeShelf, YtAccountProfile, YtMusicClient,
 };
 use sonata_core::providers::{Playlist, ProviderSource, Track};
 use std::fs::{self, OpenOptions};
@@ -148,6 +148,12 @@ pub struct AndroidTrack {
     pub duration_secs: Option<u64>,
     pub thumbnail_url: Option<String>,
     pub liked: bool,
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub album_id: Option<String>,
+    #[serde(default)]
+    #[uniffi(default = false)]
+    pub is_explicit: bool,
 }
 
 impl From<&Track> for AndroidTrack {
@@ -160,6 +166,8 @@ impl From<&Track> for AndroidTrack {
             duration_secs: t.duration_secs,
             thumbnail_url: t.thumbnail_url.clone(),
             liked: t.liked,
+            album_id: t.album_id.clone(),
+            is_explicit: t.is_explicit,
         }
     }
 }
@@ -177,6 +185,8 @@ impl From<AndroidTrack> for Track {
             audio_badge: None,
             set_video_id: None,
             liked: t.liked,
+            album_id: t.album_id,
+            is_explicit: t.is_explicit,
         }
     }
 }
@@ -240,6 +250,51 @@ impl From<&HomeShelf> for AndroidHomeShelf {
             title: s.title.clone(),
             tracks: s.tracks.iter().map(AndroidTrack::from).collect(),
             cards: s.cards.iter().map(AndroidHomeCard::from).collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct AndroidArtistPage {
+    pub id: String,
+    pub name: String,
+    pub subtitle: String,
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub description: Option<String>,
+    pub subscribers: Option<String>,
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub monthly_listeners: Option<String>,
+    pub thumbnail_url: Option<String>,
+    pub shuffle_playlist_id: Option<String>,
+    pub radio_playlist_id: Option<String>,
+    pub latest_release: Option<AndroidHomeCard>,
+    pub popular_tracks: Vec<AndroidTrack>,
+    pub releases: Vec<AndroidHomeCard>,
+    pub related_artists: Vec<AndroidHomeCard>,
+}
+
+impl From<&ArtistPage> for AndroidArtistPage {
+    fn from(a: &ArtistPage) -> Self {
+        Self {
+            id: a.id.clone(),
+            name: a.name.clone(),
+            subtitle: a.subtitle.clone(),
+            description: a.description.clone(),
+            subscribers: a.subscribers.clone(),
+            monthly_listeners: a.monthly_listeners.clone(),
+            thumbnail_url: a.thumbnail_url.clone(),
+            shuffle_playlist_id: a.shuffle_playlist_id.clone(),
+            radio_playlist_id: a.radio_playlist_id.clone(),
+            latest_release: a.latest_release.as_ref().map(AndroidHomeCard::from),
+            popular_tracks: a.popular_tracks.iter().map(AndroidTrack::from).collect(),
+            releases: a.releases.iter().map(AndroidHomeCard::from).collect(),
+            related_artists: a
+                .related_artists
+                .iter()
+                .map(AndroidHomeCard::from)
+                .collect(),
         }
     }
 }
@@ -417,6 +472,7 @@ impl SonataAndroidEngine {
             .timeout(std::time::Duration::from_secs(20))
             .tcp_nodelay(true)
             .pool_max_idle_per_host(8)
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36")
             .build()
             .map_err(|e| SonataAndroidError::Engine {
                 reason: format!("Failed to initialize HTTP client: {e}"),
@@ -495,6 +551,9 @@ impl SonataAndroidEngine {
             });
         }
         let _ = cookies.save_ytm_header();
+        if let Some(ref db) = self.cache_db {
+            db.clear_stream_cache();
+        }
         let bridge = self.cipher_bridge.read().ok().and_then(|g| g.clone());
         let next_session = Self::build_session(&self.http, self.cache_db.clone(), cookies, bridge);
         let ytm = next_session.ytm.clone();
@@ -533,6 +592,9 @@ impl SonataAndroidEngine {
         remove_cached_json(CACHE_PROFILE_FILE);
         remove_cached_json(CACHE_HOME_FILE);
         remove_cached_json(CACHE_PLAYLISTS_FILE);
+        if let Some(ref db) = self.cache_db {
+            db.clear_stream_cache();
+        }
         let bridge = self.cipher_bridge.read().ok().and_then(|g| g.clone());
         let next_session = Self::build_session(
             &self.http,
@@ -589,6 +651,130 @@ impl SonataAndroidEngine {
         Ok(tracks.iter().map(AndroidTrack::from).collect())
     }
 
+    /// Fetches a full YouTube Music artist page (hero, subscribers, top tracks, releases, similar artists).
+    pub fn fetch_artist_page(
+        &self,
+        browse_id: String,
+    ) -> Result<AndroidArtistPage, SonataAndroidError> {
+        let ytm = self.current_ytm();
+        let page = self
+            .rt
+            .block_on(async move { ytm.fetch_artist_page(&browse_id).await })?;
+        Ok(AndroidArtistPage::from(&page))
+    }
+
+    /// Resolves an artist name (e.g. `"The Weeknd"` or `"The Weeknd, Daft Punk"`) to its `UC...` browse ID.
+    pub fn resolve_artist_browse_id(
+        &self,
+        name: String,
+    ) -> Result<Option<String>, SonataAndroidError> {
+        let ytm = self.current_ytm();
+        let id = self
+            .rt
+            .block_on(async move { ytm.resolve_artist_browse_id(&name).await })?;
+        Ok(id)
+    }
+
+    /// Resolves an artist name to its `UC...` browse ID and fetches its full `AndroidArtistPage`.
+    pub fn fetch_artist_by_name(
+        &self,
+        name: String,
+    ) -> Result<AndroidArtistPage, SonataAndroidError> {
+        let ytm = self.current_ytm();
+        let page = self
+            .rt
+            .block_on(async move { ytm.fetch_artist_by_name(&name).await })?;
+        Ok(AndroidArtistPage::from(&page))
+    }
+
+    /// Resolves an album title + artist name to its `MPRE...` / `OLAK...` browse ID.
+    pub fn resolve_album_browse_id(
+        &self,
+        album_name: String,
+        artist_name: String,
+    ) -> Result<Option<String>, SonataAndroidError> {
+        let ytm = self.current_ytm();
+        let id = self.rt.block_on(async move {
+            ytm.resolve_album_browse_id(&album_name, &artist_name).await
+        })?;
+        Ok(id)
+    }
+
+    /// Fetches personalized YouTube Music radio & mix shelves (excluding manual user playlists).
+    pub fn fetch_radio_mixes(&self) -> Result<Vec<AndroidHomeShelf>, SonataAndroidError> {
+        let ytm = self.current_ytm();
+        let shelves = self
+            .rt
+            .block_on(async move { ytm.fetch_radio_mixes().await })?;
+        Ok(shelves.iter().map(AndroidHomeShelf::from).collect())
+    }
+
+    /// Fetches the signed-in user's reverse-chronological YTM listening history (`FEmusic_history`).
+    pub fn fetch_listening_history(&self) -> Result<Vec<AndroidTrack>, SonataAndroidError> {
+        let ytm = self.current_ytm();
+        let tracks = self
+            .rt
+            .block_on(async move { ytm.fetch_listening_history().await })?;
+        Ok(tracks.iter().map(AndroidTrack::from).collect())
+    }
+
+    /// Finds an explicit counterpart track when `track` is unbadged or clean/edited.
+    pub fn resolve_explicit_counterpart(&self, track: AndroidTrack) -> Option<AndroidTrack> {
+        let ytm = self.current_ytm();
+        let core_track: Track = track.into();
+        self.rt
+            .block_on(async move { ytm.resolve_explicit_counterpart(&core_track).await })
+            .as_ref()
+            .map(AndroidTrack::from)
+    }
+
+    /// Fetches personalized radio / up-next tracks seeded by `video_id` (`RDAMVM<video_id>`).
+    pub fn fetch_radio_queue(
+        &self,
+        video_id: String,
+    ) -> Result<Vec<AndroidTrack>, SonataAndroidError> {
+        let ytm = self.current_ytm();
+        let tracks = self
+            .rt
+            .block_on(async move { ytm.fetch_radio_queue(&video_id).await })?;
+        Ok(tracks.iter().map(AndroidTrack::from).collect())
+    }
+
+    /// Persists like/unlike status for a YouTube Music track.
+    pub fn set_like_status(&self, video_id: String, liked: bool) -> Result<(), SonataAndroidError> {
+        let ytm = self.current_ytm();
+        self.rt
+            .block_on(async move { ytm.set_like_status(&video_id, liked).await })?;
+        Ok(())
+    }
+
+    /// Appends one or more tracks to a YouTube Music playlist (strips `VL` prefix when needed).
+    pub fn add_tracks_to_playlist(
+        &self,
+        playlist_id: String,
+        video_ids: Vec<String>,
+    ) -> Result<(), SonataAndroidError> {
+        let ytm = self.current_ytm();
+        self.rt
+            .block_on(async move { ytm.add_tracks_to_playlist(&playlist_id, &video_ids).await })?;
+        Ok(())
+    }
+
+    /// Creates a new private YouTube Music playlist and optionally seeds it with `video_ids`.
+    pub fn create_playlist(
+        &self,
+        title: String,
+        description: String,
+        video_ids: Vec<String>,
+    ) -> Result<String, SonataAndroidError> {
+        let ytm = self.current_ytm();
+        let pid = self.rt.block_on(async move {
+            ytm.create_playlist_with_tracks(&title, &description, &video_ids)
+                .await
+        })?;
+        Ok(pid)
+    }
+
     /// Resolves a fast-start audio stream URL and HTTP headers for Media3 `ExoPlayer`.
     pub fn resolve_stream(
         &self,
@@ -599,6 +785,19 @@ impl SonataAndroidEngine {
         let stream = self
             .rt
             .block_on(async move { resolver.resolve_fast(&core_track).await })?;
+        Ok(stream.into())
+    }
+
+    /// Invalidates stale cached streams and re-resolves a fresh recovery stream after mid-track error.
+    pub fn resolve_recovery(
+        &self,
+        track: AndroidTrack,
+    ) -> Result<AndroidResolvedStream, SonataAndroidError> {
+        let resolver = self.current_resolver();
+        let core_track: Track = track.into();
+        let stream = self
+            .rt
+            .block_on(async move { resolver.resolve_recovery(&core_track).await })?;
         Ok(stream.into())
     }
 

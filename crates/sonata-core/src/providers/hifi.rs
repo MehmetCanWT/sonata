@@ -115,6 +115,13 @@ impl StreamResolver {
         tracing::info!(event = "resolver_warmed", "resolver prerequisites ready");
     }
 
+    pub async fn clear_all_stream_caches(&self) {
+        self.cache.lock().await.clear();
+        if let Some(database) = &self.cache_db {
+            database.clear_stream_cache();
+        }
+    }
+
     /// Recovery after mpv/ExoPlayer rejects a stream. It does not repeat the cached resolver.
     #[tracing::instrument(level = "debug", skip(self, track), fields(track_id = %track.id, provider = ?track.source))]
     pub async fn resolve_recovery(&self, track: &Track) -> Result<ResolvedStream> {

@@ -230,6 +230,7 @@ impl BackendHandle {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 pub(super) enum InternalEvent {
     SignInFinished {
         browser_id: String,

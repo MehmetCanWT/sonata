@@ -101,6 +101,8 @@ pub fn parse_embed_playlist_html(html: &str) -> Result<(String, Vec<Track>)> {
                 audio_badge: None,
                 set_video_id: None,
                 liked: false,
+                album_id: None,
+                is_explicit: false,
             });
         }
     }
@@ -163,6 +165,8 @@ pub(super) fn parse_gql_track(data: Option<&Value>) -> Option<Track> {
         audio_badge: None,
         set_video_id: None,
         liked: false,
+        album_id: None,
+        is_explicit: false,
     })
 }
 

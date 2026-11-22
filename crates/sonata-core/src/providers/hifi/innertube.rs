@@ -55,7 +55,7 @@ impl StreamResolver {
         if let Some(video_id) = &video_id {
             if cfg!(target_os = "android") {
                 if let Some(stream) = tokio::time::timeout(
-                    Duration::from_millis(6500),
+                    Duration::from_millis(8500),
                     self.resolve_youtube_bootstrap(video_id, track.source),
                 )
                 .await
@@ -394,21 +394,26 @@ impl StreamResolver {
         let auth_header = self
             .cookies
             .ytm_sapisidhash_for_origin("https://www.youtube.com")?;
+        let visitor_data = self.ensure_visitor_data().await;
         let prepared = self.ensure_prepared_player_js().await?;
+
+        let mut client_obj = serde_json::Map::new();
+        client_obj.insert("clientName".to_string(), json!("TVHTML5"));
+        client_obj.insert("clientVersion".to_string(), json!("5.20260707"));
+        client_obj.insert("deviceMake".to_string(), json!("Samsung"));
+        client_obj.insert("deviceModel".to_string(), json!("UKS9800"));
+        client_obj.insert("userAgent".to_string(), json!(TVHTML5_USER_AGENT));
+        client_obj.insert("osName".to_string(), json!("Tizen"));
+        client_obj.insert("osVersion".to_string(), json!("2.4.0"));
+        client_obj.insert("hl".to_string(), json!("en"));
+        client_obj.insert("gl".to_string(), json!("US"));
+        if let Some(ref visitor) = visitor_data {
+            client_obj.insert("visitorData".to_string(), json!(visitor));
+        }
 
         let body = json!({
             "context": {
-                "client": {
-                    "clientName": "TVHTML5",
-                    "clientVersion": "5.20260707",
-                    "deviceMake": "Samsung",
-                    "deviceModel": "UKS9800",
-                    "userAgent": TVHTML5_USER_AGENT,
-                    "osName": "Tizen",
-                    "osVersion": "2.4.0",
-                    "hl": "en",
-                    "gl": "US"
-                }
+                "client": Value::Object(client_obj)
             },
             "videoId": video_id,
             "playbackContext": {
@@ -421,7 +426,7 @@ impl StreamResolver {
             "racyCheckOk": true
         });
 
-        let response = self
+        let mut req = self
             .http
             .post(PLAYER_API)
             .header("User-Agent", TVHTML5_USER_AGENT)
@@ -435,10 +440,11 @@ impl StreamResolver {
             .header("Cookie", cookie_header)
             .header("Authorization", auth_header)
             .json(&body)
-            .timeout(Duration::from_millis(3200))
-            .send()
-            .await
-            .ok()?;
+            .timeout(Duration::from_millis(4500));
+        if let Some(ref visitor) = visitor_data {
+            req = req.header("X-Goog-Visitor-Id", visitor);
+        }
+        let response = req.send().await.ok()?;
 
         if !response.status().is_success() {
             return None;
@@ -619,21 +625,83 @@ impl StreamResolver {
         video_id: &str,
         source: ProviderSource,
     ) -> Option<ResolvedStream> {
-        let body = json!({
+        let prepared = self.ensure_prepared_player_js().await;
+        let visitor_data = self.ensure_visitor_data().await;
+        let mut client_obj = serde_json::Map::new();
+        client_obj.insert("clientName".to_string(), json!("WEB_REMIX"));
+        client_obj.insert("clientVersion".to_string(), json!("1.20260707.12.00"));
+        client_obj.insert("hl".to_string(), json!("en"));
+        client_obj.insert("gl".to_string(), json!("US"));
+        if let Some(ref visitor) = visitor_data {
+            client_obj.insert("visitorData".to_string(), json!(visitor));
+        }
+
+        let mut body = json!({
             "context": {
-                "client": {
-                    "clientName": "WEB_REMIX",
-                    "clientVersion": "1.20250402.01.00",
-                    "hl": "en",
-                    "gl": "US"
-                }
+                "client": Value::Object(client_obj)
             },
             "videoId": video_id,
             "contentCheckOk": true,
             "racyCheckOk": true
         });
-        let ua = "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/131.0.0.0 Mobile Safari/537.36";
-        self.post_innertube_best(&body, ua, source, true).await
+        if let Some(ref p) = prepared {
+            body["playbackContext"] = json!({
+                "contentPlaybackContext": {
+                    "signatureTimestamp": p.signature_timestamp,
+                    "html5Preference": "HTML5_PREF_WANTS"
+                }
+            });
+        }
+        let ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
+        let mut req = self
+            .http
+            .post("https://music.youtube.com/youtubei/v1/player?prettyPrint=false")
+            .header("User-Agent", ua)
+            .header("Content-Type", "application/json")
+            .header("Origin", "https://music.youtube.com")
+            .header("Referer", "https://music.youtube.com/")
+            .header("X-Origin", "https://music.youtube.com")
+            .header("X-YouTube-Client-Name", "67")
+            .header("X-YouTube-Client-Version", "1.20260707.12.00")
+            .header("X-Goog-AuthUser", "0")
+            .json(&body)
+            .timeout(Duration::from_millis(3500));
+        if let Some(ref visitor) = visitor_data {
+            req = req.header("X-Goog-Visitor-Id", visitor);
+        }
+        if let Some(cookie) = self.cookies.ytm_cookie_header() {
+            req = req.header("Cookie", cookie);
+        }
+        if let Some(auth) = self.cookies.ytm_sapisidhash() {
+            req = req.header("Authorization", auth);
+        }
+        let response = req.send().await.ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        let payload: Value = response.json().await.ok()?;
+        let mut stream = if let Some(ref p) = prepared {
+            self.parse_innertube_ciphered_audio_candidate(&payload, p, false)
+                .await
+                .map(|(_, _, s)| s)
+                .or_else(|| parse_innertube_best_audio(&payload))?
+        } else {
+            parse_innertube_best_audio(&payload)?
+        };
+        if source == ProviderSource::YouTubeMusic {
+            stream.headers = vec![
+                ("User-Agent".to_string(), ua.to_string()),
+                (
+                    "Origin".to_string(),
+                    "https://music.youtube.com".to_string(),
+                ),
+                (
+                    "Referer".to_string(),
+                    "https://music.youtube.com/".to_string(),
+                ),
+            ];
+        }
+        Some(stream)
     }
 
     async fn post_innertube_best(

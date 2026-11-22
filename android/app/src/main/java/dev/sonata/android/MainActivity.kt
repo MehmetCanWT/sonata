@@ -26,9 +26,11 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -93,20 +95,28 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import coil3.network.okhttp.OkHttpNetworkFetcherFactory
+import okhttp3.Dispatcher
+import okhttp3.OkHttpClient
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -114,13 +124,17 @@ import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.drawscope.ContentDrawScope
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -203,9 +217,49 @@ import dev.sonata.android.ui.rememberArtworkRequest
 import dev.sonata.android.ui.rememberSmoothLyricClock
 import dev.sonata.android.ui.toMeshPalette
 import dev.sonata.android.ui.topPicksSkeleton
+import dev.sonata.android.data.ActiveDownload
+import dev.sonata.android.data.AudioPipelineInfo
+import dev.sonata.android.data.CanvasMedia
+import dev.sonata.android.data.CanvasResolver
+import dev.sonata.android.data.DownloadedTrackRecord
+import dev.sonata.android.data.PlayerBackdropMode
+import dev.sonata.android.data.SonataSettingsState
+import dev.sonata.android.data.SonataThumbnailInterceptor
+import dev.sonata.android.data.ThemeMode
+import dev.sonata.android.ui.components.AddToPlaylistSheet
+import dev.sonata.android.ui.components.HeldContextMenu
+import dev.sonata.android.ui.components.HeldContextTarget
+import dev.sonata.android.ui.components.ScrollActivityTracker
+import dev.sonata.android.ui.components.SonataArtistCircleCard
+import dev.sonata.android.ui.components.SonataDiscoveryStationArt
+import dev.sonata.android.ui.components.SonataEditorialCard
+import dev.sonata.android.ui.components.SonataLastPlayedSquareCard
+import dev.sonata.android.ui.components.SonataPersonalStationArt
+import dev.sonata.android.ui.components.SonataSplitHeroHeader
+import dev.sonata.android.ui.components.TrackOptionsMenu
+import dev.sonata.android.ui.components.UserMenuSheet
+import dev.sonata.android.ui.lyrics.EnhancedLyricsPanel
+import dev.sonata.android.ui.player.AudioControlsSheet
+import dev.sonata.android.ui.player.AudioPipelineModal
+import dev.sonata.android.ui.player.BakedArtworkMeshBackdrop
+import dev.sonata.android.ui.player.CanvasVideoSurface
+import dev.sonata.android.ui.player.NowPlayingOptionsMenu
+import dev.sonata.android.ui.player.SleepTimerSheet
+import dev.sonata.android.ui.screens.ArtistReleaseItem
+import dev.sonata.android.ui.screens.ArtistScreen
+import dev.sonata.android.ui.screens.ArtistScreenData
+import dev.sonata.android.ui.screens.ArtistSimilarItem
+import dev.sonata.android.ui.screens.ArtistTrackItem
+import dev.sonata.android.ui.screens.DownloadsManagerSheet
+import dev.sonata.android.ui.screens.RadioMixesScreen
+import dev.sonata.android.ui.screens.SonataSettingsScreen
+import dev.sonata.android.ui.theme.SonataRadioWavesIcon
+import dev.sonata.android.ui.theme.SonataTabIconSize
 import dev.sonata.android.ui.trackColumnWidth
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 import uniffi.sonata_android.AndroidAccountProfile
+import uniffi.sonata_android.AndroidArtistPage
 import uniffi.sonata_android.AndroidHomeCard
 import uniffi.sonata_android.AndroidHomeCardKind
 import uniffi.sonata_android.AndroidHomeShelf
@@ -245,6 +299,7 @@ private data class NavTabSpec(
 private val PrimaryTabs = listOf(
     NavTabSpec(AndroidTab.Home, "Home", SonataIcons.Home),
     NavTabSpec(AndroidTab.Explore, "Explore", SonataIcons.TabExplore),
+    NavTabSpec(AndroidTab.Radio, "Radio", SonataRadioWavesIcon),
     NavTabSpec(AndroidTab.Library, "Library", SonataIcons.TabLibrary),
     NavTabSpec(AndroidTab.Search, "Search", SonataIcons.TabSearch),
 )
@@ -258,6 +313,23 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         SingletonImageLoader.setSafe { appCtx ->
             ImageLoader.Builder(appCtx)
+                .components {
+                    add(
+                        OkHttpNetworkFetcherFactory(
+                            callFactory = {
+                                OkHttpClient.Builder()
+                                    .dispatcher(
+                                        Dispatcher().apply {
+                                            maxRequests = 32
+                                            maxRequestsPerHost = 12
+                                        },
+                                    )
+                                    .build()
+                            },
+                        ),
+                    )
+                    add(SonataThumbnailInterceptor)
+                }
                 .memoryCache {
                     MemoryCache.Builder()
                         .maxSizePercent(appCtx, 0.25)
@@ -280,10 +352,7 @@ class MainActivity : ComponentActivity() {
             notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         setContent {
-            SonataTheme(darkTheme = true) {
-                SystemBarIcons(dark = true)
-                SonataApp()
-            }
+            SonataApp()
         }
     }
 }
@@ -293,8 +362,13 @@ private fun Modifier.adaptiveLiquidGlass(
     shape: CornerBasedShape,
     fallbackColor: Color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
     surfaceTint: Color? = null,
+    chromaticAberration: Boolean = true,
 ): Modifier = if (LocalLiquidGlassEnabled.current && isGlassSupported()) {
-    this.liquidGlass(shape = shape, surfaceTint = surfaceTint)
+    this.liquidGlass(
+        shape = shape,
+        surfaceTint = surfaceTint,
+        chromaticAberration = chromaticAberration,
+    )
 } else {
     this.lightweightLiquidGlass(shape = shape, fallbackColor = fallbackColor)
 }
@@ -302,56 +376,144 @@ private fun Modifier.adaptiveLiquidGlass(
 @Composable
 fun SonataApp(vm: SonataViewModel = viewModel()) {
     val state by vm.uiState.collectAsStateWithLifecycle()
+    val settings by vm.settings.collectAsStateWithLifecycle()
+
     val context = LocalContext.current
-    LaunchedEffect(state.fpsLimit, state.supports120Hz) {
+    LaunchedEffect(settings.fpsLimit, state.supports120Hz) {
         val activity = context as? ComponentActivity ?: return@LaunchedEffect
-        val targetFps = if (state.fpsLimit >= 120 && state.supports120Hz) 120f else 60f
         runCatching {
             val window = activity.window
             val params = window.attributes
-            params.preferredRefreshRate = targetFps
-            @Suppress("DEPRECATION")
-            val modes = window.windowManager?.defaultDisplay?.supportedModes
-            val bestMode = modes?.minByOrNull { kotlin.math.abs(it.refreshRate - targetFps) }
+            val currentDisplay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                activity.display
+            } else {
+                @Suppress("DEPRECATION")
+                window.windowManager?.defaultDisplay
+            }
+            val currentMode = currentDisplay?.mode
+            val modes = currentDisplay?.supportedModes
+            val sameResModes = if (currentMode != null && modes != null) {
+                modes.filter {
+                    it.physicalWidth == currentMode.physicalWidth &&
+                        it.physicalHeight == currentMode.physicalHeight
+                }.ifEmpty { modes.toList() }
+            } else {
+                modes?.toList().orEmpty()
+            }
+            val maxRefresh = sameResModes.maxOfOrNull { it.refreshRate }
+                ?: if (state.supports120Hz) 120f else 60f
+            val requestedCap = when {
+                settings.fpsLimit <= 60 -> 60f
+                settings.fpsLimit <= 90 -> 90f.coerceAtMost(maxRefresh)
+                else -> maxRefresh
+            }
+            val bestMode = sameResModes
+                .filter { it.refreshRate <= requestedCap + 1.5f }
+                .maxByOrNull { it.refreshRate }
+                ?: sameResModes.minByOrNull { kotlin.math.abs(it.refreshRate - requestedCap) }
+            val resolvedHz = bestMode?.refreshRate ?: requestedCap
+            params.preferredRefreshRate = resolvedHz
             if (bestMode != null) {
                 params.preferredDisplayModeId = bestMode.modeId
             }
             window.attributes = params
         }
     }
-    val windowBackground = MaterialTheme.colorScheme.background
-    val paintBackdrop: ContentDrawScope.() -> Unit = remember(windowBackground) {
-        {
-            drawRect(windowBackground)
-            drawContent()
-        }
+    val darkTheme = when (settings.themeMode) {
+        ThemeMode.LIGHT -> false
+        ThemeMode.DARK, ThemeMode.AMOLED -> true
+        ThemeMode.SYSTEM -> androidx.compose.foundation.isSystemInDarkTheme()
     }
-    val appBackdrop = rememberLayerBackdrop(onDraw = paintBackdrop)
-    val glassEnabled = state.liquidGlassEnabled && isGlassSupported()
+    val amoled = settings.themeMode == ThemeMode.AMOLED
+    SonataTheme(darkTheme = darkTheme, amoled = amoled) {
+        SystemBarIcons(dark = !darkTheme)
+        val windowBackground = MaterialTheme.colorScheme.background
+        val paintBackdrop: ContentDrawScope.() -> Unit = remember(windowBackground) {
+            {
+                drawRect(windowBackground)
+                drawContent()
+            }
+        }
+        val appBackdrop = rememberLayerBackdrop(onDraw = paintBackdrop)
+        val glassEnabled = settings.liquidGlassEnabled && isGlassSupported()
 
-    CompositionLocalProvider(
-        LocalLiquidGlassEnabled provides glassEnabled,
-        LocalAppBackdrop provides appBackdrop,
-    ) {
-        SonataAppContent(
-            state = state,
-            appBackdrop = appBackdrop,
-            vm = vm,
-        )
+        CompositionLocalProvider(
+            LocalLiquidGlassEnabled provides glassEnabled,
+            LocalGlassPerformance provides settings.glassPerformance,
+            LocalReduceDynamicBlur provides settings.reduceDynamicBlur,
+            LocalReduceAnimation provides settings.reduceAnimation,
+            LocalAppBackdrop provides appBackdrop,
+        ) {
+            SonataAppContent(
+                state = state,
+                settings = settings,
+                appBackdrop = appBackdrop,
+                vm = vm,
+            )
+        }
     }
 }
 
 @Composable
 private fun SonataAppContent(
     state: SonataUiState,
+    settings: SonataSettingsState,
     appBackdrop: LayerBackdrop,
     vm: SonataViewModel,
 ) {
+    val context = LocalContext.current
     var showNowPlaying by rememberSaveable { mutableStateOf(false) }
     var showAllMoods by remember { mutableStateOf(false) }
+    var showUserMenu by remember { mutableStateOf(false) }
+    var showDownloadsSheet by remember { mutableStateOf(false) }
+    var showAudioPipeline by remember { mutableStateOf(false) }
+    var showSleepTimer by remember { mutableStateOf(false) }
+    var showAudioControls by remember { mutableStateOf(false) }
+    var trackOptionsTarget by remember { mutableStateOf<TrackMenuRequest?>(null) }
+    var heldContextTarget by remember { mutableStateOf<HeldContextTarget?>(null) }
+    var collectionPickerMeta by remember { mutableStateOf<HeldContextTarget.AlbumOrPlaylistCard?>(null) }
+    var pendingAddToPlaylistBrowseId by remember { mutableStateOf<String?>(null) }
+    var visiblePlaylistStatus by remember { mutableStateOf<String?>(null) }
+    val tabBackStack = remember { mutableStateListOf<AndroidTab>() }
+    val navigateToTab: (AndroidTab) -> Unit = { target ->
+        if (target != state.activeTab) {
+            if (target == AndroidTab.Home) {
+                tabBackStack.clear()
+            } else if (state.activeTab != AndroidTab.Home) {
+                tabBackStack.remove(target)
+                tabBackStack.add(state.activeTab)
+            }
+        }
+        vm.selectTab(target)
+    }
+
+    val exportBackupLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json"),
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.openOutputStream(uri)?.use { out ->
+                    out.write(vm.exportSettingsBackup().toByteArray(Charsets.UTF_8))
+                }
+            }
+        }
+    }
+    val importBackupLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                val json = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                if (!json.isNullOrBlank()) {
+                    vm.importSettingsBackup(json)
+                }
+            }
+        }
+    }
 
     val homeListState = rememberLazyListState()
     val exploreListState = rememberLazyListState()
+    val radioListState = rememberLazyListState()
     val libraryListState = rememberLazyListState()
     val searchListState = rememberLazyListState()
     val collectionListState = rememberLazyListState()
@@ -375,6 +537,7 @@ private fun SonataAppContent(
         showAllMoods,
         homeListState,
         exploreListState,
+        radioListState,
         libraryListState,
         searchListState,
         collectionListState,
@@ -391,6 +554,9 @@ private fun SonataAppContent(
                 state.activeTab == AndroidTab.Explore ->
                     exploreListState.firstVisibleItemIndex > 0 ||
                         exploreListState.firstVisibleItemScrollOffset > 28
+                state.activeTab == AndroidTab.Radio ->
+                    radioListState.firstVisibleItemIndex > 0 ||
+                        radioListState.firstVisibleItemScrollOffset > 28
                 state.activeTab == AndroidTab.Library ->
                     libraryListState.firstVisibleItemIndex > 0 ||
                         libraryListState.firstVisibleItemScrollOffset > 28
@@ -401,14 +567,76 @@ private fun SonataAppContent(
         }
     }
 
-    if (showAllMoods && !showNowPlaying && state.collectionTitle == null) {
-        BackHandler { showAllMoods = false }
+    val hasOverlayOpen = showNowPlaying ||
+        showUserMenu ||
+        showDownloadsSheet ||
+        showAudioPipeline ||
+        showSleepTimer ||
+        showAudioControls ||
+        trackOptionsTarget != null ||
+        heldContextTarget != null ||
+        state.addToPlaylistTargets.isNotEmpty() ||
+        state.showSettingsSheet ||
+        state.artistPage != null ||
+        state.artistLoading
+
+    LaunchedEffect(state.loading, state.collectionTracks, pendingAddToPlaylistBrowseId) {
+        val pendingId = pendingAddToPlaylistBrowseId
+        if (pendingId != null && !state.loading) {
+            if (state.collectionTracks.isNotEmpty()) {
+                vm.openAddToPlaylist(state.collectionTracks)
+                pendingAddToPlaylistBrowseId = null
+            } else if (state.collectionTitle != null) {
+                pendingAddToPlaylistBrowseId = null
+            }
+        }
     }
-    if (state.collectionTitle != null && !showNowPlaying) {
-        BackHandler { vm.closeCollection() }
+
+    LaunchedEffect(state.addToPlaylistStatus) {
+        val msg = state.addToPlaylistStatus
+        if (!msg.isNullOrBlank()) {
+            visiblePlaylistStatus = msg
+            delay(2500L)
+            visiblePlaylistStatus = null
+        }
+    }
+
+    if (trackOptionsTarget != null &&
+        heldContextTarget == null &&
+        state.addToPlaylistTargets.isEmpty() &&
+        !showNowPlaying &&
+        !state.showSettingsSheet
+    ) {
+        BackHandler { trackOptionsTarget = null }
+    }
+
+    if (showUserMenu &&
+        heldContextTarget == null &&
+        state.addToPlaylistTargets.isEmpty() &&
+        !showNowPlaying &&
+        !state.showSettingsSheet
+    ) {
+        BackHandler { showUserMenu = false }
+    }
+
+    val canStepBackFromSearch = state.activeTab == AndroidTab.Search && state.query.isNotEmpty()
+    if (!hasOverlayOpen && (state.collectionTitle != null || showAllMoods || canStepBackFromSearch || state.activeTab != AndroidTab.Home)) {
+        BackHandler {
+            when {
+                state.collectionTitle != null -> vm.closeCollection()
+                showAllMoods -> showAllMoods = false
+                canStepBackFromSearch -> vm.searchDebounced("")
+                tabBackStack.isNotEmpty() -> {
+                    val prevTab = tabBackStack.removeAt(tabBackStack.lastIndex)
+                    vm.selectTab(prevTab)
+                }
+                state.activeTab != AndroidTab.Home -> vm.selectTab(AndroidTab.Home)
+            }
+        }
     }
 
     if (state.showLoginSheet) {
+        BackHandler { vm.dismissLoginSheet() }
         YtMusicLoginScreen(
             onCaptured = vm::completeLogin,
             onDismiss = vm::dismissLoginSheet,
@@ -428,20 +656,76 @@ private fun SonataAppContent(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    if (state.showSettingsSheet) {
-        SettingsSheet(
-            state = state,
-            onDismiss = vm::dismissSettingsSheet,
-            onSignIn = vm::openLoginSheet,
-            onSignOut = vm::signOut,
-            onTogglePreferHighQuality = vm::togglePreferHighQuality,
-            onToggleCrossfade = vm::toggleCrossfade,
-            onToggleLiquidGlass = vm::toggleLiquidGlass,
-            onToggleAnimatedArtwork = vm::toggleAnimatedArtwork,
-            onSetFpsLimit = vm::setFpsLimit,
-            onClearMediaCache = vm::clearMediaCache,
-            onCheckForUpdates = { vm.checkForUpdates(autoPopup = true, isManual = true) },
-            onDownloadUpdate = vm::downloadAndInstallUpdate,
+    if (showDownloadsSheet) {
+        val downloads by vm.downloads.collectAsStateWithLifecycle()
+        val activeDownloads by vm.activeDownloads.collectAsStateWithLifecycle()
+        val downloadsTotalBytes by vm.downloadsTotalBytes.collectAsStateWithLifecycle()
+        DownloadsManagerSheet(
+            downloads = downloads,
+            activeDownloads = activeDownloads,
+            totalBytes = downloadsTotalBytes,
+            wifiOnly = settings.wifiOnlyDownloads,
+            exportToMusic = settings.exportDownloads,
+            onToggleWifiOnly = { vm.updateSettings { it.copy(wifiOnlyDownloads = !it.wifiOnlyDownloads) } },
+            onToggleExportToMusic = { vm.updateSettings { it.copy(exportDownloads = !it.exportDownloads) } },
+            onPlayOfflineTrack = { rec ->
+                vm.playDownloadedTrack(rec)
+                showDownloadsSheet = false
+            },
+            onPlayAllOffline = {
+                downloads.firstOrNull()?.let { first ->
+                    vm.playDownloadedTrack(first)
+                    showDownloadsSheet = false
+                }
+            },
+            onCancelActiveDownload = vm::cancelDownload,
+            onRemoveDownload = vm::removeDownload,
+            onClearAllDownloads = vm::clearAllDownloads,
+            onDismiss = { showDownloadsSheet = false },
+        )
+    }
+
+    if (showAudioPipeline) {
+        val audioPipelineInfo by vm.audioPipelineInfo.collectAsStateWithLifecycle()
+        AudioPipelineModal(
+            info = audioPipelineInfo,
+            onDismiss = { showAudioPipeline = false },
+        )
+    }
+
+    if (showSleepTimer) {
+        val sleepTimerRemaining by vm.sleepTimerRemainingMinutes.collectAsStateWithLifecycle()
+        SleepTimerSheet(
+            remainingMinutes = sleepTimerRemaining,
+            onSelectMinutes = { mins ->
+                vm.setSleepTimer(mins)
+                showSleepTimer = false
+            },
+            onDismiss = { showSleepTimer = false },
+        )
+    }
+
+    if (showAudioControls) {
+        AudioControlsSheet(
+            speed = settings.playbackSpeed,
+            eqEnabled = settings.eqEnabled,
+            eqPreset = settings.eqPreset,
+            eqBandsDb = settings.eqBandsDb,
+            loudnessNorm = settings.loudnessNormEnabled,
+            skipSilence = settings.skipSilenceEnabled,
+            onSpeedChange = { speed -> vm.updateSettings { it.copy(playbackSpeed = speed) } },
+            onEqToggle = { enabled -> vm.updateSettings { it.copy(eqEnabled = enabled) } },
+            onEqPreset = { preset, bands -> vm.updateSettings { it.copy(eqPreset = preset, eqBandsDb = bands) } },
+            onEqBandChange = { index, gainDb ->
+                vm.updateSettings { current ->
+                    val updated = current.eqBandsDb.toMutableList()
+                    if (index in updated.indices) updated[index] = gainDb
+                    current.copy(eqPreset = "Custom", eqBandsDb = updated)
+                }
+            },
+            onLoudnessToggle = { enabled -> vm.updateSettings { it.copy(loudnessNormEnabled = enabled) } },
+            onSkipSilenceToggle = { enabled -> vm.updateSettings { it.copy(skipSilenceEnabled = enabled) } },
+            onDismiss = { showAudioControls = false },
         )
     }
 
@@ -459,13 +743,54 @@ private fun SonataAppContent(
         )
     }
 
+    val artistWindowBg = MaterialTheme.colorScheme.background
+    val artistBackdrop = rememberLayerBackdrop {
+        drawRect(artistWindowBg)
+        drawContent()
+    }
+    val activeOverlayBackdrop = if (state.artistPage != null || state.artistLoading) {
+        artistBackdrop
+    } else {
+        appBackdrop
+    }
+
+    val openTrackHeldMenu: (AndroidTrack, Int?, Rect?) -> Unit = { track, trackNumber, bounds ->
+        heldContextTarget = HeldContextTarget.TrackRow(
+            track = track,
+            trackNumber = trackNumber,
+            isExplicit = track.isExplicit,
+            anchorBounds = bounds,
+        )
+    }
+    val openCardHeldMenu: (AndroidHomeCard, String?, Boolean, Rect?) -> Unit = { card, eyebrow, isTopPickTall, bounds ->
+        val cardTrack = card.track
+        if (cardTrack != null && (card.kind == AndroidHomeCardKind.SONG || card.kind == AndroidHomeCardKind.VIDEO)) {
+            heldContextTarget = HeldContextTarget.TrackRow(
+                track = cardTrack,
+                isExplicit = cardTrack.isExplicit,
+                anchorBounds = bounds,
+            )
+        } else {
+            heldContextTarget = HeldContextTarget.AlbumOrPlaylistCard(
+                browseId = card.id,
+                title = card.title,
+                subtitle = card.subtitle,
+                coverUrl = card.thumbnailUrl,
+                isAlbum = card.kind == AndroidHomeCardKind.ALBUM,
+                eyebrow = eyebrow,
+                isTopPickTall = isTopPickTall,
+                anchorBounds = bounds,
+            )
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black),
     ) {
         // Scrollable backdrop source sampled by sibling floating Liquid Glass overlays
-        // (single offscreen capture; redundant Haze capture removed).
+        // (ArtistScreen renders as its own sibling outside appBackdrop so floating Liquid Glass never cycles).
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -487,12 +812,30 @@ private fun SonataAppContent(
                     contentPadding = contentPadding,
                     modifier = Modifier.nestedScroll(navBarScroll),
                     onPlayTrack = { track -> vm.playTrack(track, state.collectionTracks) },
+                    onTrackOptions = { track, bounds -> trackOptionsTarget = TrackMenuRequest(track, bounds) },
+                    onTrackLongClick = { track, trackNum, bounds -> openTrackHeldMenu(track, trackNum, bounds) },
                     onPlayAll = {
                         state.collectionTracks.firstOrNull()?.let { first ->
                             vm.playTrack(first, state.collectionTracks)
                         }
                     },
                     onShuffleAll = { vm.toggleShuffleAndPlay(state.collectionTracks) },
+                    onDownloadAll = {
+                        vm.downloadCollection(
+                            tracks = state.collectionTracks,
+                            collectionId = state.collectionTitle ?: "collection",
+                        )
+                    },
+                    onShare = {
+                        shareInAppText(
+                            context = context,
+                            title = state.collectionTitle.orEmpty(),
+                            subtitle = state.collectionSubtitle.orEmpty(),
+                        )
+                    },
+                    onOpenArtist = { artistName ->
+                        vm.openArtist("", artistName)
+                    },
                 )
 
                 showAllMoods -> AllMoodsScreen(
@@ -504,58 +847,216 @@ private fun SonataAppContent(
                     },
                 )
 
-                else -> when (state.activeTab) {
-                    AndroidTab.Home -> HomeTabContent(
-                        state = state,
-                        listState = homeListState,
-                        contentPadding = contentPadding,
-                        modifier = Modifier.nestedScroll(navBarScroll),
-                        onRefresh = vm::loadHome,
-                        onSignIn = vm::openLoginSheet,
-                        onPlayTrack = { track, queue -> vm.playTrack(track, queue) },
-                        onOpenCard = { card, shelfTracks -> vm.openCard(card, shelfTracks) },
-                        onOpenMood = vm::openMood,
-                        onShowAllMoods = { showAllMoods = true },
-                    )
+                else -> {
+                    val tabStateHolder = rememberSaveableStateHolder()
+                    tabStateHolder.SaveableStateProvider(key = state.activeTab) {
+                        when (state.activeTab) {
+                            AndroidTab.Home -> HomeTabContent(
+                                state = state,
+                                settings = settings,
+                                listState = homeListState,
+                                contentPadding = contentPadding,
+                                modifier = Modifier.nestedScroll(navBarScroll),
+                                onRefresh = vm::loadHome,
+                                onSignIn = vm::openLoginSheet,
+                                onPlayTrack = { track, queue -> vm.playTrack(track, queue) },
+                                onTrackOptions = { track, bounds -> trackOptionsTarget = TrackMenuRequest(track, bounds) },
+                                onTrackLongClick = { track, bounds -> openTrackHeldMenu(track, null, bounds) },
+                                onCardLongClick = openCardHeldMenu,
+                                onPlaylistLongClick = { playlist, bounds ->
+                                    heldContextTarget = HeldContextTarget.AlbumOrPlaylistCard(
+                                        browseId = playlist.id,
+                                        title = playlist.name,
+                                        subtitle = "Playlist",
+                                        coverUrl = playlist.thumbnailUrl,
+                                        isAlbum = false,
+                                        eyebrow = "PLAYLIST",
+                                        isTopPickTall = false,
+                                        anchorBounds = bounds,
+                                    )
+                                },
+                                onOpenCard = { card, shelfTracks -> vm.openCard(card, shelfTracks) },
+                                onOpenPlaylist = vm::openPlaylist,
+                                onOpenMood = vm::openMood,
+                                onShowAllMoods = { showAllMoods = true },
+                            )
 
-                    AndroidTab.Explore -> ExploreTabContent(
-                        state = state,
-                        listState = exploreListState,
-                        contentPadding = contentPadding,
-                        modifier = Modifier.nestedScroll(navBarScroll),
-                        onOpenMood = vm::openMood,
-                        onOpenCard = { card, shelfTracks -> vm.openCard(card, shelfTracks) },
-                    )
+                            AndroidTab.Explore -> ExploreTabContent(
+                                state = state,
+                                listState = exploreListState,
+                                contentPadding = contentPadding,
+                                modifier = Modifier.nestedScroll(navBarScroll),
+                                onOpenMood = vm::openMood,
+                                onOpenCard = { card, shelfTracks -> vm.openCard(card, shelfTracks) },
+                                onCardLongClick = { card, bounds -> openCardHeldMenu(card, null, false, bounds) },
+                            )
 
-                    AndroidTab.Library -> LibraryTabContent(
-                        state = state,
-                        listState = libraryListState,
-                        contentPadding = contentPadding,
-                        modifier = Modifier.nestedScroll(navBarScroll),
-                        onSignIn = vm::openLoginSheet,
-                        onOpenPlaylist = vm::openPlaylist,
-                        onPlayTrack = { track, queue -> vm.playTrack(track, queue) },
-                        onOpenSearch = { vm.selectTab(AndroidTab.Search) },
-                    )
+                            AndroidTab.Radio -> {
+                                TrackScrollActivity(radioListState)
+                                RadioMixesScreen(
+                                    homeShelves = state.shelves,
+                                    radioMixShelves = state.radioMixShelves,
+                                    activeTrack = state.activeTrack,
+                                    contentPadding = contentPadding,
+                                    onStartQuickRadio = { vm.startQuickRadio(state.activeTrack) },
+                                    onCardClick = { card -> vm.openCard(card, emptyList()) },
+                                    onCardLongClick = { card, bounds -> openCardHeldMenu(card, "RADIO MIX", false, bounds) },
+                                    onMoodQueryClick = { title, query ->
+                                        vm.openMood(title.ifBlank { query })
+                                    },
+                                    modifier = Modifier.nestedScroll(navBarScroll),
+                                    listState = radioListState,
+                                )
+                            }
 
-                    AndroidTab.Search -> SearchTabContent(
-                        state = state,
-                        listState = searchListState,
-                        contentPadding = contentPadding,
-                        modifier = Modifier.nestedScroll(navBarScroll),
-                        onSearchQuery = { q -> vm.search(q) },
-                        onRemoveRecentSearch = vm::removeRecentSearch,
-                        onClearRecentSearches = vm::clearRecentSearches,
-                        onPlayTrack = { track, queue -> vm.playTrack(track, queue) },
-                        onOpenPlaylist = vm::openPlaylist,
-                    )
+                            AndroidTab.Library -> {
+                                val downloads by vm.downloads.collectAsStateWithLifecycle()
+                                LibraryTabContent(
+                                    state = state,
+                                    downloadsCount = downloads.size,
+                                    latestDownloadCoverUrl = downloads.firstOrNull()?.coverUrl,
+                                    listState = libraryListState,
+                                    contentPadding = contentPadding,
+                                    modifier = Modifier.nestedScroll(navBarScroll),
+                                    onSignIn = vm::openLoginSheet,
+                                    onOpenPlaylist = vm::openPlaylist,
+                                    onPlaylistLongClick = { playlist, bounds ->
+                                        heldContextTarget = HeldContextTarget.AlbumOrPlaylistCard(
+                                            browseId = playlist.id,
+                                            title = playlist.name,
+                                            subtitle = if (playlist.id == SonataViewModel.DOWNLOADS_PLAYLIST_ID) "Offline Library" else "Playlist",
+                                            coverUrl = playlist.thumbnailUrl,
+                                            isAlbum = false,
+                                            eyebrow = "PLAYLIST",
+                                            isTopPickTall = false,
+                                            anchorBounds = bounds,
+                                        )
+                                    },
+                                    onPlayTrack = { track, queue -> vm.playTrack(track, queue) },
+                                    onOpenDownloads = vm::openDownloadsPlaylist,
+                                    onOpenDownloadsManager = { showDownloadsSheet = true },
+                                    onOpenArtist = { id, name -> vm.openArtist(id, name) },
+                                )
+                            }
+
+                            AndroidTab.Search -> SearchTabContent(
+                                state = state,
+                                listState = searchListState,
+                                contentPadding = contentPadding,
+                                modifier = Modifier.nestedScroll(navBarScroll),
+                                onSearchQuery = { q -> vm.searchDebounced(q) },
+                                onRemoveRecentSearch = vm::removeRecentSearch,
+                                onClearRecentSearches = vm::clearRecentSearches,
+                                onPlayTrack = { track, queue -> vm.playTrack(track, queue) },
+                                onTrackOptions = { track, bounds -> trackOptionsTarget = TrackMenuRequest(track, bounds) },
+                                onTrackLongClick = { track, bounds -> openTrackHeldMenu(track, null, bounds) },
+                                onOpenPlaylist = vm::openPlaylist,
+                            )
+                        }
+                    }
                 }
             }
         }
 
+        // Full-screen ArtistScreen rendered as a sibling outside appBackdrop (never nests layerBackdrops)
+        if (state.artistPage != null || state.artistLoading) {
+            val downloads by vm.downloads.collectAsStateWithLifecycle()
+            val downloadedIds = remember(downloads) { downloads.map { it.videoId }.toSet() }
+            val artistData = remember(state.artistPage, downloadedIds) {
+                state.artistPage?.toArtistScreenData(downloadedIds)
+            }
+            BackHandler(
+                enabled = !showNowPlaying &&
+                    !state.showSettingsSheet &&
+                    !showUserMenu &&
+                    trackOptionsTarget == null &&
+                    heldContextTarget == null &&
+                    state.addToPlaylistTargets.isEmpty() &&
+                    !showDownloadsSheet &&
+                    !showAudioPipeline &&
+                    !showSleepTimer &&
+                    !showAudioControls &&
+                    state.collectionTitle == null,
+            ) {
+                vm.closeArtist()
+            }
+            ArtistScreen(
+                artist = artistData,
+                loading = state.artistLoading,
+                activeTrackId = state.activeTrack?.id,
+                userAvatarUrl = if (state.signedIn) state.accountProfile?.avatarUrl else null,
+                backdrop = artistBackdrop,
+                contentBottomPadding = PaddingValues(bottom = bottomBarInset),
+                onBack = vm::closeArtist,
+                onShareArtist = { data ->
+                    shareInAppText(context, data.name, data.subscriberText ?: "Artist on Sonata")
+                },
+                onAvatarClick = { showUserMenu = true },
+                onPlayTopSongs = { data ->
+                    val tracks = data.topSongs.map { it.track }
+                    tracks.firstOrNull()?.let { first -> vm.playTrack(first, tracks) }
+                },
+                onShuffleTopSongs = { data ->
+                    val tracks = data.topSongs.map { it.track }
+                    if (tracks.isNotEmpty()) vm.toggleShuffleAndPlay(tracks)
+                },
+                onToggleSubscribe = { data ->
+                    android.widget.Toast.makeText(
+                        context,
+                        if (data.isSubscribed) "Removed ${data.name}" else "Subscribed to ${data.name}",
+                        android.widget.Toast.LENGTH_SHORT,
+                    ).show()
+                },
+                onOpenRelease = { release ->
+                    vm.openAlbumOrPlaylist(
+                        id = release.id,
+                        title = release.title,
+                        coverUrl = release.thumbnailUrl,
+                        subtitle = release.subtitle,
+                        kindLabel = release.kindLabel,
+                        year = release.year,
+                    )
+                },
+                onSaveRelease = { release ->
+                    vm.openAlbumOrPlaylist(
+                        id = release.id,
+                        title = release.title,
+                        coverUrl = release.thumbnailUrl,
+                        subtitle = release.subtitle,
+                        kindLabel = release.kindLabel,
+                        year = release.year,
+                    )
+                },
+                onPlayTrack = { track, queue -> vm.playTrack(track, queue) },
+                onTrackOptions = { track, bounds -> trackOptionsTarget = TrackMenuRequest(track, bounds) },
+                onTrackLongClick = { track, trackNum, bounds -> openTrackHeldMenu(track, trackNum, bounds) },
+                onReleaseLongClick = { release, bounds ->
+                    heldContextTarget = HeldContextTarget.AlbumOrPlaylistCard(
+                        browseId = release.id,
+                        title = release.title,
+                        subtitle = release.subtitle,
+                        coverUrl = release.thumbnailUrl,
+                        isAlbum = release.kindLabel.equals("Album", ignoreCase = true) ||
+                            release.kindLabel.equals("Single", ignoreCase = true),
+                        eyebrow = release.kindLabel.uppercase(),
+                        isTopPickTall = false,
+                        anchorBounds = bounds,
+                    )
+                },
+                onOpenAllTopSongs = { data ->
+                    val tracks = data.topSongs.map { it.track }
+                    tracks.firstOrNull()?.let { first -> vm.playTrack(first, tracks) }
+                },
+                onOpenSimilarArtist = { similar -> vm.openArtist(similar.id, similar.name) },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .nestedScroll(navBarScroll),
+            )
+        }
+
         // Top progressive fade scrim behind floating top-bar controls when scrolled
         val topFadeAlpha by animateFloatAsState(
-            targetValue = if (scrolled && state.collectionTitle == null) 1f else 0f,
+            targetValue = if (scrolled && state.collectionTitle == null && state.artistPage == null && !state.artistLoading) 1f else 0f,
             animationSpec = tween(180),
             label = "topFadeAlpha",
         )
@@ -569,22 +1070,24 @@ private fun SonataAppContent(
             )
         }
 
-        // Floating sibling top chrome (outside layerBackdrop so adaptiveLiquidGlass never recurses)
-        FloatingTopChrome(
-            state = state,
-            showAllMoods = showAllMoods,
-            onBack = {
-                when {
-                    state.collectionTitle != null -> vm.closeCollection()
-                    showAllMoods -> showAllMoods = false
-                }
-            },
-            onQueryChange = vm::onQueryChange,
-            onSearchSubmit = { vm.search() },
-            onHistoryClick = { vm.selectTab(AndroidTab.Search) },
-            onAvatarClick = vm::openSettingsSheet,
-            modifier = Modifier.align(Alignment.TopCenter),
-        )
+        // Floating sibling top chrome (hidden when ArtistScreen or full-screen Settings owns its top bar)
+        if (state.artistPage == null && !state.artistLoading) {
+            FloatingTopChrome(
+                state = state,
+                showAllMoods = showAllMoods,
+                onBack = {
+                    when {
+                        state.collectionTitle != null -> vm.closeCollection()
+                        showAllMoods -> showAllMoods = false
+                    }
+                },
+                onQueryChange = vm::searchDebounced,
+                onSearchSubmit = { vm.search() },
+                onHistoryClick = { navigateToTab(AndroidTab.Search) },
+                onAvatarClick = { showUserMenu = true },
+                modifier = Modifier.align(Alignment.TopCenter),
+            )
+        }
 
         // Bottom fade scrim behind the floating Liquid Glass navigation bar
         BottomFadeScrim(
@@ -594,26 +1097,215 @@ private fun SonataAppContent(
         )
 
         // Floating Liquid Glass Tab Bar + MiniPlayer + circular Search pill
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .widthIn(max = FLOATING_BAR_MAX_WIDTH)
-                .fillMaxWidth(),
-        ) {
-            SonataGlassNavBar(
-                selectedTab = state.activeTab,
-                onTabSelected = { tab ->
-                    showAllMoods = false
-                    vm.selectTab(tab)
+        CompositionLocalProvider(LocalAppBackdrop provides activeOverlayBackdrop) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .widthIn(max = FLOATING_BAR_MAX_WIDTH)
+                    .fillMaxWidth(),
+            ) {
+                SonataGlassNavBar(
+                    selectedTab = state.activeTab,
+                    onTabSelected = { tab ->
+                        showAllMoods = false
+                        vm.closeArtist()
+                        navigateToTab(tab)
+                    },
+                    scrollConnection = navBarScroll,
+                    activeTrack = state.activeTrack,
+                    isPlaying = state.isPlaying,
+                    isBuffering = state.isBuffering,
+                    onPlayPause = vm::togglePlayPause,
+                    onNext = vm::nextTrack,
+                    onPrevious = vm::prevTrack,
+                    onExpand = { showNowPlaying = true },
+                )
+            }
+        }
+
+        // Liquid Glass 3-dot Track Options Menu (sibling OUTSIDE appBackdrop & ArtistScreen — zero RenderNode cycles)
+        if (trackOptionsTarget != null) {
+            val menuDownloads by vm.downloads.collectAsStateWithLifecycle()
+            val menuActiveDownloads by vm.activeDownloads.collectAsStateWithLifecycle()
+            val activeTarget = trackOptionsTarget
+            TrackOptionsMenu(
+                track = activeTarget?.track,
+                isLiked = activeTarget?.track?.id?.let { it in state.likedTrackIds } == true,
+                isDownloaded = activeTarget?.track?.id?.let { id -> menuDownloads.any { it.videoId == id } } == true,
+                activeDownload = activeTarget?.track?.id?.let { menuActiveDownloads[it] },
+                backdrop = activeOverlayBackdrop,
+                anchorBounds = activeTarget?.anchorBounds,
+                onDismiss = { trackOptionsTarget = null },
+                onToggleLike = { t -> vm.toggleStarTrack(t.id) },
+                onToggleDislike = { t -> vm.toggleStarTrack(t.id) },
+                onShareInApp = { t -> shareInAppText(context, t.title, t.artist) },
+                onAddToPlaylist = { t -> vm.openAddToPlaylist(listOf(t)) },
+                onStartRadio = { t -> vm.startQuickRadio(t) },
+                onPlayNext = { t -> vm.playNext(t) },
+                onAddToQueue = { t -> vm.addToQueue(t) },
+                onDownloadTrack = { t -> vm.downloadTrack(t) },
+                onRemoveFromCache = { t -> vm.removeTrackFromCache(t.id) },
+                onOpenAlbum = { t ->
+                    vm.openAlbum(
+                        albumId = t.albumId.orEmpty(),
+                        albumTitle = t.album.ifBlank { t.title },
+                        artistName = t.artist,
+                        coverUrl = t.thumbnailUrl,
+                    )
                 },
-                scrollConnection = navBarScroll,
-                activeTrack = state.activeTrack,
-                isPlaying = state.isPlaying,
-                isBuffering = state.isBuffering,
-                onPlayPause = vm::togglePlayPause,
-                onNext = vm::nextTrack,
-                onPrevious = vm::prevTrack,
-                onExpand = { showNowPlaying = true },
+                onOpenArtist = { t ->
+                    vm.openArtist("", t.artist)
+                },
+                onSongInfo = {
+                    showAudioPipeline = true
+                },
+            )
+        }
+
+        // iOS-style Held Long-Press Context Menu (sibling OUTSIDE appBackdrop & ArtistScreen — zero RenderNode cycles)
+        run {
+            val heldDownloads by vm.downloads.collectAsStateWithLifecycle()
+            val heldActiveDownloads by vm.activeDownloads.collectAsStateWithLifecycle()
+            val targetTrack = (heldContextTarget as? HeldContextTarget.TrackRow)?.track
+            HeldContextMenu(
+                target = heldContextTarget,
+                isLiked = targetTrack?.id?.let { it in state.likedTrackIds } == true,
+                isDisliked = false,
+                isDownloaded = targetTrack?.id?.let { id -> heldDownloads.any { it.videoId == id } } == true,
+                activeDownload = targetTrack?.id?.let { heldActiveDownloads[it] },
+                backdrop = activeOverlayBackdrop,
+                onDismiss = { heldContextTarget = null },
+                onToggleLike = { t -> vm.toggleStarTrack(t.id) },
+                onToggleDislike = { t -> vm.toggleStarTrack(t.id) },
+                onShareTrack = { t -> shareInAppText(context, t.title, t.artist) },
+                onAddTrackToPlaylist = { t -> vm.openAddToPlaylist(listOf(t)) },
+                onStartRadio = { t -> vm.startQuickRadio(t) },
+                onPlayTrackNext = { t -> vm.playNext(t) },
+                onAddTrackToQueue = { t -> vm.addToQueue(t) },
+                onDownloadTrack = { t -> vm.downloadTrack(t) },
+                onRemoveFromCache = { t -> vm.removeTrackFromCache(t.id) },
+                onOpenAlbum = { t ->
+                    vm.openAlbum(
+                        albumId = t.albumId.orEmpty(),
+                        albumTitle = t.album.ifBlank { t.title },
+                        artistName = t.artist,
+                        coverUrl = t.thumbnailUrl,
+                    )
+                },
+                onOpenArtist = { t -> vm.openArtist("", t.artist) },
+                onSongInfo = { showAudioPipeline = true },
+                onPlayCollection = { col ->
+                    if (col.browseId == SonataViewModel.DOWNLOADS_PLAYLIST_ID) {
+                        vm.openDownloadsPlaylist()
+                    } else {
+                        vm.openAlbumOrPlaylist(
+                            id = col.browseId,
+                            title = col.title,
+                            coverUrl = col.coverUrl,
+                            subtitle = col.subtitle,
+                            kindLabel = if (col.isAlbum) "Album" else "Playlist",
+                        )
+                    }
+                },
+                onShuffleCollection = { col ->
+                    vm.playCollectionShuffled(
+                        browseId = col.browseId,
+                        title = col.title,
+                        subtitle = col.subtitle,
+                        coverUrl = col.coverUrl,
+                    )
+                },
+                onAddCollectionToPlaylist = { col ->
+                    collectionPickerMeta = col
+                    pendingAddToPlaylistBrowseId = col.browseId
+                    vm.openAlbumOrPlaylist(
+                        id = col.browseId,
+                        title = col.title,
+                        coverUrl = col.coverUrl,
+                        subtitle = col.subtitle,
+                        kindLabel = if (col.isAlbum) "Album" else "Playlist",
+                    )
+                },
+                onPlayCollectionNext = { col -> vm.enqueueCollectionNext(col.browseId) },
+                onAddCollectionToQueue = { col -> vm.enqueueCollectionLater(col.browseId) },
+                onDownloadCollection = { col -> vm.downloadCollectionById(col.browseId) },
+                onOpenCollection = { col ->
+                    if (col.browseId == SonataViewModel.DOWNLOADS_PLAYLIST_ID) {
+                        vm.openDownloadsPlaylist()
+                    } else {
+                        vm.openAlbumOrPlaylist(
+                            id = col.browseId,
+                            title = col.title,
+                            coverUrl = col.coverUrl,
+                            subtitle = col.subtitle,
+                            kindLabel = if (col.isAlbum) "Album" else "Playlist",
+                        )
+                    }
+                },
+                onShareCollection = { col ->
+                    shareInAppText(
+                        context = context,
+                        title = col.title,
+                        subtitle = col.subtitle.ifBlank {
+                            if (col.isAlbum) "Album on Sonata" else "Playlist on Sonata"
+                        },
+                    )
+                },
+            )
+        }
+
+        // Floating Liquid Glass Account Menu (sibling OUTSIDE appBackdrop & ArtistScreen — zero RenderNode cycles)
+        val userMenuDownloads by vm.downloads.collectAsStateWithLifecycle()
+        UserMenuSheet(
+            visible = showUserMenu,
+            signedIn = state.signedIn,
+            accountProfile = state.accountProfile,
+            settings = settings,
+            downloadedCount = userMenuDownloads.size,
+            backdrop = activeOverlayBackdrop,
+            onDismiss = { showUserMenu = false },
+            onSignIn = vm::openLoginSheet,
+            onSignOut = vm::signOut,
+            onOpenDownloads = { showDownloadsSheet = true },
+            onOpenHistory = { navigateToTab(AndroidTab.Search) },
+            onOpenAudioPipeline = { showAudioPipeline = true },
+            onOpenSettings = vm::openSettingsSheet,
+            onToggleLiquidGlass = { vm.updateSettings { it.copy(liquidGlassEnabled = !it.liquidGlassEnabled) } },
+            onToggleAnimatedArt = { vm.updateSettings { it.copy(animatedArtwork = !it.animatedArtwork) } },
+            onCycleThemeMode = {
+                val modes = ThemeMode.entries
+                val next = modes[(modes.indexOf(settings.themeMode) + 1) % modes.size]
+                vm.updateSettings { it.copy(themeMode = next) }
+            },
+            onRefreshLibrary = vm::loadHome,
+        )
+
+        // Full-screen Flat Neutral Settings Page (zero Liquid Glass)
+        AnimatedVisibility(
+            visible = state.showSettingsSheet,
+            enter = slideInVertically(tween(240)) { it / 8 } + fadeIn(tween(180)),
+            exit = slideOutVertically(tween(200)) { it / 8 } + fadeOut(tween(150)),
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            BackHandler(enabled = state.showSettingsSheet) { vm.dismissSettingsSheet() }
+            SonataSettingsScreen(
+                settings = settings,
+                signedIn = state.signedIn,
+                accountProfile = state.accountProfile,
+                supports120Hz = state.supports120Hz,
+                statusMessage = state.status,
+                updateInfo = state.updateInfo,
+                checkingUpdates = state.checkingUpdates,
+                installedVersionName = state.installedVersionName,
+                onUpdateSettings = vm::updateSettings,
+                onSignIn = vm::openLoginSheet,
+                onSignOut = vm::signOut,
+                onClearMediaCache = vm::clearMediaCache,
+                onExportBackup = { exportBackupLauncher.launch("sonata-backup.json") },
+                onImportBackup = { importBackupLauncher.launch(arrayOf("application/json", "*/*")) },
+                onCheckForUpdates = { vm.checkForUpdates(autoPopup = true, isManual = true) },
+                onDownloadUpdate = vm::downloadAndInstallUpdate,
+                onBack = vm::dismissSettingsSheet,
             )
         }
 
@@ -631,10 +1323,31 @@ private fun SonataAppContent(
             modifier = Modifier.fillMaxSize(),
         ) {
             state.activeTrack?.let { track ->
-                BackHandler { showNowPlaying = false }
+                BackHandler(enabled = showNowPlaying) { showNowPlaying = false }
+                val downloads by vm.downloads.collectAsStateWithLifecycle()
+                val activeDownloads by vm.activeDownloads.collectAsStateWithLifecycle()
+                val currentCanvas by vm.currentCanvas.collectAsStateWithLifecycle()
+                val audioPipelineInfo by vm.audioPipelineInfo.collectAsStateWithLifecycle()
+                val sleepTimerRemaining by vm.sleepTimerRemainingMinutes.collectAsStateWithLifecycle()
+                val activeLyricsSource by vm.activeLyricsSource.collectAsStateWithLifecycle()
+                val isTrackDownloaded = remember(downloads, track.id) {
+                    downloads.any { it.videoId == track.id }
+                }
+                val activeTrackDownload = activeDownloads[track.id]
+                var trackLyricOffsetMs by remember(track.id, settings.lyricsOffsetMs) {
+                    mutableLongStateOf(vm.getTrackLyricOffsetMs(track.id))
+                }
                 NowPlayingScreen(
                     track = track,
                     state = state,
+                    settings = settings,
+                    currentCanvas = currentCanvas,
+                    audioPipelineSummary = audioPipelineInfo.codec.ifBlank { null },
+                    isTrackDownloaded = isTrackDownloaded,
+                    activeTrackDownload = activeTrackDownload,
+                    sleepTimerRemaining = sleepTimerRemaining,
+                    activeLyricsSource = activeLyricsSource,
+                    trackLyricOffsetMs = trackLyricOffsetMs,
                     clock = vm.playbackClock,
                     onToggleLyrics = vm::toggleLyrics,
                     onToggleStar = { vm.toggleStarTrack(track.id) },
@@ -646,11 +1359,110 @@ private fun SonataAppContent(
                     onSeekTo = vm::seekTo,
                     onSeekFraction = vm::seekToFraction,
                     onJumpToQueueIndex = vm::jumpToQueueIndex,
+                    onDownloadTrack = { vm.downloadTrack(track) },
+                    onOpenAudioControls = { showAudioControls = true },
+                    onOpenSleepTimer = { showSleepTimer = true },
+                    onOpenAudioPipeline = { showAudioPipeline = true },
+                    onToggleLyricsTranslation = {
+                        vm.updateSettings { it.copy(lyricsTranslationEnabled = !it.lyricsTranslationEnabled) }
+                    },
+                    onToggleLyricsRomanization = {
+                        vm.updateSettings { it.copy(lyricsRomanizationEnabled = !it.lyricsRomanizationEnabled) }
+                    },
+                    onStepLyricOffsetMs = { delta ->
+                        val next = (trackLyricOffsetMs + delta).coerceIn(-5000L, 5000L)
+                        trackLyricOffsetMs = next
+                        vm.setTrackLyricOffsetMs(track.id, next)
+                    },
+                    onResetLyricOffsetMs = {
+                        trackLyricOffsetMs = 0L
+                        vm.setTrackLyricOffsetMs(track.id, 0L)
+                    },
+                    onShareInApp = {
+                        shareInAppText(context, track.title, track.artist)
+                    },
+                    onStartRadio = { vm.startQuickRadio(track) },
+                    onPlayNext = { vm.playNext(track) },
+                    onAddToQueue = { vm.addToQueue(track) },
+                    onOpenAlbum = {
+                        showNowPlaying = false
+                        vm.openAlbum(
+                            albumId = track.albumId.orEmpty(),
+                            albumTitle = track.album.ifBlank { track.title },
+                            artistName = track.artist,
+                            coverUrl = track.thumbnailUrl,
+                        )
+                    },
+                    onOpenArtist = {
+                        showNowPlaying = false
+                        vm.openArtist("", track.artist)
+                    },
                     onOpenSettings = {
                         showNowPlaying = false
                         vm.openSettingsSheet()
                     },
+                    onAddToPlaylist = {
+                        vm.openAddToPlaylist(listOf(track))
+                    },
                     onDismiss = { showNowPlaying = false },
+                )
+            }
+        }
+
+        // Full-screen Add to Playlist picker (rendered above NowPlaying & ArtistScreen)
+        AddToPlaylistSheet(
+            visible = state.addToPlaylistTargets.isNotEmpty(),
+            targets = state.addToPlaylistTargets,
+            playlists = state.playlists,
+            overrideTitle = collectionPickerMeta?.title,
+            overrideSubtitle = collectionPickerMeta?.subtitle,
+            overrideCoverUrl = collectionPickerMeta?.coverUrl,
+            onDismiss = {
+                collectionPickerMeta = null
+                vm.dismissAddToPlaylist()
+            },
+            onConfirmAdd = { playlistIds, tracks ->
+                collectionPickerMeta = null
+                vm.addTracksToPlaylists(tracks, playlistIds)
+                vm.dismissAddToPlaylist()
+            },
+            onCreatePlaylist = { title, tracks ->
+                collectionPickerMeta = null
+                vm.createPlaylistWithTracks(title, tracks)
+            },
+        )
+
+        // Brief floating feedback pill when tracks are added to a playlist
+        AnimatedVisibility(
+            visible = !visiblePlaylistStatus.isNullOrBlank(),
+            enter = slideInVertically(tween(220)) { it / 2 } + fadeIn(tween(180)),
+            exit = slideOutVertically(tween(180)) { it / 2 } + fadeOut(tween(150)),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(bottom = 112.dp, start = 20.dp, end = 20.dp),
+        ) {
+            Row(
+                modifier = Modifier
+                    .clip(CapsulePillShape)
+                    .background(Color(0xEE1C1C22))
+                    .border(0.5.dp, Color.White.copy(alpha = 0.16f), CapsulePillShape)
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(
+                    imageVector = SonataIcons.Check,
+                    contentDescription = null,
+                    tint = SonataAccent,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(
+                    text = visiblePlaylistStatus.orEmpty(),
+                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Medium),
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
@@ -685,7 +1497,7 @@ private fun FloatingTopChrome(
             Box(
                 modifier = Modifier
                     .size(44.dp)
-                    .adaptiveLiquidGlass(shape = pillShape)
+                    .adaptiveLiquidGlass(shape = pillShape, chromaticAberration = false)
                     .clip(pillShape)
                     .clickable(onClick = onBack),
                 contentAlignment = Alignment.Center,
@@ -731,7 +1543,7 @@ private fun FloatingTopChrome(
             Row(
                 modifier = Modifier
                     .height(44.dp)
-                    .adaptiveLiquidGlass(shape = capsuleShape)
+                    .adaptiveLiquidGlass(shape = capsuleShape, chromaticAberration = false)
                     .clip(capsuleShape)
                     .padding(horizontal = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -762,7 +1574,7 @@ private fun FloatingTopChrome(
             Box(
                 modifier = Modifier
                     .size(44.dp)
-                    .adaptiveLiquidGlass(shape = pillShape)
+                    .adaptiveLiquidGlass(shape = pillShape, chromaticAberration = false)
                     .clip(pillShape)
                     .clickable(onClick = onAvatarClick),
                 contentAlignment = Alignment.Center,
@@ -832,6 +1644,9 @@ private fun SonataGlassNavBar(
     val selectedColor = contentColor
     val unselectedColor = contentColor.copy(alpha = 0.65f)
     val selectedIndex = PrimaryTabs.indexOfFirst { it.tab == selectedTab }.coerceAtLeast(0)
+    val tabClickCallbacks = remember(onTabSelected) {
+        PrimaryTabs.map { spec -> { onTabSelected(spec.tab) } }
+    }
     val glassSurface: @Composable () -> Modifier = remember {
         {
             Modifier.adaptiveLiquidGlass(
@@ -849,6 +1664,7 @@ private fun SonataGlassNavBar(
             .padding(horizontal = BAR_GUTTER)
             .padding(bottom = NavBarLift)
             .fillMaxWidth(),
+        mergeStandaloneWhenExpanded = true,
         tabBarContentModifier = glassSurface,
         inlineAccessory = activeTrack?.let { track ->
             { accessoryModifier, _ ->
@@ -908,7 +1724,7 @@ private fun SonataGlassNavBar(
         PrimaryTabs.forEachIndexed { index, spec ->
             val isSelected = index == selectedIndex
             val tint = if (isSelected) selectedColor else unselectedColor
-            val onClick = { onTabSelected(spec.tab) }
+            val onClick = tabClickCallbacks[index]
             if (index == PrimaryTabs.lastIndex) {
                 standaloneTab(
                     key = index,
@@ -917,10 +1733,23 @@ private fun SonataGlassNavBar(
                             imageVector = spec.icon,
                             contentDescription = spec.label,
                             tint = tint,
-                            modifier = Modifier.size(22.dp),
+                            modifier = Modifier.size(SonataTabIconSize),
                         )
                     },
                     onClick = onClick,
+                    title = {
+                        Text(
+                            text = spec.label,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontSize = 10.sp,
+                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                            ),
+                            color = tint,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                    },
                 )
             } else {
                 tab(
@@ -930,7 +1759,7 @@ private fun SonataGlassNavBar(
                             imageVector = spec.icon,
                             contentDescription = spec.label,
                             tint = tint,
-                            modifier = Modifier.size(22.dp),
+                            modifier = Modifier.size(SonataTabIconSize),
                         )
                     },
                     title = {
@@ -1053,8 +1882,12 @@ private fun GlassMiniPlayer(
                     )
                 }
             }
-            Spacer(Modifier.width(10.dp))
-            Column(modifier = Modifier.weight(1f)) {
+            Spacer(Modifier.width(if (isInline) 8.dp else 10.dp))
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .clipToBounds(),
+            ) {
                 MarqueeText(
                     text = track.title,
                     style = MaterialTheme.typography.titleSmall.copy(
@@ -1140,22 +1973,46 @@ private sealed interface TopPickEntry {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+private fun homeShelfSortOrder(title: String): Int {
+    val t = title.lowercase()
+    return when {
+        "new" in t && ("album" in t || "single" in t || "release" in t) -> 0
+        "album" in t || "single" in t || "release" in t -> 1
+        "trend" in t || "chart" in t -> 2
+        "favorite" in t || "replay" in t -> 3
+        else -> 4
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 private fun HomeTabContent(
     state: SonataUiState,
+    settings: SonataSettingsState,
     listState: LazyListState,
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
     onRefresh: () -> Unit,
     onSignIn: () -> Unit,
     onPlayTrack: (AndroidTrack, List<AndroidTrack>) -> Unit,
+    onTrackOptions: (AndroidTrack, Rect?) -> Unit = { _, _ -> },
+    onTrackLongClick: (AndroidTrack, Rect?) -> Unit = { _, _ -> },
+    onCardLongClick: (AndroidHomeCard, String?, Boolean, Rect?) -> Unit = { _, _, _, _ -> },
+    onPlaylistLongClick: (AndroidPlaylist, Rect?) -> Unit = { _, _ -> },
     onOpenCard: (AndroidHomeCard, List<AndroidTrack>) -> Unit,
+    onOpenPlaylist: (AndroidPlaylist) -> Unit,
     onOpenMood: (String) -> Unit,
     onShowAllMoods: () -> Unit,
 ) {
-    val recentsShelf = remember(state.shelves) {
-        state.shelves.firstOrNull { shelf ->
+    val haptics = LocalHapticFeedback.current
+    val visibleShelves = remember(state.shelves) {
+        state.shelves.filterNot { shelf ->
+            val t = shelf.title.lowercase()
+            "forgotten" in t || "unutulan" in t
+        }
+    }
+    val recentsShelf = remember(visibleShelves) {
+        visibleShelves.firstOrNull { shelf ->
             shelf.tracks.isNotEmpty() || (
                 shelf.cards.isNotEmpty() && shelf.cards.all {
                     it.kind == AndroidHomeCardKind.SONG || it.kind == AndroidHomeCardKind.VIDEO
@@ -1163,12 +2020,16 @@ private fun HomeTabContent(
                 )
         }
     }
-    val remainingShelves = remember(state.shelves, recentsShelf) {
-        state.shelves.filter { shelf ->
-            shelf !== recentsShelf && shelf.cards.any { it.kind != AndroidHomeCardKind.MOOD }
-        }
+    val remainingShelves = remember(visibleShelves, recentsShelf) {
+        visibleShelves
+            .filter { shelf ->
+                shelf !== recentsShelf && shelf.cards.any { it.kind != AndroidHomeCardKind.MOOD }
+            }
+            .sortedBy { homeShelfSortOrder(it.title) }
+            .distinctBy { it.title }
     }
-    val topPicks = remember(state.shelves, state.tracks) {
+    val fallbackHomeTracks = state.tracks.takeIf { state.shelves.isEmpty() }.orEmpty()
+    val topPicks = remember(state.shelves, fallbackHomeTracks) {
         val allCardPairs = state.shelves.flatMap { shelf ->
             shelf.cards.map { it to shelf.tracks }
         }
@@ -1193,9 +2054,14 @@ private fun HomeTabContent(
                 ) to shelf.tracks
             }
         }
+        val seedTracks = if (state.shelves.isNotEmpty()) {
+            state.shelves.flatMap { it.tracks }
+        } else {
+            fallbackHomeTracks
+        }
         val portraitUrls = (
             artistCards.mapNotNull { it.first.thumbnailUrl } +
-                state.tracks.mapNotNull { it.thumbnailUrl } +
+                seedTracks.mapNotNull { it.thumbnailUrl } +
                 albumOrReleaseCards.mapNotNull { it.first.thumbnailUrl } +
                 playlistCards.mapNotNull { it.first.thumbnailUrl }
             ).distinct()
@@ -1212,7 +2078,7 @@ private fun HomeTabContent(
 
         // Card 2: Vivid purple ArtistCollageArt with 2-3 circular portraits peeking beside Card 1
         val artistCard = artistCards.firstOrNull()?.first
-        val topArtists = state.tracks.map { it.artist }.filter { it.isNotBlank() }.distinct().take(2)
+        val topArtists = seedTracks.map { it.artist }.filter { it.isNotBlank() }.distinct().take(2)
         val artistMixCard = artistCard ?: AndroidHomeCard(
             kind = AndroidHomeCardKind.ARTIST,
             id = "artist_mix",
@@ -1252,7 +2118,14 @@ private fun HomeTabContent(
         }
     }
     val recentsColumns = remember(recentsTracks) { recentsTracks.chunked(4) }
+    val lastPlayedTracks = remember(state.lastPlayedTracks, recentsTracks, fallbackHomeTracks) {
+        state.lastPlayedTracks
+            .ifEmpty { recentsTracks.ifEmpty { fallbackHomeTracks } }
+            .distinctBy { it.id }
+            .take(14)
+    }
     val showSkeleton = state.loading && state.shelves.isEmpty()
+    TrackScrollActivity(listState)
 
     PullToRefreshBox(
         isRefreshing = state.refreshing,
@@ -1314,7 +2187,7 @@ private fun HomeTabContent(
                         }
                     }
 
-                    // Shelf 1: Top Picks for You (252.dp x 336.dp 3:4 portrait cards)
+                    // Shelf 1: Top Picks for You (252.dp x 336.dp 3:4 portrait cards + live Canvas & Sonata Stations)
                     item(key = "top_picks_shelf", contentType = "top_picks_shelf") {
                         Column(Modifier.padding(bottom = 26.dp)) {
                             SectionHeader(title = "Top Picks for You")
@@ -1332,18 +2205,46 @@ private fun HomeTabContent(
                                             val artUrl = remember(pick.card.thumbnailUrl) {
                                                 pick.card.thumbnailUrl.artworkAt(CARD_ART_PX)
                                             }
+                                            var cardCanvas by remember(pick.card.id, settings.animatedArtwork) {
+                                                mutableStateOf(
+                                                    pick.card.track?.id?.let { CanvasResolver.cached(it) }
+                                                        ?: CanvasResolver.cached(pick.card.id),
+                                                )
+                                            }
+                                            LaunchedEffect(pick.card.id, settings.animatedArtwork) {
+                                                if (settings.animatedArtwork && !settings.reduceAnimation && cardCanvas == null) {
+                                                    val targetTrack = pick.card.track ?: pick.shelfTracks.firstOrNull()
+                                                    val resolved = CanvasResolver.resolve(
+                                                        videoId = targetTrack?.id ?: pick.card.id,
+                                                        title = targetTrack?.title ?: pick.card.title,
+                                                        artist = targetTrack?.artist ?: pick.card.subtitle,
+                                                        album = targetTrack?.album,
+                                                    )
+                                                    if (resolved != null) cardCanvas = resolved
+                                                }
+                                            }
+                                            val eyebrow = if (pick.card.kind == AndroidHomeCardKind.ALBUM) {
+                                                "NEW RELEASE"
+                                            } else {
+                                                "FEATURED PLAYLIST"
+                                            }
+                                            var cardBounds by remember { mutableStateOf<Rect?>(null) }
                                             ReleaseArt(
                                                 artworkUrl = artUrl,
                                                 title = pick.card.title,
                                                 subtitle = pick.card.subtitle,
-                                                eyebrow = if (pick.card.kind == AndroidHomeCardKind.ALBUM) {
-                                                    "NEW RELEASE"
-                                                } else {
-                                                    "FEATURED PLAYLIST"
-                                                },
-                                                modifier = Modifier.clickable {
-                                                    onOpenCard(pick.card, pick.shelfTracks)
-                                                },
+                                                eyebrow = eyebrow,
+                                                canvasMedia = cardCanvas,
+                                                canvasActive = settings.animatedArtwork && !settings.reduceAnimation,
+                                                modifier = Modifier
+                                                    .onGloballyPositioned { cardBounds = it.boundsInRoot() }
+                                                    .combinedClickable(
+                                                        onClick = { onOpenCard(pick.card, pick.shelfTracks) },
+                                                        onLongClick = {
+                                                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                            onCardLongClick(pick.card, eyebrow, true, cardBounds)
+                                                        },
+                                                    ),
                                             )
                                         }
 
@@ -1351,18 +2252,26 @@ private fun HomeTabContent(
                                             val sizedPortraits = remember(pick.portraits) {
                                                 pick.portraits.mapNotNull { it.artworkAt(CARD_ART_PX) }
                                             }
+                                            var cardBounds by remember { mutableStateOf<Rect?>(null) }
                                             ArtistCollageArt(
                                                 images = sizedPortraits,
                                                 title = pick.card.title,
                                                 subtitle = pick.card.subtitle.ifBlank { "Featuring artists you love" },
-                                                modifier = Modifier.clickable {
-                                                    onOpenCard(pick.card, emptyList())
-                                                },
+                                                modifier = Modifier
+                                                    .onGloballyPositioned { cardBounds = it.boundsInRoot() }
+                                                    .combinedClickable(
+                                                        onClick = { onOpenCard(pick.card, emptyList()) },
+                                                        onLongClick = {
+                                                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                            onCardLongClick(pick.card, "MIX", true, cardBounds)
+                                                        },
+                                                    ),
                                             )
                                         }
 
                                         TopPickEntry.PersonalStation -> {
                                             val name = state.accountProfile?.name?.takeIf { it.isNotBlank() }
+                                            val stationTitle = if (name != null) "$name's Station" else "My Station"
                                             Box(
                                                 modifier = Modifier
                                                     .width(252.dp)
@@ -1373,7 +2282,10 @@ private fun HomeTabContent(
                                                         tracks.firstOrNull()?.let { first -> onPlayTrack(first, tracks) }
                                                     },
                                             ) {
-                                                PersonalStationArt(Modifier.fillMaxSize(), still = true)
+                                                SonataPersonalStationArt(
+                                                    title = stationTitle,
+                                                    modifier = Modifier.fillMaxSize(),
+                                                )
                                                 Column(
                                                     modifier = Modifier
                                                         .align(Alignment.BottomStart)
@@ -1389,7 +2301,7 @@ private fun HomeTabContent(
                                                     )
                                                     Spacer(Modifier.height(4.dp))
                                                     Text(
-                                                        text = if (name != null) "$name's Station" else "My Station",
+                                                        text = stationTitle,
                                                         style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                                                         color = Color.White,
                                                     )
@@ -1407,7 +2319,7 @@ private fun HomeTabContent(
                                                     tracks.firstOrNull()?.let { first -> onPlayTrack(first, tracks) }
                                                 },
                                         ) {
-                                            DiscoveryStationArt(Modifier.fillMaxSize(), still = true)
+                                            SonataDiscoveryStationArt(Modifier.fillMaxSize())
                                             Column(
                                                 modifier = Modifier
                                                     .align(Alignment.BottomStart)
@@ -1435,7 +2347,35 @@ private fun HomeTabContent(
                         }
                     }
 
-                    // Shelf 2: Recents / Quick Picks (4-rows-per-column pager)
+                    // Shelf 2a: Last Played (156.dp square cover + title strip, ZERO glass)
+                    if (lastPlayedTracks.isNotEmpty()) {
+                        item(key = "last_played_square_strip", contentType = "last_played_strip") {
+                            val activeId = state.activeTrack?.id
+                            Column(Modifier.padding(bottom = 24.dp)) {
+                                SectionHeader(title = "Last Played")
+                                LazyRow(
+                                    contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    items(
+                                        items = lastPlayedTracks,
+                                        key = { t -> "lp_${t.id}" },
+                                        contentType = { "last_played" },
+                                    ) { track ->
+                                        SonataLastPlayedSquareCard(
+                                            title = track.title,
+                                            artworkUrl = track.thumbnailUrl,
+                                            isCurrent = activeId != null && track.id == activeId,
+                                            onClick = { onPlayTrack(track, lastPlayedTracks) },
+                                            onLongClick = { bounds -> onTrackLongClick(track, bounds) },
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Shelf 2b: Smooth Classic "Son Dinlenenler" 4-rows-per-column pager
                     if (recentsShelf != null && recentsColumns.isNotEmpty()) {
                         item(key = "recents_shelf", contentType = "recents_shelf") {
                             val activeId = state.activeTrack?.id
@@ -1446,11 +2386,11 @@ private fun HomeTabContent(
                                     contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
                                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                                 ) {
-                                    itemsIndexed(
+                                    items(
                                         items = recentsColumns,
-                                        key = { colIdx, col -> "recents_col_${colIdx}_${col.firstOrNull()?.id.orEmpty()}" },
-                                        contentType = { _, _ -> "recents_col" },
-                                    ) { _, column ->
+                                        key = { col -> "recents_col_${col.joinToString("_") { it.id }}" },
+                                        contentType = { "recents_col" },
+                                    ) { column ->
                                         Column(Modifier.width(colWidth)) {
                                             column.forEach { track ->
                                                 val current = activeId != null && track.id == activeId
@@ -1459,6 +2399,8 @@ private fun HomeTabContent(
                                                     isCurrent = current,
                                                     isPlaying = current && state.isPlaying,
                                                     onClick = { onPlayTrack(track, recentsTracks) },
+                                                    onOptionsClick = { bounds -> onTrackOptions(track, bounds) },
+                                                    onLongClick = { bounds -> onTrackLongClick(track, bounds) },
                                                 )
                                             }
                                         }
@@ -1468,7 +2410,7 @@ private fun HomeTabContent(
                         }
                     }
 
-                    // Shelf 3: Find Your Mood (150.dp 1:1 square MoodTiles + Show all)
+                    // Shelf 3: Find Your Mood (always-animated SonataMoodAnimatedArt)
                     item(key = "find_your_mood_shelf", contentType = "mood_shelf") {
                         Column(Modifier.padding(bottom = 26.dp)) {
                             SectionHeader(
@@ -1493,14 +2435,45 @@ private fun HomeTabContent(
                         }
                     }
 
+                    // Shelf 4: Personal Playlists
+                    if (state.playlists.isNotEmpty()) {
+                        item(key = "personal_playlists_shelf", contentType = "personal_playlists_shelf") {
+                            Column(Modifier.padding(bottom = 26.dp)) {
+                                SectionHeader(title = "Your Playlists")
+                                LazyRow(
+                                    contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
+                                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                                ) {
+                                    items(
+                                        items = state.playlists,
+                                        key = { "home_pl_${it.id}" },
+                                        contentType = { "playlist_card" },
+                                    ) { playlist ->
+                                        SonataEditorialCard(
+                                            title = playlist.name,
+                                            subtitle = "Playlist",
+                                            artworkUrl = playlist.thumbnailUrl,
+                                            badgeLabel = "Playlist",
+                                            onClick = { onOpenPlaylist(playlist) },
+                                            onPlayClick = { onOpenPlaylist(playlist) },
+                                            onLongClick = { bounds -> onPlaylistLongClick(playlist, bounds) },
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Remaining Shelves: clean 150.dp 1:1 square ShelfCards & 248.dp 16:9 VideoShelfCards
-                    itemsIndexed(
+                    items(
                         items = remainingShelves,
-                        key = { idx, shelf -> "shelf_${shelf.title}_$idx" },
-                        contentType = { _, _ -> "home_shelf" },
-                    ) { _, shelf ->
+                        key = { shelf -> "shelf_${shelf.title}" },
+                        contentType = { "home_shelf" },
+                    ) { shelf ->
                         val cards = remember(shelf.cards) {
-                            shelf.cards.filter { it.kind != AndroidHomeCardKind.MOOD }
+                            shelf.cards
+                                .filter { it.kind != AndroidHomeCardKind.MOOD }
+                                .distinctBy { "${it.kind}_${it.id}_${it.title}" }
                         }
                         if (cards.isNotEmpty()) {
                             val isVideoShelf = remember(cards) {
@@ -1512,11 +2485,11 @@ private fun HomeTabContent(
                                     contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
                                     horizontalArrangement = Arrangement.spacedBy(14.dp),
                                 ) {
-                                    itemsIndexed(
+                                    items(
                                         items = cards,
-                                        key = { cardIdx, card -> "${card.kind}_${card.id}_${card.title}_$cardIdx" },
-                                        contentType = { _, _ -> if (isVideoShelf) "video_card" else "shelf_card" },
-                                    ) { _, card ->
+                                        key = { card -> "${card.kind}_${card.id}_${card.title}" },
+                                        contentType = { if (isVideoShelf) "video_card" else "home_card" },
+                                    ) { card ->
                                         val activeId = state.activeTrack?.id
                                         val current = activeId != null && card.track?.id == activeId
                                         if (isVideoShelf) {
@@ -1525,13 +2498,34 @@ private fun HomeTabContent(
                                                 isCurrent = current,
                                                 isPlaying = current && state.isPlaying,
                                                 onClick = { onOpenCard(card, shelf.tracks) },
+                                                onLongClick = { bounds -> onCardLongClick(card, "VIDEO", false, bounds) },
+                                            )
+                                        } else if (card.kind == AndroidHomeCardKind.ARTIST) {
+                                            SonataArtistCircleCard(
+                                                name = card.title,
+                                                artworkUrl = card.thumbnailUrl,
+                                                onClick = { onOpenCard(card, shelf.tracks) },
                                             )
                                         } else {
-                                            ShelfCard(
-                                                card = card,
-                                                isCurrent = current,
-                                                isPlaying = current && state.isPlaying,
+                                            SonataEditorialCard(
+                                                title = card.title,
+                                                subtitle = card.subtitle,
+                                                artworkUrl = card.thumbnailUrl,
+                                                badgeLabel = when (card.kind) {
+                                                    AndroidHomeCardKind.ALBUM -> "Album"
+                                                    AndroidHomeCardKind.PLAYLIST -> "Playlist"
+                                                    else -> null
+                                                },
                                                 onClick = { onOpenCard(card, shelf.tracks) },
+                                                onPlayClick = { onOpenCard(card, shelf.tracks) },
+                                                onLongClick = { bounds ->
+                                                    onCardLongClick(
+                                                        card,
+                                                        if (card.kind == AndroidHomeCardKind.ALBUM) "ALBUM" else "PLAYLIST",
+                                                        false,
+                                                        bounds,
+                                                    )
+                                                },
                                             )
                                         }
                                     }
@@ -1540,6 +2534,27 @@ private fun HomeTabContent(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TrackScrollActivity(listState: LazyListState) {
+    LaunchedEffect(listState) {
+        var active = false
+        try {
+            snapshotFlow { listState.isScrollInProgress }
+                .distinctUntilChanged()
+                .collect { scrolling ->
+                    if (scrolling != active) {
+                        active = scrolling
+                        ScrollActivityTracker.setScrolling(scrolling)
+                    }
+                }
+        } finally {
+            if (active) {
+                ScrollActivityTracker.setScrolling(false)
             }
         }
     }
@@ -1665,6 +2680,12 @@ private fun SignInBanner(
     }
 }
 
+private data class TrackMenuRequest(
+    val track: AndroidTrack,
+    val anchorBounds: Rect? = null,
+)
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun CompactTrackRow(
     track: AndroidTrack,
@@ -1672,12 +2693,26 @@ private fun CompactTrackRow(
     isPlaying: Boolean,
     onClick: () -> Unit,
     leadingIndex: Int? = null,
+    onOptionsClick: ((Rect?) -> Unit)? = null,
+    onLongClick: ((Rect?) -> Unit)? = null,
 ) {
+    val haptics = LocalHapticFeedback.current
+    var rowBounds by remember { mutableStateOf<Rect?>(null) }
+    var optionsBounds by remember { mutableStateOf<Rect?>(null) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(Shape10)
-            .clickable(onClick = onClick)
+            .onGloballyPositioned { rowBounds = it.boundsInRoot() }
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick?.let { callback ->
+                    {
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        callback(rowBounds)
+                    }
+                },
+            )
             .padding(vertical = 6.dp, horizontal = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1752,29 +2787,51 @@ private fun CompactTrackRow(
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        Icon(
-            imageVector = SonataIcons.MoreVert,
-            contentDescription = "Track options",
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        Box(
             modifier = Modifier
-                .padding(start = 6.dp)
-                .size(18.dp),
-        )
+                .size(32.dp)
+                .clip(CircleShape)
+                .onGloballyPositioned { optionsBounds = it.boundsInRoot() }
+                .then(
+                    if (onOptionsClick != null) Modifier.clickable { onOptionsClick(optionsBounds) } else Modifier,
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = SonataIcons.MoreVert,
+                contentDescription = "Track options",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp),
+            )
+        }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ShelfCard(
     card: AndroidHomeCard,
     isCurrent: Boolean,
     isPlaying: Boolean,
     onClick: () -> Unit,
+    onLongClick: ((Rect?) -> Unit)? = null,
     modifier: Modifier = Modifier.width(SHELF_CARD_WIDTH),
 ) {
+    val haptics = LocalHapticFeedback.current
+    var cardBounds by remember { mutableStateOf<Rect?>(null) }
     Column(
         modifier = modifier
             .clip(Shape12)
-            .clickable(onClick = onClick),
+            .onGloballyPositioned { cardBounds = it.boundsInRoot() }
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick?.let { callback ->
+                    {
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        callback(cardBounds)
+                    }
+                },
+            ),
     ) {
         Box(
             modifier = Modifier
@@ -1841,18 +2898,31 @@ private fun ShelfCard(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun VideoShelfCard(
     card: AndroidHomeCard,
     isCurrent: Boolean,
     isPlaying: Boolean,
     onClick: () -> Unit,
+    onLongClick: ((Rect?) -> Unit)? = null,
     modifier: Modifier = Modifier.width(248.dp),
 ) {
+    val haptics = LocalHapticFeedback.current
+    var cardBounds by remember { mutableStateOf<Rect?>(null) }
     Column(
         modifier = modifier
             .clip(Shape12)
-            .clickable(onClick = onClick),
+            .onGloballyPositioned { cardBounds = it.boundsInRoot() }
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick?.let { callback ->
+                    {
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        callback(cardBounds)
+                    }
+                },
+            ),
     ) {
         Box(
             modifier = Modifier
@@ -1918,15 +2988,19 @@ private fun DetailScreen(
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
     onPlayTrack: (AndroidTrack) -> Unit,
+    onTrackOptions: (AndroidTrack, Rect?) -> Unit = { _, _ -> },
+    onTrackLongClick: (AndroidTrack, Int, Rect?) -> Unit = { _, _, _ -> },
     onPlayAll: () -> Unit,
     onShuffleAll: () -> Unit,
+    onDownloadAll: (() -> Unit)? = null,
+    onShare: (() -> Unit)? = null,
+    onOpenArtist: ((String) -> Unit)? = null,
 ) {
     val palette = rememberArtworkPalette(
         artworkUrl = state.collectionCoverUrl,
         dark = true,
         artPx = HEADER_ART_PX,
     )
-    var savedToLibrary by remember(state.collectionTitle) { mutableStateOf(false) }
 
     Box(
         modifier = modifier
@@ -1946,216 +3020,24 @@ private fun DetailScreen(
                 contentPadding = contentPadding,
             ) {
                 item(key = "detail_header", contentType = "detail_header") {
-                    val screenWidth = LocalConfiguration.current.screenWidthDp.dp
-                    val isWideTablet = screenWidth >= 680.dp
-                    val cover = remember(state.collectionCoverUrl) { state.collectionCoverUrl.artworkAt(HEADER_ART_PX) }
-                    val coverRequest = rememberArtworkRequest(cover, 600, 600)
-                    val meta = remember(state.collectionKindLabel, state.collectionYear, state.collectionTracks.size) {
-                        listOfNotNull(
-                            state.collectionKindLabel,
-                            state.collectionYear,
-                            state.collectionTracks.takeIf { it.isNotEmpty() }?.let { "${it.size} songs" },
-                        ).joinToString(" · ")
+                    val subtitleArtist = state.collectionSubtitle?.takeIf {
+                        it.isNotBlank() && state.collectionKindLabel != "Offline Library"
                     }
-
-                    @Composable
-                    fun HeaderActionRow() {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Button(
-                                onClick = onPlayAll,
-                                enabled = state.collectionTracks.isNotEmpty(),
-                                shape = CapsulePillShape,
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = SonataAccent,
-                                    contentColor = Color.White,
-                                ),
-                                contentPadding = PaddingValues(horizontal = 26.dp, vertical = 12.dp),
-                            ) {
-                                Icon(
-                                    painter = painterResource(R.drawable.ic_player_play),
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    text = "Play",
-                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                                )
-                            }
-                            Box(
-                                modifier = Modifier
-                                    .size(42.dp)
-                                    .lightweightLiquidGlass(CircleShape, fallbackColor = Color.White.copy(alpha = 0.14f))
-                                    .clip(CircleShape)
-                                    .clickable(enabled = state.collectionTracks.isNotEmpty(), onClick = onShuffleAll),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Icon(
-                                    imageVector = SonataIcons.Shuffle,
-                                    contentDescription = "Shuffle",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(18.dp),
-                                )
-                            }
-                            Box(
-                                modifier = Modifier
-                                    .size(42.dp)
-                                    .lightweightLiquidGlass(CircleShape, fallbackColor = Color.White.copy(alpha = 0.14f))
-                                    .clip(CircleShape)
-                                    .clickable { savedToLibrary = !savedToLibrary },
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Icon(
-                                    imageVector = if (savedToLibrary) SonataIcons.Check else SonataIcons.TabLibrary,
-                                    contentDescription = "Save to Library",
-                                    tint = if (savedToLibrary) SonataAccent else Color.White,
-                                    modifier = Modifier.size(18.dp),
-                                )
-                            }
-                        }
-                    }
-
-                    if (isWideTablet) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = PAGE_GUTTER, vertical = 14.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(26.dp),
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(196.dp)
-                                    .shadow(18.dp, Shape14, clip = false)
-                                    .clip(Shape14)
-                                    .background(palette.elevated)
-                                    .border(0.5.dp, Color.White.copy(alpha = 0.16f), Shape14),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                if (coverRequest != null) {
-                                    AsyncImage(
-                                        model = coverRequest,
-                                        contentDescription = state.collectionTitle,
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier.fillMaxSize(),
-                                    )
-                                } else {
-                                    Icon(
-                                        imageVector = SonataIcons.TabLibrary,
-                                        contentDescription = null,
-                                        tint = Color.White.copy(alpha = 0.55f),
-                                        modifier = Modifier.size(60.dp),
-                                    )
-                                }
-                            }
-                            Column(
-                                modifier = Modifier.weight(1f),
-                                verticalArrangement = Arrangement.Center,
-                            ) {
-                                Text(
-                                    text = state.collectionTitle.orEmpty(),
-                                    style = MaterialTheme.typography.headlineMedium.copy(
-                                        fontSize = 28.sp,
-                                        fontWeight = FontWeight.Bold,
-                                    ),
-                                    color = Color.White,
-                                )
-                                state.collectionSubtitle?.takeIf { it.isNotBlank() }?.let { subtitle ->
-                                    Spacer(Modifier.height(4.dp))
-                                    Text(
-                                        text = subtitle,
-                                        style = MaterialTheme.typography.titleMedium.copy(
-                                            fontSize = 18.sp,
-                                            fontWeight = FontWeight.Medium,
-                                        ),
-                                        color = SonataAccent,
-                                    )
-                                }
-                                if (meta.isNotBlank()) {
-                                    Spacer(Modifier.height(4.dp))
-                                    Text(
-                                        text = meta,
-                                        style = MaterialTheme.typography.labelLarge,
-                                        color = Color.White.copy(alpha = 0.62f),
-                                    )
-                                }
-                                Spacer(Modifier.height(18.dp))
-                                HeaderActionRow()
-                            }
-                        }
-                    } else {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = PAGE_GUTTER, vertical = 10.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                        ) {
-                            val artWidth = ((screenWidth - PAGE_GUTTER * 2) * 0.76f).coerceAtMost(310.dp)
-                            Box(
-                                modifier = Modifier
-                                    .size(artWidth)
-                                    .shadow(18.dp, Shape14, clip = false)
-                                    .clip(Shape14)
-                                    .background(palette.elevated)
-                                    .border(0.5.dp, Color.White.copy(alpha = 0.16f), Shape14),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                if (coverRequest != null) {
-                                    AsyncImage(
-                                        model = coverRequest,
-                                        contentDescription = state.collectionTitle,
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier.fillMaxSize(),
-                                    )
-                                } else {
-                                    Icon(
-                                        imageVector = SonataIcons.TabLibrary,
-                                        contentDescription = null,
-                                        tint = Color.White.copy(alpha = 0.55f),
-                                        modifier = Modifier.size(64.dp),
-                                    )
-                                }
-                            }
-
-                            Spacer(Modifier.height(18.dp))
-                            Text(
-                                text = state.collectionTitle.orEmpty(),
-                                style = MaterialTheme.typography.headlineSmall.copy(
-                                    fontSize = 23.sp,
-                                    fontWeight = FontWeight.Bold,
-                                ),
-                                color = Color.White,
-                                textAlign = TextAlign.Center,
-                            )
-                            state.collectionSubtitle?.takeIf { it.isNotBlank() }?.let { subtitle ->
-                                Spacer(Modifier.height(4.dp))
-                                Text(
-                                    text = subtitle,
-                                    style = MaterialTheme.typography.titleMedium.copy(
-                                        fontSize = 17.sp,
-                                        fontWeight = FontWeight.Medium,
-                                    ),
-                                    color = SonataAccent,
-                                    textAlign = TextAlign.Center,
-                                )
-                            }
-                            if (meta.isNotBlank()) {
-                                Spacer(Modifier.height(4.dp))
-                                Text(
-                                    text = meta,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = Color.White.copy(alpha = 0.62f),
-                                )
-                            }
-
-                            Spacer(Modifier.height(16.dp))
-                            HeaderActionRow()
-                            Spacer(Modifier.height(14.dp))
-                        }
-                    }
+                    SonataSplitHeroHeader(
+                        title = state.collectionTitle.orEmpty(),
+                        subtitle = state.collectionSubtitle,
+                        kindLabel = state.collectionKindLabel,
+                        year = state.collectionYear,
+                        trackCount = state.collectionTracks.size,
+                        artworkUrl = state.collectionCoverUrl,
+                        accentColor = SonataAccent,
+                        washColor = palette.wash,
+                        onPlayAll = onPlayAll,
+                        onShuffleAll = onShuffleAll,
+                        onDownloadAll = onDownloadAll?.takeIf { state.collectionTracks.isNotEmpty() },
+                        onShare = onShare,
+                        onOpenArtist = subtitleArtist?.let { artist -> { onOpenArtist?.invoke(artist) } },
+                    )
                 }
 
                 if (state.loading && state.collectionTracks.isEmpty()) {
@@ -2175,6 +3057,8 @@ private fun DetailScreen(
                                 isPlaying = current && state.isPlaying,
                                 leadingIndex = idx + 1,
                                 onClick = { onPlayTrack(track) },
+                                onOptionsClick = { bounds -> onTrackOptions(track, bounds) },
+                                onLongClick = { bounds -> onTrackLongClick(track, idx + 1, bounds) },
                             )
                             HorizontalDivider(
                                 color = Color.White.copy(alpha = 0.08f),
@@ -2225,6 +3109,7 @@ private fun ExploreTabContent(
     modifier: Modifier = Modifier,
     onOpenMood: (String) -> Unit,
     onOpenCard: (AndroidHomeCard, List<AndroidTrack>) -> Unit,
+    onCardLongClick: (AndroidHomeCard, Rect?) -> Unit = { _, _ -> },
 ) {
     val screenWidthDp = LocalConfiguration.current.screenWidthDp
     val moodColumns = when {
@@ -2254,17 +3139,30 @@ private fun ExploreTabContent(
         }
         (fromFeed + fallback).distinctBy { it.title }
     }
-    val releaseShelves = remember(state.shelves) {
+    val orderedExploreShelves = remember(state.shelves) {
         state.shelves.filter { shelf ->
-            shelf.cards.any {
-                it.kind == AndroidHomeCardKind.ALBUM ||
-                    it.kind == AndroidHomeCardKind.PLAYLIST ||
-                    it.kind == AndroidHomeCardKind.ARTIST
-            }
-        }
+            val t = shelf.title.lowercase()
+            "forgotten" !in t && "unutulan" !in t &&
+                shelf.cards.any {
+                    it.kind == AndroidHomeCardKind.ALBUM ||
+                        it.kind == AndroidHomeCardKind.PLAYLIST ||
+                        it.kind == AndroidHomeCardKind.ARTIST ||
+                        it.kind == AndroidHomeCardKind.VIDEO
+                }
+        }.distinctBy { it.title }
+    }
+    val topReleaseAndChartShelves = remember(orderedExploreShelves) {
+        orderedExploreShelves.filter { shelf ->
+            val t = shelf.title.lowercase()
+            "new" in t || "release" in t || "chart" in t || "trend" in t || "album" in t || "single" in t
+        }.sortedBy { homeShelfSortOrder(it.title) }
+    }
+    val lowerExploreShelves = remember(orderedExploreShelves, topReleaseAndChartShelves) {
+        orderedExploreShelves.filter { it !in topReleaseAndChartShelves }
     }
 
     val moodRows = remember(moodSleeves, moodColumns) { moodSleeves.chunked(moodColumns) }
+    TrackScrollActivity(listState)
 
     LazyColumn(
         state = listState,
@@ -2281,6 +3179,53 @@ private fun ExploreTabContent(
                 color = Color.White,
                 modifier = Modifier.padding(horizontal = PAGE_GUTTER, vertical = 10.dp),
             )
+        }
+
+        // 1. New Releases & Charts / Trending shelves first
+        items(
+            items = topReleaseAndChartShelves,
+            key = { shelf -> "explore_top_${shelf.title}" },
+            contentType = { "explore_shelf" },
+        ) { shelf ->
+            val cards = remember(shelf.cards) {
+                shelf.cards
+                    .filter { it.kind != AndroidHomeCardKind.MOOD }
+                    .distinctBy { "${it.kind}_${it.id}_${it.title}" }
+            }
+            if (cards.isNotEmpty()) {
+                Column(Modifier.padding(top = 8.dp, bottom = 14.dp)) {
+                    SectionHeader(title = shelf.title)
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    ) {
+                        items(
+                            items = cards,
+                            key = { card -> "top_${card.kind}_${card.id}_${card.title}" },
+                            contentType = { "shelf_card" },
+                        ) { card ->
+                            val activeId = state.activeTrack?.id
+                            val current = activeId != null && card.track?.id == activeId
+                            ShelfCard(
+                                card = card,
+                                isCurrent = current,
+                                isPlaying = current && state.isPlaying,
+                                onClick = { onOpenCard(card, shelf.tracks) },
+                                onLongClick = if (card.kind == AndroidHomeCardKind.ARTIST) {
+                                    null
+                                } else {
+                                    { bounds -> onCardLongClick(card, bounds) }
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Moods & Genres section (always-animated SonataMoodAnimatedArt)
+        item(key = "explore_moods_header", contentType = "section_header") {
+            SectionHeader(title = "Moods & Genres")
         }
 
         itemsIndexed(
@@ -2314,32 +3259,53 @@ private fun ExploreTabContent(
             }
         }
 
-        itemsIndexed(
-            items = releaseShelves,
-            key = { idx, shelf -> "explore_${shelf.title}_$idx" },
-            contentType = { _, _ -> "explore_shelf" },
-        ) { _, shelf ->
-            val cards = remember(shelf.cards) { shelf.cards.filter { it.kind != AndroidHomeCardKind.MOOD } }
+        // 3. Featured Videos & Remaining Explore shelves
+        items(
+            items = lowerExploreShelves,
+            key = { shelf -> "explore_rest_${shelf.title}" },
+            contentType = { "explore_shelf" },
+        ) { shelf ->
+            val cards = remember(shelf.cards) {
+                shelf.cards
+                    .filter { it.kind != AndroidHomeCardKind.MOOD }
+                    .distinctBy { "${it.kind}_${it.id}_${it.title}" }
+            }
             if (cards.isNotEmpty()) {
+                val isVideoShelf = remember(cards) { cards.all { it.kind == AndroidHomeCardKind.VIDEO } }
                 Column(Modifier.padding(top = 18.dp, bottom = 10.dp)) {
                     SectionHeader(title = shelf.title)
                     LazyRow(
                         contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
                         horizontalArrangement = Arrangement.spacedBy(14.dp),
                     ) {
-                        itemsIndexed(
+                        items(
                             items = cards,
-                            key = { cardIdx, card -> "${card.kind}_${card.id}_${card.title}_$cardIdx" },
-                            contentType = { _, _ -> "shelf_card" },
-                        ) { _, card ->
+                            key = { card -> "${card.kind}_${card.id}_${card.title}" },
+                            contentType = { if (isVideoShelf) "video_card" else "shelf_card" },
+                        ) { card ->
                             val activeId = state.activeTrack?.id
                             val current = activeId != null && card.track?.id == activeId
-                            ShelfCard(
-                                card = card,
-                                isCurrent = current,
-                                isPlaying = current && state.isPlaying,
-                                onClick = { onOpenCard(card, shelf.tracks) },
-                            )
+                            if (isVideoShelf) {
+                                VideoShelfCard(
+                                    card = card,
+                                    isCurrent = current,
+                                    isPlaying = current && state.isPlaying,
+                                    onClick = { onOpenCard(card, shelf.tracks) },
+                                    onLongClick = { bounds -> onCardLongClick(card, bounds) },
+                                )
+                            } else {
+                                ShelfCard(
+                                    card = card,
+                                    isCurrent = current,
+                                    isPlaying = current && state.isPlaying,
+                                    onClick = { onOpenCard(card, shelf.tracks) },
+                                    onLongClick = if (card.kind == AndroidHomeCardKind.ARTIST) {
+                                        null
+                                    } else {
+                                        { bounds -> onCardLongClick(card, bounds) }
+                                    },
+                                )
+                            }
                         }
                     }
                 }
@@ -2351,26 +3317,49 @@ private fun ExploreTabContent(
 @Composable
 private fun LibraryTabContent(
     state: SonataUiState,
+    downloadsCount: Int,
+    latestDownloadCoverUrl: String?,
     listState: LazyListState,
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
     onSignIn: () -> Unit,
     onOpenPlaylist: (AndroidPlaylist) -> Unit,
+    onPlaylistLongClick: (AndroidPlaylist, Rect?) -> Unit = { _, _ -> },
     onPlayTrack: (AndroidTrack, List<AndroidTrack>) -> Unit,
-    onOpenSearch: () -> Unit,
+    onOpenDownloads: () -> Unit,
+    onOpenDownloadsManager: () -> Unit,
+    onOpenArtist: (String, String) -> Unit,
 ) {
     val screenWidthDp = LocalConfiguration.current.screenWidthDp
-    val playlistColumns = when {
-        screenWidthDp >= 760 -> 4
-        screenWidthDp >= 560 -> 3
-        else -> 2
-    }
+    val playlistColumns = ((screenWidthDp - 32) / 160).coerceIn(2, 6)
     val replayArt = remember(state.tracks, state.playlists) {
         state.tracks.firstOrNull { !it.thumbnailUrl.isNullOrBlank() }?.thumbnailUrl
             ?: state.playlists.firstOrNull { !it.thumbnailUrl.isNullOrBlank() }?.thumbnailUrl
     }
     val holderName = state.accountProfile?.name?.takeIf { it.isNotBlank() } ?: "SONATA LISTENER"
-    val playlistRows = remember(state.playlists, playlistColumns) { state.playlists.chunked(playlistColumns) }
+    val downloadsPlaylist = remember(latestDownloadCoverUrl) {
+        AndroidPlaylist(
+            id = SonataViewModel.DOWNLOADS_PLAYLIST_ID,
+            name = "Downloads",
+            thumbnailUrl = latestDownloadCoverUrl,
+        )
+    }
+    val combinedPlaylists = remember(downloadsPlaylist, state.playlists) {
+        listOf(downloadsPlaylist) + state.playlists.filterNot {
+            it.id == SonataViewModel.DOWNLOADS_PLAYLIST_ID
+        }
+    }
+    val playlistRows = remember(combinedPlaylists, playlistColumns) {
+        combinedPlaylists.chunked(playlistColumns)
+    }
+    val libraryArtists = remember(state.shelves) {
+        state.shelves.flatMap { it.cards }
+            .filter { it.kind == AndroidHomeCardKind.ARTIST }
+            .distinctBy { it.id }
+            .take(12)
+    }
+
+    TrackScrollActivity(listState)
 
     LazyColumn(
         state = listState,
@@ -2410,15 +3399,13 @@ private fun LibraryTabContent(
                 }
                 item(key = "replay_card_playlists", contentType = "replay_card") {
                     ReplayCreditCard(
-                        label = "Library Playlists",
-                        value = "${state.playlists.size} Mixes",
-                        detail = state.playlists.firstOrNull()?.name ?: "Sign in to sync",
-                        artworkUrl = state.playlists.getOrNull(1)?.thumbnailUrl?.artworkAt(CARD_ART_PX)
+                        label = "Offline Library",
+                        value = "$downloadsCount Downloaded",
+                        detail = if (downloadsCount > 0) "Ready without network" else "Save songs for offline play",
+                        artworkUrl = latestDownloadCoverUrl?.artworkAt(CARD_ART_PX)
                             ?: replayArt.artworkAt(CARD_ART_PX),
                         holder = holderName,
-                        onClick = {
-                            state.playlists.firstOrNull()?.let(onOpenPlaylist)
-                        },
+                        onClick = onOpenDownloads,
                         modifier = Modifier.width(300.dp),
                     )
                 }
@@ -2426,14 +3413,14 @@ private fun LibraryTabContent(
             Spacer(Modifier.height(10.dp))
         }
 
-        // Downloads & Local Music navigation rows
+        // Downloads Playlist & Download Manager rows (never navigate to Search!)
         item(key = "library_device_rows", contentType = "device_rows") {
             Column(modifier = Modifier.padding(horizontal = PAGE_GUTTER)) {
                 LibraryNavRow(
                     icon = SonataIcons.Download,
                     label = "Downloads",
-                    subtitle = "Offline cached streams",
-                    onClick = onOpenSearch,
+                    subtitle = if (downloadsCount > 0) "$downloadsCount offline tracks" else "Offline cached streams",
+                    onClick = onOpenDownloads,
                 )
                 HorizontalDivider(
                     color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f),
@@ -2441,54 +3428,74 @@ private fun LibraryTabContent(
                 )
                 LibraryNavRow(
                     icon = SonataIcons.Folder,
-                    label = "Local Music",
-                    subtitle = "Device audio library",
-                    onClick = onOpenSearch,
+                    label = "Manage Downloads",
+                    subtitle = "Storage & download queue",
+                    onClick = onOpenDownloadsManager,
                 )
             }
             Spacer(Modifier.height(14.dp))
+        }
+
+        if (libraryArtists.isNotEmpty()) {
+            item(key = "library_artists_shelf", contentType = "library_artists") {
+                Column(Modifier.padding(bottom = 18.dp)) {
+                    SectionHeader(title = "Artists")
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    ) {
+                        items(
+                            items = libraryArtists,
+                            key = { "lib_artist_${it.id}" },
+                            contentType = { "artist_circle" },
+                        ) { artist ->
+                            SonataArtistCircleCard(
+                                name = artist.title,
+                                artworkUrl = artist.thumbnailUrl,
+                                onClick = { onOpenArtist(artist.id, artist.title) },
+                            )
+                        }
+                    }
+                }
+            }
         }
 
         if (state.authInitialized && !state.signedIn) {
             item(key = "library_signin_banner", contentType = "sign_in_banner") {
                 SignInBanner(onSignIn = onSignIn)
             }
-        } else if (state.signedIn) {
-            item(key = "library_playlists_header", contentType = "section_header") {
-                SectionHeader(title = "Playlists")
-            }
-            if (state.playlists.isEmpty()) {
-                item(key = "library_empty_playlists", contentType = "empty_state") {
-                    Text(
-                        text = "Your YouTube Music playlists will appear here once synced.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = PAGE_GUTTER, vertical = 16.dp),
+        }
+
+        item(key = "library_playlists_header", contentType = "section_header") {
+            SectionHeader(title = "Playlists")
+        }
+        items(
+            items = playlistRows,
+            key = { row -> "pl_row_${row.joinToString("_") { it.id }}" },
+            contentType = { "playlist_grid_row" },
+        ) { rowPlaylists ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = PAGE_GUTTER, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                rowPlaylists.forEach { playlist ->
+                    PlaylistGridCard(
+                        playlist = playlist,
+                        onClick = {
+                            if (playlist.id == SonataViewModel.DOWNLOADS_PLAYLIST_ID) {
+                                onOpenDownloads()
+                            } else {
+                                onOpenPlaylist(playlist)
+                            }
+                        },
+                        onLongClick = { bounds -> onPlaylistLongClick(playlist, bounds) },
+                        modifier = Modifier.weight(1f),
                     )
                 }
-            } else {
-                itemsIndexed(
-                    items = playlistRows,
-                    key = { rowIdx, row -> "pl_row_${rowIdx}_${row.firstOrNull()?.id.orEmpty()}" },
-                    contentType = { _, _ -> "playlist_grid_row" },
-                ) { _, rowPlaylists ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = PAGE_GUTTER, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(14.dp),
-                    ) {
-                        rowPlaylists.forEach { playlist ->
-                            PlaylistGridCard(
-                                playlist = playlist,
-                                onClick = { onOpenPlaylist(playlist) },
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
-                        repeat(playlistColumns - rowPlaylists.size) {
-                            Spacer(Modifier.weight(1f))
-                        }
-                    }
+                repeat(playlistColumns - rowPlaylists.size) {
+                    Spacer(Modifier.weight(1f))
                 }
             }
         }
@@ -2532,21 +3539,36 @@ private fun LibraryNavRow(
     }
 }
 
-private val LikedPlaylistBrush = Brush.linearGradient(listOf(Color(0xFF7B52FF), Color(0xFFF35CA8)))
+private val LikedPlaylistBrush = Brush.linearGradient(listOf(Color(0xFF7B52FF), Color(0xFFB79CED)))
+private val DownloadsPlaylistBrush = Brush.linearGradient(listOf(Color(0xFF1D1A2B), Color(0xFF8F96D9)))
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PlaylistGridCard(
     playlist: AndroidPlaylist,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    onLongClick: ((Rect?) -> Unit)? = null,
 ) {
-    val isLikedPlaylist = playlist.id == "LM" || playlist.name.contains("Liked", ignoreCase = true)
+    val haptics = LocalHapticFeedback.current
+    var cardBounds by remember { mutableStateOf<Rect?>(null) }
+    val isDownloadsPlaylist = playlist.id == SonataViewModel.DOWNLOADS_PLAYLIST_ID
+    val isLikedPlaylist = !isDownloadsPlaylist && (playlist.id == "LM" || playlist.name.contains("Liked", ignoreCase = true))
     val cover = remember(playlist.thumbnailUrl) { playlist.thumbnailUrl.artworkAt(CARD_ART_PX) }
     val coverRequest = rememberArtworkRequest(cover, 360, 360)
     Column(
         modifier = modifier
             .clip(Shape12)
-            .clickable(onClick = onClick),
+            .onGloballyPositioned { cardBounds = it.boundsInRoot() }
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick?.let { callback ->
+                    {
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        callback(cardBounds)
+                    }
+                },
+            ),
     ) {
         Box(
             modifier = Modifier
@@ -2554,29 +3576,65 @@ private fun PlaylistGridCard(
                 .aspectRatio(1f)
                 .clip(Shape12)
                 .then(
-                    if (isLikedPlaylist || coverRequest == null) {
-                        Modifier.background(LikedPlaylistBrush)
-                    } else {
-                        Modifier.background(MaterialTheme.colorScheme.surfaceVariant)
+                    when {
+                        isDownloadsPlaylist && coverRequest == null -> Modifier.background(DownloadsPlaylistBrush)
+                        isLikedPlaylist || coverRequest == null -> Modifier.background(LikedPlaylistBrush)
+                        else -> Modifier.background(MaterialTheme.colorScheme.surfaceVariant)
                     }
                 )
                 .border(0.5.dp, Color.White.copy(alpha = 0.14f), Shape12),
             contentAlignment = Alignment.Center,
         ) {
-            if (isLikedPlaylist || coverRequest == null) {
-                Icon(
-                    imageVector = SonataIcons.ThumbUp,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(64.dp),
-                )
-            } else {
-                AsyncImage(
-                    model = coverRequest,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize(),
-                )
+            when {
+                isDownloadsPlaylist -> {
+                    if (coverRequest != null) {
+                        AsyncImage(
+                            model = coverRequest,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(8.dp)
+                                .size(30.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.72f)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                imageVector = SonataIcons.Download,
+                                contentDescription = null,
+                                tint = SonataAccent,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
+                    } else {
+                        Icon(
+                            imageVector = SonataIcons.Download,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(54.dp),
+                        )
+                    }
+                }
+                isLikedPlaylist || coverRequest == null -> {
+                    Icon(
+                        imageVector = SonataIcons.ThumbUp,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(64.dp),
+                    )
+                }
+                else -> {
+                    AsyncImage(
+                        model = coverRequest,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             }
         }
         Spacer(Modifier.height(8.dp))
@@ -2600,6 +3658,8 @@ private fun SearchTabContent(
     onRemoveRecentSearch: (String) -> Unit,
     onClearRecentSearches: () -> Unit,
     onPlayTrack: (AndroidTrack, List<AndroidTrack>) -> Unit,
+    onTrackOptions: (AndroidTrack, Rect?) -> Unit = { _, _ -> },
+    onTrackLongClick: (AndroidTrack, Rect?) -> Unit = { _, _ -> },
     onOpenPlaylist: (AndroidPlaylist) -> Unit,
 ) {
     var selectedSegment by remember { mutableIntStateOf(0) }
@@ -2733,6 +3793,8 @@ private fun SearchTabContent(
                                 isCurrent = current,
                                 isPlaying = current && state.isPlaying,
                                 onClick = { onPlayTrack(track, state.tracks) },
+                                onOptionsClick = { bounds -> onTrackOptions(track, bounds) },
+                                onLongClick = { bounds -> onTrackLongClick(track, bounds) },
                             )
                         }
                     }
@@ -2753,6 +3815,8 @@ private fun SearchTabContent(
                             isCurrent = current,
                             isPlaying = current && state.isPlaying,
                             onClick = { onPlayTrack(track, filteredLibraryTracks) },
+                            onOptionsClick = { bounds -> onTrackOptions(track, bounds) },
+                            onLongClick = { bounds -> onTrackLongClick(track, bounds) },
                         )
                     }
                 }
@@ -2953,7 +4017,7 @@ private fun SettingsSheet(
                             Text(
                                 text = if (state.signedIn) "Sign Out" else "Connect YouTube Music",
                                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                                color = if (state.signedIn) SonataAccent else Color(0xFF64D2FF),
+                                color = SonataAccent,
                                 modifier = Modifier.weight(1f),
                             )
                             Icon(
@@ -3151,7 +4215,7 @@ private fun SettingsSheet(
                             Text(
                                 text = "Check for Updates",
                                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Medium),
-                                color = Color(0xFF64D2FF),
+                                color = SonataAccent,
                                 modifier = Modifier.weight(1f),
                             )
                             if (state.checkingUpdates) {
@@ -3284,10 +4348,38 @@ private fun SettingsSwitchRow(
     }
 }
 
+private data class NowPlayingExtras(
+    val trackId: String = "",
+    val settings: SonataSettingsState = SonataSettingsState(),
+    val currentCanvas: CanvasMedia? = null,
+    val isTrackDownloaded: Boolean = false,
+    val activeTrackDownload: ActiveDownload? = null,
+    val sleepTimerRemaining: Int? = null,
+    val activeLyricsSource: String = "Synced",
+    val trackLyricOffsetMs: Long = 0L,
+    val onDownloadTrack: () -> Unit = {},
+    val onOpenAudioControls: () -> Unit = {},
+    val onOpenSleepTimer: () -> Unit = {},
+    val onOpenAudioPipeline: () -> Unit = {},
+    val onToggleLyricsTranslation: () -> Unit = {},
+    val onToggleLyricsRomanization: () -> Unit = {},
+    val onStepLyricOffsetMs: (Long) -> Unit = {},
+)
+
+private val LocalNowPlayingExtras = androidx.compose.runtime.compositionLocalOf { NowPlayingExtras() }
+
 @Composable
 private fun NowPlayingScreen(
     track: AndroidTrack,
     state: SonataUiState,
+    settings: SonataSettingsState,
+    currentCanvas: CanvasMedia?,
+    audioPipelineSummary: String?,
+    isTrackDownloaded: Boolean,
+    activeTrackDownload: ActiveDownload?,
+    sleepTimerRemaining: Int?,
+    activeLyricsSource: String,
+    trackLyricOffsetMs: Long,
     clock: PlaybackClockState,
     onToggleLyrics: () -> Unit,
     onToggleStar: () -> Unit,
@@ -3299,12 +4391,64 @@ private fun NowPlayingScreen(
     onSeekTo: (Long) -> Unit,
     onSeekFraction: (Float) -> Unit,
     onJumpToQueueIndex: (Int) -> Unit,
+    onDownloadTrack: () -> Unit,
+    onOpenAudioControls: () -> Unit,
+    onOpenSleepTimer: () -> Unit,
+    onOpenAudioPipeline: () -> Unit,
+    onToggleLyricsTranslation: () -> Unit,
+    onToggleLyricsRomanization: () -> Unit,
+    onStepLyricOffsetMs: (Long) -> Unit,
+    onResetLyricOffsetMs: () -> Unit,
+    onShareInApp: () -> Unit,
+    onStartRadio: () -> Unit,
+    onPlayNext: () -> Unit,
+    onAddToQueue: () -> Unit,
+    onOpenAlbum: () -> Unit,
+    onOpenArtist: () -> Unit,
     onOpenSettings: () -> Unit,
+    onAddToPlaylist: () -> Unit = {},
     onDismiss: () -> Unit,
 ) {
+    val extras = remember(
+        track.id,
+        settings,
+        isTrackDownloaded,
+        activeTrackDownload,
+        sleepTimerRemaining,
+        activeLyricsSource,
+        trackLyricOffsetMs,
+    ) {
+        NowPlayingExtras(
+            trackId = track.id,
+            settings = settings,
+            currentCanvas = currentCanvas,
+            isTrackDownloaded = isTrackDownloaded,
+            activeTrackDownload = activeTrackDownload,
+            sleepTimerRemaining = sleepTimerRemaining,
+            activeLyricsSource = activeLyricsSource,
+            trackLyricOffsetMs = trackLyricOffsetMs,
+            onDownloadTrack = onDownloadTrack,
+            onOpenAudioControls = onOpenAudioControls,
+            onOpenSleepTimer = onOpenSleepTimer,
+            onOpenAudioPipeline = onOpenAudioPipeline,
+            onToggleLyricsTranslation = onToggleLyricsTranslation,
+            onToggleLyricsRomanization = onToggleLyricsRomanization,
+            onStepLyricOffsetMs = onStepLyricOffsetMs,
+        )
+    }
+    CompositionLocalProvider(LocalNowPlayingExtras provides extras) {
     var showQueue by remember { mutableStateOf(false) }
+    var showPlayerOptions by remember { mutableStateOf(false) }
     var dragOffsetY by remember { mutableFloatStateOf(0f) }
     var scrubbing by remember { mutableStateOf(false) }
+
+    if (showQueue && !showPlayerOptions) {
+        BackHandler { showQueue = false }
+    }
+
+    if (showPlayerOptions) {
+        BackHandler { showPlayerOptions = false }
+    }
 
     val panelOpen = state.showLyrics || showQueue
     val isLiked = track.id in state.likedTrackIds
@@ -3319,7 +4463,7 @@ private fun NowPlayingScreen(
         clock = clock,
         isPlaying = state.isPlaying,
         isBuffering = state.isBuffering,
-        fpsLimit = state.fpsLimit,
+        fpsLimit = settings.fpsLimit,
         trackKey = track.id,
     )
     val density = LocalDensity.current
@@ -3395,6 +4539,8 @@ private fun NowPlayingScreen(
         label = "nowPlayingCoverScale",
     )
 
+    val nowPlayingBackdrop = rememberLayerBackdrop()
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -3411,17 +4557,22 @@ private fun NowPlayingScreen(
                     },
                     onDragCancel = { dragOffsetY = 0f },
                 )
-            }
-            .background(palette.background),
+            },
     ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(palette.background)
+                .layerBackdrop(nowPlayingBackdrop),
+        ) {
 
-        // Smooth crossfade between MeshGradientBackground (artwork mode) and FullArtworkBlurBackdrop (lyrics/queue mode)
+        // Smooth crossfade between selected Now Playing backdrop and FullArtworkBlurBackdrop (lyrics/queue mode)
         Crossfade(
-            targetState = panelOpen,
+            targetState = panelOpen to settings.playerBackdropMode,
             animationSpec = tween(320, easing = FastOutSlowInEasing),
             label = "nowPlayingBgCrossfade",
-        ) { blurred ->
-            if (blurred) {
+        ) { (blurred, backdropMode) ->
+            if (blurred || backdropMode == PlayerBackdropMode.BLURRED_COVER) {
                 Box(Modifier.fillMaxSize()) {
                     FullArtworkBlurBackdrop(
                         artworkUrl = track.thumbnailUrl.artworkAt(CARD_ART_PX),
@@ -3430,13 +4581,18 @@ private fun NowPlayingScreen(
                     Box(
                         Modifier
                             .fillMaxSize()
-                            .background(Color.Black.copy(alpha = 0.28f)),
+                            .background(Color.Black.copy(alpha = if (blurred) 0.28f else 0.18f)),
                     )
                 }
+            } else if (backdropMode == PlayerBackdropMode.ARTWORK_MESH) {
+                BakedArtworkMeshBackdrop(
+                    artworkUrl = track.thumbnailUrl.artworkAt(CARD_ART_PX),
+                    modifier = Modifier.fillMaxSize(),
+                )
             } else {
                 MeshGradientBackground(
                     palette = palette.toMeshPalette(),
-                    paused = !state.isPlaying || !state.animatedArtwork,
+                    paused = !state.isPlaying || !settings.animatedArtwork || settings.reduceAnimation,
                     trackKey = track.id,
                     modifier = Modifier.fillMaxSize(),
                 )
@@ -3497,6 +4653,14 @@ private fun NowPlayingScreen(
                             modifier = Modifier.size(84.dp),
                         )
                     }
+                }
+                if (settings.animatedArtwork && currentCanvas != null) {
+                    CanvasVideoSurface(
+                        media = currentCanvas,
+                        isVisible = showPortraitHero && state.isPlaying,
+                        preferPortrait = true,
+                        modifier = Modifier.fillMaxSize(),
+                    )
                 }
             }
         }
@@ -3581,7 +4745,7 @@ private fun NowPlayingScreen(
                     onToggleRepeat = onToggleRepeat,
                     onSeekTo = onSeekTo,
                     onJumpToQueueIndex = onJumpToQueueIndex,
-                    onOpenSettings = onOpenSettings,
+                    onOpenSettings = { showPlayerOptions = true },
                     modifier = Modifier.weight(1f),
                 )
             } else {
@@ -3632,11 +4796,45 @@ private fun NowPlayingScreen(
                     onToggleRepeat = onToggleRepeat,
                     onSeekTo = onSeekTo,
                     onJumpToQueueIndex = onJumpToQueueIndex,
-                    onOpenSettings = onOpenSettings,
+                    onOpenSettings = { showPlayerOptions = true },
                     modifier = Modifier.weight(1f),
                 )
             }
         }
+        }
+
+        // Now Playing `⋯` Options floating Liquid Glass menu (sibling OUTSIDE nowPlayingBackdrop — zero RenderNode cycle)
+        NowPlayingOptionsMenu(
+            visible = showPlayerOptions,
+            track = track,
+            isLiked = isLiked,
+            isDownloaded = isTrackDownloaded,
+            activeDownload = activeTrackDownload,
+            sleepTimerRemainingMinutes = sleepTimerRemaining,
+            lyricOffsetMs = trackLyricOffsetMs,
+            romanizationEnabled = settings.lyricsRomanizationEnabled,
+            translationEnabled = settings.lyricsTranslationEnabled,
+            pipelineSummary = audioPipelineSummary,
+            backdrop = nowPlayingBackdrop,
+            onDismiss = { showPlayerOptions = false },
+            onToggleLike = onToggleStar,
+            onAddToPlaylist = onAddToPlaylist,
+            onShareInApp = onShareInApp,
+            onOpenAudioControls = onOpenAudioControls,
+            onOpenAudioPipeline = onOpenAudioPipeline,
+            onDownloadTrack = onDownloadTrack,
+            onOpenSleepTimer = onOpenSleepTimer,
+            onStepLyricOffsetMs = onStepLyricOffsetMs,
+            onResetLyricOffset = onResetLyricOffsetMs,
+            onToggleRomanization = onToggleLyricsRomanization,
+            onToggleTranslation = onToggleLyricsTranslation,
+            onStartRadio = onStartRadio,
+            onPlayNext = onPlayNext,
+            onAddToQueue = onAddToQueue,
+            onOpenAlbum = onOpenAlbum,
+            onOpenArtist = onOpenArtist,
+        )
+    }
     }
 }
 
@@ -3651,6 +4849,7 @@ private fun NowPlayingActionRowBlock(
     onToggleRepeat: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
+    val extras = LocalNowPlayingExtras.current
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -3719,21 +4918,22 @@ private fun NowPlayingActionRowBlock(
                     )
                 }
             }
-        } else {
-            Box(
-                modifier = Modifier
-                    .size(35.dp)
-                    .clip(RoundedCornerShape(7.dp))
-                    .clickable(onClick = onOpenSettings),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    painter = painterResource(R.drawable.ic_output_speaker),
-                    contentDescription = "Audio Output",
-                    tint = Color.White.copy(alpha = 0.78f),
-                    modifier = Modifier.size(24.dp),
-                )
-            }
+        }
+
+        ActionCutoutTile(
+            active = extras.settings.lyricsTranslationEnabled,
+            onClick = extras.onToggleLyricsTranslation,
+        ) {
+            Icon(
+                imageVector = SonataIcons.Translate,
+                contentDescription = if (extras.settings.lyricsTranslationEnabled) {
+                    "Disable Lyrics Translation"
+                } else {
+                    "Translate Lyrics"
+                },
+                tint = if (extras.settings.lyricsTranslationEnabled) SonataAccent else Color.White,
+                modifier = Modifier.size(23.dp),
+            )
         }
 
         ActionCutoutTile(
@@ -3749,15 +4949,7 @@ private fun NowPlayingActionRowBlock(
         }
     }
 
-    Spacer(Modifier.height(if (compact) 6.dp else 10.dp))
-    Text(
-        text = Build.MODEL,
-        style = MaterialTheme.typography.labelMedium,
-        color = Color.White.copy(alpha = 0.56f),
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-    )
-    Spacer(Modifier.height(if (compact) 2.dp else 6.dp))
+    Spacer(Modifier.height(if (compact) 4.dp else 8.dp))
 }
 
 /**
@@ -4067,6 +5259,15 @@ private fun NowPlayingLandscapeLayout(
                             contentDescription = null,
                             tint = Color.White.copy(alpha = 0.45f),
                             modifier = Modifier.size(84.dp),
+                        )
+                    }
+                    val extras = LocalNowPlayingExtras.current
+                    if (extras.settings.animatedArtwork && extras.currentCanvas != null) {
+                        CanvasVideoSurface(
+                            media = extras.currentCanvas,
+                            isVisible = state.isPlaying,
+                            preferPortrait = false,
+                            modifier = Modifier.fillMaxSize(),
                         )
                     }
                 }
@@ -4579,6 +5780,7 @@ private fun CurrentLyricStrip(
             .fillMaxWidth()
             .height(26.dp)
             .offset(y = 6.dp)
+            .clipToBounds()
             .graphicsLayer { alpha = stripAlpha }
             .then(
                 if (lyrics.isNotEmpty()) Modifier.clickable(onClick = onClick) else Modifier
@@ -4598,10 +5800,12 @@ private fun CurrentLyricStrip(
                 AnimatedContent(
                     targetState = activeIndex,
                     transitionSpec = {
-                        (fadeIn(tween(240)) + slideInVertically(tween(240)) { it / 2 }) togetherWith
-                            (fadeOut(tween(180)) + slideOutVertically(tween(180)) { -it / 2 })
+                        fadeIn(tween(140, delayMillis = 80)) togetherWith fadeOut(tween(100))
                     },
                     label = "liveLyricStripLine",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clipToBounds(),
                 ) { idx ->
                     val activeLine = lyrics.getOrNull(idx)
                     if (activeLine != null) {
@@ -4648,6 +5852,36 @@ private fun CurrentLyricStrip(
 
 @Composable
 private fun NowPlayingLyricsPanel(
+    lyrics: List<AndroidLyricLine>,
+    lyricsLoading: Boolean,
+    clockMs: State<Long>,
+    clock: PlaybackClockState,
+    onSeekTo: (Long) -> Unit,
+) {
+    val extras = LocalNowPlayingExtras.current
+    EnhancedLyricsPanel(
+        trackId = extras.trackId,
+        lyrics = lyrics,
+        lyricsLoading = lyricsLoading,
+        clockMs = clockMs,
+        clock = clock,
+        lyricsBlurEnabled = extras.settings.lyricsBlurEnabled,
+        translationEnabled = extras.settings.lyricsTranslationEnabled,
+        translationLang = extras.settings.lyricsTranslationLang,
+        romanizationEnabled = extras.settings.lyricsRomanizationEnabled,
+        offsetMs = extras.trackLyricOffsetMs,
+        sourceLabel = extras.activeLyricsSource,
+        onToggleTranslation = extras.onToggleLyricsTranslation,
+        onToggleRomanization = extras.onToggleLyricsRomanization,
+        onStepOffsetMs = extras.onStepLyricOffsetMs,
+        onSeekTo = onSeekTo,
+        modifier = Modifier.fillMaxSize(),
+    )
+}
+
+@Suppress("unused")
+@Composable
+private fun LegacyNowPlayingLyricsPanel(
     lyrics: List<AndroidLyricLine>,
     lyricsLoading: Boolean,
     clockMs: State<Long>,
@@ -5195,4 +6429,86 @@ private fun formatDurationMs(ms: Long): String {
     val mins = totalSec / 60L
     val secs = totalSec % 60L
     return "$mins:${secs.toString().padStart(2, '0')}"
+}
+
+private fun shareInAppText(context: android.content.Context, title: String, subtitle: String) {
+    val text = if (subtitle.isNotBlank()) "$title — $subtitle" else title
+    if (text.isBlank()) return
+    val sendIntent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_TEXT, text)
+    }
+    runCatching {
+        context.startActivity(Intent.createChooser(sendIntent, "Share via"))
+    }
+}
+
+private fun AndroidArtistPage.toArtistScreenData(downloadedIds: Set<String>): ArtistScreenData {
+    val latest = latestRelease?.let { card ->
+        ArtistReleaseItem(
+            id = card.id,
+            title = card.title,
+            subtitle = card.subtitle,
+            kindLabel = if (card.kind == AndroidHomeCardKind.ALBUM) "Album" else "Single",
+            thumbnailUrl = card.thumbnailUrl,
+        )
+    }
+    val songs = popularTracks.map { t ->
+        ArtistTrackItem(
+            track = t,
+            isExplicit = t.isExplicit,
+            isDownloaded = t.id in downloadedIds,
+        )
+    }
+    val albumItems = releases
+        .filter { card ->
+            card.kind == AndroidHomeCardKind.ALBUM &&
+                !card.subtitle.contains("Single", ignoreCase = true) &&
+                !card.subtitle.contains("EP", ignoreCase = true)
+        }
+        .map { card ->
+            ArtistReleaseItem(
+                id = card.id,
+                title = card.title,
+                subtitle = card.subtitle,
+                kindLabel = "Album",
+                thumbnailUrl = card.thumbnailUrl,
+            )
+        }
+    val singleItems = releases
+        .filter { card ->
+            card.kind != AndroidHomeCardKind.ALBUM ||
+                card.subtitle.contains("Single", ignoreCase = true) ||
+                card.subtitle.contains("EP", ignoreCase = true)
+        }
+        .map { card ->
+            ArtistReleaseItem(
+                id = card.id,
+                title = card.title,
+                subtitle = card.subtitle,
+                kindLabel = if (card.subtitle.contains("EP", ignoreCase = true)) "EP" else "Single",
+                thumbnailUrl = card.thumbnailUrl,
+            )
+        }
+    val similar = relatedArtists.map { card ->
+        ArtistSimilarItem(
+            id = card.id,
+            name = card.title,
+            subtitle = card.subtitle.takeIf { it.isNotBlank() },
+            thumbnailUrl = card.thumbnailUrl,
+        )
+    }
+    return ArtistScreenData(
+        id = id,
+        name = name,
+        subscriberText = subscribers ?: subtitle.takeIf { it.isNotBlank() },
+        monthlyListeners = monthlyListeners?.takeIf { it.isNotBlank() },
+        aboutBio = description?.takeIf { it.isNotBlank() },
+        avatarUrl = thumbnailUrl,
+        latestRelease = latest,
+        topSongs = songs,
+        albums = albumItems,
+        singles = singleItems,
+        similarArtists = similar,
+    )
 }

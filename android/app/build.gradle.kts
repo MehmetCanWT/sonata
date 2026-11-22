@@ -9,8 +9,8 @@ android {
     compileSdk = 35
     ndkVersion = "27.2.12479018"
 
-    val appVersionName = (project.findProperty("sonataVersion") as String?)?.trim().takeIf { !it.isNullOrEmpty() } ?: "1.0.0"
-    val appVersionCode = (project.findProperty("sonataVersionCode") as String?)?.toIntOrNull() ?: 10000
+    val appVersionName = (project.findProperty("sonataVersion") as String?)?.trim().takeIf { !it.isNullOrEmpty() } ?: "1.0.1"
+    val appVersionCode = (project.findProperty("sonataVersionCode") as String?)?.toIntOrNull() ?: 10001
 
     defaultConfig {
         applicationId = "dev.sonata.android"
@@ -82,6 +82,7 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
 
     implementation("androidx.compose.foundation:foundation:1.10.0")
     implementation("androidx.compose.ui:ui")
@@ -92,6 +93,7 @@ dependencies {
     implementation("androidx.palette:palette-ktx:1.0.0")
 
     implementation("androidx.media3:media3-exoplayer:1.6.1")
+    implementation("androidx.media3:media3-exoplayer-hls:1.6.1")
     implementation("androidx.media3:media3-datasource:1.6.1")
     implementation("androidx.media3:media3-database:1.6.1")
     implementation("androidx.media3:media3-session:1.6.1")

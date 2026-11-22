@@ -79,6 +79,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
@@ -164,6 +165,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.ResolvedTextDirection
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
@@ -185,15 +187,21 @@ import coil3.request.ImageRequest
 import coil3.request.SuccessResult
 import coil3.request.allowHardware
 import coil3.request.crossfade
-import coil3.request.transformations
 import coil3.size.Precision
 import coil3.toBitmap
-import coil3.transform.Transformation
 import dev.sonata.android.LocalReduceAnimation
 import dev.sonata.android.PlaybackClockState
 import dev.sonata.android.R
 import dev.sonata.android.SquirclePillShape
+import dev.sonata.android.data.CanvasMedia
 import dev.sonata.android.lightweightLiquidGlass
+import dev.sonata.android.ui.components.SonataMoodAnimatedArt
+import dev.sonata.android.ui.player.CardCanvasSurface
+import dev.sonata.android.ui.theme.LocalLunariaColors
+import dev.sonata.android.ui.theme.LunariaColors
+import dev.sonata.android.ui.theme.SonataAppFontFamily
+import dev.sonata.android.ui.theme.lunariaColorScheme
+import dev.sonata.android.ui.theme.lunariaTokens
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
@@ -218,8 +226,8 @@ import kotlin.random.Random
 // 1. Theme, Colors & Typography
 // =============================================================================
 
-/** Signature crimson accent preserved across Sonata themes. */
-val SonataAccent = Color(0xFFFA2D48)
+/** Signature Lunaria Moon Lavender accent across Sonata themes. */
+val SonataAccent = LunariaColors.PetalLavender
 
 val SonataDarkColors = darkColorScheme(
     primary = Color.White,
@@ -285,18 +293,22 @@ val SonataTypography = Typography(
     bodyMedium = TextStyle(fontWeight = FontWeight.W400, fontSize = 14.sp, letterSpacing = 0.3.sp),
     labelMedium = TextStyle(fontWeight = FontWeight.W600, fontSize = 12.sp, letterSpacing = 0.25.sp),
     labelSmall = TextStyle(fontWeight = FontWeight.W600, fontSize = 11.sp, letterSpacing = 0.3.sp),
-).withFamily(SFProDisplay)
+).withFamily(SonataAppFontFamily)
 
 @Composable
 fun SonataTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
+    amoled: Boolean = false,
     content: @Composable () -> Unit,
 ) {
-    MaterialTheme(
-        colorScheme = if (darkTheme) SonataDarkColors else SonataLightColors,
-        typography = SonataTypography,
-        content = content,
-    )
+    val tokens = lunariaTokens(darkTheme = darkTheme, amoled = amoled)
+    CompositionLocalProvider(LocalLunariaColors provides tokens) {
+        MaterialTheme(
+            colorScheme = lunariaColorScheme(darkTheme = darkTheme, amoled = amoled),
+            typography = SonataTypography,
+            content = content,
+        )
+    }
 }
 
 /** Updates system status and navigation bar glyph appearance to match surface contrast. */
@@ -567,6 +579,39 @@ object SonataIcons {
                     lineTo(x, 11f)
                     close()
                 }
+            }
+        }.build()
+    }
+
+    val Translate: ImageVector by lazy {
+        ImageVector.Builder(
+            name = "sonata_translate",
+            defaultWidth = 24.dp,
+            defaultHeight = 24.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f,
+        ).apply {
+            path(
+                stroke = stroke,
+                strokeLineWidth = 1.9f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                // Source script glyph (left)
+                moveTo(3.5f, 6.5f)
+                lineTo(11.5f, 6.5f)
+                moveTo(7.5f, 4f)
+                lineTo(7.5f, 6.5f)
+                moveTo(9.8f, 6.5f)
+                quadTo(9.2f, 11.5f, 4.5f, 14.5f)
+                moveTo(5.6f, 9.2f)
+                quadTo(7.6f, 12f, 10.6f, 14f)
+                // Target 'A' glyph (bottom-right)
+                moveTo(12.2f, 19.5f)
+                lineTo(16f, 10.2f)
+                lineTo(19.8f, 19.5f)
+                moveTo(13.4f, 16.8f)
+                lineTo(18.6f, 16.8f)
             }
         }.build()
     }
@@ -1363,6 +1408,7 @@ fun LazyListScope.recentlyPlayedSkeleton(rows: Int = 4) {
     item(key = "skeleton:recently-played") {
         val screenWidth = LocalConfiguration.current.screenWidthDp.dp
         val columnWidth = trackColumnWidth(screenWidth)
+        val columnCount = (((screenWidth - PAGE_GUTTER) / (columnWidth + 12.dp)).toInt() + 1).coerceIn(2, 5)
         Column(Modifier.padding(bottom = 26.dp)) {
             SectionHeaderSkeleton(index = 0)
             LazyRow(
@@ -1370,7 +1416,7 @@ fun LazyListScope.recentlyPlayedSkeleton(rows: Int = 4) {
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 userScrollEnabled = false,
             ) {
-                item {
+                items(columnCount) {
                     Column(Modifier.width(columnWidth)) {
                         repeat(rows.coerceAtLeast(1)) { index -> CompactSongRowSkeleton(index) }
                     }
@@ -1384,6 +1430,7 @@ fun LazyListScope.topPicksSkeleton() {
     item(key = "skeleton:top-picks") {
         val screenWidth = LocalConfiguration.current.screenWidthDp.dp
         val cardWidth = minOf(screenWidth * 0.60f, 280.dp)
+        val cardCount = (((screenWidth - PAGE_GUTTER) / (cardWidth + 14.dp)).toInt() + 1).coerceIn(2, 6)
         Column(Modifier.padding(bottom = 26.dp)) {
             SectionHeaderSkeleton()
             LazyRow(
@@ -1391,7 +1438,7 @@ fun LazyListScope.topPicksSkeleton() {
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
                 userScrollEnabled = false,
             ) {
-                items(2) {
+                items(cardCount) {
                     ShimmerBox(
                         modifier = Modifier
                             .width(cardWidth)
@@ -1410,6 +1457,8 @@ fun ShelfSkeleton(
     cardWidth: Dp = SHELF_CARD_WIDTH,
     cardCorner: Dp = 12.dp,
 ) {
+    val screenWidth = LocalConfiguration.current.screenWidthDp.dp
+    val cardCount = (((screenWidth - PAGE_GUTTER) / (cardWidth + 14.dp)).toInt() + 1).coerceIn(3, 8)
     Column(Modifier.padding(bottom = 26.dp)) {
         SectionHeaderSkeleton(index = index)
         LazyRow(
@@ -1417,7 +1466,7 @@ fun ShelfSkeleton(
             horizontalArrangement = Arrangement.spacedBy(14.dp),
             userScrollEnabled = false,
         ) {
-            items(3) { card ->
+            items(cardCount) { card ->
                 Column(Modifier.width(cardWidth)) {
                     ShimmerBox(
                         modifier = Modifier
@@ -1443,13 +1492,15 @@ fun LazyListScope.feedSkeleton(sections: Int = 2) {
 
 @Composable
 fun ReplayCardRowSkeleton(modifier: Modifier = Modifier) {
+    val screenWidth = LocalConfiguration.current.screenWidthDp.dp
+    val cardCount = (((screenWidth - PAGE_GUTTER) / 312.dp).toInt() + 1).coerceIn(2, 5)
     LazyRow(
         modifier = modifier.padding(vertical = 6.dp),
         contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         userScrollEnabled = false,
     ) {
-        items(2) {
+        items(cardCount) {
             ShimmerBox(
                 modifier = Modifier
                     .width(300.dp)
@@ -2450,7 +2501,11 @@ fun MoodTile(
                 .clip(shape)
                 .border(1.dp, borderColor, shape),
         ) {
-            MoodArt(mood, Modifier.fillMaxSize(), square = true, still = true)
+            SonataMoodAnimatedArt(
+                moodTitle = mood.displayName,
+                moodIndex = mood.ordinal,
+                modifier = Modifier.fillMaxSize(),
+            )
             Icon(
                 painter = painterResource(R.drawable.ic_sonata_moon),
                 contentDescription = null,
@@ -2580,62 +2635,12 @@ fun ArtistCollageArt(
     }
 }
 
-private object ArtworkBottomStripBlur : Transformation() {
-    override val cacheKey = "sonataReleaseBottomBlur"
-
-    override suspend fun transform(input: Bitmap, size: coil3.size.Size): Bitmap {
-        val top = (input.height * 0.6f).toInt().coerceIn(0, input.height - 1)
-        val w = 48
-        val h = ((input.height - top) * w / input.width.toFloat()).toInt().coerceAtLeast(4)
-        val copiedSw = input.config == Bitmap.Config.HARDWARE
-        val sw = if (copiedSw) input.copy(Bitmap.Config.ARGB_8888, false) else input
-        val strip = Bitmap.createBitmap(sw, 0, top, sw.width, sw.height - top)
-        val small = Bitmap.createScaledBitmap(strip, w, h, true)
-        val pixels = IntArray(w * h)
-        small.getPixels(pixels, 0, w, 0, 0, w, h)
-        if (small !== strip) small.recycle()
-        if (strip !== sw) strip.recycle()
-        if (copiedSw) sw.recycle()
-        repeat(3) {
-            boxBlurPass(pixels, w, h, 3, horizontal = true)
-            boxBlurPass(pixels, w, h, 3, horizontal = false)
-        }
-        return Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888)
-    }
-
-    private fun boxBlurPass(pixels: IntArray, width: Int, height: Int, radius: Int, horizontal: Boolean) {
-        val lines = if (horizontal) height else width
-        val length = if (horizontal) width else height
-        val line = IntArray(length)
-        val window = radius * 2 + 1
-        for (l in 0 until lines) {
-            fun at(i: Int) = if (horizontal) l * width + i else i * width + l
-            for (i in 0 until length) line[i] = pixels[at(i)]
-            var r = 0
-            var g = 0
-            var b = 0
-            for (k in -radius..radius) {
-                val p = line[k.coerceIn(0, length - 1)]
-                r += (p shr 16) and 0xFF
-                g += (p shr 8) and 0xFF
-                b += p and 0xFF
-            }
-            for (i in 0 until length) {
-                pixels[at(i)] = (0xFF shl 24) or ((r / window) shl 16) or ((g / window) shl 8) or (b / window)
-                val out = line[(i - radius).coerceIn(0, length - 1)]
-                val inn = line[(i + radius + 1).coerceIn(0, length - 1)]
-                r += ((inn shr 16) and 0xFF) - ((out shr 16) and 0xFF)
-                g += ((inn shr 8) and 0xFF) - ((out shr 8) and 0xFF)
-                b += (inn and 0xFF) - (out and 0xFF)
-            }
-        }
-    }
-}
-
 private val ReleaseCardShape = RoundedCornerShape(12.dp)
 private val ReleaseBottomScrim = Brush.verticalGradient(
-    0.6f to Color.Black.copy(alpha = 0.08f),
-    1f to Color.Black.copy(alpha = 0.38f),
+    0.42f to Color.Transparent,
+    0.66f to Color.Black.copy(alpha = 0.56f),
+    0.84f to Color.Black.copy(alpha = 0.86f),
+    1.0f to Color.Black.copy(alpha = 0.96f),
 )
 
 @Composable
@@ -2646,20 +2651,9 @@ fun ReleaseArt(
     eyebrow: String = "NEW RELEASE",
     modifier: Modifier = Modifier,
     showBrandLogo: Boolean = false,
+    canvasMedia: CanvasMedia? = null,
+    canvasActive: Boolean = false,
 ) {
-    val context = LocalPlatformContext.current
-    val blurredModel = remember(artworkUrl, context) {
-        artworkUrl?.croppedAt(160)?.let { url ->
-            ImageRequest.Builder(context)
-                .data(url)
-                .size(96, 96)
-                .precision(Precision.INEXACT)
-                .allowHardware(false)
-                .crossfade(false)
-                .transformations(ArtworkBottomStripBlur)
-                .build()
-        }
-    }
     val coverUrl = remember(artworkUrl) { artworkUrl.croppedAt(CARD_ART_PX) }
     val coverRequest = rememberArtworkRequest(coverUrl, CARD_ART_PX, CARD_ART_PX)
     Box(
@@ -2670,34 +2664,28 @@ fun ReleaseArt(
             .background(Color.Black),
     ) {
         AsyncImage(
-            model = blurredModel,
+            model = coverRequest,
             contentDescription = null,
-            contentScale = ContentScale.FillBounds,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .fillMaxHeight(0.42f),
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize(),
         )
+        if (canvasMedia != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(1f),
+            ) {
+                CardCanvasSurface(
+                    media = canvasMedia,
+                    isVisible = canvasActive,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
         Box(
             Modifier
                 .fillMaxSize()
                 .background(ReleaseBottomScrim),
-        )
-        AsyncImage(
-            model = coverRequest,
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(1f)
-                .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-                .drawWithCache {
-                    val maskBrush = Brush.verticalGradient(0.78f to Color.Black, 1f to Color.Transparent)
-                    onDrawWithContent {
-                        drawContent()
-                        drawRect(maskBrush, blendMode = BlendMode.DstIn)
-                    }
-                },
         )
         if (showBrandLogo) {
             Icon(
@@ -2769,32 +2757,18 @@ fun MoodGenreSleeve(
     }
     Box(
         modifier
-            .clip(RoundedCornerShape(10.dp))
+            .clip(RoundedCornerShape(12.dp))
             .background(tone.stripe),
     ) {
-        Box(
-            Modifier
-                .align(Alignment.CenterEnd)
-                .fillMaxHeight()
-                .fillMaxWidth(1f - MOOD_STRIPE_FRACTION)
-                .background(tone.placeholder),
-        ) {
-            if (!thumbnailUrl.isNullOrBlank()) {
-                val sizedThumb = remember(thumbnailUrl) { thumbnailUrl.artworkAt(CARD_ART_PX) }
-                val sleeveRequest = rememberArtworkRequest(sizedThumb, 360, 360)
-                AsyncImage(
-                    model = sleeveRequest,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    colorFilter = tone.duotone,
-                    modifier = Modifier.fillMaxSize(),
-                )
-            }
-        }
+        SonataMoodAnimatedArt(
+            moodTitle = title,
+            moodIndex = (title.hashCode() and 0x7FFF_FFFF),
+            modifier = Modifier.fillMaxSize(),
+        )
         Box(
             Modifier
                 .matchParentSize()
-                .background(Brush.verticalGradient(0f to Color.Black.copy(alpha = 0.24f), 0.62f to Color.Transparent)),
+                .background(Brush.verticalGradient(0f to Color.Black.copy(alpha = 0.28f), 0.72f to Color.Transparent)),
         )
         Text(
             text = title,
@@ -3091,52 +3065,89 @@ fun ShimmerText(
         fontWeight = FontWeight.Medium,
         fontSize = 13.sp,
     ),
-    baseAlpha: Float = 0.55f,
+    baseAlpha: Float = 0.50f,
 ) {
-    val progress = rememberInfiniteTransition(label = "lossless-shimmer").animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
+    val reduceAnimation = LocalReduceAnimation.current
+    val baseColor = remember(baseAlpha) { Color.White.copy(alpha = baseAlpha) }
+    val glowStyle = remember(style) {
+        style.copy(
+            shadow = Shadow(
+                color = Color.White.copy(alpha = 0.85f),
+                offset = Offset.Zero,
+                blurRadius = 12f,
+            ),
+        )
+    }
+    if (reduceAnimation) {
+        Text(
+            text = text,
+            style = style.copy(shadow = null),
+            color = baseColor,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+        )
+        return
+    }
+
+    // Left-to-right pure white glowing spotlight gliding smoothly over steady muted gray text
+    val phase = rememberInfiniteTransition(label = "lossless-shimmer").animateFloat(
+        initialValue = -0.35f,
+        targetValue = 1.35f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 3_000, easing = LinearEasing),
+            animation = tween(durationMillis = 2_800, easing = LinearEasing),
             repeatMode = RepeatMode.Restart,
         ),
-        label = "lossless-shimmer-progress",
+        label = "lossless-shimmer-phase",
     )
-    val tint = Color.White
-    val baseColor = remember(baseAlpha) { Color.White.copy(alpha = baseAlpha) }
-    val stops = remember(baseColor) {
-        arrayOf(0f to baseColor, 0.5f to tint, 1f to baseColor)
+    val spotlightStops = remember {
+        arrayOf(
+            0.0f to Color.Transparent,
+            0.25f to Color.White.copy(alpha = 0.25f),
+            0.50f to Color.White,
+            0.75f to Color.White.copy(alpha = 0.25f),
+            1.0f to Color.Transparent,
+        )
     }
-    Text(
-        text = text,
-        style = style,
-        color = tint,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-        modifier = modifier
-            .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-            .drawWithCache {
-                val width = size.width.coerceAtLeast(1f)
-                val band = (width * 0.6f).coerceAtLeast(1f)
-                val bandBrush = Brush.linearGradient(
-                    colorStops = stops,
-                    start = Offset(0f, 0f),
-                    end = Offset(band * 2f, 0f),
-                )
-                val travel = width + 2f * band
-                onDrawWithContent {
+
+    Box(modifier = modifier) {
+        // Layer 1: Steady muted gray base text (never changes color or brightness)
+        Text(
+            text = text,
+            style = style.copy(shadow = null),
+            color = baseColor,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+        )
+
+        // Layer 2: Soft glowing white text clipped by a smooth Gaussian-like left-to-right mask
+        Text(
+            text = text,
+            style = glowStyle,
+            color = Color.White,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
+                .drawWithContent {
                     drawContent()
-                    val center = -band + progress.value * travel
-                    translate(left = center - band) {
-                        drawRect(
-                            brush = bandBrush,
-                            size = Size(band * 2f, size.height),
-                            blendMode = BlendMode.SrcIn,
-                        )
-                    }
+                    val bandWidth = (size.width * 0.42f).coerceAtLeast(24f)
+                    val centerX = phase.value * size.width
+                    val bandLeft = centerX - bandWidth * 0.5f
+                    val bandRight = centerX + bandWidth * 0.5f
+                    drawRect(
+                        brush = Brush.horizontalGradient(
+                            colorStops = spotlightStops,
+                            startX = bandLeft,
+                            endX = bandRight,
+                        ),
+                        blendMode = BlendMode.DstIn,
+                    )
                 }
-            },
-    )
+                .padding(horizontal = 4.dp, vertical = 2.dp),
+        )
+    }
 }
 
 private val LosslessPillShape = SquirclePillShape()
@@ -3144,57 +3155,32 @@ private val LosslessPillShape = SquirclePillShape()
 @Composable
 fun LosslessLabel(
     label: String,
-    pulsing: Boolean = false,
+    @Suppress("UNUSED_PARAMETER") pulsing: Boolean = false,
     onClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
-    val reduceAnimation = LocalReduceAnimation.current
-    val pulse = if (pulsing && !reduceAnimation) {
-        rememberInfiniteTransition(label = "losslessPulse").animateFloat(
-            initialValue = 1f,
-            targetValue = 0.35f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 900, easing = FastOutSlowInEasing),
-                repeatMode = RepeatMode.Reverse,
-            ),
-            label = "losslessPulseAlpha",
-        ).value
-    } else {
-        1f
-    }
     Row(
         modifier = modifier
             .lightweightLiquidGlass(LosslessPillShape, fallbackColor = Color.White.copy(alpha = 0.14f))
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
-            .padding(horizontal = 10.dp, vertical = 4.dp)
-            .graphicsLayer {
-                alpha = pulse
-                compositingStrategy = CompositingStrategy.ModulateAlpha
-            },
+            .padding(start = 10.dp, end = 6.dp, top = 2.dp, bottom = 2.dp),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
             painter = painterResource(R.drawable.ic_lossless),
             contentDescription = null,
-            tint = Color.White.copy(alpha = 0.78f),
+            tint = Color.White.copy(alpha = 0.56f),
             modifier = Modifier.height(12.dp),
         )
-        Spacer(Modifier.width(5.dp))
-        if (pulsing) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium),
-                color = Color.White.copy(alpha = 0.78f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        } else {
-            ShimmerText(
-                text = label,
-                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium),
-            )
-        }
+        Spacer(Modifier.width(1.dp))
+        ShimmerText(
+            text = label,
+            style = MaterialTheme.typography.labelMedium.copy(
+                fontWeight = FontWeight.Medium,
+            ),
+            baseAlpha = 0.50f,
+        )
     }
 }
 
@@ -3506,7 +3492,7 @@ fun MarqueeText(
     val density = LocalDensity.current
     val textMeasurer = rememberTextMeasurer()
     val reduceAnimation = LocalReduceAnimation.current
-    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
+    Row(modifier = modifier.clipToBounds(), verticalAlignment = Alignment.CenterVertically) {
         if (leading != null) {
             leading()
             Spacer(Modifier.width(6.dp))
@@ -3561,7 +3547,7 @@ fun MarqueeText(
                         },
                     )
                     .wrapContentWidth(align = Alignment.Start, unbounded = true)
-                    .offset { IntOffset(offsetX.value.roundToInt(), 0) },
+                    .graphicsLayer { translationX = offsetX.value },
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(text = text, style = style, color = color, maxLines = 1, softWrap = false, overflow = TextOverflow.Clip)
@@ -4263,7 +4249,7 @@ fun SweptKaraokeLyricText(
     val spans = remember(text, lineStartMs, lineEndMs, words) {
         buildKaraokeSpans(text, lineStartMs, lineEndMs, words)
     }
-    var textLayout by remember(text, style, maxLines) { mutableStateOf<TextLayoutResult?>(null) }
+    var textLayout by remember(text, style, maxLines, overflow) { mutableStateOf<TextLayoutResult?>(null) }
 
     Box(modifier) {
         if (!active) {
@@ -4271,6 +4257,7 @@ fun SweptKaraokeLyricText(
                 text = text,
                 style = style,
                 color = uncommittedColor,
+                softWrap = true,
                 maxLines = maxLines,
                 overflow = overflow,
                 modifier = Modifier.fillMaxWidth(),
@@ -4281,6 +4268,7 @@ fun SweptKaraokeLyricText(
             text = text,
             style = style,
             color = uncommittedColor,
+            softWrap = true,
             maxLines = maxLines,
             overflow = overflow,
             onTextLayout = { textLayout = it },
@@ -4296,6 +4284,7 @@ fun SweptKaraokeLyricText(
                 ),
             ),
             color = color,
+            softWrap = true,
             maxLines = maxLines,
             overflow = overflow,
             modifier = Modifier
@@ -4315,13 +4304,18 @@ fun SweptKaraokeLyricText(
                     for (lineIdx in 0 until layout.lineCount) {
                         val lineTop = layout.getLineTop(lineIdx)
                         val lineBottom = layout.getLineBottom(lineIdx)
-                        val lineH = (lineBottom - lineTop).coerceAtLeast(1f)
+                        val clipTop = if (lineIdx == 0) 0f else lineTop
+                        val clipBottom = if (lineIdx == layout.lineCount - 1) size.height else lineBottom
+                        val clipH = (clipBottom - clipTop).coerceAtLeast(1f)
                         val lineStartChar = layout.getLineStart(lineIdx)
                         val lineEndChar = layout.getLineEnd(lineIdx, visibleEnd = true)
+                        val isRtl = layout.getParagraphDirection(lineIdx) == ResolvedTextDirection.Rtl
+                        val lineEdgeStart = if (isRtl) layout.getLineRight(lineIdx) else layout.getLineLeft(lineIdx)
+                        val lineEdgeEnd = if (isRtl) layout.getLineLeft(lineIdx) else layout.getLineRight(lineIdx)
 
                         var minStart = Long.MAX_VALUE
                         var maxEnd = Long.MIN_VALUE
-                        var sweepX = layout.getLineLeft(lineIdx)
+                        var sweepX = lineEdgeStart
                         var anyStarted = false
 
                         for (span in spans) {
@@ -4329,47 +4323,71 @@ fun SweptKaraokeLyricText(
                             if (span.startMs < minStart) minStart = span.startMs
                             if (span.endMs > maxEnd) maxEnd = span.endMs
 
-                            val clampedStart = span.startChar.coerceIn(0, len)
-                            val clampedEnd = span.endChar.coerceIn(clampedStart, len)
-                            val x0 = layout.getHorizontalPosition(clampedStart, usePrimaryDirection = true)
-                            val x1 = layout.getHorizontalPosition(clampedEnd, usePrimaryDirection = true)
+                            val x0 = if (span.startChar <= lineStartChar) {
+                                lineEdgeStart
+                            } else {
+                                layout.getHorizontalPosition(
+                                    span.startChar.coerceIn(0, len),
+                                    usePrimaryDirection = true,
+                                )
+                            }
+                            val x1 = if (span.endChar >= lineEndChar) {
+                                lineEdgeEnd
+                            } else {
+                                layout.getHorizontalPosition(
+                                    span.endChar.coerceIn(0, len),
+                                    usePrimaryDirection = true,
+                                )
+                            }
 
                             when {
                                 nowMs >= span.endMs -> {
                                     anyStarted = true
-                                    sweepX = maxOf(sweepX, x1)
+                                    sweepX = if (isRtl) minOf(sweepX, x1) else maxOf(sweepX, x1)
                                 }
                                 nowMs >= span.startMs -> {
                                     anyStarted = true
                                     val dur = (span.endMs - span.startMs).coerceAtLeast(1L).toFloat()
                                     val t = ((nowMs - span.startMs).toFloat() / dur).coerceIn(0f, 1f)
-                                    sweepX = maxOf(sweepX, x0 + (x1 - x0) * t)
+                                    val currentX = x0 + (x1 - x0) * t
+                                    sweepX = if (isRtl) minOf(sweepX, currentX) else maxOf(sweepX, currentX)
                                 }
                             }
                         }
 
-                        clipRect(0f, lineTop, size.width, lineBottom) {
+                        clipRect(0f, clipTop, size.width, clipBottom) {
                             when {
                                 minStart == Long.MAX_VALUE || !anyStarted || nowMs <= minStart -> {
                                     drawRect(
                                         color = Color.Black,
-                                        topLeft = Offset(0f, lineTop),
-                                        size = Size(size.width, lineH),
+                                        topLeft = Offset(0f, clipTop),
+                                        size = Size(size.width, clipH),
                                         blendMode = BlendMode.DstOut,
                                     )
                                 }
                                 nowMs >= maxEnd -> Unit
                                 else -> {
-                                    val gradStart = (sweepX - featherPx * 0.35f).coerceAtLeast(0f)
-                                    val gradEnd = (sweepX + featherPx * 0.65f).coerceAtLeast(gradStart + 1f)
-                                    drawRect(
-                                        brush = Brush.horizontalGradient(
+                                    val brush = if (!isRtl) {
+                                        val gradStart = (sweepX - featherPx * 0.35f).coerceAtLeast(0f)
+                                        val gradEnd = (sweepX + featherPx * 0.65f).coerceAtLeast(gradStart + 1f)
+                                        Brush.horizontalGradient(
                                             colorStops = KaraokeSweepStops,
                                             startX = gradStart,
                                             endX = gradEnd,
-                                        ),
-                                        topLeft = Offset(0f, lineTop),
-                                        size = Size(size.width, lineH),
+                                        )
+                                    } else {
+                                        val gradStart = (sweepX + featherPx * 0.35f).coerceAtMost(size.width)
+                                        val gradEnd = (sweepX - featherPx * 0.65f).coerceAtMost(gradStart - 1f)
+                                        Brush.horizontalGradient(
+                                            colorStops = KaraokeSweepStops,
+                                            startX = gradStart,
+                                            endX = gradEnd,
+                                        )
+                                    }
+                                    drawRect(
+                                        brush = brush,
+                                        topLeft = Offset(0f, clipTop),
+                                        size = Size(size.width, clipH),
                                         blendMode = BlendMode.DstIn,
                                     )
                                 }

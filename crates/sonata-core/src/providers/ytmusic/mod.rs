@@ -18,16 +18,21 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 mod parsers;
 
 use parsers::{
-    collect_playlists, collect_tracks, find_description_text, find_header_thumbnail,
-    find_home_continuation, find_mplyt_browse_id, find_shelf_continuation, merge_home_shelves,
+    apply_collection_backfill, collect_playlists, collect_tracks, extract_search_album_browse_id,
+    extract_search_artist_browse_id, find_artist_songs_endpoint, find_collection_header,
+    find_description_text, find_home_continuation, find_mplyt_browse_id, find_shelf_continuation,
+    is_excluded_shelf_title, merge_home_shelves, CollectionHeader,
 };
 pub use parsers::{parse_account_profile_json, parse_artist_page_json, parse_home_shelves_json};
 const INNERTUBE_BASE: &str = "https://music.youtube.com/youtubei/v1";
+const WEB_REMIX_VERSION: &str = "1.20260707.12.00";
+const WEB_USER_AGENT: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct YtAccountProfile {
@@ -69,7 +74,13 @@ pub struct ArtistPage {
     pub id: String,
     pub name: String,
     pub subtitle: String,
+    pub description: Option<String>,
+    pub subscribers: Option<String>,
+    pub monthly_listeners: Option<String>,
     pub thumbnail_url: Option<String>,
+    pub shuffle_playlist_id: Option<String>,
+    pub radio_playlist_id: Option<String>,
+    pub latest_release: Option<HomeCard>,
     pub popular_tracks: Vec<Track>,
     pub releases: Vec<HomeCard>,
     pub related_artists: Vec<HomeCard>,
@@ -88,12 +99,25 @@ pub fn upscale_thumbnail(url: &str) -> String {
 }
 
 type PlaylistCache = Arc<Mutex<HashMap<String, (Instant, Vec<Track>)>>>;
+type ArtistCache = Arc<Mutex<HashMap<String, (Instant, ArtistPage)>>>;
+type ExplicitCache = Arc<Mutex<HashMap<String, (Instant, Option<Track>)>>>;
+
+#[derive(Debug, Clone, Default)]
+struct ChannelScope {
+    page_id: Option<String>,
+    data_sync_id: Option<String>,
+}
 
 #[derive(Clone)]
 pub struct YtMusicClient {
     http: Client,
     cookies: ExtractedCookies,
     playlist_cache: PlaylistCache,
+    artist_cache: ArtistCache,
+    explicit_cache: ExplicitCache,
+    visitor_data: Arc<RwLock<Option<String>>>,
+    channel_scope: Arc<RwLock<Option<ChannelScope>>>,
+    scope_lock: Arc<Mutex<()>>,
 }
 
 impl YtMusicClient {
@@ -102,6 +126,11 @@ impl YtMusicClient {
             http,
             cookies,
             playlist_cache: Arc::new(Mutex::new(HashMap::new())),
+            artist_cache: Arc::new(Mutex::new(HashMap::new())),
+            explicit_cache: Arc::new(Mutex::new(HashMap::new())),
+            visitor_data: Arc::new(RwLock::new(None)),
+            channel_scope: Arc::new(RwLock::new(None)),
+            scope_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -123,18 +152,94 @@ impl YtMusicClient {
         self.cookies.has_ytm_auth()
     }
 
-    async fn post(&self, endpoint: &str, body: Value) -> Result<Value> {
+    async fn ensure_channel_scope(&self) {
+        if !self.is_authenticated() {
+            return;
+        }
+        if self.channel_scope.read().await.is_some() {
+            return;
+        }
+        let _guard = self.scope_lock.lock().await;
+        if self.channel_scope.read().await.is_some() {
+            return;
+        }
+        let detected = self.fetch_active_brand_scope().await.unwrap_or_default();
+        *self.channel_scope.write().await = Some(detected);
+    }
+
+    async fn fetch_active_brand_scope(&self) -> Option<ChannelScope> {
+        let cookie_hdr = self.cookies.ytm_cookie_header()?;
+        let auth_hdr = self
+            .cookies
+            .ytm_sapisidhash_for_origin("https://www.youtube.com")?;
+        let resp = self
+            .http
+            .get("https://www.youtube.com/getAccountSwitcherEndpoint")
+            .header("User-Agent", WEB_USER_AGENT)
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .header("X-Origin", "https://www.youtube.com")
+            .header("Referer", "https://www.youtube.com/")
+            .header("X-Goog-AuthUser", "0")
+            .header("Cookie", cookie_hdr)
+            .header("Authorization", auth_hdr)
+            .timeout(Duration::from_secs(4))
+            .send()
+            .await
+            .ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let raw = resp.text().await.ok()?;
+        let body = raw
+            .strip_prefix(")]}'\n")
+            .or_else(|| raw.strip_prefix(")]}'"))
+            .unwrap_or(&raw)
+            .trim();
+        let val: Value = serde_json::from_str(body).ok()?;
+        find_selected_brand_scope(&val)
+    }
+
+    async fn post(&self, endpoint: &str, mut body: Value) -> Result<Value> {
+        if self.is_authenticated() {
+            self.ensure_channel_scope().await;
+        }
+        let visitor = self.visitor_data.read().await.clone();
+        let scope = self.channel_scope.read().await.clone().unwrap_or_default();
+
+        if let Some(client) = body
+            .pointer_mut("/context/client")
+            .and_then(Value::as_object_mut)
+        {
+            if let Some(ref v) = visitor {
+                client.insert("visitorData".to_string(), json!(v));
+            }
+        }
+        if let Some(ref dsid) = scope.data_sync_id {
+            if let Some(ctx) = body.get_mut("context").and_then(Value::as_object_mut) {
+                ctx.insert(
+                    "user".to_string(),
+                    json!({ "lockedSafetyMode": false, "onBehalfOfUser": dsid }),
+                );
+            }
+        }
+
         let url = format!("{INNERTUBE_BASE}/{endpoint}?prettyPrint=false");
         let mut req = self
             .http
             .post(&url)
             .header("Content-Type", "application/json")
+            .header("User-Agent", WEB_USER_AGENT)
+            .header("Accept-Language", "en-US,en;q=0.9")
             .header("Origin", "https://music.youtube.com")
             .header("X-Origin", "https://music.youtube.com")
             .header("Referer", "https://music.youtube.com/")
             .header("X-YouTube-Client-Name", "67")
-            .header("X-YouTube-Client-Version", "1.20260401.01.00")
+            .header("X-YouTube-Client-Version", WEB_REMIX_VERSION)
             .json(&body);
+
+        if let Some(ref v) = visitor {
+            req = req.header("X-Goog-Visitor-Id", v);
+        }
 
         if let (Some(cookie_hdr), Some(auth_hdr)) = (
             self.cookies.ytm_cookie_header(),
@@ -144,13 +249,26 @@ impl YtMusicClient {
                 .header("Cookie", cookie_hdr)
                 .header("Authorization", auth_hdr)
                 .header("X-Goog-AuthUser", "0");
+            if let Some(ref page_id) = scope.page_id {
+                req = req.header("X-Goog-PageId", page_id);
+            }
         }
 
         let resp = req.send().await?;
         if !resp.status().is_success() {
             return Err(anyhow!("YouTube Music API HTTP {}", resp.status()));
         }
-        Ok(resp.json().await?)
+        let data: Value = resp.json().await?;
+        if self.visitor_data.read().await.is_none() {
+            if let Some(v) = data
+                .pointer("/responseContext/visitorData")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                *self.visitor_data.write().await = Some(v.to_string());
+            }
+        }
+        Ok(data)
     }
 
     fn base_context() -> Value {
@@ -158,7 +276,7 @@ impl YtMusicClient {
             "context": {
                 "client": {
                     "clientName": "WEB_REMIX",
-                    "clientVersion": "1.20260401.01.00",
+                    "clientVersion": WEB_REMIX_VERSION,
                     "hl": "en",
                     "gl": "US"
                 }
@@ -171,10 +289,6 @@ impl YtMusicClient {
             return Ok(Vec::new());
         }
 
-        let mut body = Self::base_context();
-        body["browseId"] = json!("FEmusic_liked_playlists");
-        let data = self.post("browse", body).await?;
-
         let mut playlists = vec![Playlist {
             id: "VLLM".to_string(),
             name: "Liked Music".to_string(),
@@ -183,7 +297,37 @@ impl YtMusicClient {
             thumbnail_url: None,
         }];
 
+        let mut body = Self::base_context();
+        body["browseId"] = json!("FEmusic_liked_playlists");
+        let data = self.post("browse", body).await?;
         collect_playlists(&data, &mut playlists);
+
+        let mut cont = find_shelf_continuation(&data).or_else(|| find_home_continuation(&data));
+        for _ in 0..8 {
+            let Some(token) = cont.take() else { break };
+            let mut next_body = Self::base_context();
+            next_body["continuation"] = json!(token);
+            let Ok(page) = self.post("browse", next_body).await else {
+                break;
+            };
+            let before = playlists.len();
+            collect_playlists(&page, &mut playlists);
+            let next_cont =
+                find_shelf_continuation(&page).or_else(|| find_home_continuation(&page));
+            if next_cont.as_deref() == Some(token.as_str()) || playlists.len() == before {
+                break;
+            }
+            cont = next_cont;
+        }
+
+        if playlists.len() <= 1 {
+            let mut landing_body = Self::base_context();
+            landing_body["browseId"] = json!("FEmusic_library_landing");
+            if let Ok(landing) = self.post("browse", landing_body).await {
+                collect_playlists(&landing, &mut playlists);
+            }
+        }
+
         // Deduplicate preserving order
         let mut seen = std::collections::HashSet::new();
         playlists.retain(|p| seen.insert(p.id.clone()));
@@ -221,12 +365,12 @@ impl YtMusicClient {
         body["browseId"] = json!(browse_id);
         let browse_res = self.post("browse", body).await;
 
-        let mut header_thumb = None;
+        let mut header = CollectionHeader::default();
         let mut page1 = Vec::new();
         let mut cont = None;
 
         if let Ok(data) = browse_res {
-            header_thumb = find_header_thumbnail(&data);
+            header = find_collection_header(&data);
             collect_tracks(&data, &mut page1);
             cont = find_shelf_continuation(&data);
         }
@@ -249,14 +393,7 @@ impl YtMusicClient {
             ));
         }
 
-        for t in &mut page1 {
-            if browse_id == "VLLM" {
-                t.liked = true;
-            }
-            if t.thumbnail_url.is_none() {
-                t.thumbnail_url = header_thumb.clone();
-            }
-        }
+        apply_collection_backfill(&mut page1, &browse_id, &header);
         on_batch(page1.clone(), true);
 
         let mut all_tracks = page1;
@@ -272,14 +409,7 @@ impl YtMusicClient {
             if batch.is_empty() {
                 break;
             }
-            for t in &mut batch {
-                if browse_id == "VLLM" {
-                    t.liked = true;
-                }
-                if t.thumbnail_url.is_none() {
-                    t.thumbnail_url = header_thumb.clone();
-                }
-            }
+            apply_collection_backfill(&mut batch, &browse_id, &header);
             on_batch(batch.clone(), false);
             all_tracks.extend(batch);
             let next_cont = find_shelf_continuation(&page);
@@ -325,39 +455,38 @@ impl YtMusicClient {
             cont = find_home_continuation(&home_data);
         }
 
-        // Merge discovery shelves from Explore (e.g. New albums & singles, Moods & genres)
-        // before deciding whether an additional Home continuation page is needed.
+        // Follow up to 2 personalized Home continuation pages BEFORE merging Explore so that
+        // Listen again, Mixed for you, Forgotten favorites, etc. are never truncated by Explore.
+        for _ in 0..2 {
+            let Some(token) = cont.take() else { break };
+            let mut next_body = Self::base_context();
+            next_body["continuation"] = json!(token);
+            let page_res = if shelves.is_empty() {
+                self.post("browse", next_body).await.ok()
+            } else {
+                tokio::time::timeout(Duration::from_secs(5), self.post("browse", next_body))
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+            };
+            let Some(page) = page_res else {
+                break;
+            };
+            let before = shelves.len();
+            merge_home_shelves(&mut shelves, parse_home_shelves_json(&page));
+            let next_cont = find_home_continuation(&page);
+            if next_cont.as_deref() == Some(token.as_str()) || shelves.len() == before {
+                break;
+            }
+            cont = next_cont;
+        }
+
+        // Append discovery shelves from Explore (New albums & singles, Moods & genres).
         if let Ok(Ok(exp_data)) = exp_res {
             merge_home_shelves(&mut shelves, parse_home_shelves_json(&exp_data));
         }
 
-        // Follow at most 1 continuation page, and skip altogether if >= 6 shelves are already loaded.
-        if shelves.len() < 6 {
-            for _ in 0..1 {
-                let Some(token) = cont.take() else { break };
-                let mut next_body = Self::base_context();
-                next_body["continuation"] = json!(token);
-                let page_res = if shelves.is_empty() {
-                    self.post("browse", next_body).await.ok()
-                } else {
-                    tokio::time::timeout(Duration::from_secs(5), self.post("browse", next_body))
-                        .await
-                        .ok()
-                        .and_then(Result::ok)
-                };
-                let Some(page) = page_res else {
-                    break;
-                };
-                let before = shelves.len();
-                merge_home_shelves(&mut shelves, parse_home_shelves_json(&page));
-                let next_cont = find_home_continuation(&page);
-                if next_cont.as_deref() == Some(token.as_str()) || shelves.len() == before {
-                    break;
-                }
-                cont = next_cont;
-            }
-        }
-
+        shelves.retain(|s| !is_excluded_shelf_title(&s.title));
         if shelves.is_empty() {
             return Err(anyhow!("YouTube Music home feed returned no shelves"));
         }
@@ -366,11 +495,110 @@ impl YtMusicClient {
 
     /// Fetch an artist only when YouTube Music supplied a concrete browse ID.
     pub async fn fetch_artist_page(&self, browse_id: &str) -> Result<ArtistPage> {
+        {
+            let guard = self.artist_cache.lock().await;
+            if let Some((cached_at, cached)) = guard.get(browse_id) {
+                if cached_at.elapsed() < Duration::from_secs(900) {
+                    return Ok(cached.clone());
+                }
+            }
+        }
+
         let mut body = Self::base_context();
         body["browseId"] = json!(browse_id);
         let data = self.post("browse", body).await?;
-        parse_artist_page_json(browse_id, &data)
-            .ok_or_else(|| anyhow!("YouTube Music artist page contained no usable content"))
+        let mut page = parse_artist_page_json(browse_id, &data)
+            .ok_or_else(|| anyhow!("YouTube Music artist page contained no usable content"))?;
+
+        // Expand Top Songs past the 5 preview rows via the artist's Songs shelf `bottomEndpoint`.
+        if let Some((songs_browse_id, songs_params)) = find_artist_songs_endpoint(&data) {
+            let mut songs_body = Self::base_context();
+            songs_body["browseId"] = json!(songs_browse_id);
+            if let Some(params) = songs_params {
+                songs_body["params"] = json!(params);
+            }
+            if let Ok(Ok(songs_data)) =
+                tokio::time::timeout(Duration::from_secs(5), self.post("browse", songs_body)).await
+            {
+                let mut full_tracks = Vec::new();
+                collect_tracks(&songs_data, &mut full_tracks);
+                if !full_tracks.is_empty() {
+                    let mut seen = std::collections::HashSet::new();
+                    let mut merged = Vec::new();
+                    for t in page.popular_tracks.drain(..).chain(full_tracks) {
+                        if !t.id.is_empty() && seen.insert(t.id.clone()) {
+                            merged.push(t);
+                            if merged.len() >= 24 {
+                                break;
+                            }
+                        }
+                    }
+                    page.popular_tracks = merged;
+                }
+            }
+        }
+
+        {
+            let mut guard = self.artist_cache.lock().await;
+            if guard.len() >= 32 {
+                if let Some(oldest_key) = guard
+                    .iter()
+                    .min_by_key(|(_, (ts, _))| *ts)
+                    .map(|(k, _)| k.clone())
+                {
+                    guard.remove(&oldest_key);
+                }
+            }
+            guard.insert(browse_id.to_string(), (Instant::now(), page.clone()));
+        }
+
+        Ok(page)
+    }
+
+    /// Resolves a primary artist's `UC...` browse ID by querying YTM search with the Artists filter.
+    pub async fn resolve_artist_browse_id(&self, name: &str) -> Result<Option<String>> {
+        let primary = primary_artist_query(name);
+        if primary.is_empty() {
+            return Ok(None);
+        }
+
+        // Primary query with YouTube Music's Artists search filter.
+        let mut body = Self::base_context();
+        body["query"] = json!(primary);
+        body["params"] = json!("EgWKAQIgAWoKEAkQBRAKEAMQBA%3D%3D");
+        let data = self.post("search", body).await?;
+        if let Some(id) = extract_search_artist_browse_id(&data, &primary) {
+            return Ok(Some(id));
+        }
+
+        // Fallback to unfiltered search (Top Result card / linked artist run).
+        let mut fallback = Self::base_context();
+        fallback["query"] = json!(primary);
+        let fb_data = self.post("search", fallback).await?;
+        Ok(extract_search_artist_browse_id(&fb_data, &primary))
+    }
+
+    /// Resolves `name` to a `UC...` channel ID and fetches the full `ArtistPage`.
+    pub async fn fetch_artist_by_name(&self, name: &str) -> Result<ArtistPage> {
+        let browse_id = self
+            .resolve_artist_browse_id(name)
+            .await?
+            .ok_or_else(|| anyhow!("No YouTube Music artist channel found for '{name}'"))?;
+        self.fetch_artist_page(&browse_id).await
+    }
+
+    /// Fetches personalized up-next / radio queue tracks (`RDAMVM<video_id>`) via InnerTube `next`.
+    pub async fn fetch_radio_queue(&self, video_id: &str) -> Result<Vec<Track>> {
+        let mut body = Self::base_context();
+        body["videoId"] = json!(video_id);
+        body["playlistId"] = json!(format!("RDAMVM{video_id}"));
+        body["isAudioOnly"] = json!(true);
+        let data = self.post("next", body).await?;
+        let mut tracks = Vec::new();
+        collect_tracks(&data, &mut tracks);
+        let mut seen = std::collections::HashSet::new();
+        tracks.retain(|t| !t.id.is_empty() && seen.insert(t.id.clone()));
+        Ok(tracks)
     }
 
     pub async fn fetch_native_lyrics(&self, video_id: &str) -> Option<String> {
@@ -397,19 +625,62 @@ impl YtMusicClient {
     }
 
     pub async fn add_to_playlist(&self, playlist_browse_id: &str, video_id: &str) -> Result<()> {
+        self.add_tracks_to_playlist(playlist_browse_id, &[video_id.to_string()])
+            .await
+    }
+
+    /// Appends one or more tracks to a YouTube Music playlist (`browse/edit_playlist`),
+    /// routing `"VLLM"` / `"LM"` to `like/like`.
+    pub async fn add_tracks_to_playlist(
+        &self,
+        playlist_browse_id: &str,
+        video_ids: &[String],
+    ) -> Result<()> {
         if !self.is_authenticated() {
             return Err(anyhow!("Sign in to YouTube Music in your browser first"));
         }
+        let mut unique_ids = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for id in video_ids {
+            let clean = id.trim();
+            if !clean.is_empty() && seen.insert(clean.to_string()) {
+                unique_ids.push(clean.to_string());
+            }
+        }
+        if unique_ids.is_empty() {
+            return Ok(());
+        }
+
         let raw_id = playlist_browse_id
+            .trim()
             .strip_prefix("VL")
-            .unwrap_or(playlist_browse_id);
+            .unwrap_or(playlist_browse_id.trim());
+        if raw_id.is_empty() {
+            return Err(anyhow!("Missing target playlist ID"));
+        }
+        if raw_id == "LM" {
+            for vid in &unique_ids {
+                self.set_like_status(vid, true).await?;
+            }
+            return Ok(());
+        }
+
+        let actions: Vec<Value> = unique_ids
+            .iter()
+            .map(|vid| {
+                json!({
+                    "action": "ACTION_ADD_VIDEO",
+                    "addedVideoId": vid
+                })
+            })
+            .collect();
         let mut body = Self::base_context();
         body["playlistId"] = json!(raw_id);
-        body["actions"] = json!([{
-            "action": "ACTION_ADD_VIDEO",
-            "addedVideoId": video_id
-        }]);
-        self.post("browse/edit_playlist", body).await?;
+        body["actions"] = json!(actions);
+        let resp = self.post("browse/edit_playlist", body).await?;
+        if resp.get("status").and_then(|v| v.as_str()) == Some("STATUS_FAILED") {
+            return Err(anyhow!("YouTube Music rejected playlist update"));
+        }
         self.invalidate_cache(Some(playlist_browse_id)).await;
         Ok(())
     }
@@ -439,19 +710,54 @@ impl YtMusicClient {
     }
 
     pub async fn create_playlist(&self, title: &str) -> Result<String> {
+        let created = self.create_playlist_with_tracks(title, "", &[]).await?;
+        Ok(created.strip_prefix("VL").unwrap_or(&created).to_string())
+    }
+
+    /// Creates a private YouTube Music playlist and optionally seeds it with `video_ids`,
+    /// returning the normalized `VL...` browse ID.
+    pub async fn create_playlist_with_tracks(
+        &self,
+        title: &str,
+        description: &str,
+        video_ids: &[String],
+    ) -> Result<String> {
         if !self.is_authenticated() {
             return Err(anyhow!("Sign in to YouTube Music in your browser first"));
         }
+        let clean_title = title.trim();
+        if clean_title.is_empty() {
+            return Err(anyhow!("Playlist title cannot be empty"));
+        }
+        let mut clean_ids = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for id in video_ids {
+            let trimmed = id.trim();
+            if !trimmed.is_empty() && seen.insert(trimmed.to_string()) {
+                clean_ids.push(trimmed.to_string());
+            }
+        }
         let mut body = Self::base_context();
-        body["title"] = json!(title);
+        body["title"] = json!(clean_title);
+        if !description.trim().is_empty() {
+            body["description"] = json!(description.trim());
+        }
         body["privacyStatus"] = json!("PRIVATE");
+        if !clean_ids.is_empty() {
+            body["videoIds"] = json!(clean_ids);
+        }
         let resp = self.post("playlist/create", body).await?;
         let pid = resp
             .get("playlistId")
             .and_then(|v| v.as_str())
-            .map(str::to_string)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
             .ok_or_else(|| anyhow!("Missing playlistId in response"))?;
-        Ok(pid)
+        Ok(if pid.starts_with("VL") {
+            pid.to_string()
+        } else {
+            format!("VL{pid}")
+        })
     }
 
     pub async fn search_songs(&self, query: &str) -> Result<Vec<Track>> {
@@ -471,6 +777,555 @@ impl YtMusicClient {
                 collect_tracks(&fb_data, &mut tracks);
             }
         }
+        prefer_explicit_order(&mut tracks);
         Ok(tracks)
+    }
+
+    /// Resolves an explicit counterpart track when `track` is unbadged or clean/edited.
+    pub async fn resolve_explicit_counterpart(&self, track: &Track) -> Option<Track> {
+        if track.is_explicit && !is_marked_clean(&track.title) {
+            return None;
+        }
+        {
+            let guard = self.explicit_cache.lock().await;
+            if let Some((ts, cached)) = guard.get(&track.id) {
+                if ts.elapsed() < Duration::from_secs(900) {
+                    return cached.clone();
+                }
+            }
+        }
+
+        let target_key = canonical_song_key(&track.title, &track.artist);
+        let mut found: Option<Track> = None;
+
+        if !target_key.0.is_empty() {
+            if let Some(album_id) = track.album_id.as_deref() {
+                let mut body = Self::base_context();
+                body["browseId"] = json!(album_id);
+                if let Ok(album_data) = self.post("browse", body).await {
+                    let mut album_tracks = Vec::new();
+                    collect_tracks(&album_data, &mut album_tracks);
+                    found = album_tracks.into_iter().find(|cand| {
+                        cand.id != track.id
+                            && cand.is_explicit
+                            && !is_marked_clean(&cand.title)
+                            && canonical_song_title(&cand.title) == target_key.0
+                    });
+                }
+            }
+
+            if found.is_none() {
+                let primary_artist = primary_artist_query(&track.artist);
+                let query = if primary_artist.is_empty() {
+                    track.title.clone()
+                } else {
+                    format!("{} {primary_artist}", canonical_song_title(&track.title))
+                };
+                if let Ok(candidates) = self.search_songs(&query).await {
+                    found = candidates.into_iter().find(|cand| {
+                        if cand.id == track.id || !cand.is_explicit || is_marked_clean(&cand.title)
+                        {
+                            return false;
+                        }
+                        let cand_key = canonical_song_key(&cand.title, &cand.artist);
+                        if cand_key.0 != target_key.0 {
+                            return false;
+                        }
+                        if !target_key.1.is_empty()
+                            && !cand_key.1.is_empty()
+                            && cand_key.1 != target_key.1
+                            && !cand_key.1.contains(&target_key.1)
+                            && !target_key.1.contains(&cand_key.1)
+                        {
+                            return false;
+                        }
+                        match (track.duration_secs, cand.duration_secs) {
+                            (Some(a), Some(b)) if a > 0 && b > 0 => a.abs_diff(b) <= 6,
+                            _ => true,
+                        }
+                    });
+                }
+            }
+        }
+
+        let mut guard = self.explicit_cache.lock().await;
+        if guard.len() >= 128 {
+            if let Some(oldest_key) = guard
+                .iter()
+                .min_by_key(|(_, (ts, _))| *ts)
+                .map(|(k, _)| k.clone())
+            {
+                guard.remove(&oldest_key);
+            }
+        }
+        guard.insert(track.id.clone(), (Instant::now(), found.clone()));
+        found
+    }
+
+    /// Fetches the signed-in listener's reverse-chronological YTM listening history (`FEmusic_history`).
+    pub async fn fetch_listening_history(&self) -> Result<Vec<Track>> {
+        if !self.is_authenticated() {
+            return Ok(Vec::new());
+        }
+        let mut body = Self::base_context();
+        body["browseId"] = json!("FEmusic_history");
+        let data = self.post("browse", body).await?;
+        let mut tracks = Vec::new();
+        collect_tracks(&data, &mut tracks);
+        let mut seen = std::collections::HashSet::new();
+        tracks.retain(|t| !t.id.is_empty() && seen.insert(t.id.clone()));
+        tracks.truncate(50);
+        Ok(tracks)
+    }
+
+    /// Resolves an album title + artist name to its `MPRE...` / `OLAK...` album browse ID.
+    pub async fn resolve_album_browse_id(
+        &self,
+        album_name: &str,
+        artist_name: &str,
+    ) -> Result<Option<String>> {
+        let clean_album = album_name.trim();
+        if clean_album.is_empty() {
+            return Ok(None);
+        }
+        let primary_artist = primary_artist_query(artist_name);
+        let query = if primary_artist.is_empty() {
+            clean_album.to_string()
+        } else {
+            format!("{clean_album} {primary_artist}")
+        };
+
+        let mut body = Self::base_context();
+        body["query"] = json!(query);
+        // Filter to Albums.
+        body["params"] = json!("EgWKAQIYAWoKEAkQBRAKEAMQBA%3D%3D");
+        let data = self.post("search", body).await?;
+        if let Some(id) = extract_search_album_browse_id(&data, clean_album) {
+            return Ok(Some(id));
+        }
+
+        if !primary_artist.is_empty() {
+            let mut fallback = Self::base_context();
+            fallback["query"] = json!(clean_album);
+            fallback["params"] = json!("EgWKAQIYAWoKEAkQBRAKEAMQBA%3D%3D");
+            if let Ok(fb_data) = self.post("search", fallback).await {
+                if let Some(id) = extract_search_album_browse_id(&fb_data, clean_album) {
+                    return Ok(Some(id));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Fetches personalized YouTube Music radio & mix shelves (`FEmusic_mixed_for_you` + Home/Explore mixes),
+    /// strictly excluding manual `VLPL...` user playlists.
+    pub async fn fetch_radio_mixes(&self) -> Result<Vec<HomeShelf>> {
+        let mut mixed_body = Self::base_context();
+        mixed_body["browseId"] = json!("FEmusic_mixed_for_you");
+        let mut home_body = Self::base_context();
+        home_body["browseId"] = json!("FEmusic_home");
+        let mut exp_body = Self::base_context();
+        exp_body["browseId"] = json!("FEmusic_explore");
+
+        let (mixed_res, home_res, exp_res) = tokio::join!(
+            tokio::time::timeout(Duration::from_secs(6), self.post("browse", mixed_body)),
+            tokio::time::timeout(Duration::from_secs(6), self.post("browse", home_body)),
+            tokio::time::timeout(Duration::from_secs(5), self.post("browse", exp_body)),
+        );
+
+        let mut mixed_cards: Vec<HomeCard> = Vec::new();
+        let mut seen_ids = std::collections::HashSet::new();
+
+        if let Ok(Ok(mixed_data)) = mixed_res {
+            for shelf in parse_home_shelves_json(&mixed_data) {
+                for card in shelf.cards {
+                    if !is_manual_user_playlist_id(&card.id) && seen_ids.insert(card.id.clone()) {
+                        mixed_cards.push(card);
+                    }
+                }
+            }
+            let mut cont = find_home_continuation(&mixed_data);
+            for _ in 0..2 {
+                let Some(token) = cont.take() else { break };
+                let mut next_body = Self::base_context();
+                next_body["continuation"] = json!(token);
+                let Ok(Ok(page)) =
+                    tokio::time::timeout(Duration::from_secs(4), self.post("browse", next_body))
+                        .await
+                else {
+                    break;
+                };
+                for shelf in parse_home_shelves_json(&page) {
+                    for card in shelf.cards {
+                        if !is_manual_user_playlist_id(&card.id) && seen_ids.insert(card.id.clone())
+                        {
+                            mixed_cards.push(card);
+                        }
+                    }
+                }
+                let next_cont = find_home_continuation(&page);
+                if next_cont.as_deref() == Some(token.as_str()) {
+                    break;
+                }
+                cont = next_cont;
+            }
+        }
+
+        let mut signature_cards = Vec::new();
+        let mut personal_mix_cards = Vec::new();
+        let mut mood_mix_cards = Vec::new();
+        for card in mixed_cards {
+            match classify_mix_card(&card.title) {
+                MixBucket::Signature => signature_cards.push(card),
+                MixBucket::Mood => mood_mix_cards.push(card),
+                MixBucket::Personal => personal_mix_cards.push(card),
+            }
+        }
+
+        let mut out = Vec::new();
+        if !signature_cards.is_empty() {
+            out.push(HomeShelf {
+                title: "Signature Mixes".to_string(),
+                tracks: Vec::new(),
+                cards: signature_cards,
+            });
+        }
+        if !personal_mix_cards.is_empty() {
+            out.push(HomeShelf {
+                title: "Your Mixes".to_string(),
+                tracks: Vec::new(),
+                cards: personal_mix_cards,
+            });
+        }
+        if !mood_mix_cards.is_empty() {
+            out.push(HomeShelf {
+                title: "Mood Mixes".to_string(),
+                tracks: Vec::new(),
+                cards: mood_mix_cards,
+            });
+        }
+
+        // Supplement with mix/radio shelves from Home (+1 continuation) and Explore.
+        let mut extra_shelves = Vec::new();
+        if let Ok(Ok(home_data)) = home_res {
+            extra_shelves.extend(parse_home_shelves_json(&home_data));
+            if let Some(token) = find_home_continuation(&home_data) {
+                let mut next_body = Self::base_context();
+                next_body["continuation"] = json!(token);
+                if let Ok(Ok(page)) =
+                    tokio::time::timeout(Duration::from_secs(4), self.post("browse", next_body))
+                        .await
+                {
+                    extra_shelves.extend(parse_home_shelves_json(&page));
+                }
+            }
+        }
+        if let Ok(Ok(exp_data)) = exp_res {
+            extra_shelves.extend(parse_home_shelves_json(&exp_data));
+        }
+
+        for shelf in extra_shelves {
+            if is_excluded_shelf_title(&shelf.title) {
+                continue;
+            }
+            let lower_title = shelf.title.to_ascii_lowercase();
+            let shelf_is_mix_or_radio = lower_title.contains("mix")
+                || lower_title.contains("radio")
+                || lower_title.contains("mood")
+                || lower_title.contains("energy")
+                || lower_title.contains("discover")
+                || lower_title.contains("station");
+            let filtered_cards: Vec<HomeCard> = shelf
+                .cards
+                .into_iter()
+                .filter(|card| {
+                    !is_manual_user_playlist_id(&card.id)
+                        && (is_mix_playlist_id(&card.id) || shelf_is_mix_or_radio)
+                        && seen_ids.insert(card.id.clone())
+                })
+                .collect();
+            if !filtered_cards.is_empty() {
+                out.push(HomeShelf {
+                    title: shelf.title,
+                    tracks: Vec::new(),
+                    cards: filtered_cards,
+                });
+            }
+        }
+
+        Ok(out)
+    }
+}
+
+fn find_selected_brand_scope(val: &Value) -> Option<ChannelScope> {
+    fn walk(node: &Value, out: &mut Vec<ChannelScope>) {
+        match node {
+            Value::Object(map) => {
+                if let Some(item) = map.get("accountItem") {
+                    if item.get("isSelected").and_then(Value::as_bool) == Some(true) {
+                        let page_id = find_nested_string(item, "pageId");
+                        let data_sync_id = find_nested_string(item, "datasyncIdToken")
+                            .map(|s| normalize_datasync_id(&s));
+                        if page_id.is_some() {
+                            out.push(ChannelScope {
+                                page_id,
+                                data_sync_id,
+                            });
+                        }
+                    }
+                }
+                for v in map.values() {
+                    walk(v, out);
+                }
+            }
+            Value::Array(arr) => {
+                for v in arr {
+                    walk(v, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut found = Vec::new();
+    walk(val, &mut found);
+    found.into_iter().next()
+}
+
+fn find_nested_string(val: &Value, key: &str) -> Option<String> {
+    match val {
+        Value::Object(map) => {
+            if let Some(s) = map.get(key).and_then(Value::as_str) {
+                if !s.trim().is_empty() {
+                    return Some(s.trim().to_string());
+                }
+            }
+            map.values().find_map(|v| find_nested_string(v, key))
+        }
+        Value::Array(arr) => arr.iter().find_map(|v| find_nested_string(v, key)),
+        _ => None,
+    }
+}
+
+fn normalize_datasync_id(raw: &str) -> String {
+    let trimmed = raw.trim();
+    match trimmed.split_once("||") {
+        Some((left, "")) => left.to_string(),
+        _ => trimmed.to_string(),
+    }
+}
+
+fn primary_artist_query(raw: &str) -> String {
+    static PAREN_FEAT_RE: OnceLock<Regex> = OnceLock::new();
+    let paren_re = PAREN_FEAT_RE.get_or_init(|| {
+        Regex::new(r"(?i)\s*[\(\[]\s*(?:feat\.?|ft\.?|featuring|with)\b[^\)\]]*[\)\]]").unwrap()
+    });
+    let cleaned = paren_re.replace_all(raw.trim(), "");
+
+    static INLINE_FEAT_RE: OnceLock<Regex> = OnceLock::new();
+    let inline_re = INLINE_FEAT_RE
+        .get_or_init(|| Regex::new(r"(?i)\s+(?:feat\.?|ft\.?|featuring|x|×)\s+.*$").unwrap());
+    let no_feat = inline_re.replace(cleaned.trim(), "").trim().to_string();
+
+    let lower = no_feat.to_ascii_lowercase();
+    if !lower.starts_with("tyler, the creator") && !lower.starts_with("earth, wind") {
+        if let Some((first, _)) = no_feat.split_once(',') {
+            let trimmed = first.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+    }
+    no_feat
+}
+
+fn is_marked_clean(title: &str) -> bool {
+    static CLEAN_TAG_RE: OnceLock<Regex> = OnceLock::new();
+    let re = CLEAN_TAG_RE.get_or_init(|| {
+        Regex::new(r"(?i)[\(\[]\s*(?:clean|edited|radio\s+edit)\s*[\)\]]").unwrap()
+    });
+    re.is_match(title)
+}
+
+fn canonical_song_title(title: &str) -> String {
+    static VERSION_TAG_RE: OnceLock<Regex> = OnceLock::new();
+    let re = VERSION_TAG_RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)\s*[\(\[]\s*(?:clean|edited|explicit|radio\s+edit|album\s+version)\s*[\)\]]",
+        )
+        .unwrap()
+    });
+    re.replace_all(title.trim(), "")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+fn canonical_song_key(title: &str, artist: &str) -> (String, String) {
+    (
+        canonical_song_title(title),
+        primary_artist_query(artist).to_ascii_lowercase(),
+    )
+}
+
+/// Promotes explicit tracks ahead of clean/unbadged duplicates sharing the same `(title, artist)`
+/// while preserving overall search relevance order.
+pub fn prefer_explicit_order(tracks: &mut Vec<Track>) {
+    if tracks.len() <= 1 {
+        return;
+    }
+    let mut group_first_pos: HashMap<(String, String), usize> = HashMap::new();
+    for (idx, t) in tracks.iter().enumerate() {
+        let key = canonical_song_key(&t.title, &t.artist);
+        if !key.0.is_empty() && !key.1.is_empty() {
+            group_first_pos.entry(key).or_insert(idx);
+        }
+    }
+
+    let mut indexed: Vec<(usize, bool, usize, Track)> = tracks
+        .drain(..)
+        .enumerate()
+        .map(|(orig_idx, t)| {
+            let key = canonical_song_key(&t.title, &t.artist);
+            let group_pos = group_first_pos.get(&key).copied().unwrap_or(orig_idx);
+            let explicit_rank = t.is_explicit && !is_marked_clean(&t.title);
+            (group_pos, !explicit_rank, orig_idx, t)
+        })
+        .collect();
+
+    indexed.sort_by_key(|(group_pos, non_explicit, orig_idx, _)| {
+        (*group_pos, *non_explicit, *orig_idx)
+    });
+    *tracks = indexed.into_iter().map(|(_, _, _, t)| t).collect();
+}
+
+fn is_manual_user_playlist_id(id: &str) -> bool {
+    let trimmed = id.trim();
+    trimmed.starts_with("VLPL")
+        || trimmed.starts_with("PL")
+        || trimmed == "VLLM"
+        || trimmed == "VLSE"
+        || trimmed == "LM"
+        || trimmed == "SE"
+}
+
+fn is_mix_playlist_id(id: &str) -> bool {
+    let stripped = id.trim().strip_prefix("VL").unwrap_or(id.trim());
+    stripped.starts_with("RDCLAK")
+        || stripped.starts_with("RDTMAK")
+        || stripped.starts_with("RDEM")
+        || stripped.starts_with("RDAMPL")
+        || stripped.starts_with("RDAT")
+        || stripped.starts_with("RDAMVM")
+        || stripped.starts_with("RD")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MixBucket {
+    Signature,
+    Mood,
+    Personal,
+}
+
+fn classify_mix_card(title: &str) -> MixBucket {
+    let lower = title.trim().to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "my supermix"
+            | "supermix"
+            | "discover mix"
+            | "new release mix"
+            | "replay mix"
+            | "archive mix"
+    ) || lower.contains("supermix")
+        && !lower.contains("chill")
+        && !lower.contains("feel good")
+        && !lower.contains("focus")
+        && !lower.contains("energy")
+        && !lower.contains("workout")
+        && !lower.contains("party")
+        && !lower.contains("romance")
+    {
+        return MixBucket::Signature;
+    }
+    if lower.contains("chill")
+        || lower.contains("feel good")
+        || lower.contains("focus")
+        || lower.contains("energy")
+        || lower.contains("workout")
+        || lower.contains("party")
+        || lower.contains("romance")
+        || lower.contains("sleep")
+        || lower.contains("commute")
+        || lower.contains("sad")
+        || lower.contains("mood")
+    {
+        return MixBucket::Mood;
+    }
+    MixBucket::Personal
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        is_manual_user_playlist_id, is_mix_playlist_id, prefer_explicit_order, primary_artist_query,
+    };
+    use crate::providers::{ProviderSource, Track};
+
+    fn dummy(id: &str, title: &str, artist: &str, is_explicit: bool) -> Track {
+        Track {
+            id: id.into(),
+            title: title.into(),
+            artist: artist.into(),
+            album: String::new(),
+            duration_secs: Some(200),
+            thumbnail_url: None,
+            source: ProviderSource::YouTubeMusic,
+            audio_badge: None,
+            set_video_id: None,
+            liked: false,
+            album_id: None,
+            is_explicit,
+        }
+    }
+
+    #[test]
+    fn extracts_primary_artist_name_without_features() {
+        assert_eq!(primary_artist_query("The Weeknd, Daft Punk"), "The Weeknd");
+        assert_eq!(
+            primary_artist_query("The Weeknd feat. Daft Punk"),
+            "The Weeknd"
+        );
+        assert_eq!(
+            primary_artist_query("The Weeknd (ft. Ariana Grande)"),
+            "The Weeknd"
+        );
+        assert_eq!(
+            primary_artist_query("Tyler, The Creator"),
+            "Tyler, The Creator"
+        );
+    }
+
+    #[test]
+    fn promotes_explicit_tracks_above_clean_duplicates() {
+        let mut tracks = vec![
+            dummy("other", "Blinding Lights", "The Weeknd", false),
+            dummy("clean", "Starboy (Clean)", "The Weeknd", false),
+            dummy("explicit", "Starboy", "The Weeknd", true),
+        ];
+        prefer_explicit_order(&mut tracks);
+        let ids: Vec<&str> = tracks.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["other", "explicit", "clean"]);
+    }
+
+    #[test]
+    fn filters_manual_playlists_and_recognizes_ytm_mixes() {
+        assert!(is_manual_user_playlist_id("VLPLabc123"));
+        assert!(is_manual_user_playlist_id("PLabc123"));
+        assert!(!is_manual_user_playlist_id("RDCLAK5uy_abc"));
+        assert!(is_mix_playlist_id("RDCLAK5uy_abc"));
+        assert!(is_mix_playlist_id("RDTMAK5uy_xyz"));
+        assert!(!is_mix_playlist_id("VLPLabc123"));
     }
 }

@@ -693,6 +693,8 @@ mod tests {
             audio_badge: None,
             set_video_id: None,
             liked: false,
+            album_id: None,
+            is_explicit: false,
         };
         let lyrics = parse_lrc(
             "[00:01.00] Lyrics by: Someone\n[00:03.00] Linkin Park\n[00:05.00] The Emptiness Machine\n[00:07.00] Real line",
@@ -715,6 +717,8 @@ mod tests {
             audio_badge: None,
             set_video_id: None,
             liked: false,
+            album_id: None,
+            is_explicit: false,
         };
 
         let rich_lines: Vec<LyricLine> = (0..12)

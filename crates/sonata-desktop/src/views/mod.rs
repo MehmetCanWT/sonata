@@ -42,6 +42,7 @@ pub enum CenterMode {
     Fullscreen,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum DesktopModal {
     None,

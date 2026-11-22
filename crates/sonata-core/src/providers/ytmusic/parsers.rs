@@ -18,6 +18,11 @@ pub(super) fn collect_playlists(val: &Value, out: &mut Vec<Playlist>) {
                     out.push(pl);
                 }
             }
+            if let Some(renderer) = map.get("musicResponsiveListItemRenderer") {
+                if let Some(pl) = parse_responsive_playlist(renderer) {
+                    out.push(pl);
+                }
+            }
             for v in map.values() {
                 collect_playlists(v, out);
             }
@@ -31,20 +36,62 @@ pub(super) fn collect_playlists(val: &Value, out: &mut Vec<Playlist>) {
     }
 }
 
+fn normalize_playlist_browse_id(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty()
+        || trimmed == "VLLM"
+        || trimmed == "VLSE"
+        || trimmed == "LM"
+        || trimmed == "SE"
+    {
+        return None;
+    }
+    if trimmed.starts_with("VL") {
+        return Some(trimmed.to_string());
+    }
+    if trimmed.starts_with("PL")
+        || trimmed.starts_with("OLAK")
+        || trimmed.starts_with("RDCLAK")
+        || trimmed.starts_with("RDAMPL")
+    {
+        return Some(format!("VL{trimmed}"));
+    }
+    None
+}
+
 fn parse_two_row_playlist(r: &Value) -> Option<Playlist> {
-    let browse_id = r
+    let raw_id = r
         .pointer("/navigationEndpoint/browseEndpoint/browseId")
+        .or_else(|| r.pointer("/title/runs/0/navigationEndpoint/browseEndpoint/browseId"))
         .and_then(|v| v.as_str())?;
-    if !browse_id.starts_with("VL") {
-        return None;
-    }
-    if browse_id == "VLLM" || browse_id == "VLSE" {
-        return None;
-    }
+    let browse_id = normalize_playlist_browse_id(raw_id)?;
     let name = extract_runs_text(r.get("title")?)?;
     let thumb = extract_last_thumbnail(r.get("thumbnailRenderer"));
     Some(Playlist {
-        id: browse_id.to_string(),
+        id: browse_id,
+        name,
+        source: ProviderSource::YouTubeMusic,
+        track_count: None,
+        thumbnail_url: thumb,
+    })
+}
+
+fn parse_responsive_playlist(r: &Value) -> Option<Playlist> {
+    let raw_id = r
+        .pointer("/navigationEndpoint/browseEndpoint/browseId")
+        .or_else(|| {
+            r.pointer(
+                "/flexColumns/0/musicResponsiveListItemFlexColumnRenderer/text/runs/0/navigationEndpoint/browseEndpoint/browseId",
+            )
+        })
+        .and_then(|v| v.as_str())?;
+    let browse_id = normalize_playlist_browse_id(raw_id)?;
+    let name = r
+        .pointer("/flexColumns/0/musicResponsiveListItemFlexColumnRenderer/text")
+        .and_then(extract_runs_text)?;
+    let thumb = extract_last_thumbnail(r.get("thumbnail"));
+    Some(Playlist {
+        id: browse_id,
         name,
         source: ProviderSource::YouTubeMusic,
         track_count: None,
@@ -84,6 +131,7 @@ fn parse_panel_video_track(r: &Value) -> Option<Track> {
 
     let mut artist = String::new();
     let mut album = String::new();
+    let mut album_id: Option<String> = None;
     if let Some(runs) = r
         .pointer("/longBylineText/runs")
         .or_else(|| r.pointer("/shortBylineText/runs"))
@@ -96,14 +144,25 @@ fn parse_panel_video_track(r: &Value) -> Option<Track> {
                 if t.is_empty() || t == "•" || t == "," || t == "&" {
                     continue;
                 }
+                let run_browse_id = run
+                    .pointer("/navigationEndpoint/browseEndpoint/browseId")
+                    .and_then(|v| v.as_str());
                 if let Some(page_type) = run.pointer("/navigationEndpoint/browseEndpoint/browseEndpointContextSupportedConfigs/browseEndpointContextMusicConfig/pageType").and_then(|v| v.as_str()) {
                     if page_type == "MUSIC_PAGE_TYPE_ALBUM" {
                         album = t.to_string();
+                        if let Some(bid) = run_browse_id.filter(|id| id.starts_with("MPRE") || id.starts_with("OLAK")) {
+                            album_id = Some(bid.to_string());
+                        }
                     } else if artist.is_empty() {
                         artist = t.to_string();
                     } else {
                         artist = format!("{artist}, {t}");
                     }
+                } else if let Some(bid) = run_browse_id.filter(|id| id.starts_with("MPRE") || id.starts_with("OLAK")) {
+                    if album.is_empty() {
+                        album = t.to_string();
+                    }
+                    album_id = Some(bid.to_string());
                 } else {
                     parts.push(t.to_string());
                 }
@@ -129,6 +188,7 @@ fn parse_panel_video_track(r: &Value) -> Option<Track> {
         .and_then(|t| t.get("url"))
         .and_then(|v| v.as_str())
         .map(upscale_thumbnail);
+    let is_explicit = has_explicit_badge(r);
 
     Some(Track {
         id: video_id,
@@ -145,6 +205,8 @@ fn parse_panel_video_track(r: &Value) -> Option<Track> {
         audio_badge: None,
         set_video_id: None,
         liked: false,
+        album_id,
+        is_explicit,
     })
 }
 
@@ -164,6 +226,7 @@ fn parse_responsive_track(r: &Value) -> Option<Track> {
 
     let mut artist = String::new();
     let mut album = String::new();
+    let mut album_id: Option<String> = None;
     let mut duration_secs = None;
 
     if let Some(runs) = flex
@@ -178,16 +241,27 @@ fn parse_responsive_track(r: &Value) -> Option<Track> {
                 if t.is_empty() || t == "•" || t == "," || t == "&" {
                     continue;
                 }
+                let run_browse_id = run
+                    .pointer("/navigationEndpoint/browseEndpoint/browseId")
+                    .and_then(|v| v.as_str());
                 if let Some(dur) = parse_duration_text(t) {
                     duration_secs = Some(dur);
                 } else if let Some(page_type) = run.pointer("/navigationEndpoint/browseEndpoint/browseEndpointContextSupportedConfigs/browseEndpointContextMusicConfig/pageType").and_then(|v| v.as_str()) {
                     if page_type == "MUSIC_PAGE_TYPE_ALBUM" {
                         album = t.to_string();
+                        if let Some(bid) = run_browse_id.filter(|id| id.starts_with("MPRE") || id.starts_with("OLAK")) {
+                            album_id = Some(bid.to_string());
+                        }
                     } else if artist.is_empty() {
                         artist = t.to_string();
                     } else {
                         artist = format!("{artist}, {t}");
                     }
+                } else if let Some(bid) = run_browse_id.filter(|id| id.starts_with("MPRE") || id.starts_with("OLAK")) {
+                    if album.is_empty() {
+                        album = t.to_string();
+                    }
+                    album_id = Some(bid.to_string());
                 } else {
                     parts.push(t.to_string());
                 }
@@ -204,6 +278,35 @@ fn parse_responsive_track(r: &Value) -> Option<Track> {
             }
             if album.is_empty() && filtered.len() > 1 {
                 album = filtered[1].clone();
+            }
+        }
+    }
+
+    // Also inspect extra flexColumns (e.g. search/album rows put album link in flexColumns[2]).
+    if album_id.is_none() {
+        for col in flex.iter().skip(2) {
+            if let Some(runs) = col
+                .pointer("/musicResponsiveListItemFlexColumnRenderer/text/runs")
+                .and_then(|v| v.as_array())
+            {
+                for run in runs {
+                    if let Some(bid) = run
+                        .pointer("/navigationEndpoint/browseEndpoint/browseId")
+                        .and_then(|v| v.as_str())
+                        .filter(|id| id.starts_with("MPRE") || id.starts_with("OLAK"))
+                    {
+                        album_id = Some(bid.to_string());
+                        if album.is_empty() {
+                            if let Some(t) = run.get("text").and_then(|v| v.as_str()) {
+                                album = t.trim().to_string();
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            if album_id.is_some() {
+                break;
             }
         }
     }
@@ -227,6 +330,7 @@ fn parse_responsive_track(r: &Value) -> Option<Track> {
         .and_then(|v| v.as_str())
         .map(str::to_string);
     let liked = has_like_status(r);
+    let is_explicit = has_explicit_badge(r);
 
     Some(Track {
         id: video_id,
@@ -243,7 +347,27 @@ fn parse_responsive_track(r: &Value) -> Option<Track> {
         audio_badge: None,
         set_video_id,
         liked,
+        album_id,
+        is_explicit,
     })
+}
+
+fn has_explicit_badge(r: &Value) -> bool {
+    fn contains_explicit(val: &Value) -> bool {
+        match val {
+            Value::Object(map) => {
+                if map.get("iconType").and_then(|v| v.as_str()) == Some("MUSIC_EXPLICIT_BADGE") {
+                    return true;
+                }
+                map.values().any(contains_explicit)
+            }
+            Value::Array(arr) => arr.iter().any(contains_explicit),
+            _ => false,
+        }
+    }
+
+    r.get("badges").is_some_and(contains_explicit)
+        || r.get("subtitleBadges").is_some_and(contains_explicit)
 }
 
 fn has_like_status(val: &Value) -> bool {
@@ -285,6 +409,30 @@ fn extract_last_thumbnail(val: Option<&Value>) -> Option<String> {
     Some(upscale_thumbnail(raw))
 }
 
+fn extract_continuation_token(renderer: &Value) -> Option<String> {
+    let endpoint = renderer.get("continuationEndpoint")?;
+    if let Some(tok) = endpoint
+        .pointer("/continuationCommand/token")
+        .and_then(|v| v.as_str())
+    {
+        return Some(tok.to_string());
+    }
+    if let Some(commands) = endpoint
+        .pointer("/commandExecutorCommand/commands")
+        .and_then(|v| v.as_array())
+    {
+        for cmd in commands {
+            if let Some(tok) = cmd
+                .pointer("/continuationCommand/token")
+                .and_then(|v| v.as_str())
+            {
+                return Some(tok.to_string());
+            }
+        }
+    }
+    None
+}
+
 pub(super) fn find_shelf_continuation(val: &Value) -> Option<String> {
     match val {
         Value::Object(map) => {
@@ -293,6 +441,8 @@ pub(super) fn find_shelf_continuation(val: &Value) -> Option<String> {
                 "musicShelfRenderer",
                 "musicPlaylistShelfContinuation",
                 "musicShelfContinuation",
+                "gridRenderer",
+                "gridContinuation",
             ] {
                 if let Some(shelf) = map.get(shelf_key) {
                     if let Some(tok) = shelf
@@ -305,10 +455,9 @@ pub(super) fn find_shelf_continuation(val: &Value) -> Option<String> {
             }
             if let Some(tok) = map
                 .get("continuationItemRenderer")
-                .and_then(|c| c.pointer("/continuationEndpoint/continuationCommand/token"))
-                .and_then(|v| v.as_str())
+                .and_then(extract_continuation_token)
             {
-                return Some(tok.to_string());
+                return Some(tok);
             }
             for v in map.values() {
                 if let Some(found) = find_shelf_continuation(v) {
@@ -337,10 +486,9 @@ pub(super) fn find_home_continuation(val: &Value) -> Option<String> {
             }
             if let Some(tok) = map
                 .get("continuationItemRenderer")
-                .and_then(|c| c.pointer("/continuationEndpoint/continuationCommand/token"))
-                .and_then(|v| v.as_str())
+                .and_then(extract_continuation_token)
             {
-                return Some(tok.to_string());
+                return Some(tok);
             }
             for v in map.values() {
                 if let Some(found) = find_home_continuation(v) {
@@ -386,16 +534,233 @@ pub(super) fn find_description_text(val: &Value) -> Option<String> {
     }
 }
 
-pub(super) fn find_header_thumbnail(val: &Value) -> Option<String> {
-    let hdr = val.get("header")?;
+pub(super) fn find_description_subheader(val: &Value) -> Option<String> {
+    match val {
+        Value::Object(map) => {
+            if let Some(shelf) = map.get("musicDescriptionShelfRenderer") {
+                if let Some(sub) = shelf.get("subheader").and_then(extract_runs_text) {
+                    if !sub.trim().is_empty() {
+                        return Some(sub.trim().to_string());
+                    }
+                }
+            }
+            map.values().find_map(find_description_subheader)
+        }
+        Value::Array(arr) => arr.iter().find_map(find_description_subheader),
+        _ => None,
+    }
+}
+
+fn upscale_hero_thumbnail(url: String) -> String {
+    if url.contains("googleusercontent.com") && url.contains("=w800-h800-l90-rj") {
+        url.replace("=w800-h800-l90-rj", "=w1200-h1200-l90-rj")
+    } else {
+        url
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct CollectionHeader {
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub cover_url: Option<String>,
+}
+
+fn upscale_collection_cover(url: String) -> String {
+    if url.contains("googleusercontent.com") && url.contains("=w800-h800-l90-rj") {
+        url.replace("=w800-h800-l90-rj", "=w544-h544-l90-rj")
+    } else {
+        url
+    }
+}
+
+fn extract_artist_from_collection_node(node: &Value) -> Option<String> {
+    if let Some(runs) = node
+        .pointer("/straplineTextOne/runs")
+        .and_then(|v| v.as_array())
+    {
+        let mut names: Vec<String> = Vec::new();
+        for run in runs {
+            let Some(t) = run.get("text").and_then(|v| v.as_str()).map(str::trim) else {
+                continue;
+            };
+            if t.is_empty() || matches!(t, "•" | "," | "&" | "and") {
+                continue;
+            }
+            if !names.iter().any(|n| n.eq_ignore_ascii_case(t)) {
+                names.push(t.to_string());
+            }
+        }
+        if !names.is_empty() {
+            return Some(names.join(", "));
+        }
+    }
+
+    if let Some(runs) = node.pointer("/subtitle/runs").and_then(|v| v.as_array()) {
+        let mut candidates: Vec<String> = Vec::new();
+        for run in runs {
+            let Some(t) = run.get("text").and_then(|v| v.as_str()).map(str::trim) else {
+                continue;
+            };
+            if t.is_empty() || matches!(t, "•" | "," | "&") {
+                continue;
+            }
+            let lower = t.to_ascii_lowercase();
+            if matches!(
+                lower.as_str(),
+                "album" | "single" | "ep" | "playlist" | "compilation" | "audiobook"
+            ) {
+                continue;
+            }
+            if t.len() == 4 && t.chars().all(|c| c.is_ascii_digit()) {
+                continue;
+            }
+            // Prefer runs linked to an artist channel or fallback non-metadata text runs.
+            let is_artist_link = run
+                .pointer("/navigationEndpoint/browseEndpoint/browseId")
+                .and_then(|v| v.as_str())
+                .is_some_and(|id| id.starts_with("UC"));
+            if is_artist_link
+                || (candidates.is_empty()
+                    && !lower.contains("song")
+                    && !lower.contains("track")
+                    && !lower.contains("minute")
+                    && !lower.contains("hour")
+                    && !lower.contains("view"))
+            {
+                candidates.push(t.to_string());
+            }
+        }
+        if !candidates.is_empty() {
+            return Some(candidates.join(", "));
+        }
+    }
+    None
+}
+
+pub(super) fn find_collection_header(val: &Value) -> CollectionHeader {
+    let mut node: Option<&Value> = None;
     for key in [
         "musicResponsiveHeaderRenderer",
         "musicDetailHeaderRenderer",
+        "musicEditablePlaylistDetailHeaderRenderer",
+    ] {
+        if let Some(found) = val
+            .pointer(&format!("/header/{key}"))
+            .or_else(|| find_key_object(val, key))
+        {
+            node = Some(found);
+            break;
+        }
+    }
+    let Some(raw_node) = node else {
+        return CollectionHeader {
+            title: None,
+            artist: None,
+            cover_url: find_header_thumbnail(val).map(upscale_collection_cover),
+        };
+    };
+
+    // `musicEditablePlaylistDetailHeaderRenderer` wraps the real header inside `/header/*`.
+    let resolved_node = raw_node
+        .pointer("/header/musicDetailHeaderRenderer")
+        .or_else(|| raw_node.pointer("/header/musicResponsiveHeaderRenderer"))
+        .unwrap_or(raw_node);
+
+    let title = resolved_node
+        .get("title")
+        .and_then(extract_runs_text)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let artist = extract_artist_from_collection_node(resolved_node);
+    let cover_url = extract_last_thumbnail(resolved_node.get("thumbnail"))
+        .or_else(|| extract_last_thumbnail(resolved_node.get("foregroundThumbnail")))
+        .or_else(|| find_header_thumbnail(val))
+        .map(upscale_collection_cover);
+
+    CollectionHeader {
+        title,
+        artist,
+        cover_url,
+    }
+}
+
+pub(super) fn apply_collection_backfill(
+    tracks: &mut [Track],
+    browse_id: &str,
+    header: &CollectionHeader,
+) {
+    let resolved_album_id = if browse_id.starts_with("MPRE")
+        || browse_id.starts_with("OLAK")
+        || browse_id.starts_with("VLOLAK")
+    {
+        Some(
+            browse_id
+                .strip_prefix("VL")
+                .unwrap_or(browse_id)
+                .to_string(),
+        )
+    } else {
+        None
+    };
+
+    for t in tracks {
+        if browse_id == "VLLM" {
+            t.liked = true;
+        }
+        if (t.artist.trim().is_empty() || t.artist.eq_ignore_ascii_case("Unknown Artist"))
+            && header.artist.as_deref().is_some_and(|a| !a.is_empty())
+        {
+            t.artist = header.artist.clone().unwrap_or_default();
+        }
+        if t.thumbnail_url
+            .as_deref()
+            .is_none_or(|u| u.trim().is_empty())
+        {
+            t.thumbnail_url = header.cover_url.clone();
+        }
+        if t.album.trim().is_empty() {
+            if let Some(title) = header.title.as_ref() {
+                t.album = title.clone();
+            }
+        }
+        if t.album_id.is_none() {
+            t.album_id = resolved_album_id.clone();
+        }
+    }
+}
+
+pub(super) fn find_header_thumbnail(val: &Value) -> Option<String> {
+    if let Some(hdr) = val.get("header") {
+        for key in [
+            "musicImmersiveHeaderRenderer",
+            "musicVisualHeaderRenderer",
+            "musicResponsiveHeaderRenderer",
+            "musicDetailHeaderRenderer",
+        ] {
+            if let Some(node) = hdr.get(key) {
+                if let Some(t) = extract_last_thumbnail(node.get("foregroundThumbnail"))
+                    .or_else(|| extract_last_thumbnail(node.get("thumbnail")))
+                {
+                    return Some(upscale_hero_thumbnail(t));
+                }
+            }
+        }
+        if let Some(t) = extract_last_thumbnail(Some(hdr)) {
+            return Some(upscale_hero_thumbnail(t));
+        }
+    }
+    for key in [
+        "musicResponsiveHeaderRenderer",
+        "musicDetailHeaderRenderer",
+        "musicImmersiveHeaderRenderer",
         "musicVisualHeaderRenderer",
     ] {
-        if let Some(node) = hdr.get(key) {
-            if let Some(t) = extract_last_thumbnail(node.get("thumbnail")) {
-                return Some(t);
+        if let Some(node) = find_key_object(val, key) {
+            if let Some(t) = extract_last_thumbnail(node.get("foregroundThumbnail"))
+                .or_else(|| extract_last_thumbnail(node.get("thumbnail")))
+            {
+                return Some(upscale_hero_thumbnail(t));
             }
         }
     }
@@ -453,8 +818,16 @@ pub fn parse_account_profile_json(val: &Value) -> Option<YtAccountProfile> {
     })
 }
 
+pub(super) fn is_excluded_shelf_title(title: &str) -> bool {
+    let lower = title.trim().to_ascii_lowercase();
+    lower.contains("forgotten favorite") || lower.contains("unutulan favori")
+}
+
 pub(super) fn merge_home_shelves(dst: &mut Vec<HomeShelf>, src: Vec<HomeShelf>) {
     for shelf in src {
+        if is_excluded_shelf_title(&shelf.title) {
+            continue;
+        }
         if dst
             .iter()
             .any(|existing| existing.title.eq_ignore_ascii_case(&shelf.title))
@@ -468,6 +841,7 @@ pub(super) fn merge_home_shelves(dst: &mut Vec<HomeShelf>, src: Vec<HomeShelf>) 
 pub fn parse_home_shelves_json(val: &Value) -> Vec<HomeShelf> {
     let mut shelves = Vec::new();
     collect_home_shelves(val, &mut shelves);
+    shelves.retain(|s| !is_excluded_shelf_title(&s.title));
     shelves
 }
 
@@ -738,6 +1112,8 @@ fn parse_home_two_row(r: &Value) -> Option<HomeCard> {
             audio_badge: None,
             set_video_id: None,
             liked: false,
+            album_id: None,
+            is_explicit: has_explicit_badge(r),
         };
         return Some(HomeCard {
             kind,
@@ -752,45 +1128,400 @@ fn parse_home_two_row(r: &Value) -> Option<HomeCard> {
     None
 }
 
+pub(super) fn extract_search_artist_browse_id(val: &Value, preferred_name: &str) -> Option<String> {
+    #[derive(Debug)]
+    struct Candidate {
+        browse_id: String,
+        title: String,
+        is_artist_item: bool,
+    }
+
+    fn push_if_uc(
+        out: &mut Vec<Candidate>,
+        browse_id: Option<&str>,
+        title: Option<String>,
+        is_artist_item: bool,
+    ) {
+        let Some(id) = browse_id.map(str::trim).filter(|id| id.starts_with("UC")) else {
+            return;
+        };
+        out.push(Candidate {
+            browse_id: id.to_string(),
+            title: title.unwrap_or_default().trim().to_string(),
+            is_artist_item,
+        });
+    }
+
+    fn walk(value: &Value, out: &mut Vec<Candidate>) {
+        match value {
+            Value::Object(map) => {
+                if let Some(card) = map.get("musicCardShelfRenderer") {
+                    let title = card
+                        .pointer("/title")
+                        .and_then(extract_runs_text)
+                        .or_else(|| {
+                            card.pointer("/header/musicCardShelfHeaderBasicRenderer/title")
+                                .and_then(extract_runs_text)
+                        });
+                    let browse_id = card
+                        .pointer("/title/runs/0/navigationEndpoint/browseEndpoint/browseId")
+                        .or_else(|| {
+                            card.pointer("/onTap/browseEndpoint/browseId")
+                        })
+                        .or_else(|| {
+                            card.pointer("/header/musicCardShelfHeaderBasicRenderer/title/runs/0/navigationEndpoint/browseEndpoint/browseId")
+                        })
+                        .and_then(|v| v.as_str());
+                    push_if_uc(out, browse_id, title, true);
+                }
+                if let Some(item) = map.get("musicResponsiveListItemRenderer") {
+                    let title = item
+                        .pointer("/flexColumns/0/musicResponsiveListItemFlexColumnRenderer/text")
+                        .and_then(extract_runs_text);
+                    let browse_id = item
+                        .pointer("/navigationEndpoint/browseEndpoint/browseId")
+                        .or_else(|| {
+                            item.pointer(
+                                "/flexColumns/0/musicResponsiveListItemFlexColumnRenderer/text/runs/0/navigationEndpoint/browseEndpoint/browseId",
+                            )
+                        })
+                        .and_then(|v| v.as_str());
+                    push_if_uc(out, browse_id, title, true);
+
+                    // Fallback: linked artist runs inside secondary flex columns (e.g. unfiltered song rows).
+                    if let Some(cols) = item.pointer("/flexColumns").and_then(|v| v.as_array()) {
+                        for col in cols.iter().skip(1) {
+                            if let Some(runs) = col
+                                .pointer("/musicResponsiveListItemFlexColumnRenderer/text/runs")
+                                .and_then(|v| v.as_array())
+                            {
+                                for run in runs {
+                                    let run_text = run
+                                        .get("text")
+                                        .and_then(|v| v.as_str())
+                                        .map(str::to_string);
+                                    let run_id = run
+                                        .pointer("/navigationEndpoint/browseEndpoint/browseId")
+                                        .and_then(|v| v.as_str());
+                                    push_if_uc(out, run_id, run_text, false);
+                                }
+                            }
+                        }
+                    }
+                }
+                for child in map.values() {
+                    walk(child, out);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    walk(item, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut candidates = Vec::new();
+    walk(val, &mut candidates);
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let needle = preferred_name.trim().to_ascii_lowercase();
+    if !needle.is_empty() {
+        if let Some(exact) = candidates
+            .iter()
+            .find(|c| c.is_artist_item && c.title.eq_ignore_ascii_case(&needle))
+        {
+            return Some(exact.browse_id.clone());
+        }
+        if let Some(exact_any) = candidates
+            .iter()
+            .find(|c| c.title.eq_ignore_ascii_case(&needle))
+        {
+            return Some(exact_any.browse_id.clone());
+        }
+        if let Some(partial) = candidates.iter().find(|c| {
+            c.is_artist_item && {
+                let lower = c.title.to_ascii_lowercase();
+                !lower.is_empty() && (lower.contains(&needle) || needle.contains(&lower))
+            }
+        }) {
+            return Some(partial.browse_id.clone());
+        }
+    }
+
+    candidates
+        .into_iter()
+        .find(|c| c.is_artist_item)
+        .map(|c| c.browse_id)
+}
+
+pub(super) fn extract_search_album_browse_id(val: &Value, preferred_album: &str) -> Option<String> {
+    #[derive(Debug)]
+    struct Candidate {
+        browse_id: String,
+        title: String,
+        is_album_item: bool,
+    }
+
+    fn is_album_browse_id(id: &str) -> bool {
+        id.starts_with("MPRE") || id.starts_with("OLAK") || id.starts_with("VLOLAK")
+    }
+
+    fn walk(value: &Value, out: &mut Vec<Candidate>) {
+        match value {
+            Value::Object(map) => {
+                if let Some(card) = map.get("musicCardShelfRenderer") {
+                    let title = card
+                        .pointer("/title")
+                        .and_then(extract_runs_text)
+                        .or_else(|| {
+                            card.pointer("/header/musicCardShelfHeaderBasicRenderer/title")
+                                .and_then(extract_runs_text)
+                        })
+                        .unwrap_or_default();
+                    let browse_id = card
+                        .pointer("/title/runs/0/navigationEndpoint/browseEndpoint/browseId")
+                        .or_else(|| card.pointer("/onTap/browseEndpoint/browseId"))
+                        .and_then(|v| v.as_str());
+                    if let Some(id) = browse_id.map(str::trim).filter(|id| is_album_browse_id(id)) {
+                        out.push(Candidate {
+                            browse_id: id.to_string(),
+                            title: title.trim().to_string(),
+                            is_album_item: true,
+                        });
+                    }
+                }
+                if let Some(item) = map.get("musicResponsiveListItemRenderer") {
+                    let title = item
+                        .pointer("/flexColumns/0/musicResponsiveListItemFlexColumnRenderer/text")
+                        .and_then(extract_runs_text)
+                        .unwrap_or_default();
+                    let browse_id = item
+                        .pointer("/navigationEndpoint/browseEndpoint/browseId")
+                        .or_else(|| {
+                            item.pointer(
+                                "/flexColumns/0/musicResponsiveListItemFlexColumnRenderer/text/runs/0/navigationEndpoint/browseEndpoint/browseId",
+                            )
+                        })
+                        .and_then(|v| v.as_str());
+                    if let Some(id) = browse_id.map(str::trim).filter(|id| is_album_browse_id(id)) {
+                        out.push(Candidate {
+                            browse_id: id.to_string(),
+                            title: title.trim().to_string(),
+                            is_album_item: true,
+                        });
+                    }
+                    if let Some(cols) = item.pointer("/flexColumns").and_then(|v| v.as_array()) {
+                        for col in cols.iter().skip(1) {
+                            if let Some(runs) = col
+                                .pointer("/musicResponsiveListItemFlexColumnRenderer/text/runs")
+                                .and_then(|v| v.as_array())
+                            {
+                                for run in runs {
+                                    if let Some(id) = run
+                                        .pointer("/navigationEndpoint/browseEndpoint/browseId")
+                                        .and_then(|v| v.as_str())
+                                        .map(str::trim)
+                                        .filter(|id| is_album_browse_id(id))
+                                    {
+                                        let run_title = run
+                                            .get("text")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or_default()
+                                            .trim()
+                                            .to_string();
+                                        out.push(Candidate {
+                                            browse_id: id.to_string(),
+                                            title: run_title,
+                                            is_album_item: false,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                for child in map.values() {
+                    walk(child, out);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    walk(item, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut candidates = Vec::new();
+    walk(val, &mut candidates);
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let needle = preferred_album.trim().to_ascii_lowercase();
+    if !needle.is_empty() {
+        if let Some(exact) = candidates
+            .iter()
+            .find(|c| c.is_album_item && c.title.eq_ignore_ascii_case(&needle))
+        {
+            return Some(exact.browse_id.clone());
+        }
+        if let Some(exact_any) = candidates
+            .iter()
+            .find(|c| c.title.eq_ignore_ascii_case(&needle))
+        {
+            return Some(exact_any.browse_id.clone());
+        }
+        if let Some(partial) = candidates.iter().find(|c| {
+            c.is_album_item && {
+                let lower = c.title.to_ascii_lowercase();
+                !lower.is_empty() && (lower.contains(&needle) || needle.contains(&lower))
+            }
+        }) {
+            return Some(partial.browse_id.clone());
+        }
+    }
+
+    candidates
+        .into_iter()
+        .find(|c| c.is_album_item)
+        .map(|c| c.browse_id)
+}
+
+pub(super) fn find_artist_songs_endpoint(val: &Value) -> Option<(String, Option<String>)> {
+    fn walk(value: &Value) -> Option<(String, Option<String>)> {
+        match value {
+            Value::Object(map) => {
+                if let Some(shelf) = map.get("musicShelfRenderer") {
+                    let title = shelf
+                        .get("title")
+                        .and_then(extract_runs_text)
+                        .unwrap_or_default()
+                        .trim()
+                        .to_ascii_lowercase();
+                    let is_songs_shelf =
+                        title == "songs" || title == "top songs" || title.contains("songs");
+                    if is_songs_shelf {
+                        if let Some(browse_ep) =
+                            shelf.pointer("/bottomEndpoint/browseEndpoint").or_else(|| {
+                                shelf.pointer("/title/runs/0/navigationEndpoint/browseEndpoint")
+                            })
+                        {
+                            if let Some(bid) = browse_ep
+                                .get("browseId")
+                                .and_then(|v| v.as_str())
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty())
+                            {
+                                let params = browse_ep
+                                    .get("params")
+                                    .and_then(|v| v.as_str())
+                                    .map(str::to_string);
+                                return Some((bid.to_string(), params));
+                            }
+                        }
+                    }
+                }
+                for child in map.values() {
+                    if let Some(found) = walk(child) {
+                        return Some(found);
+                    }
+                }
+                None
+            }
+            Value::Array(items) => items.iter().find_map(walk),
+            _ => None,
+        }
+    }
+    walk(val)
+}
+
 pub fn parse_artist_page_json(browse_id: &str, val: &Value) -> Option<ArtistPage> {
-    let name = val
-        .pointer("/header/musicImmersiveHeaderRenderer/title")
+    let immersive_hdr = val.pointer("/header/musicImmersiveHeaderRenderer");
+    let visual_hdr = val.pointer("/header/musicVisualHeaderRenderer");
+    let name = immersive_hdr
+        .and_then(|h| h.get("title"))
         .and_then(extract_runs_text)
         .or_else(|| {
-            val.pointer("/header/musicVisualHeaderRenderer/title")
+            visual_hdr
+                .and_then(|h| h.get("title"))
                 .and_then(extract_runs_text)
         })
         .or_else(|| find_first_runs_text(val, "title"))?;
-    let subtitle = val
-        .pointer("/header/musicImmersiveHeaderRenderer/description")
+    let subtitle = immersive_hdr
+        .and_then(|h| h.get("description"))
         .and_then(extract_runs_text)
         .or_else(|| {
-            val.pointer("/header/musicVisualHeaderRenderer/description")
+            visual_hdr
+                .and_then(|h| h.get("description"))
                 .and_then(extract_runs_text)
         })
         .unwrap_or_default();
+    let description = find_description_text(val)
+        .or_else(|| (!subtitle.trim().is_empty()).then(|| subtitle.clone()));
+    let subscribers = immersive_hdr
+        .or(visual_hdr)
+        .and_then(|h| {
+            h.pointer("/subscriptionButton/subscribeButtonRenderer/subscriberCountText")
+                .or_else(|| {
+                    h.pointer("/subscriptionButton/subscribeButtonRenderer/longSubscriberCountText")
+                })
+        })
+        .and_then(extract_runs_text)
+        .filter(|s| !s.trim().is_empty());
+    let monthly_listeners = immersive_hdr
+        .and_then(|h| h.get("monthlyListenerCount"))
+        .and_then(extract_runs_text)
+        .or_else(|| find_description_subheader(val))
+        .filter(|s| !s.trim().is_empty());
+    let shuffle_playlist_id = immersive_hdr
+        .and_then(|h| {
+            h.pointer("/playButton/buttonRenderer/navigationEndpoint/watchEndpoint/playlistId")
+        })
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let radio_playlist_id = immersive_hdr
+        .and_then(|h| {
+            h.pointer(
+                "/startRadioButton/buttonRenderer/navigationEndpoint/watchEndpoint/playlistId",
+            )
+        })
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
     let thumbnail_url = find_header_thumbnail(val);
     let mut popular_tracks = Vec::new();
     collect_tracks(val, &mut popular_tracks);
-    popular_tracks.truncate(10);
+    popular_tracks.truncate(24);
     let mut cards = Vec::new();
     collect_artist_cards(val, &mut cards);
     let mut releases = Vec::new();
     let mut related_artists = Vec::new();
     for card in cards {
         match card.kind {
-            HomeCardKind::Album => releases.push(card),
+            HomeCardKind::Album | HomeCardKind::Playlist => releases.push(card),
             HomeCardKind::Artist => related_artists.push(card),
             _ => {}
         }
     }
     releases.truncate(24);
     related_artists.truncate(12);
+    let latest_release = releases.first().cloned();
     Some(ArtistPage {
         id: browse_id.to_string(),
         name,
         subtitle,
+        description,
+        subscribers,
+        monthly_listeners,
         thumbnail_url,
+        shuffle_playlist_id,
+        radio_playlist_id,
+        latest_release,
         popular_tracks,
         releases,
         related_artists,
@@ -1095,5 +1826,397 @@ mod tests {
         assert_eq!(tracks[0].artist, "Kavinsky");
         assert_eq!(tracks[0].album, "OutRun");
         assert_eq!(tracks[0].duration_secs, Some(258));
+    }
+
+    #[test]
+    fn collects_playlists_from_both_grid_and_list_renderers_and_command_executor_continuations() {
+        let sample = json!({
+            "contents": [
+                {
+                    "musicTwoRowItemRenderer": {
+                        "title": { "runs": [{ "text": "Grid Mix" }] },
+                        "navigationEndpoint": { "browseEndpoint": { "browseId": "VLPLgrid123" } }
+                    }
+                },
+                {
+                    "musicResponsiveListItemRenderer": {
+                        "flexColumns": [{
+                            "musicResponsiveListItemFlexColumnRenderer": {
+                                "text": {
+                                    "runs": [{
+                                        "text": "List Playlist",
+                                        "navigationEndpoint": { "browseEndpoint": { "browseId": "PLlist456" } }
+                                    }]
+                                }
+                            }
+                        }]
+                    }
+                },
+                {
+                    "continuationItemRenderer": {
+                        "continuationEndpoint": {
+                            "commandExecutorCommand": {
+                                "commands": [
+                                    { "continuationCommand": { "token": "EXEC_CONT_TOKEN" } }
+                                ]
+                            }
+                        }
+                    }
+                }
+            ]
+        });
+
+        let mut playlists = Vec::new();
+        collect_playlists(&sample, &mut playlists);
+        assert_eq!(playlists.len(), 2);
+        assert_eq!(playlists[0].id, "VLPLgrid123");
+        assert_eq!(playlists[0].name, "Grid Mix");
+        assert_eq!(playlists[1].id, "VLPLlist456");
+        assert_eq!(playlists[1].name, "List Playlist");
+        assert_eq!(
+            find_shelf_continuation(&sample).as_deref(),
+            Some("EXEC_CONT_TOKEN")
+        );
+    }
+
+    #[test]
+    fn extracts_artist_browse_id_from_artist_search_and_song_fallback() {
+        let artist_search = json!({
+            "contents": {
+                "tabbedSearchResultsRenderer": {
+                    "tabs": [{
+                        "tabRenderer": {
+                            "content": {
+                                "sectionListRenderer": {
+                                    "contents": [{
+                                        "musicShelfRenderer": {
+                                            "contents": [
+                                                {
+                                                    "musicResponsiveListItemRenderer": {
+                                                        "flexColumns": [{
+                                                            "musicResponsiveListItemFlexColumnRenderer": {
+                                                                "text": { "runs": [{ "text": "The Weeknd Tribute" }] }
+                                                            }
+                                                        }],
+                                                        "navigationEndpoint": {
+                                                            "browseEndpoint": { "browseId": "UCtribute000" }
+                                                        }
+                                                    }
+                                                },
+                                                {
+                                                    "musicResponsiveListItemRenderer": {
+                                                        "flexColumns": [{
+                                                            "musicResponsiveListItemFlexColumnRenderer": {
+                                                                "text": { "runs": [{ "text": "The Weeknd" }] }
+                                                            }
+                                                        }],
+                                                        "navigationEndpoint": {
+                                                            "browseEndpoint": { "browseId": "UC0WP5P-ufpRfjbN6OWwLB4Q" }
+                                                        }
+                                                    }
+                                                }
+                                            ]
+                                        }
+                                    }]
+                                }
+                            }
+                        }
+                    }]
+                }
+            }
+        });
+        assert_eq!(
+            extract_search_artist_browse_id(&artist_search, "The Weeknd").as_deref(),
+            Some("UC0WP5P-ufpRfjbN6OWwLB4Q")
+        );
+
+        let song_fallback = json!({
+            "contents": [{
+                "musicResponsiveListItemRenderer": {
+                    "flexColumns": [
+                        {
+                            "musicResponsiveListItemFlexColumnRenderer": {
+                                "text": { "runs": [{ "text": "Starboy" }] }
+                            }
+                        },
+                        {
+                            "musicResponsiveListItemFlexColumnRenderer": {
+                                "text": {
+                                    "runs": [
+                                        {
+                                            "text": "The Weeknd",
+                                            "navigationEndpoint": {
+                                                "browseEndpoint": { "browseId": "UC0WP5P-ufpRfjbN6OWwLB4Q" }
+                                            }
+                                        },
+                                        { "text": " • " },
+                                        {
+                                            "text": "Daft Punk",
+                                            "navigationEndpoint": {
+                                                "browseEndpoint": { "browseId": "UCdaftpunk" }
+                                            }
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    ]
+                }
+            }]
+        });
+        assert_eq!(
+            extract_search_artist_browse_id(&song_fallback, "The Weeknd").as_deref(),
+            Some("UC0WP5P-ufpRfjbN6OWwLB4Q")
+        );
+    }
+
+    #[test]
+    fn parses_explicit_badge_album_id_and_immersive_artist_hero() {
+        let track_json = json!({
+            "contents": [{
+                "musicResponsiveListItemRenderer": {
+                    "playlistItemData": { "videoId": "3_g2un5M350" },
+                    "badges": [{
+                        "musicInlineBadgeRenderer": {
+                            "icon": { "iconType": "MUSIC_EXPLICIT_BADGE" }
+                        }
+                    }],
+                    "flexColumns": [
+                        {
+                            "musicResponsiveListItemFlexColumnRenderer": {
+                                "text": { "runs": [{ "text": "Starboy" }] }
+                            }
+                        },
+                        {
+                            "musicResponsiveListItemFlexColumnRenderer": {
+                                "text": {
+                                    "runs": [
+                                        { "text": "The Weeknd" },
+                                        { "text": " • " },
+                                        {
+                                            "text": "Starboy",
+                                            "navigationEndpoint": {
+                                                "browseEndpoint": {
+                                                    "browseId": "MPREb_starboy123",
+                                                    "browseEndpointContextSupportedConfigs": {
+                                                        "browseEndpointContextMusicConfig": {
+                                                            "pageType": "MUSIC_PAGE_TYPE_ALBUM"
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        { "text": " • " },
+                                        { "text": "3:50" }
+                                    ]
+                                }
+                            }
+                        }
+                    ]
+                }
+            }]
+        });
+
+        let mut tracks = Vec::new();
+        collect_tracks(&track_json, &mut tracks);
+        assert_eq!(tracks.len(), 1);
+        assert!(tracks[0].is_explicit);
+        assert_eq!(tracks[0].album, "Starboy");
+        assert_eq!(tracks[0].album_id.as_deref(), Some("MPREb_starboy123"));
+
+        let artist_json = json!({
+            "header": {
+                "musicImmersiveHeaderRenderer": {
+                    "title": { "runs": [{ "text": "The Weeknd" }] },
+                    "monthlyListenerCount": { "runs": [{ "text": "114M monthly audience" }] },
+                    "thumbnail": {
+                        "musicThumbnailRenderer": {
+                            "thumbnail": {
+                                "thumbnails": [
+                                    { "url": "https://lh3.googleusercontent.com/weeknd=w544-h544-l90-rj" }
+                                ]
+                            }
+                        }
+                    }
+                }
+            },
+            "contents": {
+                "singleColumnBrowseResultsRenderer": {
+                    "tabs": [{
+                        "tabRenderer": {
+                            "content": {
+                                "sectionListRenderer": {
+                                    "contents": [
+                                        {
+                                            "musicShelfRenderer": {
+                                                "title": { "runs": [{ "text": "Songs" }] },
+                                                "bottomEndpoint": {
+                                                    "browseEndpoint": {
+                                                        "browseId": "VLOLAK5uy_top_songs",
+                                                        "params": "ggM%3D"
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        {
+                                            "musicDescriptionShelfRenderer": {
+                                                "description": { "runs": [{ "text": "Abel Tesfaye bio." }] }
+                                            }
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    }]
+                }
+            }
+        });
+        let page = parse_artist_page_json("UC0WP5P-ufpRfjbN6OWwLB4Q", &artist_json)
+            .expect("immersive artist page");
+        assert_eq!(
+            page.thumbnail_url.as_deref(),
+            Some("https://lh3.googleusercontent.com/weeknd=w1200-h1200-l90-rj")
+        );
+        assert_eq!(page.description.as_deref(), Some("Abel Tesfaye bio."));
+        assert_eq!(
+            page.monthly_listeners.as_deref(),
+            Some("114M monthly audience")
+        );
+        assert_eq!(
+            find_artist_songs_endpoint(&artist_json),
+            Some((
+                "VLOLAK5uy_top_songs".to_string(),
+                Some("ggM%3D".to_string())
+            ))
+        );
+
+        let album_search = json!({
+            "contents": [{
+                "musicResponsiveListItemRenderer": {
+                    "flexColumns": [{
+                        "musicResponsiveListItemFlexColumnRenderer": {
+                            "text": { "runs": [{ "text": "Starboy" }] }
+                        }
+                    }],
+                    "navigationEndpoint": {
+                        "browseEndpoint": { "browseId": "MPREb_starboy123" }
+                    }
+                }
+            }]
+        });
+        assert_eq!(
+            extract_search_album_browse_id(&album_search, "Starboy").as_deref(),
+            Some("MPREb_starboy123")
+        );
+    }
+
+    #[test]
+    fn album_tracks_inherit_header_artist_cover_and_album_id_and_drop_forgotten_favorites() {
+        let album_json = json!({
+            "contents": {
+                "twoColumnBrowseResultsRenderer": {
+                    "tabs": [{
+                        "tabRenderer": {
+                            "content": {
+                                "sectionListRenderer": {
+                                    "contents": [{
+                                        "musicResponsiveHeaderRenderer": {
+                                            "title": { "runs": [{ "text": "Starboy" }] },
+                                            "straplineTextOne": {
+                                                "runs": [{ "text": "The Weeknd" }]
+                                            },
+                                            "subtitle": {
+                                                "runs": [
+                                                    { "text": "Album" },
+                                                    { "text": " • " },
+                                                    { "text": "2016" }
+                                                ]
+                                            },
+                                            "thumbnail": {
+                                                "musicThumbnailRenderer": {
+                                                    "thumbnail": {
+                                                        "thumbnails": [
+                                                            { "url": "https://lh3.googleusercontent.com/starboy_cover=w226-h226-l90-rj" }
+                                                        ]
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }]
+                                }
+                            }
+                        }
+                    }],
+                    "secondaryContents": {
+                        "sectionListRenderer": {
+                            "contents": [{
+                                "musicShelfRenderer": {
+                                    "contents": [{
+                                        "musicResponsiveListItemRenderer": {
+                                            "playlistItemData": { "videoId": "3_g2un5M350" },
+                                            "flexColumns": [
+                                                {
+                                                    "musicResponsiveListItemFlexColumnRenderer": {
+                                                        "text": { "runs": [{ "text": "Starboy" }] }
+                                                    }
+                                                },
+                                                {
+                                                    "musicResponsiveListItemFlexColumnRenderer": {
+                                                        "text": { "runs": [{ "text": "3:50" }] }
+                                                    }
+                                                }
+                                            ]
+                                        }
+                                    }]
+                                }
+                            }]
+                        }
+                    }
+                }
+            }
+        });
+
+        let header = find_collection_header(&album_json);
+        assert_eq!(header.title.as_deref(), Some("Starboy"));
+        assert_eq!(header.artist.as_deref(), Some("The Weeknd"));
+        assert_eq!(
+            header.cover_url.as_deref(),
+            Some("https://lh3.googleusercontent.com/starboy_cover=w544-h544-l90-rj")
+        );
+
+        let mut tracks = Vec::new();
+        collect_tracks(&album_json, &mut tracks);
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].artist, "Unknown Artist");
+        assert!(tracks[0].thumbnail_url.is_none());
+
+        apply_collection_backfill(&mut tracks, "MPREb_starboy123", &header);
+        assert_eq!(tracks[0].artist, "The Weeknd");
+        assert_eq!(tracks[0].album, "Starboy");
+        assert_eq!(tracks[0].album_id.as_deref(), Some("MPREb_starboy123"));
+        assert_eq!(
+            tracks[0].thumbnail_url.as_deref(),
+            Some("https://lh3.googleusercontent.com/starboy_cover=w544-h544-l90-rj")
+        );
+
+        let forgotten = json!({
+            "contents": [{
+                "musicCarouselShelfRenderer": {
+                    "header": {
+                        "musicCarouselShelfBasicHeaderRenderer": {
+                            "title": { "runs": [{ "text": "Forgotten favorites" }] }
+                        }
+                    },
+                    "contents": [{
+                        "musicTwoRowItemRenderer": {
+                            "title": { "runs": [{ "text": "Old Song" }] },
+                            "subtitle": { "runs": [{ "text": "Artist" }] },
+                            "navigationEndpoint": { "watchEndpoint": { "videoId": "vid1" } }
+                        }
+                    }]
+                }
+            }]
+        });
+        assert!(parse_home_shelves_json(&forgotten).is_empty());
     }
 }

@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-11-22
+
+### Added
+
+- **Lunaria Moonflower Theme & Typography**: Introduced a dedicated moon-themed Lunaria color palette (`LunariaPalette.kt`: `#B79CED` Petal Lavender, `#8F96D9` Lunar Mist, `#EDE8F8` Moon Glow) and bundled open-source **Plus Jakarta Sans** (SIL OFL-1.1) app-wide typography while preserving the dedicated Lyrics display font.
+- **Full-Screen Artist Page & Backend (`ArtistScreen.kt`)**: Added native in-app Artist pages powered by `fetch_artist_page`, `fetch_artist_by_name`, and `resolve_artist_browse_id` with full-bleed hero artwork, Liquid Glass Shuffle & Favorite buttons, Latest Release spotlight, adaptive multi-column Top Songs (up to 24 tracks), Albums & Singles, Similar Artists, About bio, and 15-minute LRU caching.
+- **Radio & Mixes Tab (`RadioMixesTab.kt`)**: Added a 5th bottom tab with dedicated YouTube Music Mix fetching (`fetch_radio_mixes`: Featured Mixes, Signature Mixes, Mood Mixes) and personalized quick-start radio (`fetch_radio_queue`).
+- **Held Context Menu, Anchored 3-Dot Menu & Add to Playlist (`HeldContextMenu.kt`, `TrackOptionsMenu.kt`, `AddToPlaylistSheet.kt`)**: Added iOS-style lifted long-press context menus across tracks, albums, playlists, and Top Picks; anchored Liquid Glass 3-dot track menus with no dimming scrim; and full YouTube Music `Add to Playlist` / `Create Playlist` support (`add_tracks_to_playlist`, `create_playlist`).
+- **In-App Downloads Playlist & Offline Playback (`DownloadManager.kt`, `DownloadsScreen.kt`)**: Added permanent offline track/collection downloads surfaced as a first-class in-app **Downloads** playlist inside Library with offline-first playback and cache eviction (`Remove from Cache`).
+- **Animated Album Art (Canvas) & Procedural Animated Covers (`CanvasResolver.kt`, `CanvasVideoPlayer.kt`, `SonataAnimatedArtworks.kt`)**: Multi-provider Canvas video resolver (Apple Music HLS, Tidal, Community MP4 with local `CanvasClipFileCache` for non-faststart MP4s) plus 14 original centered, bounds-clipped animated covers for Personal/Discovery Stations and Find Your Mood.
+- **Now Playing Options Menu, Audio Pipeline & Full-Screen Categorized Settings (`NowPlayingOptionsMenu.kt`, `AudioPipelineModal.kt`, `CategorizedSettingsSheet.kt`, `UserMenuSheet.kt`)**: Added Liquid Glass Now Playing `⋯` options popover (housing Audio Controls, Sleep Timer, Lyrics Offset, Romanize, Translate, Download, Open Album/Artist), 4-stage Audio Signal Chain inspector, Liquid Glass Account menu, and clean neutral full-screen Settings with **60 / 90 / 120 FPS** hardware refresh rate support.
+- **Liquid Glass Reference Guide ([`liquidglass.md`](liquidglass.md))**: Documented Sonata's optical refraction shader parameters, surface rules, and `LayerBackdrop` sibling guardrails.
+
+### Changed
+
+- **Android 60 / 90 / 120 Hz Performance & R8 Release Pipeline**: Added `androidx.profileinstaller:1.4.1`, zero-recomposition `ScrollActivityTracker`, `graphicsLayer`-driven `MarqueeText` & lyric spring lift, `0.20f` Liquid Glass backdrop scaling, hardware-accelerated `ReleaseArt` scrims, cached `SonataPreferences` / `ThumbnailFallback`, off-main-thread `DownloadManager` & `CanvasCache` init, async `ExoPlayer.release()`, and stable LazyList keys with `SaveableStateProvider`.
+- **Personalized Home Ordering & Lyrics Controls**: Reordered Home (`Top Picks for You` -> `Last Played` -> `Son Dinlenenler` -> `Find Your Mood` -> `Your Playlists` -> `New Albums & Singles` -> `Trending`), removed `Forgotten Favorites`, placed the Lyrics `Translate` toggle cleanly between `Lyrics` and `Queue`, and refined the quality badge into a steady gray base with a slow left-to-right white glowing sweep.
+
+### Fixed
+
+- **Account Auth, Empty Library Playlists & Explicit Audio Quality**: Added `__Secure-1PAPISID` + triple-hash `SAPISIDHASH`, Brand Channel `X-Goog-PageId` scoping, grid+list playlist parsing with continuations, explicit track preference (`prefer_explicit_order` / `resolve_explicit_counterpart`), mid-track recovery (`resolveRecovery`), and 512 KiB `ChunkedDataSource` range caps.
+- **Album Track Metadata Backfill & Open Album**: Backfilled omitted album track artist names, cover artwork, and `album_id` from collection headers, and routed `Open Album` directly to the real album detail page instead of Search.
+- **Stability, Deduplication & Navigation**: Fixed `RenderNode` self-referential `SIGSEGV` crashes on Liquid Glass overlays, strictly deduplicated `Last Played` by ID and canonical title+artist, fixed `SweptKaraokeLyricText` line-wrap clipping, fixed auto-search on type, and added hierarchical `BackHandler` navigation across Settings submenus, Search, and tabs.
+
 ## [1.0.0] - 2026-11-21
 
 ### Added
@@ -48,5 +72,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Initial GPUI Wayland desktop client (`sonata-desktop`) with ambient glass shaders, MPRIS2, System Tray, and `now_playing.json` export.
 - Arch Linux `PKGBUILD` and `PKGBUILD.desktop` packaging.
 
-[Unreleased]: https://github.com/MehmetCanWT/sonata/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/MehmetCanWT/sonata/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/MehmetCanWT/sonata/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/MehmetCanWT/sonata/releases/tag/v1.0.0
