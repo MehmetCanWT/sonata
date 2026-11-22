@@ -79,14 +79,14 @@ import dev.sonata.android.isGlassSupported
 import dev.sonata.android.liquidGlass
 import dev.sonata.android.ui.SonataAccent
 import dev.sonata.android.ui.SonataIcons
+import dev.sonata.android.ui.theme.LocalLunariaColors
 import dev.sonata.android.ui.theme.SonataRadioWavesIcon
 import dev.sonata.android.ui.theme.sonataSpecularRim
 import uniffi.sonata_android.AndroidTrack
 import kotlin.math.roundToInt
 
-private val TrackMenuGlassTint = Color(0xFF141418).copy(alpha = 0.42f)
-private val TrackMenuFallbackBg = Color(0xFF1C1C22).copy(alpha = 0.94f)
-internal val TrackMenuDivider = Color.White.copy(alpha = 0.12f)
+internal val TrackMenuDivider: Color
+    @Composable get() = LocalLunariaColors.current.cardStroke
 
 /**
  * Compact Liquid Glass floating context menu for any track row (3-dot menu).
@@ -188,21 +188,30 @@ fun TrackOptionsMenu(
             }
 
             CompositionLocalProvider(LocalAppBackdrop provides targetBackdrop) {
-                val menuShape = remember { RoundedCornerShape(24.dp) }
+                val themeTokens = LocalLunariaColors.current
+                val menuShape = remember(themeTokens.isViolet) {
+                    RoundedCornerShape(if (themeTokens.isViolet) 20.dp else 26.dp)
+                }
                 val glassOn = LocalLiquidGlassEnabled.current && isGlassSupported() && !LocalReduceDynamicBlur.current
                 val baseModifier = anchoredOffsetModifier
                     .width(256.dp)
                     .onSizeChanged { menuHeightPx = it.height }
-                    .shadow(24.dp, menuShape, clip = false)
+                    .shadow(
+                        elevation = 24.dp,
+                        shape = menuShape,
+                        clip = false,
+                        ambientColor = themeTokens.glassShadowColor,
+                        spotColor = themeTokens.glassShadowColor,
+                    )
                 val cardModifier = if (glassOn) {
                     baseModifier
-                        .liquidGlass(shape = menuShape, surfaceTint = TrackMenuGlassTint)
+                        .liquidGlass(shape = menuShape, surfaceTint = themeTokens.glassTint)
                         .sonataSpecularRim(shape = menuShape, strokeWidth = 0.75.dp)
                 } else {
                     baseModifier
                         .clip(menuShape)
-                        .background(TrackMenuFallbackBg, menuShape)
-                        .border(0.75.dp, Color.White.copy(alpha = 0.16f), menuShape)
+                        .background(themeTokens.eclipseSurface.copy(alpha = 0.96f), menuShape)
+                        .border(0.75.dp, themeTokens.cardStroke, menuShape)
                 }
 
                 val cardInteraction = remember { MutableInteractionSource() }
@@ -226,7 +235,7 @@ fun TrackOptionsMenu(
                         TrackQuickTile(
                             icon = if (isLiked) SonataIcons.StarFilled else SonataIcons.Star,
                             label = if (isLiked) "Liked" else "Like",
-                            tint = if (isLiked) SonataAccent else Color.White,
+                            tint = if (isLiked) themeTokens.petalLavender else themeTokens.onSurfacePrimary,
                             onClick = {
                                 onToggleLike(currentTrack)
                                 onDismiss()
@@ -236,7 +245,7 @@ fun TrackOptionsMenu(
                         TrackQuickTile(
                             icon = TrackDislikeIcon,
                             label = "Dislike",
-                            tint = if (isDisliked) SonataAccent else Color.White,
+                            tint = if (isDisliked) themeTokens.petalLavender else themeTokens.onSurfacePrimary,
                             onClick = {
                                 onToggleDislike(currentTrack)
                                 onDismiss()
@@ -246,7 +255,7 @@ fun TrackOptionsMenu(
                         TrackQuickTile(
                             icon = TrackShareIcon,
                             label = "Share",
-                            tint = Color.White,
+                            tint = themeTokens.onSurfacePrimary,
                             onClick = {
                                 onDismiss()
                                 onShareInApp(currentTrack)
@@ -309,7 +318,7 @@ fun TrackOptionsMenu(
                     TrackMenuRow(
                         icon = if (isDownloaded) SonataIcons.Check else SonataIcons.Download,
                         title = downloadTitle,
-                        tint = if (isDownloaded) SonataAccent else Color.White,
+                        tint = if (isDownloaded) themeTokens.petalLavender else themeTokens.onSurfacePrimary,
                         onClick = {
                             onDownloadTrack(currentTrack)
                             onDismiss()
@@ -379,6 +388,7 @@ internal fun TrackQuickTile(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val themeTokens = LocalLunariaColors.current
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(14.dp))
@@ -399,7 +409,7 @@ internal fun TrackQuickTile(
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Medium,
             ),
-            color = Color.White.copy(alpha = 0.88f),
+            color = themeTokens.onSurfacePrimary.copy(alpha = 0.90f),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
@@ -411,9 +421,10 @@ internal fun TrackMenuRow(
     icon: ImageVector,
     title: String,
     subtitle: String? = null,
-    tint: Color = Color.White,
+    tint: Color = LocalLunariaColors.current.onSurfacePrimary,
     onClick: () -> Unit,
 ) {
+    val themeTokens = LocalLunariaColors.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -435,7 +446,7 @@ internal fun TrackMenuRow(
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Medium,
                 ),
-                color = Color.White,
+                color = themeTokens.onSurfacePrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -443,7 +454,7 @@ internal fun TrackMenuRow(
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.5.sp),
-                    color = Color.White.copy(alpha = 0.62f),
+                    color = themeTokens.onSurfaceSecondary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )

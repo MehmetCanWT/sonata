@@ -604,7 +604,7 @@ impl BackendEngine {
                 self.playback.paused = false;
                 self.pos_anchor = Some((self.playback.position_secs, Instant::now()));
                 if was_starting {
-                    if let Some(track) = self.playback.current_track() {
+                    let telemetry = if let Some(track) = self.playback.current_track() {
                         tracing::info!(
                             event = "playing",
                             client = "desktop",
@@ -618,7 +618,33 @@ impl BackendEngine {
                             pending_tasks = self.playback_tasks.pending_count(),
                             "playback started"
                         );
+                        let duration = track.duration_secs;
+                        let vid = track.id.clone();
                         self.status_line = format!("Playing: {} — {}", track.title, track.artist);
+                        Some((vid, duration))
+                    } else {
+                        None
+                    };
+                    if let Some((vid, duration)) = telemetry {
+                        let ytm = self.ytm.clone();
+                        let playlist_id = self
+                            .playlist_id
+                            .as_ref()
+                            .filter(|_| self.playlist_tracks.iter().any(|t| t.id == vid))
+                            .cloned();
+                        tokio::spawn(async move {
+                            if let Err(err) = ytm
+                                .report_playback(&vid, playlist_id.as_deref(), duration)
+                                .await
+                            {
+                                tracing::debug!(
+                                    client = "desktop",
+                                    track_id = %vid,
+                                    error = %err,
+                                    "ytm playback reporting failed"
+                                );
+                            }
+                        });
                     }
                 }
                 self.start_hifi_upgrade();

@@ -69,13 +69,15 @@ import dev.sonata.android.backdrop.drawBackdrop
 import dev.sonata.android.backdrop.effects.blur
 import dev.sonata.android.data.ActiveDownload
 import dev.sonata.android.isGlassSupported
+import dev.sonata.android.liquidGlass
 import dev.sonata.android.ui.CARD_ART_PX
 import dev.sonata.android.ui.ROW_ART_PX
-import dev.sonata.android.ui.SonataAccent
 import dev.sonata.android.ui.SonataIcons
 import dev.sonata.android.ui.artworkAt
 import dev.sonata.android.ui.rememberArtworkRequest
+import dev.sonata.android.ui.theme.LocalLunariaColors
 import dev.sonata.android.ui.theme.SonataRadioWavesIcon
+import dev.sonata.android.ui.theme.sonataSpecularRim
 import uniffi.sonata_android.AndroidTrack
 import kotlin.math.roundToInt
 
@@ -102,11 +104,6 @@ sealed interface HeldContextTarget {
         override val anchorBounds: Rect? = null,
     ) : HeldContextTarget
 }
-
-private val HeldOverlayDim = Color(0xA806060A)
-private val HeldOverlayFallback = Color(0xDC08080C)
-private val HeldCardSurface = Color(0xEB131317)
-private val HeldCardBorder = Color.White.copy(alpha = 0.16f)
 
 /**
  * Full-screen iOS-style held context menu rendered as a sibling overlay outside
@@ -166,10 +163,13 @@ fun HeldContextMenu(
         modifier = modifier.fillMaxSize(),
     ) {
         val activeTarget = target ?: return@AnimatedVisibility
+        val themeTokens = LocalLunariaColors.current
         val targetBackdrop = backdrop ?: LocalAppBackdrop.current
         val glassOn = LocalLiquidGlassEnabled.current && isGlassSupported() && !LocalReduceDynamicBlur.current
         val density = LocalDensity.current
         val outsideInteraction = remember { MutableInteractionSource() }
+        val overlayDim = if (themeTokens.isDark) Color(0x9C06060A) else Color(0x521B142B)
+        val overlayFallback = themeTokens.eclipseBase.copy(alpha = 0.90f)
 
         val blurOverlayModifier = if (glassOn) {
             val blurPx = with(density) { 26.dp.toPx() } * 0.20f
@@ -181,13 +181,13 @@ fun HeldContextMenu(
                     effects = { blur(blurPx) },
                     highlight = null,
                     shadow = null,
-                    onDrawSurface = { drawRect(HeldOverlayDim) },
+                    onDrawSurface = { drawRect(overlayDim) },
                     backdropScale = 0.20f,
                 )
         } else {
             Modifier
                 .fillMaxSize()
-                .background(HeldOverlayFallback)
+                .background(overlayFallback)
         }
 
         BoxWithConstraints(
@@ -287,13 +287,41 @@ fun HeldContextMenu(
 
 @Composable
 private fun HeldLiftedPreviewCard(target: HeldContextTarget) {
-    val previewShape = remember { RoundedCornerShape(18.dp) }
+    val themeTokens = LocalLunariaColors.current
+    val glassOn = LocalLiquidGlassEnabled.current && isGlassSupported() && !LocalReduceDynamicBlur.current
+    val previewShape = remember(themeTokens.isViolet) {
+        RoundedCornerShape(if (themeTokens.isViolet) 16.dp else 22.dp)
+    }
     val cardInteraction = remember { MutableInteractionSource() }
     val blockClickModifier = Modifier.clickable(
         interactionSource = cardInteraction,
         indication = null,
         onClick = {},
     )
+    val surfaceModifier = if (glassOn) {
+        Modifier
+            .shadow(
+                elevation = 20.dp,
+                shape = previewShape,
+                clip = false,
+                ambientColor = themeTokens.glassShadowColor,
+                spotColor = themeTokens.glassShadowColor,
+            )
+            .liquidGlass(shape = previewShape, surfaceTint = themeTokens.glassTint)
+            .sonataSpecularRim(shape = previewShape, strokeWidth = 0.75.dp)
+    } else {
+        Modifier
+            .shadow(
+                elevation = 20.dp,
+                shape = previewShape,
+                clip = false,
+                ambientColor = themeTokens.glassShadowColor,
+                spotColor = themeTokens.glassShadowColor,
+            )
+            .clip(previewShape)
+            .background(themeTokens.eclipseSurface.copy(alpha = 0.96f), previewShape)
+            .border(0.75.dp, themeTokens.cardStroke, previewShape)
+    }
 
     when (target) {
         is HeldContextTarget.TrackRow -> {
@@ -301,10 +329,7 @@ private fun HeldLiftedPreviewCard(target: HeldContextTarget) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .shadow(20.dp, previewShape, clip = false)
-                    .clip(previewShape)
-                    .background(HeldCardSurface, previewShape)
-                    .border(0.5.dp, HeldCardBorder, previewShape)
+                    .then(surfaceModifier)
                     .then(blockClickModifier)
                     .padding(horizontal = 14.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -313,7 +338,7 @@ private fun HeldLiftedPreviewCard(target: HeldContextTarget) {
                     Text(
                         text = target.trackNumber.toString(),
                         style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
-                        color = Color.White.copy(alpha = 0.65f),
+                        color = themeTokens.onSurfaceSecondary,
                         modifier = Modifier.width(24.dp),
                     )
                     Spacer(Modifier.width(8.dp))
@@ -324,8 +349,8 @@ private fun HeldLiftedPreviewCard(target: HeldContextTarget) {
                         modifier = Modifier
                             .size(46.dp)
                             .clip(RoundedCornerShape(9.dp))
-                            .background(Color.White.copy(alpha = 0.08f))
-                            .border(0.5.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(9.dp)),
+                            .background(themeTokens.eclipseCard)
+                            .border(0.5.dp, themeTokens.cardStroke, RoundedCornerShape(9.dp)),
                         contentAlignment = Alignment.Center,
                     ) {
                         if (thumbRequest != null) {
@@ -339,7 +364,7 @@ private fun HeldLiftedPreviewCard(target: HeldContextTarget) {
                             Icon(
                                 imageVector = SonataIcons.MusicNote,
                                 contentDescription = null,
-                                tint = Color.White.copy(alpha = 0.55f),
+                                tint = themeTokens.onSurfaceSecondary,
                                 modifier = Modifier.size(20.dp),
                             )
                         }
@@ -357,7 +382,7 @@ private fun HeldLiftedPreviewCard(target: HeldContextTarget) {
                                 modifier = Modifier
                                     .size(14.dp)
                                     .clip(RoundedCornerShape(3.dp))
-                                    .background(Color.White.copy(alpha = 0.24f)),
+                                    .background(themeTokens.onSurfaceSecondary.copy(alpha = 0.24f)),
                                 contentAlignment = Alignment.Center,
                             ) {
                                 Text(
@@ -366,7 +391,7 @@ private fun HeldLiftedPreviewCard(target: HeldContextTarget) {
                                         fontSize = 9.sp,
                                         fontWeight = FontWeight.Bold,
                                     ),
-                                    color = Color.White,
+                                    color = themeTokens.onSurfacePrimary,
                                 )
                             }
                         }
@@ -376,7 +401,7 @@ private fun HeldLiftedPreviewCard(target: HeldContextTarget) {
                                 fontSize = 15.5.sp,
                                 fontWeight = FontWeight.SemiBold,
                             ),
-                            color = Color.White,
+                            color = themeTokens.onSurfacePrimary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -386,7 +411,7 @@ private fun HeldLiftedPreviewCard(target: HeldContextTarget) {
                         Text(
                             text = track.artist,
                             style = MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp),
-                            color = Color.White.copy(alpha = 0.65f),
+                            color = themeTokens.onSurfaceSecondary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -398,7 +423,7 @@ private fun HeldLiftedPreviewCard(target: HeldContextTarget) {
                     Text(
                         text = target.durationText,
                         style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.5.sp),
-                        color = Color.White.copy(alpha = 0.56f),
+                        color = themeTokens.onSurfaceSecondary,
                     )
                 }
             }
@@ -412,10 +437,7 @@ private fun HeldLiftedPreviewCard(target: HeldContextTarget) {
                     modifier = Modifier
                         .width(216.dp)
                         .height(288.dp)
-                        .shadow(24.dp, previewShape, clip = false)
-                        .clip(previewShape)
-                        .background(HeldCardSurface, previewShape)
-                        .border(0.5.dp, HeldCardBorder, previewShape)
+                        .then(surfaceModifier)
                         .then(blockClickModifier),
                 ) {
                     if (coverReq != null) {
@@ -432,8 +454,8 @@ private fun HeldLiftedPreviewCard(target: HeldContextTarget) {
                             .background(
                                 Brush.verticalGradient(
                                     0.42f to Color.Transparent,
-                                    0.72f to Color.Black.copy(alpha = 0.68f),
-                                    1.0f to Color.Black.copy(alpha = 0.94f),
+                                    0.72f to themeTokens.heroCardScrimColor.copy(alpha = 0.72f),
+                                    1.0f to themeTokens.heroCardScrimColor.copy(alpha = 0.94f),
                                 ),
                             ),
                     )
@@ -450,7 +472,7 @@ private fun HeldLiftedPreviewCard(target: HeldContextTarget) {
                                     fontSize = 11.5.sp,
                                     fontWeight = FontWeight.Medium,
                                 ),
-                                color = Color.White.copy(alpha = 0.68f),
+                                color = Color.White.copy(alpha = 0.74f),
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -469,7 +491,7 @@ private fun HeldLiftedPreviewCard(target: HeldContextTarget) {
                             Text(
                                 text = target.subtitle,
                                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
-                                color = Color.White.copy(alpha = 0.72f),
+                                color = Color.White.copy(alpha = 0.78f),
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -480,10 +502,7 @@ private fun HeldLiftedPreviewCard(target: HeldContextTarget) {
                 Column(
                     modifier = Modifier
                         .width(166.dp)
-                        .shadow(22.dp, previewShape, clip = false)
-                        .clip(previewShape)
-                        .background(HeldCardSurface, previewShape)
-                        .border(0.5.dp, HeldCardBorder, previewShape)
+                        .then(surfaceModifier)
                         .then(blockClickModifier)
                         .padding(10.dp),
                 ) {
@@ -492,7 +511,7 @@ private fun HeldLiftedPreviewCard(target: HeldContextTarget) {
                             .fillMaxWidth()
                             .aspectRatio(1f)
                             .clip(RoundedCornerShape(12.dp))
-                            .background(Color(0xFF1E1E24)),
+                            .background(themeTokens.eclipseCard),
                         contentAlignment = Alignment.Center,
                     ) {
                         if (coverReq != null) {
@@ -506,7 +525,7 @@ private fun HeldLiftedPreviewCard(target: HeldContextTarget) {
                             Icon(
                                 imageVector = SonataIcons.MusicNote,
                                 contentDescription = null,
-                                tint = Color.White.copy(alpha = 0.45f),
+                                tint = themeTokens.onSurfaceSecondary,
                                 modifier = Modifier.size(34.dp),
                             )
                         }
@@ -518,7 +537,7 @@ private fun HeldLiftedPreviewCard(target: HeldContextTarget) {
                             fontSize = 13.5.sp,
                             fontWeight = FontWeight.SemiBold,
                         ),
-                        color = Color.White,
+                        color = themeTokens.onSurfacePrimary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -526,7 +545,7 @@ private fun HeldLiftedPreviewCard(target: HeldContextTarget) {
                         Text(
                             text = target.subtitle,
                             style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
-                            color = Color.White.copy(alpha = 0.62f),
+                            color = themeTokens.onSurfaceSecondary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -566,16 +585,34 @@ private fun HeldActionMenuCard(
     onOpenCollection: (HeldContextTarget.AlbumOrPlaylistCard) -> Unit,
     onShareCollection: (HeldContextTarget.AlbumOrPlaylistCard) -> Unit,
 ) {
-    val menuShape = remember { RoundedCornerShape(24.dp) }
+    val themeTokens = LocalLunariaColors.current
+    val glassOn = LocalLiquidGlassEnabled.current && isGlassSupported() && !LocalReduceDynamicBlur.current
+    val menuShape = remember(themeTokens.isViolet) {
+        RoundedCornerShape(if (themeTokens.isViolet) 20.dp else 26.dp)
+    }
     val cardInteraction = remember { MutableInteractionSource() }
+    val baseModifier = Modifier
+        .width(256.dp)
+        .shadow(
+            elevation = 24.dp,
+            shape = menuShape,
+            clip = false,
+            ambientColor = themeTokens.glassShadowColor,
+            spotColor = themeTokens.glassShadowColor,
+        )
+    val menuSurfaceModifier = if (glassOn) {
+        baseModifier
+            .liquidGlass(shape = menuShape, surfaceTint = themeTokens.glassTint)
+            .sonataSpecularRim(shape = menuShape, strokeWidth = 0.75.dp)
+    } else {
+        baseModifier
+            .clip(menuShape)
+            .background(themeTokens.eclipseSurface.copy(alpha = 0.96f), menuShape)
+            .border(0.75.dp, themeTokens.cardStroke, menuShape)
+    }
 
     Column(
-        modifier = Modifier
-            .width(256.dp)
-            .shadow(24.dp, menuShape, clip = false)
-            .clip(menuShape)
-            .background(HeldCardSurface, menuShape)
-            .border(0.5.dp, HeldCardBorder, menuShape)
+        modifier = menuSurfaceModifier
             .clickable(
                 interactionSource = cardInteraction,
                 indication = null,
@@ -595,7 +632,7 @@ private fun HeldActionMenuCard(
                     TrackQuickTile(
                         icon = if (isLiked) SonataIcons.StarFilled else SonataIcons.Star,
                         label = if (isLiked) "Liked" else "Like",
-                        tint = if (isLiked) SonataAccent else Color.White,
+                        tint = if (isLiked) themeTokens.petalLavender else themeTokens.onSurfacePrimary,
                         onClick = {
                             onToggleLike(track)
                             onDismiss()
@@ -605,7 +642,7 @@ private fun HeldActionMenuCard(
                     TrackQuickTile(
                         icon = TrackDislikeIcon,
                         label = "Dislike",
-                        tint = if (isDisliked) SonataAccent else Color.White,
+                        tint = if (isDisliked) themeTokens.petalLavender else themeTokens.onSurfacePrimary,
                         onClick = {
                             onToggleDislike(track)
                             onDismiss()
@@ -615,7 +652,7 @@ private fun HeldActionMenuCard(
                     TrackQuickTile(
                         icon = TrackShareIcon,
                         label = "Share",
-                        tint = Color.White,
+                        tint = themeTokens.onSurfacePrimary,
                         onClick = {
                             onDismiss()
                             onShareTrack(track)
@@ -677,7 +714,7 @@ private fun HeldActionMenuCard(
                 TrackMenuRow(
                     icon = if (isDownloaded) SonataIcons.Check else SonataIcons.Download,
                     title = downloadTitle,
-                    tint = if (isDownloaded) SonataAccent else Color.White,
+                    tint = if (isDownloaded) themeTokens.petalLavender else themeTokens.onSurfacePrimary,
                     onClick = {
                         onDownloadTrack(track)
                         onDismiss()

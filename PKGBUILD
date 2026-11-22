@@ -1,6 +1,6 @@
 # Maintainer: MehmetCanWT
 pkgname=sonata
-pkgver=1.0.1
+pkgver=1.0.2
 pkgrel=1
 pkgdesc="Rust terminal music player for YouTube Music and Spotify"
 arch=('x86_64' 'aarch64')

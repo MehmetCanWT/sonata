@@ -271,6 +271,10 @@ impl StreamResolver {
                         self.cache_average_bitrate(&track.id, &candidate.badge);
                         return Some(local);
                     }
+                    if cfg!(target_os = "android") {
+                        self.cache_average_bitrate(&track.id, &candidate.badge);
+                        return Some(candidate);
+                    }
                 }
             }
         }

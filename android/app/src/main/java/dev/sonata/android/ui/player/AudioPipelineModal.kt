@@ -41,7 +41,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.sonata.android.data.AudioPipelineInfo
-import dev.sonata.android.ui.theme.LunariaColors
+import dev.sonata.android.ui.theme.LocalLunariaColors
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -61,33 +61,31 @@ private val SONATA_EQ_PRESETS = listOf(
 
 private val EQ_BAND_LABELS = listOf("60 Hz", "230 Hz", "910 Hz", "3.6 kHz", "14 kHz")
 
-private val PipelineSheetBg = Color(0xFF121216)
-private val PipelineCardBg = Color(0xFF1C1C22)
-private val PipelineCardBorder = Color(0xFF2C2C35)
-private val PipelineActiveLavender = LunariaColors.PetalLavender
-private val PipelineMistBlue = LunariaColors.LunarMist
-private val PipelineMoonGlow = LunariaColors.MoonGlow
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AudioPipelineModal(
     info: AudioPipelineInfo,
     onDismiss: () -> Unit,
 ) {
+    val themeTokens = LocalLunariaColors.current
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val sheetBg = themeTokens.eclipseSurface
+    val activeAccent = themeTokens.petalLavender
+    val mistAccent = themeTokens.lunarMist
+    val glowAccent = themeTokens.moonGlow
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = PipelineSheetBg,
-        contentColor = Color.White,
+        containerColor = sheetBg,
+        contentColor = themeTokens.onSurfacePrimary,
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
         dragHandle = null,
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(PipelineSheetBg)
+                .background(sheetBg)
                 .navigationBarsPadding()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp, vertical = 20.dp),
@@ -105,19 +103,19 @@ fun AudioPipelineModal(
                             fontSize = 22.sp,
                             fontWeight = FontWeight.Bold,
                         ),
-                        color = Color.White,
+                        color = themeTokens.onSurfacePrimary,
                     )
                     Spacer(Modifier.height(2.dp))
                     Text(
                         text = "Live 4-stage playback telemetry",
                         style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFF8E8E93),
+                        color = themeTokens.onSurfaceSecondary,
                     )
                 }
                 StatusBadge(
                     label = if (info.isBitTransparentDsp) "Bypassed" else "DSP Active",
                     highlighted = !info.isBitTransparentDsp,
-                    accent = if (info.isBitTransparentDsp) PipelineMistBlue else PipelineActiveLavender,
+                    accent = if (info.isBitTransparentDsp) mistAccent else activeAccent,
                 )
             }
 
@@ -136,7 +134,7 @@ fun AudioPipelineModal(
                 secondary = deliveryTag,
                 badgeLabel = if (info.fromOfflineDownload || info.fromCache) "Cached" else "Live",
                 badgeActive = info.fromOfflineDownload || info.fromCache,
-                accent = PipelineMistBlue,
+                accent = mistAccent,
             )
 
             // Stage 2: Decoder
@@ -148,7 +146,7 @@ fun AudioPipelineModal(
                 secondary = "${info.sampleRateLabel} · ${info.channelLabel}",
                 badgeLabel = "Active",
                 badgeActive = true,
-                accent = PipelineActiveLavender,
+                accent = activeAccent,
             )
 
             // Stage 3: Processing / DSP
@@ -171,7 +169,7 @@ fun AudioPipelineModal(
                 },
                 badgeLabel = if (activeStages.isEmpty()) "Bypass" else "Active",
                 badgeActive = activeStages.isNotEmpty(),
-                accent = PipelineMoonGlow,
+                accent = glowAccent,
             )
 
             // Stage 4: Output
@@ -182,7 +180,7 @@ fun AudioPipelineModal(
                 secondary = "${info.sampleRateLabel} · ${info.channelLabel}",
                 badgeLabel = "Active",
                 badgeActive = true,
-                accent = PipelineActiveLavender,
+                accent = activeAccent,
             )
 
             Spacer(modifier = Modifier.height(6.dp))
@@ -509,15 +507,16 @@ private fun PipelineStageCard(
     badgeActive: Boolean,
     accent: Color,
 ) {
+    val themeTokens = LocalLunariaColors.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(PipelineCardBg)
+            .clip(RoundedCornerShape(if (themeTokens.isViolet) 14.dp else 18.dp))
+            .background(themeTokens.eclipseCard)
             .border(
                 width = 0.5.dp,
-                color = PipelineCardBorder,
-                shape = RoundedCornerShape(16.dp),
+                color = themeTokens.cardStroke,
+                shape = RoundedCornerShape(if (themeTokens.isViolet) 14.dp else 18.dp),
             )
             .padding(horizontal = 14.dp, vertical = 13.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -545,7 +544,7 @@ private fun PipelineStageCard(
                     fontSize = 10.5.sp,
                     fontWeight = FontWeight.Bold,
                 ),
-                color = Color(0xFF8E8E93),
+                color = themeTokens.onSurfaceSecondary,
                 letterSpacing = 0.8.sp,
             )
             Text(
@@ -554,14 +553,14 @@ private fun PipelineStageCard(
                     fontSize = 15.sp,
                     fontWeight = FontWeight.SemiBold,
                 ),
-                color = Color.White,
+                color = themeTokens.onSurfacePrimary,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
                 text = secondary,
                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.5.sp),
-                color = Color(0xFFAEAEB2),
+                color = themeTokens.onSurfaceSecondary,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -569,7 +568,7 @@ private fun PipelineStageCard(
         StatusBadge(
             label = badgeLabel,
             highlighted = badgeActive,
-            accent = if (badgeActive) accent else Color(0xFF8E8E93),
+            accent = if (badgeActive) accent else themeTokens.onSurfaceSecondary,
         )
     }
 }

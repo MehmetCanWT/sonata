@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-11-22
+
+### Added
+
+- **Dual `Violet` & `Moonflower` Themes (Light & Dark, Default = `Violet` + `System`)**: Split theme styling into dedicated modular theme definitions (`VioletTheme.kt`, `MoonflowerTheme.kt`) with distinct light and dark atmospheric canvases, typography treatments, layout shapes, and Liquid Glass surfaces.
+- **Pinkish Liquid Glass Navigation Pill (`GlassSelectionPill.kt`)**: Added refractive pinkish Liquid Glass styling for the active bottom navigation tab pill and translucent bottom chrome in both `Violet` and `Moonflower` light/dark modes.
+- **Theme-Specific `"YOUR LISTENING EXPERIENCE"` Raster Artwork**: Generated high-resolution `1200x756` PNG illustrations (`bg_listening_exp_violet*.png` purple moon editions and `bg_listening_exp_moonflower*.png` pink blooming flower editions) in `drawable-nodpi` for Library summary cards.
+- **YouTube Music Playback Reporting (`report_playback`) & Live `Library -> Artists` Sync**: Wired YouTube Music playback history telemetry across `sonata-core`, `sonata-tui`, `sonata-desktop`, and `sonata-android` (including YouTube Music `videoId` resolution for JioSaavn-upgraded streams so Annual Replay / Watch History stays accurate), plus immediate promotion of played artists to the top of `Library -> Artists`.
+- **Top-Right `[History | Avatar]` Liquid Glass Capsule & `ListeningHistoryScreen`**: Removed the Home top-left moon logo, added a Liquid Glass listening history button next to the profile avatar on Home, and introduced a dedicated `ListeningHistoryScreen`.
+- **Visual Share Sheet (`SonataShareSheet.kt`)**: Added artwork-and-theme-reactive preview cards tailored per Track, Album, Playlist, and Artist with a subtle bottom-right Sonata watermark and one-tap **Share Link**, **Share Image** (`FileProvider`), and **Save Image** (`Pictures/Sonata`) actions.
+- **15 Unique Centered `Find Your Mood` Animations & Moon Badges**: Gave every mood card its own seamlessly looping centered artwork animation (`SonataAnimatedArtworks.kt`) with small top-right moon emblem badges across `Top Picks for You` and `Find Your Mood`.
+
+### Changed
+
+- **Background Quality Upgrade for Cached & Offline Tracks**: Unified `launchBackgroundQualityUpgrade` in `SonataViewModel.kt` so cached and offline-downloaded tracks still check for higher-bitrate streams matching the user's `AudioQualityTier` and seamlessly upgrade playback.
+- **Modular Android UI Architecture & Streamlined Dependencies**: Split oversized Android screens into focused components (`HomeScreen.kt`, `ExploreScreen.kt`, `LibraryScreen.kt`, `DetailScreen.kt`, `NowPlayingScreen.kt`, `SearchScreen.kt`, `SonataNavigationChrome.kt`, `SonataIcons.kt`, `SonataPalette.kt`, `SonataShimmer.kt`), enabled Gradle build/configuration caches on JDK 21, and removed F-Droid/IzzyOnDroid/Fastlane metadata plus in-app `REQUEST_INSTALL_PACKAGES` permission (updates open external browser download).
+- **Refreshed `Radio`, `Explore` & `Settings` Layouts**: Removed stale caching and merged/deduplicated `New Releases` across `Explore`, filled out `Radio` mixes density, refined the Settings hub, added progressive blur dissolve on `ArtistScreen` hero headers, and exact-fitted `Top Picks for You` and `Find Your Mood` rows.
+
+### Fixed
+
+- **Account Switching WebView Reset**: Cleared WebView cookies, `WebStorage`, cache, and history asynchronously before launching Google Sign-In (`prompt=select_account`) and gated auto-capture on visiting the auth flow so switching accounts never bounces back into the previous session.
+- **Sticky Share Notification Banner**: Auto-cleared the share save status notification after 2 seconds so `"Saved image to Pictures/Sonata"` does not persist across tab switches.
+- **Detail Header Text/Cover Overlap & Library Artist Keys**: Refactored `SonataSplitHeroHeader` (`SonataCards.kt`, `DetailScreen.kt`) so titles never overlap cover art or placeholder icons on Downloads, Albums, and Playlists, and fixed duplicate LazyRow keys when synthesizing un-enriched recent artist cards in `LibraryScreen.kt`.
+
 ## [1.0.1] - 2026-11-22
 
 ### Added
@@ -79,6 +103,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Initial GPUI Wayland desktop client (`sonata-desktop`) with ambient glass shaders, MPRIS2, System Tray, and `now_playing.json` export.
 - Arch Linux `PKGBUILD` and `PKGBUILD.desktop` packaging.
 
-[Unreleased]: https://github.com/MehmetCanWT/sonata/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/MehmetCanWT/sonata/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/MehmetCanWT/sonata/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/MehmetCanWT/sonata/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/MehmetCanWT/sonata/releases/tag/v1.0.0

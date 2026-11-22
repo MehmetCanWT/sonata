@@ -243,6 +243,12 @@ class PlaybackService : MediaSessionService() {
             isPlaying: Boolean,
         ) {
             publishSourceOnly(exoPlayer, simpleCache)
+            dev.sonata.android.widget.SonataWidgetUpdater.pushPlaybackState(
+                context = this@PlaybackService,
+                isPlaying = isPlaying,
+                positionMs = exoPlayer.currentPosition.coerceAtLeast(0L),
+                durationMs = exoPlayer.duration.coerceAtLeast(0L),
+            )
         }
 
         override fun onAudioSessionIdChanged(
@@ -358,6 +364,17 @@ class PlaybackService : MediaSessionService() {
             codecs.isNotBlank() -> codecs.uppercase(Locale.ROOT)
             else -> "PCM"
         }
+    }
+
+    internal fun togglePlayPauseFromWidget(): Boolean {
+        val player = exoPlayerInstance ?: return false
+        if (player.mediaItemCount <= 0) return false
+        if (player.isPlaying) {
+            player.pause()
+        } else {
+            player.play()
+        }
+        return true
     }
 
     internal fun applyPlaybackSpeedInternal(speed: Float) {

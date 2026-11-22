@@ -11,12 +11,12 @@ android {
     compileSdk = 35
     ndkVersion = "27.2.12479018"
 
-    val appVersionName = (project.findProperty("sonataVersion") as String?)?.trim().takeIf { !it.isNullOrEmpty() } ?: "1.0.1"
-    val appVersionCode = (project.findProperty("sonataVersionCode") as String?)?.toIntOrNull() ?: 10001
+    val appVersionName = (project.findProperty("sonataVersion") as String?)?.trim().takeIf { !it.isNullOrEmpty() } ?: "1.0.2"
+    val appVersionCode = (project.findProperty("sonataVersionCode") as String?)?.toIntOrNull() ?: 10002
 
     defaultConfig {
         applicationId = "dev.sonata.android"
-        minSdk = 26
+        minSdk = 31
         targetSdk = 35
         versionCode = appVersionCode
         versionName = appVersionName
@@ -56,6 +56,12 @@ android {
     }
 
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+            ndk {
+                abiFilters += listOf("x86_64")
+            }
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
@@ -68,12 +74,12 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
     }
 
     kotlinOptions {
-        jvmTarget = "17"
+        jvmTarget = "21"
     }
 
     buildFeatures {
@@ -86,8 +92,7 @@ android {
         }
     }
 
-    // Omit Google Play's encrypted dependency metadata block for F-Droid / IzzyOnDroid
-    // compliance and deterministic, reproducible APK builds.
+    // Omit encrypted dependency metadata block for deterministic, reproducible APK builds.
     dependenciesInfo {
         includeInApk = false
         includeInBundle = false
@@ -114,16 +119,13 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-util")
-    implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.palette:palette-ktx:1.0.0")
 
     implementation("androidx.media3:media3-exoplayer:1.6.1")
     implementation("androidx.media3:media3-exoplayer-hls:1.6.1")
-    implementation("androidx.media3:media3-datasource:1.6.1")
     implementation("androidx.media3:media3-database:1.6.1")
     implementation("androidx.media3:media3-session:1.6.1")
-    implementation("androidx.media3:media3-common:1.6.1")
 
     implementation("io.coil-kt.coil3:coil-compose:3.1.0")
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.1.0")

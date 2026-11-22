@@ -453,7 +453,11 @@ fun CanvasVideoSurface(
     }
 
     LaunchedEffect(isVisible, isResumed, activeUrl) {
-        exoPlayer.playWhenReady = isVisible && isResumed
+        val shouldPlay = isVisible && isResumed
+        exoPlayer.playWhenReady = shouldPlay
+        if (shouldPlay && exoPlayer.playbackState == Player.STATE_IDLE && exoPlayer.mediaItemCount > 0) {
+            exoPlayer.prepare()
+        }
     }
 
     val fadeAlpha by animateFloatAsState(

@@ -13,8 +13,12 @@ package dev.sonata.android.floatingtabbar
 
 import android.os.Build
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
@@ -28,6 +32,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.GraphicsLayerScope
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.layout
@@ -51,7 +56,7 @@ import kotlin.math.roundToInt
 import kotlin.math.sign
 
 /** How much taller than the bar the pill stands while it is lifted. */
-internal val PILL_GROW_HEIGHT = 9.dp
+internal val PILL_GROW_HEIGHT = 6.dp
 
 /**
  * The selection pill's physics, owned by the tab bar and handed to whichever
@@ -496,14 +501,48 @@ internal fun Modifier.pillPlacement(center: () -> Offset, size: () -> Size): Mod
         }
     }
 
-/** The flat pill: a fill and nothing else. */
+/** The flat pill: a translucent pinkish Liquid Glass capsule with a lens specular dome and rim. */
 @Composable
 internal fun FlatSelectionPill(
     color: Color,
     modifier: Modifier,
+    shape: Shape = RoundedCornerShape(percent = 50),
+    borderColor: Color = Color.White.copy(alpha = 0.25f),
 ) {
-    val shape = remember { RoundedCornerShape(percent = 50) }
-    Box(modifier.background(color, shape))
+    val bodyBrush = Brush.verticalGradient(
+        0.0f to Color.White.copy(alpha = 0.30f),
+        0.35f to color.copy(alpha = (color.alpha * 0.62f).coerceIn(0.14f, 0.30f)),
+        0.78f to color.copy(alpha = (color.alpha * 0.92f).coerceIn(0.20f, 0.38f)),
+        1.0f to Color(0xFFF482C8).copy(alpha = (color.alpha * 1.15f).coerceIn(0.24f, 0.44f)),
+    )
+    val rimBrush = Brush.linearGradient(
+        listOf(
+            borderColor,
+            Color(0xFFF9B2DD).copy(alpha = 0.48f),
+            borderColor.copy(alpha = 0.72f),
+        ),
+    )
+    Box(
+        modifier
+            .clip(shape)
+            .background(bodyBrush, shape)
+            .drawBehind {
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            Color.White.copy(alpha = 0.34f),
+                            Color(0xFFFFCBE9).copy(alpha = 0.10f),
+                            Color.Transparent,
+                        ),
+                        center = Offset(size.width * 0.5f, size.height * 0.14f),
+                        radius = size.width * 0.62f,
+                    ),
+                    radius = size.width * 0.62f,
+                    center = Offset(size.width * 0.5f, size.height * 0.14f),
+                )
+            }
+            .border(1.1.dp, rimBrush, shape),
+    )
 }
 
 /**
@@ -534,7 +573,7 @@ internal fun GlassSelectionPill(
     val backdrop = remember(page, barGlass, tabRow, fillColor, glassPerformance) {
         SelectionPillBackdrop(page, barGlass, tabRow) {
             if (glassPerformance) fillColor
-            else fillColor.copy(alpha = fillColor.alpha * (1f - motion.material))
+            else fillColor.copy(alpha = fillColor.alpha * (1f - motion.material * 0.68f))
         }
     }
     Box(

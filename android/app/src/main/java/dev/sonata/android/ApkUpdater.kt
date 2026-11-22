@@ -1,46 +1,42 @@
+/*
+ * GitHub Release APK downloader for Sonata Android.
+ *
+ * Downloads the verified release APK into the user's public Downloads folder via
+ * MediaStore.Downloads so the user can inspect and install it manually whenever ready,
+ * requiring zero REQUEST_INSTALL_PACKAGES permission or FileProvider surface.
+ */
 package dev.sonata.android
 
+import android.content.ContentValues
 import android.content.Context
-import android.content.Intent
-import android.net.Uri
-import android.provider.Settings
-import androidx.core.content.FileProvider
+import android.os.Environment
+import android.provider.MediaStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlin.coroutines.coroutineContext
 
-/**
- * Downloads GitHub Release APKs into private cache storage and hands them off
- * to Android's native package installer sheet via FileProvider.
- */
 object ApkUpdater {
-
-    sealed interface InstallOutcome {
-        data object LaunchedInstaller : InstallOutcome
-        data object NeedsUnknownSourcesPermission : InstallOutcome
-    }
 
     suspend fun downloadApk(
         context: Context,
         urlString: String,
         versionLabel: String,
         onProgress: (fraction: Float?, downloadedBytes: Long, totalBytes: Long) -> Unit,
-    ): File = withContext(Dispatchers.IO) {
+    ): String = withContext(Dispatchers.IO) {
         val updatesDir = File(context.cacheDir, "updates").apply { mkdirs() }
-        // Clean previous APKs so cache never accumulates old installers.
         updatesDir.listFiles()?.forEach { old ->
-            if (old.isFile && old.name.endsWith(".apk")) old.delete()
+            if (old.isFile) old.delete()
         }
         val safeVer = versionLabel.replace(Regex("[^A-Za-z0-9._-]"), "_")
-        val tempFile = File(updatesDir, "sonata-v$safeVer.apk.part")
-        val finalFile = File(updatesDir, "sonata-v$safeVer.apk")
+        val fileName = "Sonata-v$safeVer-arm64.apk"
+        val tempFile = File(updatesDir, "$fileName.part")
         tempFile.delete()
-        finalFile.delete()
 
         var currentUrl = urlString
         var redirects = 0
@@ -106,39 +102,35 @@ object ApkUpdater {
             require(tempFile.length() > 100_000L) {
                 "Downloaded APK looks incomplete (${tempFile.length()} bytes)"
             }
-            if (!tempFile.renameTo(finalFile)) {
-                tempFile.copyTo(finalFile, overwrite = true)
-                tempFile.delete()
+
+            // Export cleanly to public Downloads so the user owns manual installation.
+            val resolver = context.contentResolver
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+                put(MediaStore.Downloads.MIME_TYPE, "application/vnd.android.package-archive")
+                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                put(MediaStore.Downloads.IS_PENDING, 1)
             }
-            finalFile
-        } catch (t: Throwable) {
-            tempFile.delete()
-            throw t
+            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: error("Could not create entry in Downloads")
+            try {
+                resolver.openOutputStream(uri)?.use { out ->
+                    FileInputStream(tempFile).use { input ->
+                        input.copyTo(out, bufferSize = 32 * 1024)
+                    }
+                } ?: error("Could not write APK to Downloads")
+                values.clear()
+                values.put(MediaStore.Downloads.IS_PENDING, 0)
+                resolver.update(uri, values, null, null)
+            } catch (t: Throwable) {
+                resolver.delete(uri, null, null)
+                throw t
+            }
+            "Downloads/$fileName"
         } finally {
+            tempFile.delete()
             connection?.disconnect()
         }
-    }
-
-    fun launchInstaller(context: Context, apkFile: File): InstallOutcome {
-        if (!context.packageManager.canRequestPackageInstalls()) {
-            val settingsIntent = Intent(
-                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                Uri.parse("package:${context.packageName}"),
-            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            context.startActivity(settingsIntent)
-            return InstallOutcome.NeedsUnknownSourcesPermission
-        }
-        val apkUri = FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            apkFile,
-        )
-        val installIntent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(apkUri, "application/vnd.android.package-archive")
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        context.startActivity(installIntent)
-        return InstallOutcome.LaunchedInstaller
     }
 
     fun formatBytes(bytes: Long): String {

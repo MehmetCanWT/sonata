@@ -804,6 +804,8 @@ internal open class UniffiVTableCallbackInterfaceAndroidJsCipherSolver(
 
 
 
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -854,6 +856,8 @@ fun uniffi_sonata_android_checksum_method_sonataandroidengine_get_cached_account
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_get_cached_library_playlists(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_is_signed_in(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_report_playback(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_resolve_album_browse_id(
 ): Short
@@ -977,6 +981,8 @@ fun uniffi_sonata_android_fn_method_sonataandroidengine_get_cached_library_playl
 ): RustBuffer.ByValue
 fun uniffi_sonata_android_fn_method_sonataandroidengine_is_signed_in(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Byte
+fun uniffi_sonata_android_fn_method_sonataandroidengine_report_playback(`ptr`: Pointer,`videoId`: RustBuffer.ByValue,`playlistId`: RustBuffer.ByValue,`durationSecs`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 fun uniffi_sonata_android_fn_method_sonataandroidengine_resolve_album_browse_id(`ptr`: Pointer,`albumName`: RustBuffer.ByValue,`artistName`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_sonata_android_fn_method_sonataandroidengine_resolve_artist_browse_id(`ptr`: Pointer,`name`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -1181,6 +1187,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_is_signed_in() != 32775.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_report_playback() != 31540.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_resolve_album_browse_id() != 14269.toShort()) {
@@ -1720,6 +1729,12 @@ public interface SonataAndroidEngineInterface {
     fun `isSignedIn`(): kotlin.Boolean
     
     /**
+     * Reports playback and watchtime telemetry for `video_id` (with optional `playlist_id`)
+     * so YouTube Music updates Listening History (`FEmusic_history`) and yearly Replay stats.
+     */
+    fun `reportPlayback`(`videoId`: kotlin.String, `playlistId`: kotlin.String?, `durationSecs`: kotlin.ULong?)
+    
+    /**
      * Resolves an album title + artist name to its `MPRE...` / `OLAK...` browse ID.
      */
     fun `resolveAlbumBrowseId`(`albumName`: kotlin.String, `artistName`: kotlin.String): kotlin.String?
@@ -2152,6 +2167,22 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
     }
     )
     }
+    
+
+    
+    /**
+     * Reports playback and watchtime telemetry for `video_id` (with optional `playlist_id`)
+     * so YouTube Music updates Listening History (`FEmusic_history`) and yearly Replay stats.
+     */
+    @Throws(SonataAndroidException::class)override fun `reportPlayback`(`videoId`: kotlin.String, `playlistId`: kotlin.String?, `durationSecs`: kotlin.ULong?)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(SonataAndroidException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_report_playback(
+        it, FfiConverterString.lower(`videoId`),FfiConverterOptionalString.lower(`playlistId`),FfiConverterOptionalULong.lower(`durationSecs`),_status)
+}
+    }
+    
     
 
     

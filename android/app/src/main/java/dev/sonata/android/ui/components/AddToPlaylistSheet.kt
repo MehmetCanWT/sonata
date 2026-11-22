@@ -71,7 +71,7 @@ import dev.sonata.android.ui.SonataAccent
 import dev.sonata.android.ui.SonataIcons
 import dev.sonata.android.ui.artworkAt
 import dev.sonata.android.ui.rememberArtworkRequest
-import dev.sonata.android.ui.theme.LunariaColors
+import dev.sonata.android.ui.theme.LocalLunariaColors
 import uniffi.sonata_android.AndroidPlaylist
 import uniffi.sonata_android.AndroidTrack
 
@@ -130,10 +130,11 @@ fun AddToPlaylistSheet(
         }
         val headerRequest = rememberArtworkRequest(headerArtwork, ROW_ART_PX, ROW_ART_PX)
 
+        val themeTokens = LocalLunariaColors.current
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black)
+                .background(themeTokens.pageBackdropBrush)
                 .statusBarsPadding()
                 .navigationBarsPadding(),
         ) {
@@ -149,7 +150,7 @@ fun AddToPlaylistSheet(
                     Icon(
                         imageVector = SonataIcons.Close,
                         contentDescription = "Close",
-                        tint = Color.White,
+                        tint = themeTokens.onSurfacePrimary,
                         modifier = Modifier.size(22.dp),
                     )
                 }
@@ -163,7 +164,7 @@ fun AddToPlaylistSheet(
                     Icon(
                         imageVector = SonataIcons.Check,
                         contentDescription = "Save to playlists",
-                        tint = if (selectedIds.isNotEmpty()) SonataAccent else Color.White.copy(alpha = 0.28f),
+                        tint = if (selectedIds.isNotEmpty()) themeTokens.petalLavender else themeTokens.onSurfaceSecondary.copy(alpha = 0.40f),
                         modifier = Modifier.size(24.dp),
                     )
                 }
@@ -181,8 +182,8 @@ fun AddToPlaylistSheet(
                     modifier = Modifier
                         .size(48.dp)
                         .clip(RoundedCornerShape(8.dp))
-                        .background(Color(0xFF161618))
-                        .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(8.dp)),
+                        .background(themeTokens.eclipseCard)
+                        .border(0.5.dp, themeTokens.cardStroke, RoundedCornerShape(8.dp)),
                     contentAlignment = Alignment.Center,
                 ) {
                     if (headerRequest != null) {
@@ -196,7 +197,7 @@ fun AddToPlaylistSheet(
                         Icon(
                             imageVector = SonataIcons.MusicNote,
                             contentDescription = null,
-                            tint = Color.White.copy(alpha = 0.55f),
+                            tint = themeTokens.onSurfaceSecondary,
                             modifier = Modifier.size(20.dp),
                         )
                     }
@@ -208,7 +209,7 @@ fun AddToPlaylistSheet(
                             fontSize = 15.5.sp,
                             fontWeight = FontWeight.SemiBold,
                         ),
-                        color = Color.White,
+                        color = themeTokens.onSurfacePrimary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -216,7 +217,7 @@ fun AddToPlaylistSheet(
                         Text(
                             text = headerSubtitle,
                             style = MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp),
-                            color = Color.White.copy(alpha = 0.62f),
+                            color = themeTokens.onSurfaceSecondary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -224,7 +225,7 @@ fun AddToPlaylistSheet(
                 }
             }
 
-            HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
+            HorizontalDivider(color = themeTokens.cardStroke)
 
             Text(
                 text = "ADD TO PLAYLIST",
@@ -233,7 +234,7 @@ fun AddToPlaylistSheet(
                     fontWeight = FontWeight.SemiBold,
                     letterSpacing = 0.8.sp,
                 ),
-                color = Color.White.copy(alpha = 0.56f),
+                color = themeTokens.onSurfaceSecondary,
                 modifier = Modifier.padding(horizontal = PAGE_GUTTER, vertical = 12.dp),
             )
 
@@ -253,7 +254,7 @@ fun AddToPlaylistSheet(
                     Icon(
                         imageVector = PlaylistPlusIcon,
                         contentDescription = "New Playlist",
-                        tint = Color.White,
+                        tint = themeTokens.petalLavender,
                         modifier = Modifier.size(22.dp),
                     )
                 }
@@ -263,7 +264,7 @@ fun AddToPlaylistSheet(
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Medium,
                     ),
-                    color = Color.White,
+                    color = themeTokens.onSurfacePrimary,
                 )
             }
 
@@ -321,8 +322,8 @@ fun AddToPlaylistSheet(
                             modifier = Modifier
                                 .size(48.dp)
                                 .clip(RoundedCornerShape(8.dp))
-                                .background(Color(0xFF161618))
-                                .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(8.dp)),
+                                .background(themeTokens.eclipseCard)
+                                .border(0.5.dp, themeTokens.cardStroke, RoundedCornerShape(8.dp)),
                             contentAlignment = Alignment.Center,
                         ) {
                             if (coverReq != null) {
@@ -336,7 +337,7 @@ fun AddToPlaylistSheet(
                                 Icon(
                                     imageVector = SonataIcons.MusicNote,
                                     contentDescription = null,
-                                    tint = Color.White.copy(alpha = 0.55f),
+                                    tint = themeTokens.onSurfaceSecondary,
                                     modifier = Modifier.size(20.dp),
                                 )
                             }
@@ -349,7 +350,7 @@ fun AddToPlaylistSheet(
                                     fontSize = 15.5.sp,
                                     fontWeight = FontWeight.Medium,
                                 ),
-                                color = Color.White,
+                                color = themeTokens.onSurfacePrimary,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -361,7 +362,7 @@ fun AddToPlaylistSheet(
                             Text(
                                 text = subtitleText,
                                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.5.sp),
-                                color = Color.White.copy(alpha = 0.56f),
+                                color = themeTokens.onSurfaceSecondary,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -373,9 +374,9 @@ fun AddToPlaylistSheet(
                                 .clip(CircleShape)
                                 .then(
                                     if (isSelected) {
-                                        Modifier.background(SonataAccent, CircleShape)
+                                        Modifier.background(themeTokens.petalLavender, CircleShape)
                                     } else {
-                                        Modifier.border(1.5.dp, Color.White.copy(alpha = 0.38f), CircleShape)
+                                        Modifier.border(1.5.dp, themeTokens.onSurfaceSecondary.copy(alpha = 0.45f), CircleShape)
                                     },
                                 ),
                             contentAlignment = Alignment.Center,
@@ -384,7 +385,7 @@ fun AddToPlaylistSheet(
                                 Icon(
                                     imageVector = SonataIcons.Check,
                                     contentDescription = "Selected",
-                                    tint = LunariaColors.EclipseBase,
+                                    tint = Color.White,
                                     modifier = Modifier.size(15.dp),
                                 )
                             }
@@ -398,9 +399,9 @@ fun AddToPlaylistSheet(
             var newTitle by remember { mutableStateOf("") }
             AlertDialog(
                 onDismissRequest = { showCreateDialog = false },
-                containerColor = Color(0xFF161618),
-                titleContentColor = Color.White,
-                textContentColor = Color.White.copy(alpha = 0.88f),
+                containerColor = themeTokens.eclipseSurface,
+                titleContentColor = themeTokens.onSurfacePrimary,
+                textContentColor = themeTokens.onSurfaceSecondary,
                 title = {
                     Text(
                         text = "New Playlist",
@@ -412,23 +413,23 @@ fun AddToPlaylistSheet(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
-                            .background(Color(0xFF222226))
-                            .border(0.5.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(12.dp))
+                            .background(themeTokens.eclipseCard)
+                            .border(0.5.dp, themeTokens.cardStroke, RoundedCornerShape(12.dp))
                             .padding(horizontal = 14.dp, vertical = 12.dp),
                     ) {
                         if (newTitle.isEmpty()) {
                             Text(
                                 text = "Playlist title",
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = Color.White.copy(alpha = 0.45f),
+                                color = themeTokens.onSurfaceSecondary.copy(alpha = 0.65f),
                             )
                         }
                         BasicTextField(
                             value = newTitle,
                             onValueChange = { newTitle = it },
                             singleLine = true,
-                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = Color.White),
-                            cursorBrush = SolidColor(SonataAccent),
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = themeTokens.onSurfacePrimary),
+                            cursorBrush = SolidColor(themeTokens.petalLavender),
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
@@ -447,14 +448,14 @@ fun AddToPlaylistSheet(
                     ) {
                         Text(
                             text = "Create",
-                            color = if (newTitle.isNotBlank()) SonataAccent else Color.White.copy(alpha = 0.35f),
+                            color = if (newTitle.isNotBlank()) themeTokens.petalLavender else themeTokens.onSurfaceSecondary.copy(alpha = 0.45f),
                             fontWeight = FontWeight.SemiBold,
                         )
                     }
                 },
                 dismissButton = {
                     TextButton(onClick = { showCreateDialog = false }) {
-                        Text(text = "Cancel", color = Color.White.copy(alpha = 0.72f))
+                        Text(text = "Cancel", color = themeTokens.onSurfaceSecondary)
                     }
                 },
             )

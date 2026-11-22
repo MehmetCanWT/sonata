@@ -10,12 +10,22 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
+ * Structural & aesthetic design theme family for Sonata Android.
+ */
+enum class DesignTheme {
+    VIOLET,
+    MOONFLOWER,
+}
+
+/**
  * Application color theme preference for Sonata Android.
  */
 enum class ThemeMode {
+    VIOLET_LIGHT,
+    VIOLET_DARK,
+    MOONFLOWER_LIGHT,
+    MOONFLOWER_DARK,
     SYSTEM,
-    DARK,
-    LIGHT,
     AMOLED,
 }
 
@@ -55,7 +65,8 @@ enum class DownloadQualityTier {
 @Immutable
 data class SonataSettingsState(
     // Appearance & Glass
-    val themeMode: ThemeMode = ThemeMode.DARK,
+    val designTheme: DesignTheme = DesignTheme.VIOLET,
+    val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val liquidGlassEnabled: Boolean = true,
     val glassPerformance: Boolean = false,
     val reduceDynamicBlur: Boolean = false,
@@ -94,7 +105,19 @@ data class SonataSettingsState(
 
     // Modules
     val jioSaavnEnabled: Boolean = false,
-)
+) {
+    fun resolvedDesignTheme(): DesignTheme = when (themeMode) {
+        ThemeMode.VIOLET_LIGHT, ThemeMode.VIOLET_DARK -> DesignTheme.VIOLET
+        ThemeMode.MOONFLOWER_LIGHT, ThemeMode.MOONFLOWER_DARK -> DesignTheme.MOONFLOWER
+        ThemeMode.SYSTEM, ThemeMode.AMOLED -> designTheme
+    }
+
+    fun isDarkActive(systemDark: Boolean): Boolean = when (themeMode) {
+        ThemeMode.VIOLET_LIGHT, ThemeMode.MOONFLOWER_LIGHT -> false
+        ThemeMode.VIOLET_DARK, ThemeMode.MOONFLOWER_DARK, ThemeMode.AMOLED -> true
+        ThemeMode.SYSTEM -> systemDark
+    }
+}
 
 /**
  * Persistent preference store for Sonata Android backed by [SharedPreferences].
@@ -169,6 +192,7 @@ class SonataPreferences(context: Context) {
         }
 
         val settingsObj = JSONObject().apply {
+            put(KEY_DESIGN_THEME, current.designTheme.name)
             put(KEY_THEME_MODE, current.themeMode.name)
             put(KEY_LIQUID_GLASS_ENABLED, current.liquidGlassEnabled)
             put(KEY_GLASS_PERFORMANCE, current.glassPerformance)
@@ -239,7 +263,8 @@ class SonataPreferences(context: Context) {
 
             val restored = sanitize(
                 SonataSettingsState(
-                    themeMode = parseEnum(settingsObj.optString(KEY_THEME_MODE), defaults.themeMode),
+                    designTheme = parseEnum(settingsObj.optString(KEY_DESIGN_THEME), defaults.designTheme),
+                    themeMode = parseThemeMode(settingsObj.optString(KEY_THEME_MODE), defaults.themeMode),
                     liquidGlassEnabled = settingsObj.optBoolean(KEY_LIQUID_GLASS_ENABLED, defaults.liquidGlassEnabled),
                     glassPerformance = settingsObj.optBoolean(KEY_GLASS_PERFORMANCE, defaults.glassPerformance),
                     reduceDynamicBlur = settingsObj.optBoolean(KEY_REDUCE_DYNAMIC_BLUR, defaults.reduceDynamicBlur),
@@ -319,7 +344,8 @@ class SonataPreferences(context: Context) {
 
         return sanitize(
             SonataSettingsState(
-                themeMode = parseEnum(prefs.getString(KEY_THEME_MODE, null), defaults.themeMode),
+                designTheme = parseEnum(prefs.getString(KEY_DESIGN_THEME, null), defaults.designTheme),
+                themeMode = parseThemeMode(prefs.getString(KEY_THEME_MODE, null), defaults.themeMode),
                 liquidGlassEnabled = prefs.getBoolean(KEY_LIQUID_GLASS_ENABLED, defaults.liquidGlassEnabled),
                 glassPerformance = prefs.getBoolean(KEY_GLASS_PERFORMANCE, defaults.glassPerformance),
                 reduceDynamicBlur = prefs.getBoolean(KEY_REDUCE_DYNAMIC_BLUR, defaults.reduceDynamicBlur),
@@ -375,6 +401,7 @@ class SonataPreferences(context: Context) {
         trackOffsetsOverride: Map<String, Long>? = null,
     ) {
         val editor = prefs.edit()
+            .putString(KEY_DESIGN_THEME, state.designTheme.name)
             .putString(KEY_THEME_MODE, state.themeMode.name)
             .putBoolean(KEY_LIQUID_GLASS_ENABLED, state.liquidGlassEnabled)
             .putBoolean(KEY_GLASS_PERFORMANCE, state.glassPerformance)
@@ -491,6 +518,17 @@ class SonataPreferences(context: Context) {
         }.getOrDefault(fallback)
     }
 
+    private fun parseThemeMode(raw: String?, fallback: ThemeMode): ThemeMode {
+        val normalized = raw?.trim()?.uppercase() ?: return fallback
+        return when (normalized) {
+            "DARK" -> ThemeMode.MOONFLOWER_DARK
+            "LIGHT" -> ThemeMode.MOONFLOWER_LIGHT
+            "ELECTRIC_LAVENDER" -> ThemeMode.VIOLET_DARK
+            "IMPERIAL_VIOLET" -> ThemeMode.VIOLET_LIGHT
+            else -> runCatching { ThemeMode.valueOf(normalized) }.getOrDefault(fallback)
+        }
+    }
+
     private inline fun <reified T : Enum<T>> parseEnum(raw: String?, fallback: T): T {
         if (raw.isNullOrBlank()) return fallback
         return runCatching { enumValueOf<T>(raw.trim().uppercase()) }.getOrDefault(fallback)
@@ -517,6 +555,7 @@ class SonataPreferences(context: Context) {
         private const val BACKUP_KEY_SETTINGS = "settings"
         private const val BACKUP_KEY_TRACK_OFFSETS = "trackLyricOffsets"
 
+        private const val KEY_DESIGN_THEME = "design_theme"
         private const val KEY_THEME_MODE = "theme_mode"
         private const val KEY_LIQUID_GLASS_ENABLED = "liquid_glass_enabled"
         private const val KEY_GLASS_PERFORMANCE = "glass_performance"

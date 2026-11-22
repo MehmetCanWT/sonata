@@ -68,15 +68,9 @@ import dev.sonata.android.ui.CircleGlyph
 import dev.sonata.android.ui.SonataAccent
 import dev.sonata.android.ui.SonataIcons
 import dev.sonata.android.ui.rememberArtworkRequest
-import dev.sonata.android.ui.theme.LunariaColors
+import dev.sonata.android.ui.theme.LocalLunariaColors
 import dev.sonata.android.ui.theme.sonataSpecularRim
 import uniffi.sonata_android.AndroidAccountProfile
-
-private val AccountMenuGlassTint = Color(0xFF14131A).copy(alpha = 0.44f)
-private val AccountMenuFallbackBg = Color(0xFF14121E).copy(alpha = 0.96f)
-private val AccountInnerCardBg = Color.White.copy(alpha = 0.07f)
-private val AccountInnerCardBorder = Color.White.copy(alpha = 0.11f)
-private val AccountIconCircleBg = Color.White.copy(alpha = 0.10f)
 
 /**
  * Floating Liquid Glass Account Menu.
@@ -117,6 +111,10 @@ fun UserMenuSheet(
         modifier = modifier.fillMaxSize(),
     ) {
         val targetBackdrop = backdrop ?: LocalAppBackdrop.current
+        val tokens = LocalLunariaColors.current
+        val innerCardBg = tokens.onSurfacePrimary.copy(alpha = if (tokens.isDark) 0.07f else 0.05f)
+        val innerCardBorder = tokens.cardStroke
+        val iconCircleBg = tokens.onSurfacePrimary.copy(alpha = if (tokens.isDark) 0.10f else 0.08f)
         val outsideInteraction = remember { MutableInteractionSource() }
         val sheetShape = remember { RoundedCornerShape(28.dp) }
         val tileShape = remember { RoundedCornerShape(18.dp) }
@@ -146,18 +144,18 @@ fun UserMenuSheet(
                         .widthIn(max = 460.dp)
                         .fillMaxWidth()
                         .heightIn(max = 680.dp)
-                        .shadow(24.dp, sheetShape, clip = false)
-                        .liquidGlass(shape = sheetShape, surfaceTint = AccountMenuGlassTint)
+                        .shadow(24.dp, sheetShape, clip = false, ambientColor = tokens.glassShadowColor, spotColor = tokens.glassShadowColor)
+                        .liquidGlass(shape = sheetShape, surfaceTint = tokens.glassTint)
                         .sonataSpecularRim(shape = sheetShape, strokeWidth = 0.75.dp)
                 } else {
                     Modifier
                         .widthIn(max = 460.dp)
                         .fillMaxWidth()
                         .heightIn(max = 680.dp)
-                        .shadow(24.dp, sheetShape, clip = false)
+                        .shadow(24.dp, sheetShape, clip = false, ambientColor = tokens.glassShadowColor, spotColor = tokens.glassShadowColor)
                         .clip(sheetShape)
-                        .background(AccountMenuFallbackBg, sheetShape)
-                        .border(0.75.dp, Color.White.copy(alpha = 0.14f), sheetShape)
+                        .background(tokens.eclipseSurface.copy(alpha = 0.96f), sheetShape)
+                        .border(0.75.dp, tokens.cardStroke, sheetShape)
                 }
 
                 val cardInteraction = remember { MutableInteractionSource() }
@@ -180,7 +178,7 @@ fun UserMenuSheet(
                         Text(
                             text = "Account",
                             style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
-                            color = LunariaColors.MoonGlow,
+                            color = tokens.onSurfacePrimary,
                             modifier = Modifier.weight(1f),
                         )
                         CircleGlyph(
@@ -195,8 +193,8 @@ fun UserMenuSheet(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(cardShape)
-                            .background(AccountInnerCardBg)
-                            .border(0.5.dp, AccountInnerCardBorder, cardShape)
+                            .background(innerCardBg)
+                            .border(0.5.dp, innerCardBorder, cardShape)
                             .padding(14.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -210,7 +208,7 @@ fun UserMenuSheet(
                             modifier = Modifier
                                 .size(48.dp)
                                 .clip(CircleShape)
-                                .background(AccountIconCircleBg),
+                                .background(iconCircleBg),
                             contentAlignment = Alignment.Center,
                         ) {
                             if (avatarRequest != null) {
@@ -224,7 +222,7 @@ fun UserMenuSheet(
                                 Icon(
                                     imageVector = SonataIcons.Person,
                                     contentDescription = null,
-                                    tint = Color.White.copy(alpha = 0.90f),
+                                    tint = tokens.onSurfacePrimary,
                                     modifier = Modifier.size(22.dp),
                                 )
                             }
@@ -238,7 +236,7 @@ fun UserMenuSheet(
                                     "Guest Session"
                                 },
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                color = LunariaColors.MoonGlow,
+                                color = tokens.onSurfacePrimary,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -251,7 +249,7 @@ fun UserMenuSheet(
                                     "Sign in to sync library & mixes"
                                 },
                                 style = MaterialTheme.typography.bodySmall,
-                                color = Color.White.copy(alpha = 0.66f),
+                                color = tokens.onSurfaceSecondary,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -261,7 +259,7 @@ fun UserMenuSheet(
                             modifier = Modifier
                                 .clip(pillShape)
                                 .background(
-                                    if (signedIn) Color.White.copy(alpha = 0.14f) else SonataAccent,
+                                    if (signedIn) tokens.onSurfacePrimary.copy(alpha = 0.12f) else tokens.petalLavender,
                                 )
                                 .clickable {
                                     onDismiss()
@@ -272,12 +270,12 @@ fun UserMenuSheet(
                             Text(
                                 text = if (signedIn) "Sign Out" else "Sign In",
                                 style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
-                                color = if (signedIn) Color.White else LunariaColors.EclipseBase,
+                                color = if (signedIn) tokens.onSurfacePrimary else Color.White,
                             )
                         }
                     }
 
-                    // 2x2 Monochrome Action Grid (zero rainbow colors)
+                    // 2x2 Action Grid
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -339,8 +337,8 @@ fun UserMenuSheet(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(cardShape)
-                            .background(AccountInnerCardBg)
-                            .border(0.5.dp, AccountInnerCardBorder, cardShape)
+                            .background(innerCardBg)
+                            .border(0.5.dp, innerCardBorder, cardShape)
                             .padding(14.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
@@ -350,7 +348,7 @@ fun UserMenuSheet(
                                 fontWeight = FontWeight.SemiBold,
                                 letterSpacing = 0.4.sp,
                             ),
-                            color = Color.White.copy(alpha = 0.66f),
+                            color = tokens.onSurfaceSecondary,
                         )
 
                         Row(
@@ -370,16 +368,18 @@ fun UserMenuSheet(
                                 modifier = Modifier.weight(1f),
                             )
                             val themeLabel = when (settings.themeMode) {
+                                ThemeMode.VIOLET_LIGHT -> "Violet Light"
+                                ThemeMode.VIOLET_DARK -> "Violet Dark"
+                                ThemeMode.MOONFLOWER_LIGHT -> "Moonflower Light"
+                                ThemeMode.MOONFLOWER_DARK -> "Moonflower Dark"
                                 ThemeMode.SYSTEM -> "Auto"
-                                ThemeMode.DARK -> "Dark"
                                 ThemeMode.AMOLED -> "AMOLED"
-                                ThemeMode.LIGHT -> "Light"
                             }
                             QuickTogglePill(
                                 label = themeLabel,
                                 active = true,
                                 onClick = onCycleThemeMode,
-                                modifier = Modifier.weight(1f),
+                                modifier = Modifier.weight(1.25f),
                             )
                         }
 
@@ -388,7 +388,7 @@ fun UserMenuSheet(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
-                                .background(Color.White.copy(alpha = 0.08f))
+                                .background(tokens.onSurfacePrimary.copy(alpha = 0.08f))
                                 .clickable {
                                     onDismiss()
                                     onRefreshLibrary()
@@ -399,20 +399,20 @@ fun UserMenuSheet(
                             Icon(
                                 imageVector = SonataIcons.Sparkles,
                                 contentDescription = null,
-                                tint = SonataAccent,
+                                tint = tokens.petalLavender,
                                 modifier = Modifier.size(18.dp),
                             )
                             Spacer(Modifier.width(10.dp))
                             Text(
                                 text = "Refresh Home & Mixes",
                                 style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
-                                color = LunariaColors.MoonGlow,
+                                color = tokens.onSurfacePrimary,
                                 modifier = Modifier.weight(1f),
                             )
                             Icon(
                                 imageVector = SonataIcons.ChevronRight,
                                 contentDescription = null,
-                                tint = Color.White.copy(alpha = 0.56f),
+                                tint = tokens.onSurfaceSecondary,
                                 modifier = Modifier.size(16.dp),
                             )
                         }
@@ -432,11 +432,12 @@ private fun UserMenuActionTile(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val tokens = LocalLunariaColors.current
     Column(
         modifier = modifier
             .clip(shape)
-            .background(AccountInnerCardBg)
-            .border(0.5.dp, AccountInnerCardBorder, shape)
+            .background(tokens.onSurfacePrimary.copy(alpha = if (tokens.isDark) 0.07f else 0.05f))
+            .border(0.5.dp, tokens.cardStroke, shape)
             .clickable(onClick = onClick)
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -445,27 +446,27 @@ private fun UserMenuActionTile(
             modifier = Modifier
                 .size(34.dp)
                 .clip(CircleShape)
-                .background(AccountIconCircleBg),
+                .background(tokens.onSurfacePrimary.copy(alpha = if (tokens.isDark) 0.10f else 0.08f)),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = title,
-                tint = Color.White.copy(alpha = 0.88f),
+                tint = tokens.onSurfacePrimary,
                 modifier = Modifier.size(18.dp),
             )
         }
         Text(
             text = title,
             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-            color = LunariaColors.MoonGlow,
+            color = tokens.onSurfacePrimary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
         Text(
             text = subtitle,
             style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp),
-            color = Color.White.copy(alpha = 0.62f),
+            color = tokens.onSurfaceSecondary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
@@ -479,28 +480,31 @@ private fun QuickTogglePill(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val tokens = LocalLunariaColors.current
     val pillShape = RoundedCornerShape(percent = 50)
     Box(
         modifier = modifier
             .height(34.dp)
             .clip(pillShape)
             .background(
-                if (active) SonataAccent.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.06f),
+                if (active) tokens.petalLavender.copy(alpha = 0.22f) else tokens.onSurfacePrimary.copy(alpha = 0.06f),
             )
             .border(
                 width = 0.5.dp,
-                color = if (active) SonataAccent.copy(alpha = 0.62f) else AccountInnerCardBorder,
+                color = if (active) tokens.petalLavender.copy(alpha = 0.62f) else tokens.cardStroke,
                 shape = pillShape,
             )
-            .clickable(onClick = onClick),
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(
             text = label,
             style = MaterialTheme.typography.labelMedium.copy(
+                fontSize = 11.5.sp,
                 fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
             ),
-            color = if (active) LunariaColors.MoonGlow else Color.White.copy(alpha = 0.62f),
+            color = if (active) tokens.onSurfacePrimary else tokens.onSurfaceSecondary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )

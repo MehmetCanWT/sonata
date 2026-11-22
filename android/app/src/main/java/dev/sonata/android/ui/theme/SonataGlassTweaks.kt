@@ -155,15 +155,11 @@ fun Modifier.sonataSpecularRim(
     strokeWidth: Dp = 0.75.dp,
     accentGlow: Boolean = false,
 ): Modifier {
-    val isLight = MaterialTheme.colorScheme.surface.luminance() > 0.5f
-    val brush = remember(isLight, accentGlow) {
-        val topLeft = when {
-            accentGlow -> SonataAccent.copy(alpha = 0.55f)
-            isLight -> Color.White.copy(alpha = 0.72f)
-            else -> Color.White.copy(alpha = 0.24f)
-        }
-        val mid = if (isLight) Color.Black.copy(alpha = 0.06f) else Color.White.copy(alpha = 0.07f)
-        val bottomRight = if (isLight) Color.Black.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.03f)
+    val tokens = LocalLunariaColors.current
+    val brush = remember(tokens.glassRimTopLeft, tokens.glassRimBottomRight, tokens.petalLavender, accentGlow) {
+        val topLeft = if (accentGlow) tokens.petalLavender.copy(alpha = 0.65f) else tokens.glassRimTopLeft
+        val mid = tokens.glassRimBottomRight.copy(alpha = tokens.glassRimBottomRight.alpha * 0.40f)
+        val bottomRight = tokens.glassRimBottomRight
         Brush.linearGradient(
             colorStops = arrayOf(
                 0f to topLeft,
@@ -189,15 +185,15 @@ fun Modifier.sonataGlassSurface(
     tintOverride: Color? = null,
     accentGlow: Boolean = false,
 ): Modifier {
-    val isLight = MaterialTheme.colorScheme.surface.luminance() > 0.5f
+    val tokens = LocalLunariaColors.current
     val glassOn = LocalLiquidGlassEnabled.current && isGlassSupported()
     val reduceBlur = LocalReduceDynamicBlur.current
-    val baseTint = tintOverride ?: if (isLight) SonataPearlGlass else SonataObsidianGlass
+    val baseTint = tintOverride ?: tokens.glassTint
 
     if (liveBackdrop && glassOn && !reduceBlur) {
         return liquidGlass(
             shape = shape,
-            surfaceTint = baseTint.copy(alpha = if (isLight) 0.52f else 0.42f),
+            surfaceTint = baseTint,
         ).sonataSpecularRim(
             shape = shape,
             strokeWidth = 0.75.dp,
@@ -205,15 +201,10 @@ fun Modifier.sonataGlassSurface(
         )
     }
 
-    val flatColor = tintOverride ?: if (isLight) {
-        Color(0xFFF2F2F7)
-    } else {
-        Color(0xFF161618)
-    }
+    val flatColor = tintOverride ?: tokens.eclipseCard
     val borderColor = when {
-        accentGlow -> SonataAccent.copy(alpha = 0.45f)
-        isLight -> Color.Black.copy(alpha = 0.08f)
-        else -> Color.White.copy(alpha = 0.07f)
+        accentGlow -> tokens.petalLavender.copy(alpha = 0.50f)
+        else -> tokens.cardStroke
     }
     return clip(shape)
         .background(flatColor, shape)

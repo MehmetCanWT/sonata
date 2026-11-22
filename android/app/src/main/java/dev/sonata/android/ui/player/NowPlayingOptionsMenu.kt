@@ -70,16 +70,12 @@ import dev.sonata.android.isGlassSupported
 import dev.sonata.android.liquidGlass
 import dev.sonata.android.ui.SonataAccent
 import dev.sonata.android.ui.SonataIcons
+import dev.sonata.android.ui.theme.LocalLunariaColors
 import dev.sonata.android.ui.theme.SonataRadioWavesIcon
 import dev.sonata.android.ui.theme.sonataSpecularRim
 import uniffi.sonata_android.AndroidTrack
 import java.util.Locale
 import kotlin.math.roundToInt
-
-private val PopoverSurfaceColor = Color(0xFF16161C)
-private val PopoverGlassTint = Color(0xFF141418).copy(alpha = 0.44f)
-private val PopoverTileColor = Color.White.copy(alpha = 0.11f)
-private val PopoverDividerColor = Color(0x26FFFFFF)
 
 /**
  * Floating Liquid Glass options menu for [NowPlayingScreen], triggered from the player `⋯` button.
@@ -147,21 +143,37 @@ fun NowPlayingOptionsMenu(
             contentAlignment = Alignment.TopEnd,
         ) {
             CompositionLocalProvider(LocalAppBackdrop provides targetBackdrop) {
-            val menuShape = RoundedCornerShape(24.dp)
+            val themeTokens = LocalLunariaColors.current
+            val menuShape = remember(themeTokens.isViolet) {
+                RoundedCornerShape(if (themeTokens.isViolet) 20.dp else 26.dp)
+            }
+            val dividerColor = themeTokens.cardStroke
             val glassOn = LocalLiquidGlassEnabled.current && isGlassSupported() && !LocalReduceDynamicBlur.current
             val cardModifier = if (glassOn) {
                 Modifier
                     .widthIn(min = 276.dp, max = 312.dp)
-                    .shadow(24.dp, menuShape, clip = false)
-                    .liquidGlass(shape = menuShape, surfaceTint = PopoverGlassTint)
+                    .shadow(
+                        elevation = 24.dp,
+                        shape = menuShape,
+                        clip = false,
+                        ambientColor = themeTokens.glassShadowColor,
+                        spotColor = themeTokens.glassShadowColor,
+                    )
+                    .liquidGlass(shape = menuShape, surfaceTint = themeTokens.glassTint)
                     .sonataSpecularRim(shape = menuShape, strokeWidth = 0.75.dp)
             } else {
                 Modifier
                     .widthIn(min = 276.dp, max = 312.dp)
-                    .shadow(24.dp, menuShape, clip = false)
+                    .shadow(
+                        elevation = 24.dp,
+                        shape = menuShape,
+                        clip = false,
+                        ambientColor = themeTokens.glassShadowColor,
+                        spotColor = themeTokens.glassShadowColor,
+                    )
                     .clip(menuShape)
-                    .background(PopoverSurfaceColor.copy(alpha = 0.95f), menuShape)
-                    .border(0.75.dp, Color.White.copy(alpha = 0.16f), menuShape)
+                    .background(themeTokens.eclipseSurface.copy(alpha = 0.96f), menuShape)
+                    .border(0.75.dp, themeTokens.cardStroke, menuShape)
             }
 
             // Consume clicks inside the card so tapping non-interactive gaps doesn't dismiss
@@ -184,7 +196,7 @@ fun NowPlayingOptionsMenu(
                     QuickTopTile(
                         icon = if (isLiked) SonataIcons.HeartFilled else SonataIcons.Heart,
                         label = if (isLiked) "Liked" else "Like",
-                        tint = if (isLiked) SonataAccent else Color.White,
+                        tint = if (isLiked) themeTokens.petalLavender else themeTokens.onSurfacePrimary,
                         onClick = {
                             onToggleLike()
                             onDismiss()
@@ -194,7 +206,7 @@ fun NowPlayingOptionsMenu(
                     QuickTopTile(
                         icon = PopoverPlaylistAddIcon,
                         label = "Playlist",
-                        tint = Color.White,
+                        tint = themeTokens.onSurfacePrimary,
                         onClick = {
                             onDismiss()
                             onAddToPlaylist()
@@ -204,7 +216,7 @@ fun NowPlayingOptionsMenu(
                     QuickTopTile(
                         icon = PopoverShareIcon,
                         label = "Share",
-                        tint = Color.White,
+                        tint = themeTokens.onSurfacePrimary,
                         onClick = {
                             onDismiss()
                             onShareInApp()
@@ -214,7 +226,7 @@ fun NowPlayingOptionsMenu(
                 }
 
                 Spacer(Modifier.height(10.dp))
-                HorizontalDivider(color = PopoverDividerColor, thickness = 0.5.dp)
+                HorizontalDivider(color = dividerColor, thickness = 0.5.dp)
 
                 // Audio Controls & Audio Pipeline
                 PopoverActionRow(
@@ -246,7 +258,7 @@ fun NowPlayingOptionsMenu(
                     icon = if (isDownloaded) SonataIcons.Check else SonataIcons.Download,
                     title = if (isDownloaded) "Downloaded" else "Download Track",
                     subtitle = downloadSubtitle,
-                    tint = if (isDownloaded) SonataAccent else Color.White,
+                    tint = if (isDownloaded) themeTokens.petalLavender else themeTokens.onSurfacePrimary,
                     onClick = {
                         onDownloadTrack()
                         onDismiss()
@@ -258,7 +270,7 @@ fun NowPlayingOptionsMenu(
                     icon = SonataIcons.History,
                     title = "Sleep Timer",
                     subtitle = sleepTimerRemainingMinutes?.let { "${it}m remaining" } ?: "Off",
-                    tint = if (sleepTimerRemainingMinutes != null) SonataAccent else Color.White,
+                    tint = if (sleepTimerRemainingMinutes != null) themeTokens.petalLavender else themeTokens.onSurfacePrimary,
                     onClick = {
                         onDismiss()
                         onOpenSleepTimer()
@@ -266,7 +278,7 @@ fun NowPlayingOptionsMenu(
                 )
 
                 HorizontalDivider(
-                    color = PopoverDividerColor,
+                    color = dividerColor,
                     thickness = 0.5.dp,
                     modifier = Modifier.padding(vertical = 4.dp),
                 )
@@ -295,7 +307,7 @@ fun NowPlayingOptionsMenu(
                 )
 
                 HorizontalDivider(
-                    color = PopoverDividerColor,
+                    color = dividerColor,
                     thickness = 0.5.dp,
                     modifier = Modifier.padding(vertical = 4.dp),
                 )
@@ -327,7 +339,7 @@ fun NowPlayingOptionsMenu(
                 )
 
                 HorizontalDivider(
-                    color = PopoverDividerColor,
+                    color = dividerColor,
                     thickness = 0.5.dp,
                     modifier = Modifier.padding(vertical = 4.dp),
                 )
@@ -367,10 +379,11 @@ private fun QuickTopTile(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val themeTokens = LocalLunariaColors.current
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(14.dp))
-            .background(PopoverTileColor)
+            .background(themeTokens.eclipseCard.copy(alpha = 0.65f))
             .clickable(onClick = onClick)
             .padding(vertical = 10.dp, horizontal = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -388,7 +401,7 @@ private fun QuickTopTile(
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Medium,
             ),
-            color = Color.White.copy(alpha = 0.88f),
+            color = themeTokens.onSurfacePrimary.copy(alpha = 0.90f),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
@@ -400,9 +413,10 @@ private fun PopoverActionRow(
     icon: ImageVector,
     title: String,
     subtitle: String? = null,
-    tint: Color = Color.White,
+    tint: Color = LocalLunariaColors.current.onSurfacePrimary,
     onClick: () -> Unit,
 ) {
+    val themeTokens = LocalLunariaColors.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -425,7 +439,7 @@ private fun PopoverActionRow(
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Medium,
                 ),
-                color = Color.White,
+                color = themeTokens.onSurfacePrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -433,7 +447,7 @@ private fun PopoverActionRow(
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.5.sp),
-                    color = Color.White.copy(alpha = 0.56f),
+                    color = themeTokens.onSurfaceSecondary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -449,6 +463,7 @@ private fun PopoverSwitchRow(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
 ) {
+    val themeTokens = LocalLunariaColors.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -460,7 +475,7 @@ private fun PopoverSwitchRow(
         Icon(
             imageVector = icon,
             contentDescription = null,
-            tint = if (checked) SonataAccent else Color.White,
+            tint = if (checked) themeTokens.petalLavender else themeTokens.onSurfacePrimary,
             modifier = Modifier.size(19.dp),
         )
         Spacer(Modifier.width(12.dp))
@@ -470,7 +485,7 @@ private fun PopoverSwitchRow(
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Medium,
             ),
-            color = Color.White,
+            color = themeTokens.onSurfacePrimary,
             modifier = Modifier.weight(1f),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -480,9 +495,9 @@ private fun PopoverSwitchRow(
             onCheckedChange = onCheckedChange,
             colors = SwitchDefaults.colors(
                 checkedThumbColor = Color.White,
-                checkedTrackColor = SonataAccent,
-                uncheckedThumbColor = Color.White,
-                uncheckedTrackColor = Color(0xFF39393D),
+                checkedTrackColor = themeTokens.petalLavender,
+                uncheckedThumbColor = if (themeTokens.isDark) Color.White else themeTokens.eclipseSurface,
+                uncheckedTrackColor = themeTokens.onSurfaceSecondary.copy(alpha = 0.28f),
                 uncheckedBorderColor = Color.Transparent,
             ),
         )
@@ -495,6 +510,7 @@ private fun LyricsOffsetStepperRow(
     onStep: (Long) -> Unit,
     onReset: () -> Unit,
 ) {
+    val themeTokens = LocalLunariaColors.current
     val formatted = remember(offsetMs) {
         val secs = offsetMs / 1000f
         String.format(Locale.US, "%+.2fs", secs)
@@ -508,7 +524,7 @@ private fun LyricsOffsetStepperRow(
         Icon(
             imageVector = SonataIcons.LyricsQuote,
             contentDescription = null,
-            tint = if (offsetMs != 0L) SonataAccent else Color.White,
+            tint = if (offsetMs != 0L) themeTokens.petalLavender else themeTokens.onSurfacePrimary,
             modifier = Modifier.size(19.dp),
         )
         Spacer(Modifier.width(12.dp))
@@ -518,7 +534,7 @@ private fun LyricsOffsetStepperRow(
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Medium,
             ),
-            color = Color.White,
+            color = themeTokens.onSurfacePrimary,
             modifier = Modifier.weight(1f),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -531,13 +547,13 @@ private fun LyricsOffsetStepperRow(
                 modifier = Modifier
                     .size(26.dp)
                     .clip(CircleShape)
-                    .background(PopoverTileColor)
+                    .background(themeTokens.eclipseCard.copy(alpha = 0.72f))
                     .clickable(enabled = offsetMs > -5000L) { onStep(-250L) },
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
                     text = "−",
-                    color = if (offsetMs > -5000L) Color.White else Color.White.copy(alpha = 0.35f),
+                    color = if (offsetMs > -5000L) themeTokens.onSurfacePrimary else themeTokens.onSurfaceSecondary.copy(alpha = 0.40f),
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold,
                 )
@@ -548,7 +564,7 @@ private fun LyricsOffsetStepperRow(
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold,
                 ),
-                color = if (offsetMs != 0L) SonataAccent else Color.White.copy(alpha = 0.78f),
+                color = if (offsetMs != 0L) themeTokens.petalLavender else themeTokens.onSurfaceSecondary,
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
                     .clickable(onClick = onReset)
@@ -558,13 +574,13 @@ private fun LyricsOffsetStepperRow(
                 modifier = Modifier
                     .size(26.dp)
                     .clip(CircleShape)
-                    .background(PopoverTileColor)
+                    .background(themeTokens.eclipseCard.copy(alpha = 0.72f))
                     .clickable(enabled = offsetMs < 5000L) { onStep(250L) },
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
                     text = "+",
-                    color = if (offsetMs < 5000L) Color.White else Color.White.copy(alpha = 0.35f),
+                    color = if (offsetMs < 5000L) themeTokens.onSurfacePrimary else themeTokens.onSurfaceSecondary.copy(alpha = 0.40f),
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold,
                 )

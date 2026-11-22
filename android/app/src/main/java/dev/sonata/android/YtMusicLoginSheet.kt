@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.view.View
 import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
+import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.background
@@ -57,6 +58,7 @@ fun YtMusicLoginScreen(
 ) {
     var onMusicOrigin by remember { mutableStateOf(false) }
     var hasAuthCookies by remember { mutableStateOf(false) }
+    var visitedAuthFlow by remember { mutableStateOf(!freshSignIn) }
     var capturedOnce by remember { mutableStateOf(false) }
 
     fun captureOnceIfReady(cookies: String) {
@@ -126,10 +128,7 @@ fun YtMusicLoginScreen(
             factory = { context ->
                 val cm = CookieManager.getInstance()
                 cm.setAcceptCookie(true)
-                if (freshSignIn) {
-                    cm.removeAllCookies(null)
-                    cm.flush()
-                }
+                val targetUrl = if (freshSignIn) YTM_LOGIN_URL else "$YTM_ORIGIN/"
 
                 WebView(context).apply {
                     setLayerType(View.LAYER_TYPE_HARDWARE, null)
@@ -138,12 +137,19 @@ fun YtMusicLoginScreen(
                     cm.setAcceptThirdPartyCookies(this, true)
 
                     fun inspectOriginAndCookies(view: WebView?, url: String?) {
+                        if (url?.contains("accounts.google.com") == true ||
+                            url?.contains("accounts.youtube.com") == true ||
+                            url?.contains("/signin") == true ||
+                            url?.contains("ServiceLogin") == true
+                        ) {
+                            visitedAuthFlow = true
+                        }
                         val isYtm = url?.startsWith(YTM_ORIGIN) == true
                         onMusicOrigin = isYtm
                         val raw = cm.getCookie(YTM_ORIGIN).orEmpty()
                         val authPresent = hasAuthCookie(raw)
                         hasAuthCookies = authPresent
-                        if (isYtm && authPresent && !capturedOnce && view != null) {
+                        if (isYtm && authPresent && visitedAuthFlow && !capturedOnce && view != null) {
                             view.evaluateJavascript(LOGGED_IN_PROBE_JS) { result ->
                                 if (result == "true" && !capturedOnce) {
                                     val latest = cm.getCookie(YTM_ORIGIN).orEmpty()
@@ -167,7 +173,18 @@ fun YtMusicLoginScreen(
                             inspectOriginAndCookies(view, url)
                         }
                     }
-                    loadUrl(if (freshSignIn) YTM_LOGIN_URL else "$YTM_ORIGIN/")
+                    if (freshSignIn) {
+                        clearCache(true)
+                        clearHistory()
+                        clearFormData()
+                        WebStorage.getInstance().deleteAllData()
+                        cm.removeAllCookies {
+                            cm.flush()
+                            post { loadUrl(targetUrl) }
+                        }
+                    } else {
+                        loadUrl(targetUrl)
+                    }
                 }
             },
             onRelease = { webView ->

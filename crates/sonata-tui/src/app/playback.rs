@@ -102,7 +102,7 @@ impl App {
                 self.playback.paused = false;
                 self.pos_anchor = Some((self.playback.position_secs, Instant::now()));
                 if was_starting {
-                    if let Some(track) = self.playback.current_track() {
+                    let telemetry = if let Some(track) = self.playback.current_track() {
                         tracing::info!(
                             event = "playing",
                             client = "tui",
@@ -116,7 +116,33 @@ impl App {
                             pending_tasks = self.playback_tasks.pending_count(),
                             "playback started"
                         );
+                        let duration = track.duration_secs;
+                        let vid = track.id.clone();
                         self.status_line.clear();
+                        Some((vid, duration))
+                    } else {
+                        None
+                    };
+                    if let Some((vid, duration)) = telemetry {
+                        let ytm = self.ytm.clone();
+                        let playlist_id = self
+                            .current_playlist_id
+                            .as_ref()
+                            .filter(|_| self.visible_tracks.iter().any(|t| t.id == vid))
+                            .cloned();
+                        tokio::spawn(async move {
+                            if let Err(err) = ytm
+                                .report_playback(&vid, playlist_id.as_deref(), duration)
+                                .await
+                            {
+                                tracing::debug!(
+                                    client = "tui",
+                                    track_id = %vid,
+                                    error = %err,
+                                    "ytm playback reporting failed"
+                                );
+                            }
+                        });
                     }
                 }
                 self.start_hifi_upgrade();

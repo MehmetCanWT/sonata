@@ -748,6 +748,22 @@ impl SonataAndroidEngine {
         Ok(())
     }
 
+    /// Reports playback and watchtime telemetry for `video_id` (with optional `playlist_id`)
+    /// so YouTube Music updates Listening History (`FEmusic_history`) and yearly Replay stats.
+    pub fn report_playback(
+        &self,
+        video_id: String,
+        playlist_id: Option<String>,
+        duration_secs: Option<u64>,
+    ) -> Result<(), SonataAndroidError> {
+        let ytm = self.current_ytm();
+        self.rt.block_on(async move {
+            ytm.report_playback(&video_id, playlist_id.as_deref(), duration_secs)
+                .await
+        })?;
+        Ok(())
+    }
+
     /// Appends one or more tracks to a YouTube Music playlist (strips `VL` prefix when needed).
     pub fn add_tracks_to_playlist(
         &self,

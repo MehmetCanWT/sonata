@@ -67,19 +67,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import dev.sonata.android.data.AudioQualityTier
+import dev.sonata.android.data.DesignTheme
 import dev.sonata.android.data.DownloadQualityTier
 import dev.sonata.android.data.PlayerBackdropMode
 import dev.sonata.android.data.SonataSettingsState
 import dev.sonata.android.data.ThemeMode
 import dev.sonata.android.isGlassSupported
+import dev.sonata.android.sonataThemeGlassButton
 import dev.sonata.android.ui.CircleGlyph
 import dev.sonata.android.ui.PAGE_GUTTER
 import dev.sonata.android.ui.PillSegmentedControl
-import dev.sonata.android.ui.SearchField
-import dev.sonata.android.ui.SonataAccent
 import dev.sonata.android.ui.SonataIcons
 import dev.sonata.android.ui.rememberArtworkRequest
-import dev.sonata.android.ui.theme.SonataSettingsTokens
+import dev.sonata.android.ui.theme.LocalLunariaColors
 import uniffi.sonata_android.AndroidAccountProfile
 import uniffi.sonata_android.AndroidUpdateInfo
 import kotlin.math.roundToInt
@@ -166,21 +166,18 @@ fun SonataSettingsScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val tokens = LocalLunariaColors.current
     val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     var activeCategory by remember { mutableStateOf<SettingsCategory?>(null) }
-    var searchQuery by remember { mutableStateOf("") }
 
     BackHandler(enabled = activeCategory != null) {
         activeCategory = null
-    }
-    BackHandler(enabled = activeCategory == null && searchQuery.isNotEmpty()) {
-        searchQuery = ""
     }
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(SonataSettingsTokens.Background)
+            .background(tokens.settingsBg)
             .padding(top = statusTop)
             .navigationBarsPadding(),
         contentAlignment = Alignment.TopCenter,
@@ -191,19 +188,22 @@ fun SonataSettingsScreen(
                 .fillMaxSize()
                 .padding(horizontal = PAGE_GUTTER),
         ) {
-        // Top navigation bar with circular Back button & bold page title
+        // Minimalist Settings & Support top header matching reference layout
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 10.dp, bottom = 14.dp),
+                .padding(top = 14.dp, bottom = 18.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Box(
                 modifier = Modifier
                     .size(38.dp)
-                    .clip(CircleShape)
-                    .background(SonataSettingsTokens.Card)
+                    .sonataThemeGlassButton(
+                        shape = CircleShape,
+                        fallbackColor = tokens.settingsCard,
+                        shadowElevation = 2.dp,
+                    )
                     .clickable {
                         if (activeCategory != null) {
                             activeCategory = null
@@ -216,17 +216,18 @@ fun SonataSettingsScreen(
                 Icon(
                     imageVector = SonataIcons.ChevronLeft,
                     contentDescription = if (activeCategory != null) "Back to Settings" else "Back",
-                    tint = SonataSettingsTokens.TextPrimary,
-                    modifier = Modifier.size(20.dp),
+                    tint = tokens.onSurfacePrimary,
+                    modifier = Modifier.size(19.dp),
                 )
             }
             Text(
-                text = activeCategory?.title ?: "Settings",
-                style = MaterialTheme.typography.headlineLarge.copy(
-                    fontSize = 28.sp,
+                text = activeCategory?.title ?: "Settings & Support",
+                style = MaterialTheme.typography.headlineMedium.copy(
+                    fontSize = 23.sp,
                     fontWeight = FontWeight.Bold,
+                    letterSpacing = (-0.3).sp,
                 ),
-                color = SonataSettingsTokens.TextPrimary,
+                color = tokens.onSurfacePrimary,
                 modifier = Modifier.weight(1f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -236,8 +237,6 @@ fun SonataSettingsScreen(
         SettingsCategoryNavigator(
             activeCategory = activeCategory,
             onSelectCategory = { activeCategory = it },
-            searchQuery = searchQuery,
-            onSearchQueryChange = { searchQuery = it },
             settings = settings,
             signedIn = signedIn,
             accountProfile = accountProfile,
@@ -280,9 +279,9 @@ fun CategorizedSettingsSheet(
     onDownloadUpdate: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val tokens = LocalLunariaColors.current
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var activeCategory by remember { mutableStateOf<SettingsCategory?>(null) }
-    var searchQuery by remember { mutableStateOf("") }
 
     BackHandler(enabled = activeCategory != null) {
         activeCategory = null
@@ -291,14 +290,14 @@ fun CategorizedSettingsSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = SonataSettingsTokens.Background,
-        contentColor = SonataSettingsTokens.TextPrimary,
+        containerColor = tokens.settingsBg,
+        contentColor = tokens.onSurfacePrimary,
         dragHandle = null,
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(SonataSettingsTokens.Background)
+                .background(tokens.settingsBg)
                 .navigationBarsPadding()
                 .padding(horizontal = PAGE_GUTTER),
         ) {
@@ -318,9 +317,9 @@ fun CategorizedSettingsSheet(
                     )
                 }
                 Text(
-                    text = activeCategory?.title ?: "Settings",
+                    text = activeCategory?.title ?: "Settings & Support",
                     style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
-                    color = SonataSettingsTokens.TextPrimary,
+                    color = tokens.onSurfacePrimary,
                     modifier = Modifier.weight(1f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -335,8 +334,6 @@ fun CategorizedSettingsSheet(
             SettingsCategoryNavigator(
                 activeCategory = activeCategory,
                 onSelectCategory = { activeCategory = it },
-                searchQuery = searchQuery,
-                onSearchQueryChange = { searchQuery = it },
                 settings = settings,
                 signedIn = signedIn,
                 accountProfile = accountProfile,
@@ -362,8 +359,6 @@ fun CategorizedSettingsSheet(
 private fun SettingsCategoryNavigator(
     activeCategory: SettingsCategory?,
     onSelectCategory: (SettingsCategory) -> Unit,
-    searchQuery: String,
-    onSearchQueryChange: (String) -> Unit,
     settings: SonataSettingsState,
     signedIn: Boolean,
     accountProfile: AndroidAccountProfile?,
@@ -396,11 +391,15 @@ private fun SettingsCategoryNavigator(
     ) { category ->
         if (category == null) {
             SettingsOverviewContent(
-                searchQuery = searchQuery,
-                onSearchQueryChange = onSearchQueryChange,
                 signedIn = signedIn,
                 accountProfile = accountProfile,
+                updateInfo = updateInfo,
+                installedVersionName = installedVersionName,
                 onSelectCategory = onSelectCategory,
+                onSignIn = onSignIn,
+                onSignOut = onSignOut,
+                onClearMediaCache = onClearMediaCache,
+                onCheckForUpdates = onCheckForUpdates,
             )
         } else {
             when (category) {
@@ -447,61 +446,71 @@ private fun SettingsCategoryNavigator(
 
 @Composable
 private fun SettingsOverviewContent(
-    searchQuery: String,
-    onSearchQueryChange: (String) -> Unit,
     signedIn: Boolean,
     accountProfile: AndroidAccountProfile?,
+    updateInfo: AndroidUpdateInfo?,
+    installedVersionName: String,
     onSelectCategory: (SettingsCategory) -> Unit,
+    onSignIn: () -> Unit,
+    onSignOut: () -> Unit,
+    onClearMediaCache: () -> Unit,
+    onCheckForUpdates: () -> Unit,
 ) {
-    val filtered = remember(searchQuery) {
-        if (searchQuery.isBlank()) {
-            SettingsCategory.entries
-        } else {
-            SettingsCategory.entries.filter {
-                it.title.contains(searchQuery, ignoreCase = true) ||
-                    it.subtitle.contains(searchQuery, ignoreCase = true) ||
-                    it.keywords.contains(searchQuery, ignoreCase = true)
-            }
-        }
-    }
+    val tokens = LocalLunariaColors.current
+    val currentVer = updateInfo?.currentVersion ?: installedVersionName
+    val updateBadge = if (updateInfo?.updateAvailable == true) "Update v${updateInfo.latestVersion}" else "v$currentVer"
 
     LazyColumn(
-        contentPadding = PaddingValues(bottom = 28.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+        contentPadding = PaddingValues(bottom = 32.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
-        item(key = "overview_search") {
-            SearchField(
-                query = searchQuery,
-                onQueryChange = onSearchQueryChange,
-                onSubmit = {},
-                placeholder = "Search Settings",
-            )
+        item(key = "hub_main") {
+            SettingsHubSection("Settings Hub") {
+                SettingsHubRow(
+                    icon = SonataIcons.Person,
+                    title = "Account & Session",
+                    onClick = { onSelectCategory(SettingsCategory.ACCOUNT) },
+                )
+                SettingsHubRow(
+                    icon = SonataIcons.Sparkles,
+                    title = "Appearance & Themes",
+                    onClick = { onSelectCategory(SettingsCategory.APPEARANCE) },
+                )
+                SettingsHubRow(
+                    icon = SonataIcons.GraphicEq,
+                    title = "Playback & Audio",
+                    onClick = { onSelectCategory(SettingsCategory.PLAYBACK) },
+                )
+                SettingsHubRow(
+                    icon = SonataIcons.LyricsQuote,
+                    title = "Synced Lyrics",
+                    onClick = { onSelectCategory(SettingsCategory.LYRICS) },
+                )
+                SettingsHubRow(
+                    icon = SonataIcons.MusicNote,
+                    title = "Audio Modules",
+                    onClick = { onSelectCategory(SettingsCategory.MODULES) },
+                )
+            }
         }
 
-        if (searchQuery.isBlank()) {
-            item(key = "overview_profile_banner") {
-                SettingsFlatCard(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onSelectCategory(SettingsCategory.ACCOUNT) },
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        val avatarRequest = rememberArtworkRequest(
-                            url = if (signedIn) accountProfile?.avatarUrl else null,
-                            widthPx = 128,
-                            heightPx = 128,
-                        )
+        item(key = "hub_account_mgmt") {
+            SettingsHubSection(title = "Account Management", badgeText = "New") {
+                val avatarRequest = rememberArtworkRequest(
+                    url = if (signedIn) accountProfile?.avatarUrl else null,
+                    widthPx = 96,
+                    heightPx = 96,
+                )
+                SettingsHubRow(
+                    icon = SonataIcons.Person,
+                    title = if (signedIn) "Account Switching" else "Connect Account",
+                    onClick = onSignIn,
+                    trailingContent = {
                         Box(
                             modifier = Modifier
-                                .size(44.dp)
+                                .size(24.dp)
                                 .clip(CircleShape)
-                                .background(Color.White.copy(alpha = 0.1f)),
+                                .background(tokens.onSurfacePrimary.copy(alpha = 0.09f)),
                             contentAlignment = Alignment.Center,
                         ) {
                             if (avatarRequest != null) {
@@ -512,91 +521,159 @@ private fun SettingsOverviewContent(
                                     modifier = Modifier.fillMaxSize(),
                                 )
                             } else {
-                                Icon(SonataIcons.Person, null, tint = Color.White)
+                                Icon(
+                                    imageVector = SonataIcons.Person,
+                                    contentDescription = null,
+                                    tint = tokens.onSurfaceSecondary,
+                                    modifier = Modifier.size(14.dp),
+                                )
                             }
                         }
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                text = if (signedIn) accountProfile?.name ?: "YouTube Music" else "Not signed in",
-                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                                color = SonataSettingsTokens.TextPrimary,
-                            )
-                            Text(
-                                text = if (signedIn) {
-                                    accountProfile?.email ?: accountProfile?.handle ?: "Synced account"
-                                } else {
-                                    "Tap to connect YouTube Music"
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = SonataSettingsTokens.TextSecondary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                        Icon(
-                            imageVector = SonataIcons.ChevronRight,
-                            contentDescription = null,
-                            tint = SonataSettingsTokens.TextSecondary,
-                            modifier = Modifier.size(18.dp),
-                        )
-                    }
+                    },
+                )
+                if (signedIn) {
+                    SettingsHubRow(
+                        icon = SonataIcons.Close,
+                        title = "Sign Out",
+                        onClick = onSignOut,
+                    )
                 }
             }
         }
 
-        item(key = "overview_categories") {
-            SettingsFlatCard(modifier = Modifier.fillMaxWidth()) {
-                filtered.forEachIndexed { idx, cat ->
-                    if (idx > 0) SettingsDivider()
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onSelectCategory(cat) }
-                            .padding(horizontal = 16.dp, vertical = 14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(14.dp),
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(34.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(Color(0xFF222226)),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                imageVector = cat.icon,
-                                contentDescription = null,
-                                tint = Color.White.copy(alpha = 0.88f),
-                                modifier = Modifier.size(18.dp),
-                            )
-                        }
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                text = cat.title,
-                                style = MaterialTheme.typography.titleSmall.copy(
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                ),
-                                color = Color.White,
-                            )
-                            Text(
-                                text = cat.subtitle,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Color.White.copy(alpha = 0.58f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                        Icon(
-                            imageVector = SonataIcons.ChevronRight,
-                            contentDescription = null,
-                            tint = Color.White.copy(alpha = 0.4f),
-                            modifier = Modifier.size(18.dp),
+        item(key = "hub_storage") {
+            SettingsHubSection("Storage & Backup") {
+                SettingsHubRow(
+                    icon = SonataIcons.Folder,
+                    title = "Downloads & Backup",
+                    onClick = { onSelectCategory(SettingsCategory.DOWNLOADS) },
+                )
+                SettingsHubRow(
+                    icon = SonataIcons.Close,
+                    title = "Clear Media Cache",
+                    onClick = onClearMediaCache,
+                )
+            }
+        }
+
+        item(key = "hub_app") {
+            SettingsHubSection("App") {
+                SettingsHubRow(
+                    icon = SonataIcons.Download,
+                    title = "App Updates",
+                    onClick = {
+                        onCheckForUpdates()
+                        onSelectCategory(SettingsCategory.ACCOUNT)
+                    },
+                    trailingContent = {
+                        Text(
+                            text = updateBadge,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (updateInfo?.updateAvailable == true) {
+                                tokens.petalLavender
+                            } else {
+                                tokens.onSurfaceSecondary.copy(alpha = 0.78f)
+                            },
                         )
-                    }
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsHubSection(
+    title: String,
+    badgeText: String? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val tokens = LocalLunariaColors.current
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.padding(horizontal = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontSize = 12.5.sp,
+                    fontWeight = FontWeight.Medium,
+                ),
+                color = tokens.onSurfaceSecondary.copy(alpha = 0.86f),
+            )
+            if (!badgeText.isNullOrBlank()) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(percent = 50))
+                        .background(Color(0xFFDF3C30))
+                        .padding(horizontal = 7.dp, vertical = 1.5.dp),
+                ) {
+                    Text(
+                        text = badgeText,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                        ),
+                        color = Color.White,
+                    )
                 }
             }
         }
+        val cardShape = RoundedCornerShape(16.dp)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(cardShape)
+                .background(tokens.settingsCard, cardShape),
+            content = content,
+        )
+    }
+}
+
+@Composable
+private fun SettingsHubRow(
+    icon: ImageVector,
+    title: String,
+    onClick: () -> Unit,
+    trailingContent: (@Composable () -> Unit)? = null,
+) {
+    val tokens = LocalLunariaColors.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 15.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = tokens.onSurfacePrimary.copy(alpha = 0.78f),
+            modifier = Modifier.size(19.dp),
+        )
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall.copy(
+                fontSize = 15.5.sp,
+                fontWeight = FontWeight.Medium,
+            ),
+            color = tokens.onSurfacePrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        if (trailingContent != null) {
+            trailingContent()
+        }
+        Icon(
+            imageVector = SonataIcons.ChevronRight,
+            contentDescription = null,
+            tint = tokens.onSurfaceSecondary.copy(alpha = 0.65f),
+            modifier = Modifier.size(16.dp),
+        )
     }
 }
 
@@ -615,7 +692,7 @@ private fun PlaybackSettingsPage(
                     Text(
                         text = "Audio Quality Ceiling",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                        color = Color.White,
+                        color = LocalLunariaColors.current.onSurfacePrimary,
                     )
                     PillSegmentedControl(
                         options = AudioQualityTier.entries.map { it.name.lowercase().replaceFirstChar(Char::uppercase) },
@@ -701,7 +778,7 @@ private fun PlaybackSettingsPage(
                         Text(
                             text = "Preset",
                             style = MaterialTheme.typography.labelMedium,
-                            color = Color.White.copy(alpha = 0.7f),
+                            color = LocalLunariaColors.current.onSurfaceSecondary,
                         )
                         val rows = EqPresets.chunked(3)
                         rows.forEach { rowPresets ->
@@ -710,12 +787,13 @@ private fun PlaybackSettingsPage(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
                                 rowPresets.forEach { preset ->
+                                    val tokens = LocalLunariaColors.current
                                     val selected = settings.eqPreset.equals(preset, ignoreCase = true)
                                     Box(
                                         modifier = Modifier
                                             .weight(1f)
                                             .clip(RoundedCornerShape(12.dp))
-                                            .background(if (selected) SonataAccent else Color.White.copy(alpha = 0.08f))
+                                            .background(if (selected) tokens.petalLavender else tokens.onSurfacePrimary.copy(alpha = 0.08f))
                                             .clickable { onUpdate { it.copy(eqPreset = preset) } }
                                             .padding(vertical = 8.dp),
                                         contentAlignment = Alignment.Center,
@@ -725,7 +803,7 @@ private fun PlaybackSettingsPage(
                                             style = MaterialTheme.typography.labelSmall.copy(
                                                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                                             ),
-                                            color = Color.White,
+                                            color = if (selected) Color.White else tokens.onSurfacePrimary,
                                             maxLines = 1,
                                         )
                                     }
@@ -750,17 +828,87 @@ private fun AppearanceSettingsPage(
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         item(key = "ap_theme") {
-            SettingsSection("THEME & BACKDROP") {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            val tokens = LocalLunariaColors.current
+            val activeDesign = settings.resolvedDesignTheme()
+            val colorModeOptions = listOf("Light", "Dark", "System", "AMOLED")
+            val selectedColorIdx = when (settings.themeMode) {
+                ThemeMode.VIOLET_LIGHT, ThemeMode.MOONFLOWER_LIGHT -> 0
+                ThemeMode.VIOLET_DARK, ThemeMode.MOONFLOWER_DARK -> 1
+                ThemeMode.SYSTEM -> 2
+                ThemeMode.AMOLED -> 3
+            }
+
+            SettingsSection("THEME & DESIGN") {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
-                        text = "Theme Mode",
+                        text = "Design Theme",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                        color = Color.White,
+                        color = tokens.onSurfacePrimary,
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        ThemeDesignCard(
+                            title = "Violet",
+                            subtitle = "Orchid glass, layered shadows & stacked deck",
+                            previewTop = Color(0xFFE5D7F6),
+                            previewBottom = Color(0xFF7B52AB),
+                            selected = activeDesign == DesignTheme.VIOLET,
+                            onClick = {
+                                onUpdate { s ->
+                                    val nextMode = when (s.themeMode) {
+                                        ThemeMode.MOONFLOWER_LIGHT -> ThemeMode.VIOLET_LIGHT
+                                        ThemeMode.MOONFLOWER_DARK -> ThemeMode.VIOLET_DARK
+                                        ThemeMode.SYSTEM, ThemeMode.AMOLED -> s.themeMode
+                                        else -> s.themeMode
+                                    }
+                                    s.copy(designTheme = DesignTheme.VIOLET, themeMode = nextMode)
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                        )
+                        ThemeDesignCard(
+                            title = "Moonflower",
+                            subtitle = "Gossamer silk veils, blush pill & inline bar",
+                            previewTop = Color(0xFFEDE4F7),
+                            previewBottom = Color(0xFFF2CBE0),
+                            selected = activeDesign == DesignTheme.MOONFLOWER,
+                            onClick = {
+                                onUpdate { s ->
+                                    val nextMode = when (s.themeMode) {
+                                        ThemeMode.VIOLET_LIGHT -> ThemeMode.MOONFLOWER_LIGHT
+                                        ThemeMode.VIOLET_DARK -> ThemeMode.MOONFLOWER_DARK
+                                        ThemeMode.SYSTEM, ThemeMode.AMOLED -> s.themeMode
+                                        else -> s.themeMode
+                                    }
+                                    s.copy(designTheme = DesignTheme.MOONFLOWER, themeMode = nextMode)
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = "Color Mode",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = tokens.onSurfacePrimary,
                     )
                     PillSegmentedControl(
-                        options = listOf("System", "Dark", "Light", "AMOLED"),
-                        selectedIndex = ThemeMode.entries.indexOf(settings.themeMode),
-                        onSelect = { idx -> onUpdate { it.copy(themeMode = ThemeMode.entries[idx]) } },
+                        options = colorModeOptions,
+                        selectedIndex = selectedColorIdx,
+                        onSelect = { idx ->
+                            onUpdate { s ->
+                                val design = s.resolvedDesignTheme()
+                                val nextMode = when (idx) {
+                                    0 -> if (design == DesignTheme.VIOLET) ThemeMode.VIOLET_LIGHT else ThemeMode.MOONFLOWER_LIGHT
+                                    1 -> if (design == DesignTheme.VIOLET) ThemeMode.VIOLET_DARK else ThemeMode.MOONFLOWER_DARK
+                                    2 -> ThemeMode.SYSTEM
+                                    else -> ThemeMode.AMOLED
+                                }
+                                s.copy(designTheme = design, themeMode = nextMode)
+                            }
+                        },
                     )
                 }
                 SettingsDivider()
@@ -768,7 +916,7 @@ private fun AppearanceSettingsPage(
                     Text(
                         text = "Now Playing Backdrop",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                        color = Color.White,
+                        color = tokens.onSurfacePrimary,
                     )
                     PillSegmentedControl(
                         options = listOf("Artwork Mesh", "Waves", "Blurred"),
@@ -831,7 +979,7 @@ private fun AppearanceSettingsPage(
                     Text(
                         text = "Display Frame Rate",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                        color = Color.White,
+                        color = LocalLunariaColors.current.onSurfacePrimary,
                     )
                     val context = androidx.compose.ui.platform.LocalContext.current
                     val fpsTiers = remember(context, supports120Hz) {
@@ -935,7 +1083,7 @@ private fun LyricsSettingsPage(
                     Text(
                         text = "Translation Target Language",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                        color = Color.White,
+                        color = LocalLunariaColors.current.onSurfacePrimary,
                     )
                     TranslationLangs.chunked(3).forEach { row ->
                         Row(
@@ -943,12 +1091,13 @@ private fun LyricsSettingsPage(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             row.forEach { (code, label) ->
+                                val tokens = LocalLunariaColors.current
                                 val selected = settings.lyricsTranslationLang.equals(code, ignoreCase = true)
                                 Box(
                                     modifier = Modifier
                                         .weight(1f)
                                         .clip(RoundedCornerShape(12.dp))
-                                        .background(if (selected) SonataAccent else Color.White.copy(alpha = 0.08f))
+                                        .background(if (selected) tokens.petalLavender else tokens.onSurfacePrimary.copy(alpha = 0.08f))
                                         .clickable { onUpdate { it.copy(lyricsTranslationLang = code) } }
                                         .padding(vertical = 8.dp),
                                     contentAlignment = Alignment.Center,
@@ -958,7 +1107,7 @@ private fun LyricsSettingsPage(
                                         style = MaterialTheme.typography.labelSmall.copy(
                                             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                                         ),
-                                        color = Color.White,
+                                        color = if (selected) Color.White else tokens.onSurfacePrimary,
                                         maxLines = 1,
                                     )
                                 }
@@ -990,7 +1139,7 @@ private fun DownloadsStorageSettingsPage(
                     Text(
                         text = "Download Quality",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                        color = Color.White,
+                        color = LocalLunariaColors.current.onSurfacePrimary,
                     )
                     PillSegmentedControl(
                         options = listOf("High", "Standard"),
@@ -1083,7 +1232,7 @@ private fun ModulesSettingsPage(
                     Text(
                         text = "JioSaavn may occasionally match a different version, cover, or album on tracks with similar titles. Streams are only substituted when JioSaavn provides a strictly higher bitrate than YouTube Music.",
                         style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
-                        color = Color.White.copy(alpha = 0.65f),
+                        color = LocalLunariaColors.current.onSurfaceSecondary,
                     )
                 }
             }
@@ -1108,6 +1257,7 @@ private fun AccountUpdatesSettingsPage(
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         item(key = "ac_session") {
+            val tokens = LocalLunariaColors.current
             SettingsSection("YOUTUBE MUSIC SESSION") {
                 SettingsActionRow(
                     title = if (signedIn) accountProfile?.name ?: "Signed In" else "Connect YouTube Music",
@@ -1116,13 +1266,14 @@ private fun AccountUpdatesSettingsPage(
                     } else {
                         "Sign in for personalized mixes and playlists"
                     },
-                    accentTitle = SonataAccent,
+                    accentTitle = tokens.petalLavender,
                     onClick = { if (signedIn) onSignOut() else onSignIn() },
                 )
             }
         }
 
         item(key = "ac_updates") {
+            val tokens = LocalLunariaColors.current
             val currentVer = updateInfo?.currentVersion ?: installedVersionName
             val statusLabel = when {
                 checkingUpdates -> "Checking GitHub Releases..."
@@ -1142,17 +1293,17 @@ private fun AccountUpdatesSettingsPage(
                         Text(
                             text = "Sonata Android v$currentVer",
                             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                            color = Color.White,
+                            color = tokens.onSurfacePrimary,
                         )
                         Text(
                             text = statusLabel,
                             style = MaterialTheme.typography.bodySmall,
-                            color = if (updateInfo?.updateAvailable == true) SonataAccent else Color.White.copy(alpha = 0.6f),
+                            color = if (updateInfo?.updateAvailable == true) tokens.petalLavender else tokens.onSurfaceSecondary,
                         )
                     }
                     if (checkingUpdates) {
                         CircularProgressIndicator(
-                            color = Color.White,
+                            color = tokens.petalLavender,
                             strokeWidth = 2.dp,
                             modifier = Modifier.size(18.dp),
                         )
@@ -1160,7 +1311,7 @@ private fun AccountUpdatesSettingsPage(
                         Icon(
                             imageVector = SonataIcons.ChevronRight,
                             contentDescription = null,
-                            tint = Color.White.copy(alpha = 0.45f),
+                            tint = tokens.onSurfaceSecondary.copy(alpha = 0.7f),
                             modifier = Modifier.size(18.dp),
                         )
                     }
@@ -1169,8 +1320,8 @@ private fun AccountUpdatesSettingsPage(
                     SettingsDivider()
                     SettingsActionRow(
                         title = "Download v${updateInfo.latestVersion}",
-                        subtitle = "Fetch and install latest release APK",
-                        accentTitle = SonataAccent,
+                        subtitle = "Download latest APK to Downloads",
+                        accentTitle = tokens.petalLavender,
                         onClick = onDownloadUpdate,
                     )
                 }
@@ -1180,15 +1331,70 @@ private fun AccountUpdatesSettingsPage(
 }
 
 @Composable
+private fun ThemeDesignCard(
+    title: String,
+    subtitle: String,
+    previewTop: Color,
+    previewBottom: Color,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val tokens = LocalLunariaColors.current
+    val shape = RoundedCornerShape(16.dp)
+    val borderColor = if (selected) tokens.petalLavender else tokens.settingsDivider
+    Column(
+        modifier = modifier
+            .clip(shape)
+            .background(
+                if (selected) tokens.petalLavender.copy(alpha = 0.14f) else tokens.onSurfacePrimary.copy(alpha = 0.04f),
+            )
+            .border(if (selected) 1.5.dp else 0.75.dp, borderColor, shape)
+            .clickable(onClick = onClick)
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(24.dp)
+                    .clip(CircleShape)
+                    .background(
+                        androidx.compose.ui.graphics.Brush.linearGradient(listOf(previewTop, previewBottom)),
+                    )
+                    .border(0.75.dp, Color.White.copy(alpha = 0.65f), CircleShape),
+            )
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                color = tokens.onSurfacePrimary,
+            )
+        }
+        Text(
+            text = subtitle,
+            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp, lineHeight = 15.sp),
+            color = tokens.onSurfaceSecondary,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
 private fun SettingsFlatCard(
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    val tokens = LocalLunariaColors.current
     val shape = RoundedCornerShape(18.dp)
     Column(
         modifier = modifier
             .clip(shape)
-            .background(SonataSettingsTokens.Card, shape),
+            .background(tokens.settingsCard, shape)
+            .border(0.5.dp, tokens.settingsDivider.copy(alpha = 0.75f), shape),
         content = content,
     )
 }
@@ -1198,14 +1404,15 @@ private fun SettingsSection(
     title: String,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    val tokens = LocalLunariaColors.current
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
             text = title,
             style = MaterialTheme.typography.labelSmall.copy(
-                letterSpacing = 0.9.sp,
-                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.8.sp,
+                fontWeight = FontWeight.SemiBold,
             ),
-            color = SonataSettingsTokens.TextSecondary,
+            color = tokens.onSurfaceSecondary,
             modifier = Modifier.padding(horizontal = 6.dp),
         )
         SettingsFlatCard(modifier = Modifier.fillMaxWidth(), content = content)
@@ -1214,8 +1421,9 @@ private fun SettingsSection(
 
 @Composable
 private fun SettingsDivider() {
+    val tokens = LocalLunariaColors.current
     HorizontalDivider(
-        color = SonataSettingsTokens.Hairline,
+        color = tokens.settingsDivider,
         modifier = Modifier.padding(start = 16.dp),
     )
 }
@@ -1228,6 +1436,7 @@ private fun SettingsToggleRow(
     enabled: Boolean = true,
     onCheckedChange: (Boolean) -> Unit,
 ) {
+    val tokens = LocalLunariaColors.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1240,12 +1449,12 @@ private fun SettingsToggleRow(
             Text(
                 text = title,
                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Medium),
-                color = if (enabled) SonataSettingsTokens.TextPrimary else Color.White.copy(alpha = 0.4f),
+                color = if (enabled) tokens.onSurfacePrimary else tokens.onSurfacePrimary.copy(alpha = 0.4f),
             )
             Text(
                 text = subtitle,
                 style = MaterialTheme.typography.bodySmall,
-                color = if (enabled) SonataSettingsTokens.TextSecondary else Color.White.copy(alpha = 0.32f),
+                color = if (enabled) tokens.onSurfaceSecondary else tokens.onSurfaceSecondary.copy(alpha = 0.5f),
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -1256,9 +1465,9 @@ private fun SettingsToggleRow(
             enabled = enabled,
             colors = SwitchDefaults.colors(
                 checkedThumbColor = Color.White,
-                checkedTrackColor = SonataSettingsTokens.ToggleActive,
+                checkedTrackColor = tokens.petalLavender,
                 uncheckedThumbColor = Color.White,
-                uncheckedTrackColor = SonataSettingsTokens.ToggleInactive,
+                uncheckedTrackColor = tokens.onSurfaceSecondary.copy(alpha = 0.28f),
                 uncheckedBorderColor = Color.Transparent,
             ),
         )
@@ -1273,6 +1482,7 @@ private fun SettingsSliderRow(
     valueRange: ClosedFloatingPointRange<Float>,
     onValueChange: (Float) -> Unit,
 ) {
+    val tokens = LocalLunariaColors.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1285,13 +1495,13 @@ private fun SettingsSliderRow(
             Text(
                 text = title,
                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Medium),
-                color = Color.White,
+                color = tokens.onSurfacePrimary,
                 modifier = Modifier.weight(1f),
             )
             Text(
                 text = valueLabel,
                 style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                color = SonataAccent,
+                color = tokens.petalLavender,
             )
         }
         Slider(
@@ -1300,8 +1510,8 @@ private fun SettingsSliderRow(
             valueRange = valueRange,
             colors = SliderDefaults.colors(
                 thumbColor = Color.White,
-                activeTrackColor = SonataAccent,
-                inactiveTrackColor = Color.White.copy(alpha = 0.16f),
+                activeTrackColor = tokens.petalLavender,
+                inactiveTrackColor = tokens.onSurfaceSecondary.copy(alpha = 0.22f),
             ),
         )
     }
@@ -1312,8 +1522,9 @@ private fun SettingsActionRow(
     title: String,
     subtitle: String,
     onClick: () -> Unit,
-    accentTitle: Color = Color.White,
+    accentTitle: Color = LocalLunariaColors.current.onSurfacePrimary,
 ) {
+    val tokens = LocalLunariaColors.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1330,7 +1541,7 @@ private fun SettingsActionRow(
             Text(
                 text = subtitle,
                 style = MaterialTheme.typography.bodySmall,
-                color = Color.White.copy(alpha = 0.58f),
+                color = tokens.onSurfaceSecondary,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -1338,7 +1549,7 @@ private fun SettingsActionRow(
         Icon(
             imageVector = SonataIcons.ChevronRight,
             contentDescription = null,
-            tint = Color.White.copy(alpha = 0.45f),
+            tint = tokens.onSurfaceSecondary.copy(alpha = 0.7f),
             modifier = Modifier.size(18.dp),
         )
     }

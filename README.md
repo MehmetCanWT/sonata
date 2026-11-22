@@ -1,255 +1,208 @@
 <div align="center">
-  <img src="assets/sonata-logo.svg" alt="Sonata Logo" width="124" height="124" />
-  <h1>Sonata</h1>
-  <p><strong>A fast, modular Rust music player ecosystem for Linux Terminal, Wayland Desktop, and Android (Mobile &amp; Tablet).</strong></p>
-  <p>
-    <a href="https://github.com/MehmetCanWT/sonata/releases/latest"><img src="https://img.shields.io/badge/version-v1.0.1-818cf8?style=flat-square" alt="Version v1.0.1" /></a>
-    <a href="https://github.com/MehmetCanWT/sonata/actions/workflows/release-builds.yml"><img src="https://img.shields.io/badge/builds-AppImage%20%7C%20Android%20APK-38bdf8?style=flat-square" alt="Release Builds" /></a>
-    <img src="https://img.shields.io/badge/engine-Rust%20%2B%20UniFFI-f97316?style=flat-square" alt="Rust + UniFFI" />
-    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22c55e?style=flat-square" alt="MIT License" /></a>
-  </p>
+
+<br/>
+
+<img src="assets/sonata-icon.png" alt="Sonata logo" width="168" />
+
+# Sonata
+
+### Aesthetic Cross-Platform Music Player — Android, Linux Desktop & Terminal
+
+<br/>
+
+[![Latest release](https://img.shields.io/github/v/release/MehmetCanWT/sonata?style=for-the-badge&color=B79CED&labelColor=0d1117)](https://github.com/MehmetCanWT/sonata/releases/latest)
+[![License](https://img.shields.io/github/license/MehmetCanWT/sonata?style=for-the-badge&color=8F96D9&labelColor=0d1117)](LICENSE)
+[![Downloads](https://img.shields.io/github/downloads/MehmetCanWT/sonata/total?style=for-the-badge&color=7C6CE0&labelColor=0d1117)](https://github.com/MehmetCanWT/sonata/releases)
+[![Engine](https://img.shields.io/badge/Engine-Rust%20%2B%20UniFFI-f97316?style=for-the-badge&labelColor=0d1117)](#architecture)
+
+<br/>
+
+[**Download**](#download) · [**Screenshots**](#screenshots) · [**Features**](#features) · [**Build from Source**](#build-from-source) · [**Disclaimer**](#disclaimer)
+
+<br/>
+
 </div>
 
----
-
-Sonata pairs a single shared Rust core (`sonata-core`) with three native clients for **YouTube Music** and **Spotify**: native **`itag=774` (~256–321 kbps Opus Extreme)** and **`itag=141` (256 kbps AAC Extreme)** playback, word-by-word & duet Apple Music TTML karaoke lyrics (`lrc.red`, BetterLyrics, LyricsPlus, LRCLIB), 24 fps animated Apple Music motion covers, bounded SQLite WAL caching, MPRIS2, System Tray, `now_playing.json` telemetry, and automatic in-app update notifications.
-
-| Client | Platform | Stack | Distribution |
-|---|---|---|---|
-| **`sonata`** | Linux / macOS Terminal | Ratatui + Kitty/Sixel Art | One-line installer, AUR (`PKGBUILD`), Cargo |
-| **`sonata-desktop`** | Linux Wayland / Hyprland | GPUI (`gpui-kit`) + `mpv` | GitHub Releases **AppImage**, AUR (`PKGBUILD.desktop`), One-line installer |
-| **`Sonata`** | Android 8.0+ (Phone & Tablet) | Jetpack Compose + Media3 + UniFFI | GitHub Releases **APK (`arm64-v8a`)** |
+> [!IMPORTANT]
+> Sonata is an independent open-source music client and is not affiliated with, endorsed by, or connected to Google, YouTube Music, or Spotify in any way. Use it at your own discretion.
 
 ---
-
-## Screenshots
-
-### Android — Now Playing & Synced Karaoke Lyrics
 
 <div align="center">
-  <table>
-    <tr>
-      <th>Now Playing</th>
-      <th>Word-Synced Karaoke Lyrics</th>
-    </tr>
-    <tr>
-      <td align="center">
-        <img src="assets/android-mobile-now-playing.png" alt="Sonata Android Now Playing" width="300" />
-      </td>
-      <td align="center">
-        <img src="assets/android-mobile-lyrics.png" alt="Sonata Android Synced Karaoke Lyrics" width="300" />
-      </td>
-    </tr>
-  </table>
+
+<h1><a id="features"></a>Features</h1>
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+
+#### Playback & High-Fidelity Audio
+- **Native Extreme Audio** — authenticated `TVHTML5` InnerTube client + zero-AST JS cipher unlocks **`itag=774` (~256–321 kbps Opus Extreme)** and **`itag=141` (256 kbps AAC Extreme)** across Android, Desktop, and Terminal.
+- **Optional JioSaavn Module** — opt-in 320 kbps AAC source in *Settings → Modules* that searches in parallel and seamlessly upgrades playback when a strictly higher bitrate is found.
+- **Explicit Track Preference** — automatically prefers uncensored explicit versions over clean radio edits when available.
+- **Gapless Playback & Mid-Track Recovery** — bounded range streaming, lookahead precaching, and automatic stream recovery on network hiccups.
+- **Permanent Offline Downloads** — save individual tracks or entire albums/playlists into a first-class in-app **Downloads** playlist with offline-first playback and downloaded track badges.
+
+#### Cross-Platform Ecosystem
+- **Android (Phone & Tablet)** — native Jetpack Compose + Media3 ExoPlayer client powered by Rust (`sonata-core` via UniFFI), adaptive portrait & landscape layouts, and **60 / 90 / 120 Hz** support.
+- **Linux Wayland Desktop (`sonata-desktop`)** — native GPU-accelerated GPUI (`gpui-kit`) client with ambient glass shaders, selectable skins, MPRIS2, System Tray, and Waybar/Hyprlock telemetry.
+- **Terminal Client (`sonata`)** — ultra-fast Ratatui TUI with Kitty/Sixel HD album art, animated motion covers, synced lyrics, mouse-resizable panes, and Mini Mode.
+- **YouTube Music & Spotify Sync** — sign in for personalized Home feeds, Mixes, Library playlists, and two-way playlist management (`Add to Playlist` / `Create Playlist`).
+
+    </td>
+    <td width="50%" valign="top">
+
+#### Experience & Liquid Glass UI
+- **Lunaria Moonflower Design** — custom moon-inspired palette (`#B79CED` Petal Lavender, `#8F96D9` Lunar Mist) paired with bundled **Plus Jakarta Sans** typography.
+- **Optical Liquid Glass** — real-time refraction shader on floating navigation bars, mini player, Now Playing options, and anchored track menus.
+- **Animated Album Artwork (Canvas)** — motion covers from Apple Music HLS, Tidal, and community MP4s plus procedural animated covers for Stations and Moods.
+- **Word-Synced & Duet Karaoke Lyrics** — multi-provider word/syllable-level lyrics (`lrc.red`, BetterLyrics, LyricsPlus, LRCLIB, KuGou, NetEase, Genius) with simultaneous overlapping background vocal (`(hey)`) glow, romanization, translation, and per-track timing offset.
+- **Editorial Explore, Artist & Expressive Search** — full-bleed Artist pages with seamless hero dissolve, tilted *Latest Release* spotlight, numbered *Popular tracks*, editorial Explore carousel, Radio Mixes, and fitted Material 3 Expressive Search grids.
+
+#### Controls, Performance & Privacy
+- **Audio Controls & Pipeline Inspector** — playback speed, loudness normalization, silence skip, sleep timer, and a 4-stage Audio Signal Chain modal.
+- **Zero Trackers & 100% FOSS** — no ads, no analytics, no Google Play Services, no Firebase, deterministic reproducible APK builds (`dependenciesInfo` disabled), and `0o600`/`0o700` private credential handling.
+- **Built-in Update Notifications** — automatic GitHub Releases update checks across Android, Desktop, and Terminal.
+
+    </td>
+  </tr>
+</table>
+
 </div>
 
-### Desktop & Terminal UI
+---
 
-![Sonata Main Player](assets/main-player.png)
+<div align="center">
 
-| Hyprland Glass Transparency | Hyprland Glass Desktop | Mini Mode (Art + Lyrics) | Compact Mini Player |
-|---|---|---|---|
-| ![Hyprland Glass](assets/hyprland-glass.png) | ![Hyprland Glass Desktop](assets/hyprland-glass-desktop.png) | ![Mini Mode](assets/mini-lyrics.png) | ![Mini Player](assets/mini-player.png) |
+<h1><a id="screenshots"></a>Screenshots</h1>
+
+<table>
+  <tr>
+    <th colspan="2">Android — Now Playing &amp; Word-Synced Karaoke Lyrics</th>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="assets/android-mobile-now-playing.png" alt="Sonata Android Now Playing" width="320" />
+    </td>
+    <td align="center" width="50%">
+      <img src="assets/android-mobile-lyrics.png" alt="Sonata Android Synced Karaoke Lyrics" width="320" />
+    </td>
+  </tr>
+  <tr>
+    <th width="50%">Linux Wayland Desktop (<code>sonata-desktop</code>)</th>
+    <th width="50%">Linux Terminal TUI (<code>sonata</code>)</th>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="assets/hyprland-glass-desktop.png" alt="Sonata Linux Wayland Desktop" width="100%" />
+    </td>
+    <td align="center" width="50%">
+      <img src="assets/hyprland-glass.png" alt="Sonata Terminal TUI" width="100%" />
+    </td>
+  </tr>
+</table>
+
+</div>
 
 ---
 
-## Installation
+<div align="center">
 
-### 1. Android (Mobile & Tablet)
+<h1><a id="download"></a>Download</h1>
 
-- **Obtainium (Recommended — Auto-Updates Directly from GitHub Releases):**
-  1. Install [Obtainium](https://github.com/ImranR98/Obtainium).
-  2. Tap **Add App** and paste `https://github.com/MehmetCanWT/sonata`.
-  3. Set **APK Filter** to `Sonata-.*-arm64\.apk$` and tap **Add** — Obtainium will automatically track and install signed updates in-place.
-- **Droid-ify / IzzyOnDroid & F-Droid:**
-  - Open [Droid-ify](https://github.com/Droid-ify/client) (with the **IzzyOnDroid** repository enabled) or **F-Droid**, search for **Sonata** (`dev.sonata.android`), and tap **Install**.
-- **Direct APK Download:**
-  - Download the latest signed **`Sonata-v1.0.1-arm64.apk`** directly from [GitHub Releases](https://github.com/MehmetCanWT/sonata/releases/latest) and install it on any `arm64-v8a` Android 8.0+ phone or tablet.
+<a href="https://github.com/MehmetCanWT/sonata/releases/latest" target="_blank" rel="noopener noreferrer"><img src="https://cdn.jsdelivr.net/gh/JMcrafter26/badges@main/src/assets/supported/android/cozy.svg" alt="Download for Android" height="54"/></a>
+<a href="https://github.com/MehmetCanWT/sonata/releases/latest" target="_blank" rel="noopener noreferrer"><img src="https://cdn.jsdelivr.net/gh/JMcrafter26/badges@main/src/assets/supported/linux/cozy.svg" alt="Download for Linux" height="54"/></a>
 
-### 2. Linux Desktop GUI (`sonata-desktop`)
+<br/><br/>
 
-#### Prebuilt AppImage (Recommended — No Compilation Needed)
+<table>
+  <tr>
+    <td width="50%" valign="top">
 
-Download **`Sonata-v1.0.1-x86_64.AppImage`** from [GitHub Releases](https://github.com/MehmetCanWT/sonata/releases/latest):
+#### Android (Mobile & Tablet, `arm64-v8a`)
+- **Obtainium (Auto-Updates):** Add `https://github.com/MehmetCanWT/sonata` with APK filter `Sonata-.*-arm64\.apk$`.
+- **Direct APK:** Grab the latest signed **`Sonata-v1.0.2-arm64.apk`** from [GitHub Releases](https://github.com/MehmetCanWT/sonata/releases/latest).
 
-```sh
-chmod +x Sonata-v1.0.1-x86_64.AppImage
-./Sonata-v1.0.1-x86_64.AppImage
+    </td>
+    <td width="50%" valign="top">
 
-# Tip: the same AppImage also bundles the TUI client:
-./Sonata-v1.0.1-x86_64.AppImage --tui
-```
+#### Linux Desktop & Terminal (`x86_64`)
+- **AppImage (GUI + TUI):** Download **`Sonata-v1.0.2-x86_64.AppImage`** from [GitHub Releases](https://github.com/MehmetCanWT/sonata/releases/latest), `chmod +x`, and run (`--tui` launches the terminal client).
+- **One-Line Installer:**
+  ```sh
+  # Terminal client (sonata)
+  curl -fsSL https://raw.githubusercontent.com/MehmetCanWT/sonata/main/install.sh | sh
 
-#### Arch Linux / AUR (`PKGBUILD.desktop`)
+  # Desktop GUI (sonata-desktop)
+  curl -fsSL https://raw.githubusercontent.com/MehmetCanWT/sonata/main/install-desktop.sh | sh
+  ```
+- **Arch Linux / AUR:** `makepkg -si` (`PKGBUILD` for TUI, `PKGBUILD.desktop` for Desktop).
 
-```sh
-makepkg -p PKGBUILD.desktop -si
-```
+    </td>
+  </tr>
+</table>
 
-#### One-Line Source Installer
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/MehmetCanWT/sonata/main/install-desktop.sh | sh
-```
-
-### 3. Terminal UI (`sonata`)
-
-#### One-Line Installer (No Clone Required)
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/MehmetCanWT/sonata/main/install.sh | sh
-```
-
-#### Arch Linux / AUR (`PKGBUILD`)
-
-```sh
-makepkg -si
-```
-
-#### Direct Cargo Install
-
-```sh
-cargo install --git https://github.com/MehmetCanWT/sonata.git --locked sonata-tui
-```
-
-> [!TIP]
-> [`install.sh`](install.sh) and [`install-desktop.sh`](install-desktop.sh) automatically install required runtime tools (`mpv`, `yt-dlp`, `ffmpeg`, `nodejs`, plus Wayland/Vulkan/XKB/ALSA/D-Bus libraries for Desktop) via `pacman`, `apt-get`, `dnf`, `zypper`, or `brew`, install Rust via `rustup` if missing, compile while leaving 2 CPU threads free, and register the desktop icon & launcher.
+</div>
 
 ---
 
-## Core Highlights
+<a id="architecture"></a>
+<a id="build-from-source"></a>
 
-- **Native Extreme Audio (`itag=774` / `itag=141`)**:
-  - Authenticated `TVHTML5` InnerTube client + zero-AST `base.js` JS cipher solver unlocks YouTube Music Premium **`itag=774` (~256–321 kbps Opus Extreme)** and **`itag=141` (256 kbps AAC Extreme)** natively across Android (offscreen V8 WebView bridge), Desktop, and TUI.
-  - Fast-start playback with seamless background Hi-Fi upgrades, lookahead precaching, consistent Shuffle history, and live-switchable `mpv` DSP presets (`Hi-Res Crystal`, `Spatial Wide`, `Warm Bass`, `Bit-Perfect`).
-- **Word-Synced & Duet Karaoke Lyrics**:
-  - Multi-source concurrent resolution prioritized by timing accuracy: **`lrc.red`** (ISRC-keyed Apple Music TTML), **BetterLyrics**, **LyricsPlus v2**, **LRCLIB**, **KuGou KRC**, **NetEase YRC**, **QQ Music**, and native YouTube Music/Genius fallbacks.
-  - Strict recording-version isolation (`Extended`, `Remix`, `Slowed`, `Sped Up`, `Live`, `Acoustic`) and tight `<= 3.5s` duration matching prevent mismatched edits from ever polluting the cache.
-  - Duet `Lead` / `Counter` left-right alignment, background vocal styling, 3-dot instrumental break indicators, and a steered monotonic frame clock that glides smoothly without buffering drift.
-- **Adaptive Android Phone & Tablet Experience**:
-  - Full-bleed edge-to-edge hero Now Playing in portrait; spacious two-column Now Playing in tablet landscape with elevated square artwork, persistent media controls, tap-artwork Lyrics toggle, and multi-column Explore/Library grids.
-  - Built-in YouTube Music web sign-in, Media3 foreground playback service, Bluetooth/notification media controls, and 60/120 Hz frame-rate option.
-- **Native Wayland / Hyprland Desktop (`sonata-desktop`)**:
-  - Live-switchable **Sonata Glass**, **Spotify**, and **YouTube Music** skins, personalized multi-page YouTube Music Home feed, 24 fps Apple Music animated Motion Covers, fullscreen ambient wave shaders, 3-tier Mini Player (`Ctrl+M`), MPRIS2, and System Tray.
-- **Built-In Update Notifications**:
-  - Desktop (`sonata-desktop`), TUI (`sonata`), and Android automatically check GitHub Releases on startup and alert you when a newer version is published (header pill + clickable **Download Update** button in Desktop Settings, `[Update vX.Y.Z]` player badge & status alert in TUI, and Settings check on Android).
-- **Zero-Config Browser Auth & Two-Way Sync**:
-  - Automatically extracts session cookies from Zen Browser, Firefox, LibreWolf, Floorp, Chrome, Chromium, Brave, Vivaldi, and Edge with `0o600` atomic storage.
-  - Two-way YouTube Music library sync (playlists, Liked Music, like/unlike, add/remove, create playlists) plus keyless Spotify (`sp_dc`) library loading and public playlist URL import.
-- **Shared Bounded Cache & External Telemetry**:
-  - Shared SQLite WAL database (`PRAGMA user_version = 3`) and configurable LRU media cache (`Off` to `10 GB`, default `1 GB`) under `~/.cache/sonata/`.
-  - Atomic `$XDG_RUNTIME_DIR/sonata/now_playing.json` export for Waybar, Hyprlock, Eww, and custom scripts.
+<details>
+<summary><strong>Architecture &amp; Build from Source</strong></summary>
 
----
+### Workspace Layout
 
-## Versioning & Automated Releases
-
-Sonata follows [Semantic Versioning](https://semver.org/) starting at **`v1.0.0`** with both unified and per-platform release streams:
-
-- **Unified Version Source**: Rust workspace crates (`Cargo.toml`), Arch `PKGBUILD` / `PKGBUILD.desktop`, Android `versionName`, and GitHub Release tags share `MAJOR.MINOR.PATCH`. Android `versionCode` is derived deterministically as `MAJOR * 10000 + MINOR * 100 + PATCH` (`1.0.0` → `10000`).
-- **Automated Per-Platform CI Releases** ([`.github/workflows/release-builds.yml`](.github/workflows/release-builds.yml)):
-  - **`vX.Y.Z`** (e.g., `v1.0.0`): Unified release — builds **both** `Sonata-vX.Y.Z-x86_64.AppImage` and `Sonata-vX.Y.Z-arm64.apk` (+ `SHA256SUMS.txt`), notifying all clients.
-  - **`android-vX.Y.Z`** (e.g., `android-v1.0.1`): Android-only release — builds **only** `Sonata-android-vX.Y.Z-arm64.apk` and triggers update notifications **only inside Android** (Desktop & TUI ignore it).
-  - **`desktop-vX.Y.Z`** (e.g., `desktop-v1.0.1`): Desktop/TUI-only release — builds **only** `Sonata-desktop-vX.Y.Z-x86_64.AppImage` and triggers update notifications **only inside Desktop & TUI** (Android ignores it).
-  - Force-moving an existing tag automatically purges stale assets on that GitHub Release before uploading the fresh builds.
-
----
-
-## Workspace Architecture
-
-Sonata is organized as a 4-crate Cargo workspace + native Android Compose app:
-
-- `crates/sonata-core` — Shared Rust engine (browser auth, YouTube Music & Spotify providers, `TVHTML5` + `base.js` cipher solver, `mpv` IPC playback, multi-source TTML/KRC/YRC/LRCLIB lyrics, animated motion covers, themes, SQLite WAL cache, and GitHub Releases updater).
-- `crates/sonata-tui` — **`sonata`**: Ratatui terminal client with Kitty/Sixel/Halfblock album art, mouse-resizable panes, synced lyrics, Mini Mode, and update notifications.
-- `crates/sonata-desktop` — **`sonata-desktop`**: Native Wayland/Hyprland GPUI desktop client with selectable skins, fullscreen lyrics, Mini Player, MPRIS2, System Tray, and update notifications.
-- `crates/sonata-android` + `android/` — **`Sonata` (Android)**: UniFFI Rust bridge (`libsonata_android.so`) + Jetpack Compose / Media3 ExoPlayer mobile and tablet application.
-
----
-
-## TUI Keybindings & Mouse (`sonata`)
-
-| Key / Input | Action |
+| Crate / Folder | Role |
 |---|---|
-| `Tab` / `h` / `l` | Switch between Sidebar and Track List |
-| `↑` / `↓` / `j` / `g` / `G` | Navigate lists |
-| `H` / `L` | Resize focused pane width |
-| `/` | Search YouTube Music & Spotify |
-| `Enter` | Open playlist / Play selected track |
-| `Space` | Play / Pause |
-| `n` / `p` | Next / Previous track (follows Shuffle history) |
-| `<` / `>` (or `,` / `.`) | Seek -5s / +5s |
-| `-` / `+` (or `_` / `=`) | Volume down / up |
-| `e` | Cycle Audio Enhancer DSP preset |
-| `s` / `r` | Toggle Shuffle / Cycle Repeat (`Off` / `All` / `One`) |
-| `y` | Like / Unlike track on YouTube Music |
-| `a` / `x` (`Delete`) | Add to / Remove from YouTube Music playlist |
-| `c` / `R` | Create YouTube Music playlist / Refresh account & cache |
-| `i` | Import Spotify playlist URL or ID |
-| `m` / Double-Click Art | Toggle Mini Mode |
-| `S` | Open Settings (Providers, Hi-Fi, DSP, Transparency, Opacity, Theme, Updates) |
-| `u` | Check GitHub Releases for updates (inside Settings) |
-| `t` | Open Theme Picker (live preview) |
-| `k` / `?` | Open / Close Keybindings menu |
-| `q` / `Ctrl+C` | Quit |
+| `crates/sonata-core` | Shared Rust engine (auth, Hi-Fi cipher & stream resolution, multi-provider TTML/YRC/KRC/LRCLIB lyrics, SQLite WAL cache, `mpv` IPC, updater) |
+| `crates/sonata-android` + `android/` | UniFFI Rust bridge (`libsonata_android.so`) + Jetpack Compose / Media3 ExoPlayer Android mobile & tablet app |
+| `crates/sonata-desktop` | Native GPUI Wayland/Hyprland desktop client with MPRIS2 & system tray |
+| `crates/sonata-tui` | Ratatui terminal client with Kitty/Sixel artwork & synced lyrics |
 
-**Mouse**: Drag panel borders or the Album Art/Lyrics divider to resize; click or drag the `0–100%` volume slider and progress bar; click tracks/playlists/controls; double-click Album Art for Mini Mode; scroll lists, player bar volume, and inside modals.
+### Build Commands
 
-## Desktop Shortcuts (`sonata-desktop`)
+```sh
+# Rust workspace (Linux Desktop & TUI)
+cargo build --release --locked -p sonata-tui -p sonata-desktop
 
-| Shortcut | Action |
-|---|---|
-| `Ctrl+F` | Focus search bar |
-| `Space` | Play / Pause (when search/modals are unfocused) |
-| `Left` / `Right` | Seek -5s / +5s |
-| `Ctrl+L` | Switch between Library and Lyrics views |
-| `Ctrl+M` | Toggle compact Mini Player mode |
-| `Ctrl+,` | Open Settings, Skins & Updates |
-| `Esc` | Close modal / Queue drawer / exit Mini Player |
-| `Ctrl+Q` | Quit cleanly (terminates background audio) |
-
-### Optional Hyprland Blur Rule
-
-```ini
-windowrule = match:class ^(sonata-desktop)$, blur on
-windowrule = match:class ^(sonata-desktop)$, ignore_alpha 0.25
+# Android native library + release APK (JDK 21, Android SDK 35, NDK 27.2.12479018, cargo-ndk)
+rustup target add aarch64-linux-android
+cargo ndk -t arm64-v8a -P 26 -o android/app/src/main/jniLibs build -p sonata-android --release --locked
+cd android && ./gradlew :app:assembleRelease --console=plain
 ```
+
+### Verification Suite
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --all-targets --locked
+```
+
+</details>
 
 ---
 
-## Custom Themes, Logs & Integrations
+<div align="center">
 
-- **Custom Themes**: Create `~/.config/sonata/themes/my-theme.toml` (shared by TUI and Desktop) and configure global options in `~/.config/sonata/config.toml`.
-- **Logs**: Runtime logs live in `~/.cache/sonata/sonata.log` (capped at 10 MiB, `0o600` on Unix; set `RUST_LOG=debug` for verbose IPC/resolver logs).
-- **External Integrations**: `$XDG_RUNTIME_DIR/sonata/now_playing.json` (fallback: `~/.cache/sonata/now_playing.json`) exports live track metadata, quality badge, active lyric, progress, and artwork path for Waybar, Hyprlock, and Eww.
+<h1><a id="disclaimer"></a>Disclaimer & Legal Notice</h1>
 
-## Building from Source
+Sonata is an independent, community-driven third-party audio player and client. It is **not** associated with Google LLC, YouTube Music, Spotify AB, or any of their parent companies.
 
-```sh
-git clone https://github.com/MehmetCanWT/sonata.git
-cd sonata
+- **No Media Hosting:** Sonata does not host, upload, or distribute copyrighted music files. It operates strictly as a client interface for local playback or streaming from public and user-authenticated APIs.
+- **Fair Use & Responsibility:** This software is provided for personal, educational, and fair-use purposes. Users are solely responsible for complying with local copyright laws and third-party platform Terms of Service.
+- **Privacy:** All session cookies and caches are stored locally on your device with restricted permissions (`0o600`/`0o700`) and are never transmitted to any third-party telemetry server.
 
-# Terminal client
-cargo check-tui
-cargo build --release -p sonata-tui
+</div>
 
-# Desktop GUI client
-cargo check-desktop
-cargo build --release -p sonata-desktop
+---
 
-# Android native library + APK (requires Android SDK/NDK 27 + cargo-ndk)
-cargo ndk -t arm64-v8a -P 26 -o android/app/src/main/jniLibs build -p sonata-android --release
-cd android && ./gradlew :app:assembleRelease
-```
+<div align="center">
 
-## Documentation
+<h1><a id="license"></a>License</h1>
 
-- [`docs/architecture.md`](docs/architecture.md) — Workspace crate map, threading & IPC model, and filesystem layout.
-- [`docs/how-it-works.md`](docs/how-it-works.md) — Browser cookie auth, `TVHTML5`/cipher pipeline, synced lyrics, and visual effects.
-- [`docs/android-research.md`](docs/android-research.md) — Android Jetpack Compose + UniFFI client architecture.
-- [`PRIVACY.md`](PRIVACY.md) — Local-only cookie handling, direct provider requests, and cache/log policy.
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) & [`AGENTS.md`](AGENTS.md) — Contributor workflow and verification checks.
-- [`CHANGELOG.md`](CHANGELOG.md) — Full SemVer release history starting from `1.0.0`.
+This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for details.
 
-## License
-
-Licensed under the [MIT License](LICENSE).
+</div>

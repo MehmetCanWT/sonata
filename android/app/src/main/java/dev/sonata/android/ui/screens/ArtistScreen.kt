@@ -57,8 +57,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.BlurredEdgeTreatment
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
@@ -92,18 +95,21 @@ import dev.sonata.android.backdrop.backdrops.layerBackdrop
 import dev.sonata.android.backdrop.backdrops.rememberLayerBackdrop
 import dev.sonata.android.isGlassSupported
 import dev.sonata.android.liquidGlass
+import dev.sonata.android.sonataThemeGlassButton
 import dev.sonata.android.ui.CARD_ART_PX
 import dev.sonata.android.ui.HEADER_ART_PX
 import dev.sonata.android.ui.PAGE_GUTTER
 import dev.sonata.android.ui.ROW_ART_PX
 import dev.sonata.android.ui.ShimmerBox
-import dev.sonata.android.ui.SonataAccent
 import dev.sonata.android.ui.SonataIcons
 import dev.sonata.android.ui.SonataShimmerHost
 import dev.sonata.android.ui.artworkAt
 import dev.sonata.android.ui.components.ScrollActivityTracker
 import dev.sonata.android.ui.rememberArtworkPalette
 import dev.sonata.android.ui.rememberArtworkRequest
+import dev.sonata.android.ui.theme.LocalLunariaColors
+import dev.sonata.android.ui.theme.LunariaColors
+import dev.sonata.android.ui.theme.sonataGlassSurface
 import kotlinx.coroutines.flow.distinctUntilChanged
 import uniffi.sonata_android.AndroidTrack
 
@@ -149,8 +155,6 @@ data class ArtistScreenData(
     val similarArtists: List<ArtistSimilarItem> = emptyList(),
 )
 
-private val ArtistBaseWash = Color(0xFF1C1C1E)
-private val ArtistDeepBackground = Color(0xFF0A0A0C)
 private val ArtistCardNeutral = Color(0xFF242428)
 private val ArtistButtonMuted = Color(0xFF2C2C30)
 
@@ -185,23 +189,51 @@ fun ArtistScreen(
     modifier: Modifier = Modifier,
 ) {
     val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val themeTokens = LocalLunariaColors.current
     val resolvedHeroUrl = remember(artist) {
         artist?.avatarUrl?.takeIf { it.isNotBlank() }
             ?: artist?.latestRelease?.thumbnailUrl?.takeIf { it.isNotBlank() }
             ?: artist?.albums?.firstOrNull()?.thumbnailUrl?.takeIf { it.isNotBlank() }
             ?: artist?.topSongs?.firstOrNull()?.track?.thumbnailUrl
     }
-    val palette = rememberArtworkPalette(
+    val rawPalette = rememberArtworkPalette(
         artworkUrl = resolvedHeroUrl,
-        dark = true,
+        dark = themeTokens.isDark,
         artPx = HEADER_ART_PX,
     )
+    val palette = remember(rawPalette, themeTokens.designTheme, themeTokens.isDark) {
+        if (!themeTokens.isDark) {
+            val baseTarget = themeTokens.eclipseBase
+            val washTarget = themeTokens.eclipseSurface
+            val cardTarget = themeTokens.eclipseCard
+            rawPalette.copy(
+                background = androidx.compose.ui.graphics.lerp(rawPalette.background, baseTarget, 0.80f),
+                wash = androidx.compose.ui.graphics.lerp(rawPalette.wash, washTarget, 0.72f),
+                elevated = androidx.compose.ui.graphics.lerp(rawPalette.elevated, cardTarget, 0.78f),
+                accent = themeTokens.petalLavender,
+                onBackground = themeTokens.onSurfacePrimary,
+                onBackgroundVariant = themeTokens.onSurfaceSecondary,
+                divider = themeTokens.cardStroke,
+            )
+        } else {
+            val baseTarget = themeTokens.eclipseBase
+            val washTarget = themeTokens.eclipseSurface
+            rawPalette.copy(
+                background = androidx.compose.ui.graphics.lerp(rawPalette.background, baseTarget, 0.65f),
+                wash = androidx.compose.ui.graphics.lerp(rawPalette.wash, washTarget, 0.50f),
+                accent = themeTokens.petalLavender,
+                onBackground = themeTokens.onSurfacePrimary,
+                onBackgroundVariant = themeTokens.onSurfaceSecondary,
+                divider = themeTokens.cardStroke,
+            )
+        }
+    }
     val moodyWash = palette.wash
-    val artistBgBrush = remember(moodyWash, palette.background) {
+    val artistBgBrush = remember(moodyWash, palette.background, themeTokens.eclipseBase) {
         Brush.verticalGradient(
             0f to moodyWash,
             0.48f to palette.background,
-            1f to ArtistDeepBackground,
+            1f to themeTokens.eclipseBase,
         )
     }
     val paintArtistBackdrop: ContentDrawScope.() -> Unit = remember(artistBgBrush) {
@@ -335,32 +367,42 @@ fun ArtistScreen(
                                         fontWeight = FontWeight.Bold,
                                         letterSpacing = (-0.3).sp,
                                     ),
-                                    color = Color.White,
+                                    color = MaterialTheme.colorScheme.onBackground,
                                 )
-                                if (artist.topSongs.size > 4) {
-                                    Spacer(Modifier.width(4.dp))
-                                    Icon(
-                                        imageVector = SonataIcons.ChevronRight,
-                                        contentDescription = "See all",
-                                        tint = Color.White.copy(alpha = 0.55f),
-                                        modifier = Modifier.size(20.dp),
-                                    )
-                                }
+                                Spacer(Modifier.width(4.dp))
+                                Icon(
+                                    imageVector = SonataIcons.ChevronRight,
+                                    contentDescription = "See all",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp),
+                                )
                             }
+                            // Keep in-scroll Play button free of artistBackdrop sampling to avoid RenderNode cycles.
                             Box(
                                 modifier = Modifier
                                     .size(40.dp)
+                                    .shadow(
+                                        elevation = 6.dp,
+                                        shape = CircleShape,
+                                        clip = false,
+                                        ambientColor = themeTokens.glassShadowColor,
+                                        spotColor = themeTokens.glassShadowColor,
+                                    )
+                                    .sonataGlassSurface(
+                                        shape = CircleShape,
+                                        liveBackdrop = false,
+                                        tintOverride = themeTokens.petalLavender.copy(alpha = 0.22f),
+                                        accentGlow = true,
+                                    )
                                     .clip(CircleShape)
-                                    .background(SonataAccent.copy(alpha = 0.24f))
-                                    .border(0.5.dp, SonataAccent.copy(alpha = 0.45f), CircleShape)
                                     .clickable { onPlayTopSongs(artist) },
                                 contentAlignment = Alignment.Center,
                             ) {
                                 Icon(
                                     imageVector = SonataIcons.Play,
                                     contentDescription = "Play popular tracks",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(18.dp),
+                                    tint = themeTokens.onSurfacePrimary,
+                                    modifier = Modifier.size(16.dp),
                                 )
                             }
                         }
@@ -400,7 +442,7 @@ fun ArtistScreen(
                 if (artist.albums.isNotEmpty()) {
                     item(key = "albums_${artist.id}", contentType = "artist_albums") {
                         Spacer(Modifier.height(24.dp))
-                        SectionHeaderRow(title = "Albums")
+                        SectionHeaderRow(title = "Albums & singles", showChevron = true)
                         ReleaseHorizontalShelf(
                             releases = artist.albums,
                             onReleaseClick = onOpenRelease,
@@ -413,7 +455,7 @@ fun ArtistScreen(
                 if (artist.singles.isNotEmpty()) {
                     item(key = "singles_${artist.id}", contentType = "artist_singles") {
                         Spacer(Modifier.height(24.dp))
-                        SectionHeaderRow(title = "Singles & EPs")
+                        SectionHeaderRow(title = "Singles & EPs", showChevron = true)
                         ReleaseHorizontalShelf(
                             releases = artist.singles,
                             onReleaseClick = onOpenRelease,
@@ -426,7 +468,7 @@ fun ArtistScreen(
                 if (artist.similarArtists.isNotEmpty()) {
                     item(key = "similar_${artist.id}", contentType = "artist_similar") {
                         Spacer(Modifier.height(24.dp))
-                        SectionHeaderRow(title = "Similar Artists")
+                        SectionHeaderRow(title = "Similar artists", showChevron = true)
                         LazyRow(
                             contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
                             horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -479,7 +521,7 @@ fun ArtistScreen(
                     Icon(
                         imageVector = SonataIcons.ChevronLeft,
                         contentDescription = "Back",
-                        tint = Color.White,
+                        tint = themeTokens.onSurfacePrimary,
                         modifier = Modifier.size(22.dp),
                     )
                 }
@@ -506,7 +548,7 @@ private fun ArtistHeroHeader(
     onShuffle: () -> Unit,
     onToggleSubscribe: () -> Unit,
 ) {
-    val heroHeight = 360.dp + statusTop
+    val heroHeight = 336.dp + statusTop
     val heroReq = rememberArtworkRequest(
         url = heroUrl.artworkAt(HEADER_ART_PX),
         widthPx = HEADER_ART_PX,
@@ -518,10 +560,9 @@ private fun ArtistHeroHeader(
     val glassOn = LocalLiquidGlassEnabled.current && isGlassSupported() && !LocalReduceDynamicBlur.current
     val heroTopVignetteBrush = remember {
         Brush.verticalGradient(
-            0.0f to Color.Black.copy(alpha = 0.36f),
-            0.26f to Color.Transparent,
-            0.62f to Color.Transparent,
-            1.0f to Color.Black.copy(alpha = 0.24f),
+            0.0f to Color.Black.copy(alpha = 0.32f),
+            0.30f to Color.Transparent,
+            1.0f to Color.Transparent,
         )
     }
 
@@ -536,8 +577,37 @@ private fun ArtistHeroHeader(
                 .layerBackdrop(heroBackdrop),
         ) {
             if (heroReq != null) {
-                // Smooth alpha dissolve matching Portrait Now Playing so the artist portrait
-                // melts seamlessly into the artwork-derived page background with zero seam.
+                // Layer 1: Softly blurred lower tail that dissolves smoothly to transparent before hero bottom.
+                AsyncImage(
+                    model = heroReq,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .blur(26.dp, BlurredEdgeTreatment.Unbounded)
+                        .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                        .drawWithCache {
+                            val blurFadeBrush = Brush.verticalGradient(
+                                colorStops = arrayOf(
+                                    0.00f to Color.Transparent,
+                                    0.24f to Color.Transparent,
+                                    0.46f to Color.Black.copy(alpha = 0.92f),
+                                    0.74f to Color.Black.copy(alpha = 0.54f),
+                                    0.90f to Color.Black.copy(alpha = 0.16f),
+                                    0.98f to Color.Transparent,
+                                    1.00f to Color.Transparent,
+                                ),
+                                startY = 0f,
+                                endY = size.height,
+                            )
+                            onDrawWithContent {
+                                drawContent()
+                                drawRect(brush = blurFadeBrush, blendMode = BlendMode.DstIn)
+                            }
+                        },
+                )
+
+                // Layer 2: Crisp upper artist portrait blending organically into the blurred transition layer.
                 AsyncImage(
                     model = heroReq,
                     contentDescription = artist.name,
@@ -546,20 +616,20 @@ private fun ArtistHeroHeader(
                         .fillMaxSize()
                         .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
                         .drawWithCache {
-                            val fadeBrush = Brush.verticalGradient(
+                            val crispFadeBrush = Brush.verticalGradient(
                                 colorStops = arrayOf(
                                     0.00f to Color.Black,
-                                    0.32f to Color.Black.copy(alpha = 0.86f),
-                                    0.64f to Color.Black.copy(alpha = 0.44f),
-                                    0.86f to Color.Black.copy(alpha = 0.14f),
+                                    0.30f to Color.Black,
+                                    0.54f to Color.Black.copy(alpha = 0.45f),
+                                    0.72f to Color.Transparent,
                                     1.00f to Color.Transparent,
                                 ),
-                                startY = size.height * 0.40f,
+                                startY = 0f,
                                 endY = size.height,
                             )
                             onDrawWithContent {
                                 drawContent()
-                                drawRect(brush = fadeBrush, blendMode = BlendMode.DstIn)
+                                drawRect(brush = crispFadeBrush, blendMode = BlendMode.DstIn)
                             }
                         },
                 )
@@ -584,7 +654,7 @@ private fun ArtistHeroHeader(
                 }
             }
 
-            // Subtle top/bottom readability vignette for chrome and artist title
+            // Soft top vignette for chrome legibility only (never puts a hard cutoff line at bottom)
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -592,13 +662,21 @@ private fun ArtistHeroHeader(
             )
         }
 
+        val themeTokens = LocalLunariaColors.current
         val releaseCount = artist.albums.size + artist.singles.size
         val summaryLine = remember(artist.topSongs.size, releaseCount) {
             buildList {
-                if (artist.topSongs.isNotEmpty()) add("${artist.topSongs.size}+ tracks")
+                if (artist.topSongs.isNotEmpty()) add("${artist.topSongs.size} tracks")
                 if (releaseCount > 0) add("$releaseCount releases")
             }.joinToString(" • ")
         }
+        val listenersLine = artist.monthlyListeners?.takeIf { it.isNotBlank() }
+            ?: artist.subscriberText?.takeIf { it.isNotBlank() }
+        val heroTitleColor = if (themeTokens.isDark) Color.White else themeTokens.onSurfacePrimary
+        val heroSubColor = if (themeTokens.isDark) Color.White.copy(alpha = 0.84f) else themeTokens.onSurfacePrimary.copy(alpha = 0.82f)
+        val buttonTint = themeTokens.onSurfacePrimary
+        val playTint = if (themeTokens.isDark) themeTokens.glassTint.copy(alpha = 0.62f) else Color.White.copy(alpha = 0.78f)
+        val playFallback = if (themeTokens.isDark) themeTokens.eclipseCard else Color.White
 
         Column(
             modifier = Modifier
@@ -610,25 +688,25 @@ private fun ArtistHeroHeader(
             Text(
                 text = artist.name,
                 style = MaterialTheme.typography.headlineLarge.copy(
-                    fontSize = 36.sp,
+                    fontSize = 34.sp,
                     fontWeight = FontWeight.ExtraBold,
                     letterSpacing = (-0.8).sp,
                 ),
-                color = Color.White,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                color = heroTitleColor,
+                textAlign = TextAlign.Center,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            artist.subscriberText?.takeIf { it.isNotBlank() }?.let { subs ->
+            listenersLine?.let { subs ->
                 Spacer(Modifier.height(4.dp))
                 Text(
                     text = subs,
                     style = MaterialTheme.typography.bodyMedium.copy(
-                        fontSize = 14.sp,
+                        fontSize = 15.sp,
                         fontWeight = FontWeight.Medium,
                     ),
-                    color = Color.White.copy(alpha = 0.78f),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    color = heroSubColor,
+                    textAlign = TextAlign.Center,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -638,11 +716,11 @@ private fun ArtistHeroHeader(
                 Text(
                     text = summaryLine,
                     style = MaterialTheme.typography.bodySmall.copy(
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Normal,
+                        fontSize = 13.5.sp,
+                        fontWeight = FontWeight.SemiBold,
                     ),
-                    color = Color.White.copy(alpha = 0.62f),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    color = themeTokens.petalLavender,
+                    textAlign = TextAlign.Center,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -659,41 +737,35 @@ private fun ArtistHeroHeader(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     // Circular Liquid Glass Shuffle button
-                    val shuffleGlassMod = if (glassOn) {
-                        Modifier
-                            .size(52.dp)
-                            .liquidGlass(
-                                shape = CircleShape,
-                                surfaceTint = Color.Black.copy(alpha = 0.24f),
-                                chromaticAberration = false,
-                            )
-                            .border(0.5.dp, Color.White.copy(alpha = 0.20f), CircleShape)
-                    } else {
-                        Modifier
-                            .size(52.dp)
-                            .clip(CircleShape)
-                            .background(ArtistButtonMuted.copy(alpha = 0.90f))
-                            .border(0.5.dp, Color.White.copy(alpha = 0.14f), CircleShape)
-                    }
                     Box(
-                        modifier = shuffleGlassMod.clickable(onClick = onShuffle),
+                        modifier = Modifier
+                            .size(52.dp)
+                            .sonataThemeGlassButton(
+                                shape = CircleShape,
+                                fallbackColor = themeTokens.eclipseSurface,
+                            )
+                            .clickable(onClick = onShuffle),
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
                             imageVector = SonataIcons.Shuffle,
                             contentDescription = "Shuffle",
-                            tint = Color.White,
+                            tint = buttonTint,
                             modifier = Modifier.size(22.dp),
                         )
                     }
 
-                    // Large primary White Pill PLAY button
+                    // Primary Liquid Glass Pill Play button
                     Box(
                         modifier = Modifier
                             .weight(1f)
                             .height(52.dp)
-                            .clip(CircleShape)
-                            .background(Color.White)
+                            .sonataThemeGlassButton(
+                                shape = CircleShape,
+                                surfaceTint = playTint,
+                                fallbackColor = playFallback,
+                                shadowElevation = 12.dp,
+                            )
                             .clickable(onClick = onPlay),
                         contentAlignment = Alignment.Center,
                     ) {
@@ -704,63 +776,45 @@ private fun ArtistHeroHeader(
                             Icon(
                                 imageVector = SonataIcons.Play,
                                 contentDescription = null,
-                                tint = Color(0xFF101012),
+                                tint = buttonTint,
                                 modifier = Modifier.size(18.dp),
                             )
                             Text(
-                                text = "PLAY",
+                                text = "Play",
                                 style = MaterialTheme.typography.titleSmall.copy(
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    letterSpacing = 0.8.sp,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Bold,
                                 ),
-                                color = Color(0xFF101012),
+                                color = buttonTint,
                             )
                         }
                     }
 
                     // Circular Liquid Glass Subscribe / Favorite button
-                    val subscribeGlassMod = if (glassOn) {
-                        Modifier
-                            .size(52.dp)
-                            .liquidGlass(
-                                shape = CircleShape,
-                                surfaceTint = if (artist.isSubscribed) {
-                                    SonataAccent.copy(alpha = 0.24f)
-                                } else {
-                                    Color.Black.copy(alpha = 0.24f)
-                                },
-                                chromaticAberration = false,
-                            )
-                            .border(
-                                width = 0.5.dp,
-                                color = if (artist.isSubscribed) SonataAccent.copy(alpha = 0.65f)
-                                else Color.White.copy(alpha = 0.20f),
-                                shape = CircleShape,
-                            )
+                    val subTint = if (artist.isSubscribed) {
+                        themeTokens.petalLavender.copy(alpha = 0.28f)
                     } else {
-                        Modifier
-                            .size(52.dp)
-                            .clip(CircleShape)
-                            .background(
-                                if (artist.isSubscribed) SonataAccent.copy(alpha = 0.22f)
-                                else ArtistButtonMuted.copy(alpha = 0.90f),
-                            )
-                            .border(
-                                width = 0.5.dp,
-                                color = if (artist.isSubscribed) SonataAccent.copy(alpha = 0.65f)
-                                else Color.White.copy(alpha = 0.14f),
-                                shape = CircleShape,
-                            )
+                        null
                     }
                     Box(
-                        modifier = subscribeGlassMod.clickable(onClick = onToggleSubscribe),
+                        modifier = Modifier
+                            .size(52.dp)
+                            .sonataThemeGlassButton(
+                                shape = CircleShape,
+                                surfaceTint = subTint,
+                                fallbackColor = if (artist.isSubscribed) {
+                                    themeTokens.petalLavender.copy(alpha = 0.22f)
+                                } else {
+                                    themeTokens.eclipseSurface
+                                },
+                            )
+                            .clickable(onClick = onToggleSubscribe),
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
                             imageVector = if (artist.isSubscribed) SonataIcons.StarFilled else SonataIcons.Star,
                             contentDescription = if (artist.isSubscribed) "Subscribed" else "Subscribe",
-                            tint = if (artist.isSubscribed) SonataAccent else Color.White,
+                            tint = if (artist.isSubscribed) themeTokens.petalLavender else buttonTint,
                             modifier = Modifier.size(22.dp),
                         )
                     }
@@ -780,6 +834,7 @@ private fun LatestReleaseCard(
     onSaveClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val themeTokens = LocalLunariaColors.current
     val coverReq = rememberArtworkRequest(
         url = release.thumbnailUrl.artworkAt(CARD_ART_PX),
         widthPx = CARD_ART_PX,
@@ -788,19 +843,20 @@ private fun LatestReleaseCard(
     val haptics = LocalHapticFeedback.current
     var cardBounds by remember { mutableStateOf<Rect?>(null) }
     val cardShape = remember { RoundedCornerShape(26.dp) }
-    val cardBg = remember(washColor) {
+    val cardSurface = MaterialTheme.colorScheme.surface
+    val cardVariant = MaterialTheme.colorScheme.surfaceVariant
+    val cardBg = remember(washColor, cardSurface, cardVariant) {
         Brush.horizontalGradient(
-            0f to washColor.copy(alpha = 0.58f),
-            1f to Color(0xFF1F1C26).copy(alpha = 0.92f),
+            0f to androidx.compose.ui.graphics.lerp(washColor, cardSurface, 0.34f),
+            1f to cardVariant,
         )
     }
 
-    Row(
-        modifier = modifier
+    val containerModifier = if (themeTokens.isViolet) {
+        // Violet editorial open layout (`violet artist.png`): no boxed card around the double-sleeve stack.
+        modifier
             .onGloballyPositioned { cardBounds = it.boundsInRoot() }
             .clip(cardShape)
-            .background(cardBg)
-            .border(0.5.dp, Color.White.copy(alpha = 0.12f), cardShape)
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = {
@@ -808,27 +864,46 @@ private fun LatestReleaseCard(
                     onLongClick(cardBounds)
                 },
             )
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(horizontal = 4.dp, vertical = 8.dp)
+    } else {
+        // Moonflower frosted petal card container.
+        modifier
+            .onGloballyPositioned { cardBounds = it.boundsInRoot() }
+            .clip(cardShape)
+            .background(cardBg)
+            .border(0.75.dp, themeTokens.cardStroke, cardShape)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = {
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onLongClick(cardBounds)
+                },
+            )
+            .padding(horizontal = 16.dp, vertical = 14.dp)
+    }
+
+    Row(
+        modifier = containerModifier,
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // Tactile layered & subtly tilted album sleeve stack
         Box(
             modifier = Modifier
-                .width(106.dp)
-                .height(92.dp),
+                .width(120.dp)
+                .height(106.dp),
             contentAlignment = Alignment.CenterStart,
         ) {
             if (coverReq != null) {
                 Box(
                     modifier = Modifier
-                        .offset(x = 18.dp, y = 2.dp)
-                        .size(76.dp)
+                        .offset(x = 22.dp, y = 2.dp)
+                        .size(84.dp)
                         .graphicsLayer {
-                            rotationZ = 7.5f
-                            alpha = 0.44f
+                            rotationZ = 8.0f
+                            alpha = 0.48f
                         }
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(Color(0xFF161618)),
+                        .clip(RoundedCornerShape(15.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
                 ) {
                     AsyncImage(
                         model = coverReq,
@@ -840,11 +915,26 @@ private fun LatestReleaseCard(
             }
             Box(
                 modifier = Modifier
-                    .size(86.dp)
-                    .graphicsLayer { rotationZ = -3.5f }
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(Color(0xFF161618))
-                    .border(0.5.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(16.dp)),
+                    .size(96.dp)
+                    .graphicsLayer { rotationZ = -4.5f }
+                    .let { mod ->
+                        mod.then(
+                            Modifier.shadow(
+                                elevation = 10.dp,
+                                shape = RoundedCornerShape(18.dp),
+                                clip = false,
+                                ambientColor = themeTokens.glassShadowColor,
+                                spotColor = themeTokens.glassShadowColor,
+                            ),
+                        )
+                    }
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .border(
+                        1.dp,
+                        themeTokens.glassRimTopLeft,
+                        RoundedCornerShape(18.dp),
+                    ),
                 contentAlignment = Alignment.Center,
             ) {
                 if (coverReq != null) {
@@ -858,7 +948,7 @@ private fun LatestReleaseCard(
                     Icon(
                         imageVector = SonataIcons.MusicNote,
                         contentDescription = null,
-                        tint = Color.White.copy(alpha = 0.45f),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(28.dp),
                     )
                 }
@@ -874,17 +964,17 @@ private fun LatestReleaseCard(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(10.dp)
+                        .size(9.dp)
                         .clip(CircleShape)
-                        .background(SonataAccent),
+                        .background(themeTokens.petalLavender),
                 )
                 Text(
                     text = "Latest release",
                     style = MaterialTheme.typography.labelMedium.copy(
-                        fontSize = 13.sp,
+                        fontSize = 13.5.sp,
                         fontWeight = FontWeight.SemiBold,
                     ),
-                    color = SonataAccent,
+                    color = themeTokens.petalLavender,
                     maxLines = 1,
                 )
             }
@@ -892,24 +982,24 @@ private fun LatestReleaseCard(
             Text(
                 text = release.title,
                 style = MaterialTheme.typography.titleLarge.copy(
-                    fontSize = 19.sp,
+                    fontSize = 21.sp,
                     fontWeight = FontWeight.Bold,
-                    letterSpacing = (-0.2).sp,
+                    letterSpacing = (-0.3).sp,
                 ),
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
             val meta = listOfNotNull(
-                release.kindLabel.takeIf { it.isNotBlank() },
-                release.year?.takeIf { it.isNotBlank() } ?: release.subtitle.takeIf { it.isNotBlank() },
+                release.year?.takeIf { it.isNotBlank() },
+                release.kindLabel.takeIf { it.isNotBlank() } ?: release.subtitle.takeIf { it.isNotBlank() },
             ).joinToString(" • ")
             if (meta.isNotBlank()) {
                 Spacer(Modifier.height(3.dp))
                 Text(
                     text = meta,
-                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp),
-                    color = Color.White.copy(alpha = 0.68f),
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 14.sp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -920,17 +1010,28 @@ private fun LatestReleaseCard(
 
         Box(
             modifier = Modifier
-                .size(36.dp)
+                .size(42.dp)
+                .shadow(
+                    elevation = 8.dp,
+                    shape = CircleShape,
+                    clip = false,
+                    ambientColor = themeTokens.glassShadowColor,
+                    spotColor = themeTokens.glassShadowColor,
+                )
+                .sonataGlassSurface(
+                    shape = CircleShape,
+                    liveBackdrop = false,
+                    tintOverride = themeTokens.glassTint,
+                )
                 .clip(CircleShape)
-                .background(Color.White.copy(alpha = 0.14f))
                 .clickable(onClick = onSaveClick),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
                 imageVector = if (release.isSaved) SonataIcons.Check else ArtistPlusIcon,
                 contentDescription = if (release.isSaved) "Saved" else "Add to library",
-                tint = Color.White,
-                modifier = Modifier.size(18.dp),
+                tint = themeTokens.onSurfacePrimary,
+                modifier = Modifier.size(20.dp),
             )
         }
     }
@@ -961,7 +1062,7 @@ private fun ArtistSongRow(
             .fillMaxWidth()
             .onGloballyPositioned { rowBounds = it.boundsInRoot() }
             .clip(RoundedCornerShape(10.dp))
-            .background(if (isActive) Color.White.copy(alpha = 0.08f) else Color.Transparent)
+            .background(if (isActive) MaterialTheme.colorScheme.onBackground.copy(alpha = 0.08f) else Color.Transparent)
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = {
@@ -976,7 +1077,7 @@ private fun ArtistSongRow(
             modifier = Modifier
                 .size(50.dp)
                 .clip(RoundedCornerShape(8.dp))
-                .background(Color(0xFF28282C)),
+                .background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center,
         ) {
             if (artReq != null) {
@@ -990,7 +1091,7 @@ private fun ArtistSongRow(
                 Icon(
                     imageVector = SonataIcons.MusicNote,
                     contentDescription = null,
-                    tint = Color.White.copy(alpha = 0.45f),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(20.dp),
                 )
             }
@@ -1004,7 +1105,7 @@ private fun ArtistSongRow(
                     fontSize = 13.5.sp,
                     fontWeight = FontWeight.SemiBold,
                 ),
-                color = if (isActive) SonataAccent else Color.White.copy(alpha = 0.52f),
+                color = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 modifier = Modifier.width(20.dp),
             )
@@ -1020,7 +1121,7 @@ private fun ArtistSongRow(
                     fontSize = 14.5.sp,
                     fontWeight = FontWeight.SemiBold,
                 ),
-                color = if (isActive) SonataAccent else Color.White,
+                color = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -1034,7 +1135,7 @@ private fun ArtistSongRow(
                         modifier = Modifier
                             .size(14.dp)
                             .clip(RoundedCornerShape(3.dp))
-                            .background(Color.White.copy(alpha = 0.24f)),
+                            .background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.14f)),
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
@@ -1043,14 +1144,14 @@ private fun ArtistSongRow(
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.Bold,
                             ),
-                            color = Color.White,
+                            color = MaterialTheme.colorScheme.onBackground,
                         )
                     }
                 }
                 Text(
                     text = track.artist,
                     style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.5.sp),
-                    color = Color.White.copy(alpha = 0.62f),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false),
@@ -1059,7 +1160,7 @@ private fun ArtistSongRow(
                     Icon(
                         imageVector = SonataIcons.Download,
                         contentDescription = "Downloaded",
-                        tint = SonataAccent,
+                        tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(13.dp),
                     )
                 }
@@ -1075,7 +1176,7 @@ private fun ArtistSongRow(
             Icon(
                 imageVector = SonataIcons.MoreVert,
                 contentDescription = "Track options",
-                tint = Color.White.copy(alpha = 0.65f),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(18.dp),
             )
         }
@@ -1121,8 +1222,12 @@ private fun ReleaseHorizontalShelf(
                     modifier = Modifier
                         .size(146.dp)
                         .clip(RoundedCornerShape(12.dp))
-                        .background(ArtistCardNeutral)
-                        .border(0.5.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(12.dp)),
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .border(
+                            0.5.dp,
+                            MaterialTheme.colorScheme.outlineVariant,
+                            RoundedCornerShape(12.dp),
+                        ),
                     contentAlignment = Alignment.Center,
                 ) {
                     if (coverReq != null) {
@@ -1136,7 +1241,7 @@ private fun ReleaseHorizontalShelf(
                         Icon(
                             imageVector = SonataIcons.MusicNote,
                             contentDescription = null,
-                            tint = Color.White.copy(alpha = 0.45f),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(34.dp),
                         )
                     }
@@ -1148,19 +1253,19 @@ private fun ReleaseHorizontalShelf(
                         fontSize = 13.5.sp,
                         fontWeight = FontWeight.SemiBold,
                     ),
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onBackground,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 val meta = listOfNotNull(
                     release.year?.takeIf { it.isNotBlank() },
-                    release.subtitle.takeIf { it.isNotBlank() },
+                    release.kindLabel.takeIf { it.isNotBlank() } ?: release.subtitle.takeIf { it.isNotBlank() },
                 ).joinToString(" • ")
                 if (meta.isNotBlank()) {
                     Text(
                         text = meta,
                         style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
-                        color = Color.White.copy(alpha = 0.60f),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -1191,8 +1296,8 @@ private fun SimilarArtistCard(
             modifier = Modifier
                 .size(108.dp)
                 .clip(CircleShape)
-                .background(ArtistCardNeutral)
-                .border(0.5.dp, Color.White.copy(alpha = 0.10f), CircleShape),
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .border(0.5.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
             contentAlignment = Alignment.Center,
         ) {
             if (avatarReq != null) {
@@ -1206,7 +1311,7 @@ private fun SimilarArtistCard(
                 Icon(
                     imageVector = SonataIcons.Person,
                     contentDescription = null,
-                    tint = Color.White.copy(alpha = 0.48f),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(34.dp),
                 )
             }
@@ -1218,7 +1323,7 @@ private fun SimilarArtistCard(
                 fontSize = 13.sp,
                 fontWeight = FontWeight.SemiBold,
             ),
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onBackground,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
@@ -1227,7 +1332,7 @@ private fun SimilarArtistCard(
             Text(
                 text = sub,
                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp),
-                color = Color.White.copy(alpha = 0.56f),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 textAlign = TextAlign.Center,
@@ -1262,13 +1367,13 @@ private fun SectionHeaderRow(
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Bold,
             ),
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onBackground,
         )
         if (showChevron) {
             Icon(
                 imageVector = SonataIcons.ChevronRight,
                 contentDescription = "See all",
-                tint = Color.White.copy(alpha = 0.65f),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(18.dp),
             )
         }
@@ -1281,24 +1386,16 @@ private fun FloatingTopCircleButton(
     contentDescription: String,
     content: @Composable () -> Unit,
 ) {
-    val glassOn = LocalLiquidGlassEnabled.current && isGlassSupported() && !LocalReduceDynamicBlur.current
-    val baseModifier = if (glassOn) {
-        Modifier
-            .size(40.dp)
-            .liquidGlass(
-                shape = CircleShape,
-                surfaceTint = Color.Black.copy(alpha = 0.34f),
-                chromaticAberration = false,
-            )
-    } else {
-        Modifier
-            .size(40.dp)
-            .clip(CircleShape)
-            .background(Color.Black.copy(alpha = 0.52f), CircleShape)
-            .border(0.5.dp, Color.White.copy(alpha = 0.18f), CircleShape)
-    }
+    val tokens = LocalLunariaColors.current
     Box(
-        modifier = baseModifier.clickable(onClick = onClick, onClickLabel = contentDescription),
+        modifier = Modifier
+            .size(44.dp)
+            .sonataThemeGlassButton(
+                shape = CircleShape,
+                fallbackColor = tokens.eclipseSurface.copy(alpha = 0.88f),
+                shadowElevation = 8.dp,
+            )
+            .clickable(onClick = onClick, onClickLabel = contentDescription),
         contentAlignment = Alignment.Center,
     ) {
         content()
@@ -1311,36 +1408,28 @@ private fun FloatingShareAndAvatarPill(
     onShareClick: () -> Unit,
     onAvatarClick: () -> Unit,
 ) {
-    val glassOn = LocalLiquidGlassEnabled.current && isGlassSupported() && !LocalReduceDynamicBlur.current
+    val tokens = LocalLunariaColors.current
     val avatarReq = rememberArtworkRequest(
         url = userAvatarUrl.artworkAt(ROW_ART_PX),
         widthPx = ROW_ART_PX,
         heightPx = ROW_ART_PX,
     )
-    val containerModifier = if (glassOn) {
-        Modifier
-            .height(40.dp)
-            .liquidGlass(
-                shape = CircleShape,
-                surfaceTint = Color.Black.copy(alpha = 0.34f),
-                chromaticAberration = false,
-            )
-    } else {
-        Modifier
-            .height(40.dp)
-            .clip(CircleShape)
-            .background(Color.Black.copy(alpha = 0.52f), CircleShape)
-            .border(0.5.dp, Color.White.copy(alpha = 0.18f), CircleShape)
-    }
 
     Row(
-        modifier = containerModifier.padding(horizontal = 6.dp),
+        modifier = Modifier
+            .height(44.dp)
+            .sonataThemeGlassButton(
+                shape = CircleShape,
+                fallbackColor = tokens.eclipseSurface.copy(alpha = 0.88f),
+                shadowElevation = 8.dp,
+            )
+            .padding(horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Box(
             modifier = Modifier
-                .size(30.dp)
+                .size(32.dp)
                 .clip(CircleShape)
                 .clickable(onClick = onShareClick),
             contentAlignment = Alignment.Center,
@@ -1348,16 +1437,23 @@ private fun FloatingShareAndAvatarPill(
             Icon(
                 imageVector = ArtistShareIcon,
                 contentDescription = "Share artist",
-                tint = Color.White,
+                tint = tokens.onSurfacePrimary,
                 modifier = Modifier.size(18.dp),
             )
         }
 
         Box(
             modifier = Modifier
-                .size(28.dp)
+                .width(1.dp)
+                .height(18.dp)
+                .background(tokens.onSurfacePrimary.copy(alpha = 0.22f)),
+        )
+
+        Box(
+            modifier = Modifier
+                .size(32.dp)
                 .clip(CircleShape)
-                .background(Color.White.copy(alpha = 0.14f))
+                .background(tokens.onSurfacePrimary.copy(alpha = 0.10f))
                 .clickable(onClick = onAvatarClick),
             contentAlignment = Alignment.Center,
         ) {
@@ -1372,7 +1468,7 @@ private fun FloatingShareAndAvatarPill(
                 Icon(
                     imageVector = SonataIcons.Person,
                     contentDescription = "Account",
-                    tint = Color.White,
+                    tint = tokens.onSurfacePrimary,
                     modifier = Modifier.size(16.dp),
                 )
             }
@@ -1454,7 +1550,7 @@ private fun AboutArtistSection(
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Bold,
             ),
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onBackground,
         )
 
         if (!bio.isNullOrBlank()) {
@@ -1464,7 +1560,7 @@ private fun AboutArtistSection(
                     fontSize = 14.sp,
                     lineHeight = 20.sp,
                 ),
-                color = Color.White.copy(alpha = 0.80f),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = if (expanded) Int.MAX_VALUE else 3,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -1474,7 +1570,7 @@ private fun AboutArtistSection(
                     style = MaterialTheme.typography.labelLarge.copy(
                         fontWeight = FontWeight.SemiBold,
                     ),
-                    color = SonataAccent,
+                    color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier
                         .clip(RoundedCornerShape(6.dp))
                         .clickable { expanded = !expanded }
@@ -1496,8 +1592,8 @@ private fun AboutArtistSection(
                     Row(
                         modifier = Modifier
                             .clip(CircleShape)
-                            .background(Color.White.copy(alpha = 0.10f))
-                            .border(0.5.dp, Color.White.copy(alpha = 0.14f), CircleShape)
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .border(0.5.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
                             .padding(horizontal = 12.dp, vertical = 7.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -1505,13 +1601,13 @@ private fun AboutArtistSection(
                         Icon(
                             imageVector = icon,
                             contentDescription = null,
-                            tint = Color.White.copy(alpha = 0.78f),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(14.dp),
                         )
                         Text(
                             text = label,
                             style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                            color = Color.White.copy(alpha = 0.90f),
+                            color = MaterialTheme.colorScheme.onSurface,
                         )
                     }
                 }

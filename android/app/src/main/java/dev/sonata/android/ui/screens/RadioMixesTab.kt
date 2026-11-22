@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -30,11 +31,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -59,18 +63,19 @@ import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import dev.sonata.android.ui.CARD_ART_PX
 import dev.sonata.android.ui.HEADER_ART_PX
+import dev.sonata.android.ui.MoodGenreSleeve
 import dev.sonata.android.ui.PAGE_GUTTER
 import dev.sonata.android.ui.SonataIcons
+import dev.sonata.android.ui.TopPickMood
 import dev.sonata.android.ui.artworkAt
 import dev.sonata.android.ui.components.SonataEditorialCard
 import dev.sonata.android.ui.rememberArtworkRequest
+import dev.sonata.android.ui.theme.LocalLunariaColors
 import dev.sonata.android.ui.theme.SonataRadioWavesIcon
 import uniffi.sonata_android.AndroidHomeCard
 import uniffi.sonata_android.AndroidHomeCardKind
 import uniffi.sonata_android.AndroidHomeShelf
 import uniffi.sonata_android.AndroidTrack
-
-private val MixCardFallbackBg = Color(0xFF1C1C20)
 
 private fun isMixLikeCard(card: AndroidHomeCard): Boolean {
     val id = card.id
@@ -85,7 +90,16 @@ private fun isMixLikeCard(card: AndroidHomeCard): Boolean {
         "station" in t
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+private fun canonicalCardId(card: AndroidHomeCard): String =
+    card.id.removePrefix("VL").trim().ifBlank { card.title.trim().lowercase() }
+
+private fun primaryArtistLabel(artist: String): String =
+    artist.split(",", "&", "•", "feat.", "ft.", "featuring", ignoreCase = true)
+        .firstOrNull()
+        ?.trim()
+        .orEmpty()
+
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun RadioMixesScreen(
     homeShelves: List<AndroidHomeShelf>,
@@ -98,7 +112,12 @@ fun RadioMixesScreen(
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState(),
     radioMixShelves: List<AndroidHomeShelf> = emptyList(),
+    lastPlayedTracks: List<AndroidTrack> = emptyList(),
+    refreshing: Boolean = false,
+    onRefresh: () -> Unit = {},
+    onStartTrackRadio: (AndroidTrack) -> Unit = { onStartQuickRadio() },
 ) {
+    val themeTokens = LocalLunariaColors.current
     val sourceShelves = remember(radioMixShelves, homeShelves) {
         val raw = if (radioMixShelves.isNotEmpty()) {
             radioMixShelves
@@ -119,124 +138,160 @@ fun RadioMixesScreen(
     }
 
     val featuredMixes = remember(sourceShelves) {
-        val mixCards = sourceShelves.flatMap { it.cards }
+        val seenIds = HashSet<String>()
+        val seenTitles = HashSet<String>()
+        val preferred = sourceShelves.flatMap { it.cards }
             .filter { (it.kind == AndroidHomeCardKind.PLAYLIST || it.kind == AndroidHomeCardKind.ALBUM) && isMixLikeCard(it) }
-            .distinctBy { it.id }
-        if (mixCards.isNotEmpty()) {
-            mixCards.take(10)
+        val pool = if (preferred.isNotEmpty()) {
+            preferred
         } else {
             sourceShelves.flatMap { it.cards }
                 .filter { it.kind == AndroidHomeCardKind.PLAYLIST || it.kind == AndroidHomeCardKind.ALBUM }
-                .distinctBy { it.id }
-                .take(10)
         }
+        pool.filter { card ->
+            val cid = canonicalCardId(card)
+            val normTitle = card.title.trim().lowercase()
+            seenIds.add(cid) && (normTitle.isBlank() || seenTitles.add(normTitle))
+        }.take(6)
     }
 
-    val secondaryMixShelves = remember(sourceShelves) {
-        sourceShelves.filterNot { shelf ->
-            val t = shelf.title.trim().lowercase()
-            t == "your mixes" || t == "featured mixes"
+    val secondaryMixShelves = remember(sourceShelves, featuredMixes) {
+        val usedIds = featuredMixes.mapTo(HashSet()) { canonicalCardId(it) }
+        val usedTitles = featuredMixes.mapNotNullTo(HashSet()) {
+            it.title.trim().lowercase().takeIf { t -> t.isNotBlank() }
+        }
+        sourceShelves.mapNotNull { shelf ->
+            val uniqueCards = shelf.cards.filter { card ->
+                val isCollection = card.kind == AndroidHomeCardKind.PLAYLIST || card.kind == AndroidHomeCardKind.ALBUM
+                if (!isCollection) return@filter false
+                val cid = canonicalCardId(card)
+                val normTitle = card.title.trim().lowercase()
+                val freshId = usedIds.add(cid)
+                val freshTitle = normTitle.isBlank() || usedTitles.add(normTitle)
+                freshId && freshTitle
+            }
+            if (uniqueCards.isEmpty()) null else shelf.copy(cards = uniqueCards)
         }.take(8)
     }
 
-    val screenWidth = LocalConfiguration.current.screenWidthDp.dp
+    val artistRadioSeeds = remember(activeTrack, lastPlayedTracks, homeShelves) {
+        val seenArtists = HashSet<String>()
+        val candidates = buildList {
+            activeTrack?.let { add(it) }
+            addAll(lastPlayedTracks)
+            homeShelves.forEach { shelf ->
+                addAll(shelf.tracks)
+                shelf.cards.mapNotNullTo(this) { it.track }
+            }
+        }
+        candidates.filter { track ->
+            val artist = primaryArtistLabel(track.artist)
+            !track.thumbnailUrl.isNullOrBlank() &&
+                artist.isNotBlank() &&
+                seenArtists.add(artist.lowercase())
+        }.take(12)
+    }
+
+    val screenWidthDp = LocalConfiguration.current.screenWidthDp
+    val screenWidth = screenWidthDp.dp
+    val moodColumns = if (screenWidthDp >= 780) 3 else 2
+    val moodRows = remember(moodColumns) { TopPickMood.entries.chunked(moodColumns) }
     val featuredCardWidth = (screenWidth * 0.44f).coerceIn(180.dp, 224.dp)
     val featuredCardHeight = (featuredCardWidth * 1.18f).coerceIn(216.dp, 266.dp)
     val featuredListState = rememberLazyListState()
     val featuredSnapFling = rememberSnapFlingBehavior(lazyListState = featuredListState)
 
-    LazyColumn(
-        state = listState,
+    PullToRefreshBox(
+        isRefreshing = refreshing,
+        onRefresh = onRefresh,
         modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(
-            top = contentPadding.calculateTopPadding() + 8.dp,
-            bottom = contentPadding.calculateBottomPadding() + 24.dp,
-        ),
-        verticalArrangement = Arrangement.spacedBy(22.dp),
     ) {
-        // Page heading
-        item(key = "radio_header") {
-            Text(
-                text = "Radio",
-                style = MaterialTheme.typography.headlineLarge.copy(
-                    fontSize = 32.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    letterSpacing = (-0.5).sp,
-                ),
-                color = Color.White,
-                modifier = Modifier.padding(horizontal = PAGE_GUTTER),
-            )
-        }
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                top = contentPadding.calculateTopPadding() + 8.dp,
+                bottom = contentPadding.calculateBottomPadding() + 24.dp,
+            ),
+            verticalArrangement = Arrangement.spacedBy(22.dp),
+        ) {
+            // Page heading
+            item(key = "radio_header") {
+                Text(
+                    text = "Radio",
+                    style = MaterialTheme.typography.headlineLarge.copy(
+                        fontSize = 32.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        letterSpacing = (-0.5).sp,
+                    ),
+                    color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.padding(horizontal = PAGE_GUTTER),
+                )
+            }
 
-        // "Featured Mixes" album-cover cards (never duplicates secondary "Your Mixes" shelf header)
-        if (featuredMixes.isNotEmpty()) {
-            item(key = "your_mixes_section") {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(
-                        text = "Featured Mixes",
-                        style = MaterialTheme.typography.titleLarge.copy(
-                            fontSize = 20.sp,
-                            fontWeight = FontWeight.Bold,
-                        ),
-                        color = Color.White,
-                        modifier = Modifier.padding(horizontal = PAGE_GUTTER),
-                    )
-                    LazyRow(
-                        state = featuredListState,
-                        flingBehavior = featuredSnapFling,
-                        contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        items(
-                            items = featuredMixes,
-                            key = { "featured_${it.id}" },
-                        ) { card ->
-                            FeaturedMixCoverCard(
-                                card = card,
-                                width = featuredCardWidth,
-                                height = featuredCardHeight,
-                                onClick = { onCardClick(card) },
-                                onLongClick = { bounds -> onCardLongClick(card, bounds) },
-                            )
+            // "Featured Mixes" album-cover cards (never duplicates items in secondary shelves)
+            if (featuredMixes.isNotEmpty()) {
+                item(key = "your_mixes_section") {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(
+                            text = "Featured Mixes",
+                            style = MaterialTheme.typography.titleLarge.copy(
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold,
+                            ),
+                            color = MaterialTheme.colorScheme.onBackground,
+                            modifier = Modifier.padding(horizontal = PAGE_GUTTER),
+                        )
+                        LazyRow(
+                            state = featuredListState,
+                            flingBehavior = featuredSnapFling,
+                            contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            itemsIndexed(
+                                items = featuredMixes,
+                                key = { idx, card -> "featured_${idx}_${card.id}" },
+                            ) { _, card ->
+                                FeaturedMixCoverCard(
+                                    card = card,
+                                    width = featuredCardWidth,
+                                    height = featuredCardHeight,
+                                    onClick = { onCardClick(card) },
+                                    onLongClick = { bounds -> onCardLongClick(card, bounds) },
+                                )
+                            }
                         }
                     }
                 }
-            }
-        } else if (activeTrack != null) {
-            item(key = "active_track_station") {
-                Column(
-                    modifier = Modifier.padding(horizontal = PAGE_GUTTER),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Text(
-                        text = "Your Mixes",
-                        style = MaterialTheme.typography.titleLarge.copy(
-                            fontSize = 20.sp,
-                            fontWeight = FontWeight.Bold,
-                        ),
-                        color = Color.White,
-                    )
-                    FeaturedTrackRadioCoverCard(
-                        track = activeTrack,
-                        width = featuredCardWidth,
-                        height = featuredCardHeight,
-                        onClick = onStartQuickRadio,
-                    )
+            } else if (activeTrack != null) {
+                item(key = "active_track_station") {
+                    Column(
+                        modifier = Modifier.padding(horizontal = PAGE_GUTTER),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Text(
+                            text = "Featured Station",
+                            style = MaterialTheme.typography.titleLarge.copy(
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold,
+                            ),
+                            color = themeTokens.onSurfacePrimary,
+                        )
+                        FeaturedTrackRadioCoverCard(
+                            track = activeTrack,
+                            width = featuredCardWidth,
+                            height = featuredCardHeight,
+                            onClick = onStartQuickRadio,
+                        )
+                    }
                 }
             }
-        }
 
-        // Personalized per-mood / mix horizontal shelves (proportional 148.dp square covers, NO play button)
-        items(
-            items = secondaryMixShelves,
-            key = { "mix_shelf_${it.title}" },
-        ) { shelf ->
-            val shelfCards = remember(shelf.cards) {
-                shelf.cards
-                    .filter { it.kind == AndroidHomeCardKind.PLAYLIST || it.kind == AndroidHomeCardKind.ALBUM }
-                    .distinctBy { it.id }
-            }
-            if (shelfCards.isNotEmpty()) {
+            // Deduplicated secondary mix shelves ("Your Mixes", "Mood Mixes", etc.)
+            itemsIndexed(
+                items = secondaryMixShelves,
+                key = { idx, shelf -> "mix_shelf_${idx}_${shelf.title}" },
+            ) { shelfIdx, shelf ->
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(
                         modifier = Modifier
@@ -252,7 +307,7 @@ fun RadioMixesScreen(
                                 fontSize = 20.sp,
                                 fontWeight = FontWeight.Bold,
                             ),
-                            color = Color.White,
+                            color = MaterialTheme.colorScheme.onBackground,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f),
@@ -260,7 +315,7 @@ fun RadioMixesScreen(
                         Icon(
                             imageVector = SonataIcons.ChevronRight,
                             contentDescription = null,
-                            tint = Color.White.copy(alpha = 0.55f),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(18.dp),
                         )
                     }
@@ -269,10 +324,10 @@ fun RadioMixesScreen(
                         contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        items(
-                            items = shelfCards,
-                            key = { "${shelf.title}_${it.id}" },
-                        ) { card ->
+                        itemsIndexed(
+                            items = shelf.cards,
+                            key = { cardIdx, card -> "${shelfIdx}_${cardIdx}_${card.id}" },
+                        ) { _, card ->
                             SonataEditorialCard(
                                 title = card.title,
                                 subtitle = card.subtitle,
@@ -285,28 +340,78 @@ fun RadioMixesScreen(
                     }
                 }
             }
-        }
 
-        if (featuredMixes.isEmpty() && secondaryMixShelves.isEmpty() && activeTrack == null) {
-            item(key = "radio_empty_state") {
-                Column(
+            // Personalized Artist & Track Stations built from listener history & feed
+            if (artistRadioSeeds.isNotEmpty()) {
+                item(key = "artist_track_stations") {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(
+                            text = "Artist & Track Stations",
+                            style = MaterialTheme.typography.titleLarge.copy(
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold,
+                            ),
+                            color = MaterialTheme.colorScheme.onBackground,
+                            modifier = Modifier.padding(horizontal = PAGE_GUTTER),
+                        )
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            itemsIndexed(
+                                items = artistRadioSeeds,
+                                key = { idx, tr -> "station_${idx}_${tr.id}" },
+                            ) { _, tr ->
+                                val artistName = primaryArtistLabel(tr.artist)
+                                SonataEditorialCard(
+                                    title = "$artistName Radio",
+                                    subtitle = "Based on ${tr.title}",
+                                    artworkUrl = tr.thumbnailUrl,
+                                    onClick = { onStartTrackRadio(tr) },
+                                    width = 148.dp,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Mood & Genre Radio Stations (animated theme-matched sleeves filling out the Radio page)
+            item(key = "mood_radio_stations_header") {
+                Text(
+                    text = "Mood & Genre Stations",
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                    ),
+                    color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.padding(horizontal = PAGE_GUTTER),
+                )
+            }
+
+            itemsIndexed(
+                items = moodRows,
+                key = { rowIdx, row -> "radio_mood_row_${rowIdx}_${row.firstOrNull()?.name.orEmpty()}" },
+            ) { _, rowItems ->
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = PAGE_GUTTER, vertical = 36.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                        .padding(horizontal = PAGE_GUTTER),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Icon(
-                        imageVector = SonataRadioWavesIcon,
-                        contentDescription = null,
-                        tint = Color.White.copy(alpha = 0.48f),
-                        modifier = Modifier.size(40.dp),
-                    )
-                    Text(
-                        text = "Your personalized mixes will appear here once loaded",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color.White.copy(alpha = 0.65f),
-                    )
+                    rowItems.forEach { mood ->
+                        MoodGenreSleeve(
+                            title = mood.displayName,
+                            modifier = Modifier
+                                .weight(1f)
+                                .aspectRatio(1.9f)
+                                .clip(RoundedCornerShape(18.dp))
+                                .clickable { onMoodQueryClick(mood.displayName, "${mood.displayName} radio") },
+                        )
+                    }
+                    repeat(moodColumns - rowItems.size) {
+                        Spacer(Modifier.weight(1f))
+                    }
                 }
             }
         }
@@ -322,6 +427,7 @@ private fun FeaturedMixCoverCard(
     onClick: () -> Unit,
     onLongClick: ((Rect?) -> Unit)? = null,
 ) {
+    val themeTokens = LocalLunariaColors.current
     val haptics = LocalHapticFeedback.current
     var cardBounds by remember { mutableStateOf<Rect?>(null) }
     val coverReq = rememberArtworkRequest(
@@ -329,15 +435,15 @@ private fun FeaturedMixCoverCard(
         widthPx = HEADER_ART_PX,
         heightPx = HEADER_ART_PX,
     )
-    val shape = RoundedCornerShape(16.dp)
+    val shape = themeTokens.cardShape
 
     Box(
         modifier = Modifier
             .width(width)
             .height(height)
             .clip(shape)
-            .background(MixCardFallbackBg)
-            .border(0.5.dp, Color.White.copy(alpha = 0.10f), shape)
+            .background(themeTokens.eclipseCard)
+            .border(0.75.dp, themeTokens.cardStroke, shape)
             .onGloballyPositioned { cardBounds = it.boundsInRoot() }
             .combinedClickable(
                 onClick = onClick,
@@ -364,7 +470,7 @@ private fun FeaturedMixCoverCard(
                 Icon(
                     imageVector = SonataRadioWavesIcon,
                     contentDescription = null,
-                    tint = Color.White.copy(alpha = 0.35f),
+                    tint = themeTokens.onSurfaceSecondary.copy(alpha = 0.55f),
                     modifier = Modifier.size(44.dp),
                 )
             }
@@ -376,9 +482,9 @@ private fun FeaturedMixCoverCard(
                 .background(
                     Brush.verticalGradient(
                         0.0f to Color.Transparent,
-                        0.48f to Color.Black.copy(alpha = 0.16f),
-                        0.74f to Color.Black.copy(alpha = 0.60f),
-                        1.0f to Color.Black.copy(alpha = 0.90f),
+                        0.48f to themeTokens.heroCardScrimColor.copy(alpha = 0.18f),
+                        0.74f to themeTokens.heroCardScrimColor.copy(alpha = 0.68f),
+                        1.0f to themeTokens.heroCardScrimColor.copy(alpha = 0.94f),
                     ),
                 ),
         )
@@ -420,20 +526,21 @@ private fun FeaturedTrackRadioCoverCard(
     height: androidx.compose.ui.unit.Dp,
     onClick: () -> Unit,
 ) {
+    val themeTokens = LocalLunariaColors.current
     val coverReq = rememberArtworkRequest(
         url = track.thumbnailUrl.artworkAt(CARD_ART_PX),
         widthPx = CARD_ART_PX,
         heightPx = CARD_ART_PX,
     )
-    val shape = RoundedCornerShape(16.dp)
+    val shape = themeTokens.cardShape
 
     Box(
         modifier = Modifier
             .width(width)
             .height(height)
             .clip(shape)
-            .background(MixCardFallbackBg)
-            .border(0.5.dp, Color.White.copy(alpha = 0.10f), shape)
+            .background(themeTokens.eclipseCard)
+            .border(0.75.dp, themeTokens.cardStroke, shape)
             .clickable(onClick = onClick),
     ) {
         if (coverReq != null) {
@@ -450,8 +557,8 @@ private fun FeaturedTrackRadioCoverCard(
                 .background(
                     Brush.verticalGradient(
                         0.0f to Color.Transparent,
-                        0.50f to Color.Black.copy(alpha = 0.25f),
-                        1.0f to Color.Black.copy(alpha = 0.90f),
+                        0.50f to themeTokens.heroCardScrimColor.copy(alpha = 0.25f),
+                        1.0f to themeTokens.heroCardScrimColor.copy(alpha = 0.92f),
                     ),
                 ),
         )

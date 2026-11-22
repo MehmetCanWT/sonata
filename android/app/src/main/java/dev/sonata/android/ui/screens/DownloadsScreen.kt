@@ -3,11 +3,13 @@
  *
  * Displays offline storage usage, active downloads with live progress & cancel
  * controls, downloaded tracks list with offline playback & deletion, and quick
- * Wi-Fi / Export toggles.
+ * Wi-Fi / Export toggles. Fully theme-adaptive across Violet & Moonflower
+ * Dark, Light, and AMOLED modes.
  */
 package dev.sonata.android.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -50,10 +52,10 @@ import dev.sonata.android.data.DownloadedTrackRecord
 import dev.sonata.android.ui.CircleGlyph
 import dev.sonata.android.ui.PAGE_GUTTER
 import dev.sonata.android.ui.ROW_ART_PX
-import dev.sonata.android.ui.SonataAccent
 import dev.sonata.android.ui.SonataIcons
 import dev.sonata.android.ui.artworkAt
 import dev.sonata.android.ui.rememberArtworkRequest
+import dev.sonata.android.ui.theme.LocalLunariaColors
 import dev.sonata.android.ui.theme.SonataGlassCard
 import dev.sonata.android.ui.theme.sonataGlassSurface
 
@@ -74,14 +76,19 @@ fun DownloadsManagerSheet(
     onClearAllDownloads: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val themeTokens = LocalLunariaColors.current
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val activeList = remember(activeDownloads) { activeDownloads.values.toList() }
+    val pillShape = remember { RoundedCornerShape(percent = 50) }
+    val itemShape = remember(themeTokens.cardCornerRadius) {
+        RoundedCornerShape(themeTokens.cardCornerRadius.coerceAtMost(18.dp))
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = Color(0xFF0B0B0F),
-        contentColor = Color.White,
+        containerColor = themeTokens.eclipseSurface,
+        contentColor = themeTokens.onSurfacePrimary,
         dragHandle = null,
     ) {
         LazyColumn(
@@ -101,12 +108,12 @@ fun DownloadsManagerSheet(
                         Text(
                             text = "Downloads",
                             style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
-                            color = Color.White,
+                            color = themeTokens.onSurfacePrimary,
                         )
                         Text(
                             text = "${downloads.size} tracks · ${formatBytes(totalBytes)} offline",
                             style = MaterialTheme.typography.bodySmall,
-                            color = Color.White.copy(alpha = 0.60f),
+                            color = themeTokens.onSurfaceSecondary,
                         )
                     }
                     CircleGlyph(
@@ -119,7 +126,10 @@ fun DownloadsManagerSheet(
 
             // Storage summary & quick toggles
             item(key = "dl_summary_card") {
-                SonataGlassCard(modifier = Modifier.fillMaxWidth()) {
+                SonataGlassCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(themeTokens.cardCornerRadius),
+                ) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -149,13 +159,12 @@ fun DownloadsManagerSheet(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                             ) {
-                                val pillShape = remember { RoundedCornerShape(percent = 50) }
                                 Row(
                                     modifier = Modifier
                                         .weight(1f)
                                         .height(40.dp)
                                         .clip(pillShape)
-                                        .background(SonataAccent)
+                                        .background(themeTokens.petalLavender)
                                         .clickable(onClick = onPlayAllOffline),
                                     horizontalArrangement = Arrangement.Center,
                                     verticalAlignment = Alignment.CenterVertically,
@@ -180,7 +189,7 @@ fun DownloadsManagerSheet(
                                     Text(
                                         text = "Clear All",
                                         style = MaterialTheme.typography.labelMedium,
-                                        color = Color.White.copy(alpha = 0.78f),
+                                        color = themeTokens.onSurfacePrimary.copy(alpha = 0.82f),
                                     )
                                 }
                             }
@@ -198,14 +207,14 @@ fun DownloadsManagerSheet(
                             letterSpacing = 0.8.sp,
                             fontWeight = FontWeight.Bold,
                         ),
-                        color = Color.White.copy(alpha = 0.56f),
+                        color = themeTokens.onSurfaceSecondary,
                     )
                 }
 
                 items(activeList, key = { "active_${it.videoId}" }) { item ->
                     SonataGlassCard(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(16.dp),
+                        shape = itemShape,
                     ) {
                         Column(
                             modifier = Modifier
@@ -221,14 +230,14 @@ fun DownloadsManagerSheet(
                                     Text(
                                         text = item.title,
                                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                                        color = Color.White,
+                                        color = themeTokens.onSurfacePrimary,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
                                     )
                                     Text(
                                         text = "${item.artist} · ${item.status}",
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = Color.White.copy(alpha = 0.6f),
+                                        color = themeTokens.onSurfaceSecondary,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
                                     )
@@ -237,14 +246,14 @@ fun DownloadsManagerSheet(
                                     modifier = Modifier
                                         .size(30.dp)
                                         .clip(CircleShape)
-                                        .background(Color.White.copy(alpha = 0.1f))
+                                        .background(themeTokens.onSurfacePrimary.copy(alpha = 0.10f))
                                         .clickable { onCancelActiveDownload(item.videoId) },
                                     contentAlignment = Alignment.Center,
                                 ) {
                                     Icon(
                                         imageVector = SonataIcons.Close,
                                         contentDescription = "Cancel download",
-                                        tint = Color.White,
+                                        tint = themeTokens.onSurfacePrimary,
                                         modifier = Modifier.size(14.dp),
                                     )
                                 }
@@ -254,9 +263,9 @@ fun DownloadsManagerSheet(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(4.dp)
-                                    .clip(RoundedCornerShape(percent = 50)),
-                                color = SonataAccent,
-                                trackColor = Color.White.copy(alpha = 0.14f),
+                                    .clip(pillShape),
+                                color = themeTokens.petalLavender,
+                                trackColor = themeTokens.onSurfacePrimary.copy(alpha = 0.14f),
                             )
                         }
                     }
@@ -271,13 +280,16 @@ fun DownloadsManagerSheet(
                         letterSpacing = 0.8.sp,
                         fontWeight = FontWeight.Bold,
                     ),
-                    color = Color.White.copy(alpha = 0.56f),
+                    color = themeTokens.onSurfaceSecondary,
                 )
             }
 
             if (downloads.isEmpty()) {
                 item(key = "dl_empty") {
-                    SonataGlassCard(modifier = Modifier.fillMaxWidth()) {
+                    SonataGlassCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(themeTokens.cardCornerRadius),
+                    ) {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -288,33 +300,32 @@ fun DownloadsManagerSheet(
                             Icon(
                                 imageVector = SonataIcons.Download,
                                 contentDescription = null,
-                                tint = Color.White.copy(alpha = 0.4f),
+                                tint = themeTokens.onSurfaceSecondary.copy(alpha = 0.6f),
                                 modifier = Modifier.size(32.dp),
                             )
                             Text(
                                 text = "No Offline Tracks Yet",
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                                color = Color.White,
+                                color = themeTokens.onSurfacePrimary,
                             )
                             Text(
                                 text = "Tap Download on any song or album to listen without a connection.",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = Color.White.copy(alpha = 0.58f),
+                                color = themeTokens.onSurfaceSecondary,
                             )
                         }
                     }
                 }
             } else {
                 items(downloads, key = { it.videoId }) { rec ->
-                    val rowShape = remember { RoundedCornerShape(16.dp) }
                     val artUrl = remember(rec.coverUrl) { rec.coverUrl.artworkAt(ROW_ART_PX) }
                     val artReq = rememberArtworkRequest(artUrl, ROW_ART_PX, ROW_ART_PX)
 
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .sonataGlassSurface(shape = rowShape)
-                            .clip(rowShape)
+                            .sonataGlassSurface(shape = itemShape)
+                            .clip(itemShape)
                             .clickable { onPlayOfflineTrack(rec) }
                             .padding(10.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -324,7 +335,8 @@ fun DownloadsManagerSheet(
                             modifier = Modifier
                                 .size(48.dp)
                                 .clip(RoundedCornerShape(10.dp))
-                                .background(Color.White.copy(alpha = 0.08f)),
+                                .background(themeTokens.onSurfacePrimary.copy(alpha = 0.08f))
+                                .border(0.5.dp, themeTokens.cardStroke, RoundedCornerShape(10.dp)),
                             contentAlignment = Alignment.Center,
                         ) {
                             if (artReq != null) {
@@ -335,7 +347,7 @@ fun DownloadsManagerSheet(
                                     modifier = Modifier.fillMaxSize(),
                                 )
                             } else {
-                                Icon(SonataIcons.MusicNote, null, tint = Color.White.copy(alpha = 0.5f))
+                                Icon(SonataIcons.MusicNote, null, tint = themeTokens.onSurfaceSecondary)
                             }
                         }
 
@@ -343,7 +355,7 @@ fun DownloadsManagerSheet(
                             Text(
                                 text = rec.title,
                                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                                color = Color.White,
+                                color = themeTokens.onSurfacePrimary,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -359,7 +371,7 @@ fun DownloadsManagerSheet(
                             Text(
                                 text = meta,
                                 style = MaterialTheme.typography.bodySmall,
-                                color = Color.White.copy(alpha = 0.58f),
+                                color = themeTokens.onSurfaceSecondary,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -369,14 +381,14 @@ fun DownloadsManagerSheet(
                             modifier = Modifier
                                 .size(32.dp)
                                 .clip(CircleShape)
-                                .background(Color.White.copy(alpha = 0.08f))
+                                .background(themeTokens.onSurfacePrimary.copy(alpha = 0.08f))
                                 .clickable { onRemoveDownload(rec.videoId) },
                             contentAlignment = Alignment.Center,
                         ) {
                             Icon(
                                 imageVector = SonataIcons.Close,
                                 contentDescription = "Delete download",
-                                tint = Color.White.copy(alpha = 0.72f),
+                                tint = themeTokens.onSurfacePrimary.copy(alpha = 0.72f),
                                 modifier = Modifier.size(14.dp),
                             )
                         }
@@ -394,12 +406,22 @@ private fun DownloadToggleChip(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val shape = remember { RoundedCornerShape(12.dp) }
+    val themeTokens = LocalLunariaColors.current
+    val shape = remember(themeTokens.isMoonflower) {
+        if (themeTokens.isMoonflower) RoundedCornerShape(percent = 50) else RoundedCornerShape(12.dp)
+    }
     Box(
         modifier = modifier
             .height(36.dp)
             .clip(shape)
-            .background(if (active) SonataAccent.copy(alpha = 0.24f) else Color.White.copy(alpha = 0.08f))
+            .background(
+                if (active) themeTokens.petalLavender.copy(alpha = 0.22f) else themeTokens.onSurfacePrimary.copy(alpha = 0.08f),
+            )
+            .border(
+                width = 0.5.dp,
+                color = if (active) themeTokens.petalLavender.copy(alpha = 0.45f) else themeTokens.cardStroke,
+                shape = shape,
+            )
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -408,7 +430,7 @@ private fun DownloadToggleChip(
             style = MaterialTheme.typography.labelSmall.copy(
                 fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
             ),
-            color = if (active) Color.White else Color.White.copy(alpha = 0.68f),
+            color = if (active) themeTokens.petalLavender else themeTokens.onSurfaceSecondary,
             maxLines = 1,
         )
     }

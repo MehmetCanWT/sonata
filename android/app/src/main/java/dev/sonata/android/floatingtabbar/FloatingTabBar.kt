@@ -116,6 +116,9 @@ import dev.sonata.android.LocalReduceDynamicBlur
 import dev.sonata.android.backdrop.backdrops.layerBackdrop
 import dev.sonata.android.backdrop.backdrops.rememberLayerBackdrop
 import dev.sonata.android.isGlassSupported
+import dev.sonata.android.ui.theme.LocalLunariaColors
+import androidx.compose.foundation.border
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import kotlin.math.roundToInt
@@ -512,8 +515,8 @@ private fun SharedTransitionScope.InlineTab(
                 color = colors.backgroundColor,
                 shape = shapes.tabBarShape
             )
-            .clip(shapes.tabBarShape)
             .then(tabBarContentModifier())
+            .clip(shapes.tabBarShape)
             .clickable(
                 onClick = {
                     onInlineTabClick()
@@ -574,8 +577,8 @@ private fun SharedTransitionScope.InlineStandaloneTab(
                 color = colors.backgroundColor,
                 shape = shapes.standaloneTabShape
             )
-            .clip(shapes.standaloneTabShape)
             .then(tabBarContentModifier())
+            .clip(shapes.standaloneTabShape)
             .clickable(
                 onClick = standaloneTab.onClick,
                 indication = standaloneTab.indication?.invoke(),
@@ -621,8 +624,7 @@ private fun SharedTransitionScope.InlineAccessory(
                             Modifier
                         },
                     )
-                    .background(color = colors.accessoryBackgroundColor, shapes.accessoryShape)
-                    .clip(shapes.accessoryShape),
+                    .background(color = colors.accessoryBackgroundColor, shapes.accessoryShape),
                 animatedVisibilityScope
             )
         }
@@ -748,8 +750,7 @@ private fun SharedTransitionScope.ExpandedAccessory(
                         Modifier
                     },
                 )
-                .background(color = colors.accessoryBackgroundColor, shapes.accessoryShape)
-                .clip(shapes.accessoryShape),
+                .background(color = colors.accessoryBackgroundColor, shapes.accessoryShape),
             animatedVisibilityScope
         )
     }
@@ -812,18 +813,22 @@ private fun SharedTransitionScope.ExpandedTabs(
     val currentTabStepPx by rememberUpdatedState(tabStepPx)
     val currentIsRtl by rememberUpdatedState(isRtl)
 
-    // The pill rests in its tab's cell and lifts to stand [PILL_GROW_HEIGHT]
-    // taller than the whole bar, keeping the cell's proportions as it grows.
+    // The pill rests inside its tab cell with balanced horizontal/vertical clearance and lifts to
+    // stand [PILL_GROW_HEIGHT] taller while travelling.
     val contentPadding = sizes.tabBarContentPadding
     val padLeftPx = with(density) { contentPadding.calculateLeftPadding(layoutDirection).toPx() }
     val padTopPx = with(density) { contentPadding.calculateTopPadding().toPx() }
     val padBottomPx = with(density) { contentPadding.calculateBottomPadding().toPx() }
     val rowHeightPx = rowSize.height.toFloat()
-    val restSize = Size(tabWidthPx, rowHeightPx)
-    val liftedHeightPx = rowHeightPx + padTopPx + padBottomPx +
+    val pillInsetXPx = with(density) { 8.dp.toPx() }
+    val pillInsetYPx = with(density) { 4.dp.toPx() }
+    val pillRestWidthPx = (tabWidthPx - pillInsetXPx).coerceAtLeast(1f)
+    val pillRestHeightPx = (rowHeightPx - pillInsetYPx).coerceAtLeast(1f)
+    val restSize = Size(pillRestWidthPx, pillRestHeightPx)
+    val liftedHeightPx = pillRestHeightPx + padTopPx + padBottomPx +
         with(density) { PILL_GROW_HEIGHT.toPx() }
-    val liftedSize = if (rowHeightPx > 0f) {
-        Size(liftedHeightPx * tabWidthPx / rowHeightPx, liftedHeightPx)
+    val liftedSize = if (pillRestHeightPx > 0f) {
+        Size(liftedHeightPx * pillRestWidthPx / pillRestHeightPx, liftedHeightPx)
     } else {
         restSize
     }
@@ -872,14 +877,21 @@ private fun SharedTransitionScope.ExpandedTabs(
                         color = colors.backgroundColor,
                         shape = shapes.tabBarShape
                     )
-                    .clip(shapes.tabBarShape)
                     .then(tabBarContentModifier())
+                    .clip(shapes.tabBarShape)
                     .padding(contentPadding)
-                    .animateContentSize()
             ) {
                 if (showPill && (!glassPill || pill.isFlat)) {
+                    val themeTokens = LocalLunariaColors.current
+                    val pillShape = if (themeTokens.isViolet) {
+                        RoundedCornerShape(20.dp)
+                    } else {
+                        RoundedCornerShape(percent = 50)
+                    }
                     FlatSelectionPill(
                         color = colors.indicatorColor,
+                        shape = pillShape,
+                        borderColor = themeTokens.pillIndicatorRimColor,
                         modifier = Modifier
                             .matchParentSize()
                             .pillPlacement(
@@ -1054,8 +1066,8 @@ private fun SharedTransitionScope.ExpandedStandaloneTab(
                 color = colors.backgroundColor,
                 shape = shapes.standaloneTabShape
             )
-            .clip(shapes.standaloneTabShape)
             .then(tabBarContentModifier())
+            .clip(shapes.standaloneTabShape)
             .clickable(
                 onClick = standaloneTab.onClick,
                 indication = standaloneTab.indication?.invoke(),

@@ -16,8 +16,9 @@ use regex::Regex;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, RwLock};
 
 mod parsers;
@@ -601,6 +602,151 @@ impl YtMusicClient {
         Ok(tracks)
     }
 
+    /// Reports track playback + watchtime telemetry to YouTube Music (`playbackTracking`)
+    /// so plays, playlists, and artists count toward Listening History (`FEmusic_history`)
+    /// and annual YouTube Music Replay/Recap.
+    pub async fn report_playback(
+        &self,
+        video_id: &str,
+        playlist_id: Option<&str>,
+        duration_secs: Option<u64>,
+    ) -> Result<()> {
+        if !self.is_authenticated() {
+            return Ok(());
+        }
+        let clean_vid = video_id.trim();
+        if clean_vid.is_empty()
+            || clean_vid.starts_with("local:")
+            || clean_vid.starts_with("jiosaavn:")
+        {
+            return Ok(());
+        }
+
+        let normalized_pl = playlist_id.and_then(normalize_playback_playlist_id);
+        let mut body = Self::base_context();
+        body["videoId"] = json!(clean_vid);
+        body["contentCheckOk"] = json!(true);
+        body["racyCheckOk"] = json!(true);
+        if let Some(ref pl) = normalized_pl {
+            body["playlistId"] = json!(pl);
+        }
+
+        let mut data = match self.post("player", body).await {
+            Ok(val) => val,
+            Err(err) if normalized_pl.is_some() => {
+                tracing::debug!(
+                    video_id = %clean_vid,
+                    error = %err,
+                    "player tracking call with playlistId failed; retrying single-track"
+                );
+                let mut fallback = Self::base_context();
+                fallback["videoId"] = json!(clean_vid);
+                fallback["contentCheckOk"] = json!(true);
+                fallback["racyCheckOk"] = json!(true);
+                self.post("player", fallback).await?
+            }
+            Err(err) => return Err(err),
+        };
+
+        if data
+            .pointer("/playbackTracking/videostatsPlaybackUrl/baseUrl")
+            .and_then(Value::as_str)
+            .is_none()
+            && normalized_pl.is_some()
+        {
+            let mut fallback = Self::base_context();
+            fallback["videoId"] = json!(clean_vid);
+            fallback["contentCheckOk"] = json!(true);
+            fallback["racyCheckOk"] = json!(true);
+            if let Ok(fb) = self.post("player", fallback).await {
+                data = fb;
+            }
+        }
+
+        let Some(pb_base) = data
+            .pointer("/playbackTracking/videostatsPlaybackUrl/baseUrl")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        else {
+            tracing::debug!(
+                video_id = %clean_vid,
+                "YTM player response omitted videostatsPlaybackUrl"
+            );
+            return Ok(());
+        };
+        let wt_base = data
+            .pointer("/playbackTracking/videostatsWatchtimeUrl/baseUrl")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty());
+
+        let cpn = generate_cpn();
+        let playback_url = build_videostats_url(
+            pb_base,
+            &cpn,
+            normalized_pl.as_deref(),
+            duration_secs,
+            false,
+        );
+        self.send_videostats_get(&playback_url).await?;
+
+        if let Some(wt_url_base) = wt_base {
+            let watchtime_url = build_videostats_url(
+                wt_url_base,
+                &cpn,
+                normalized_pl.as_deref(),
+                duration_secs,
+                true,
+            );
+            if let Err(err) = self.send_videostats_get(&watchtime_url).await {
+                tracing::debug!(
+                    video_id = %clean_vid,
+                    error = %err,
+                    "YTM watchtime telemetry ping failed"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    async fn send_videostats_get(&self, url: &str) -> Result<()> {
+        let visitor = self.visitor_data.read().await.clone();
+        let scope = self.channel_scope.read().await.clone().unwrap_or_default();
+
+        let mut req = self
+            .http
+            .get(url)
+            .header("User-Agent", WEB_USER_AGENT)
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .header("Origin", "https://music.youtube.com")
+            .header("X-Origin", "https://music.youtube.com")
+            .header("Referer", "https://music.youtube.com/")
+            .header("X-YouTube-Client-Name", "67")
+            .header("X-YouTube-Client-Version", WEB_REMIX_VERSION)
+            .timeout(Duration::from_secs(6));
+
+        if let Some(ref v) = visitor {
+            req = req.header("X-Goog-Visitor-Id", v);
+        }
+        if let (Some(cookie_hdr), Some(auth_hdr)) = (
+            self.cookies.ytm_cookie_header(),
+            self.cookies.ytm_sapisidhash(),
+        ) {
+            req = req
+                .header("Cookie", cookie_hdr)
+                .header("Authorization", auth_hdr)
+                .header("X-Goog-AuthUser", "0");
+            if let Some(ref page_id) = scope.page_id {
+                req = req.header("X-Goog-PageId", page_id);
+            }
+        }
+
+        let resp = req.send().await?;
+        if !resp.status().is_success() {
+            return Err(anyhow!("YouTube Music telemetry HTTP {}", resp.status()));
+        }
+        Ok(())
+    }
+
     pub async fn fetch_native_lyrics(&self, video_id: &str) -> Option<String> {
         let mut body = Self::base_context();
         body["videoId"] = json!(video_id);
@@ -704,7 +850,10 @@ impl YtMusicClient {
             "removedVideoId": video_id,
             "setVideoId": set_video_id
         }]);
-        self.post("browse/edit_playlist", body).await?;
+        let resp = self.post("browse/edit_playlist", body).await?;
+        if resp.get("status").and_then(|v| v.as_str()) == Some("STATUS_FAILED") {
+            return Err(anyhow!("YouTube Music rejected playlist item removal"));
+        }
         self.invalidate_cache(Some(playlist_browse_id)).await;
         Ok(())
     }
@@ -1266,10 +1415,119 @@ fn classify_mix_card(title: &str) -> MixBucket {
     MixBucket::Personal
 }
 
+fn normalize_playback_playlist_id(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let stripped = trimmed.strip_prefix("VL").unwrap_or(trimmed).trim();
+    if stripped.is_empty() {
+        return None;
+    }
+    if stripped == "LM"
+        || stripped.starts_with("PL")
+        || stripped.starts_with("RD")
+        || stripped.starts_with("OLAK")
+        || stripped.starts_with("UU")
+        || stripped.starts_with("LL")
+        || stripped.starts_with("FL")
+    {
+        Some(stripped.to_string())
+    } else {
+        None
+    }
+}
+
+fn generate_cpn() -> String {
+    const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
+    static CPN_SEQ: AtomicU64 = AtomicU64::new(1);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as u64);
+    let seq = CPN_SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut state = nanos ^ seq.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xA076_1D64_78BD_642F;
+    let mut out = String::with_capacity(16);
+    for _ in 0..16 {
+        // SplitMix64 step ensures uniform 6-bit indexing across the CPN alphabet.
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+        out.push(ALPHABET[(z as usize) & 63] as char);
+    }
+    out
+}
+
+fn has_query_param(url: &str, key: &str) -> bool {
+    let Some((_, query)) = url.split_once('?') else {
+        return false;
+    };
+    query.split('&').any(|pair| {
+        let name = pair.split('=').next().unwrap_or("");
+        name == key
+    })
+}
+
+fn append_query_param(url: &mut String, key: &str, encoded_value: &str) {
+    if has_query_param(url, key) {
+        return;
+    }
+    let sep = if url.contains('?') { '&' } else { '?' };
+    url.push(sep);
+    url.push_str(key);
+    url.push('=');
+    url.push_str(encoded_value);
+}
+
+fn build_videostats_url(
+    base_url: &str,
+    cpn: &str,
+    playlist_id: Option<&str>,
+    duration_secs: Option<u64>,
+    is_watchtime: bool,
+) -> String {
+    let mut url = if let Some(rest) = base_url.strip_prefix("https://s.youtube.com/") {
+        format!("https://music.youtube.com/{rest}")
+    } else if let Some(rest) = base_url.strip_prefix("http://s.youtube.com/") {
+        format!("https://music.youtube.com/{rest}")
+    } else {
+        base_url.to_string()
+    };
+
+    append_query_param(&mut url, "cpn", cpn);
+    append_query_param(&mut url, "ver", "2");
+    append_query_param(&mut url, "c", "WEB_REMIX");
+    append_query_param(&mut url, "cver", WEB_REMIX_VERSION);
+    append_query_param(&mut url, "hl", "en");
+    append_query_param(&mut url, "gl", "US");
+    if let Some(pl) = playlist_id.and_then(normalize_playback_playlist_id) {
+        append_query_param(&mut url, "list", &urlencoding::encode(&pl));
+    }
+    if let Some(dur) = duration_secs.filter(|&d| d > 0) {
+        append_query_param(&mut url, "len", &format!("{dur}.000"));
+    }
+
+    if is_watchtime {
+        let watch_secs = duration_secs
+            .filter(|&d| d > 0)
+            .map_or(30, |d| d.clamp(5, 35));
+        let formatted = format!("{watch_secs}.000");
+        append_query_param(&mut url, "st", "0.000");
+        append_query_param(&mut url, "et", &formatted);
+        append_query_param(&mut url, "cmt", &formatted);
+        append_query_param(&mut url, "rt", &formatted);
+        append_query_param(&mut url, "state", "playing");
+        append_query_param(&mut url, "final", "1");
+    } else {
+        append_query_param(&mut url, "cmt", "0");
+    }
+
+    url
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        is_manual_user_playlist_id, is_mix_playlist_id, prefer_explicit_order, primary_artist_query,
+        build_videostats_url, generate_cpn, is_manual_user_playlist_id, is_mix_playlist_id,
+        normalize_playback_playlist_id, prefer_explicit_order, primary_artist_query,
     };
     use crate::providers::{ProviderSource, Track};
 
@@ -1327,5 +1585,52 @@ mod tests {
         assert!(is_mix_playlist_id("RDCLAK5uy_abc"));
         assert!(is_mix_playlist_id("RDTMAK5uy_xyz"));
         assert!(!is_mix_playlist_id("VLPLabc123"));
+    }
+
+    #[test]
+    fn normalizes_playback_playlist_ids_and_builds_videostats_urls() {
+        assert_eq!(
+            normalize_playback_playlist_id("VLPLabc123").as_deref(),
+            Some("PLabc123")
+        );
+        assert_eq!(
+            normalize_playback_playlist_id("OLAK5uy_xyz").as_deref(),
+            Some("OLAK5uy_xyz")
+        );
+        assert_eq!(normalize_playback_playlist_id("LM").as_deref(), Some("LM"));
+        assert_eq!(normalize_playback_playlist_id("MPREb_album"), None);
+
+        let cpn1 = generate_cpn();
+        let cpn2 = generate_cpn();
+        assert_eq!(cpn1.len(), 16);
+        assert_ne!(cpn1, cpn2);
+
+        let pb = build_videostats_url(
+            "https://s.youtube.com/api/stats/playback?docid=abc&ei=123",
+            "CPN1234567890123",
+            Some("VLPLtest99"),
+            Some(210),
+            false,
+        );
+        assert!(pb.starts_with("https://music.youtube.com/api/stats/playback?"));
+        assert!(pb.contains("cpn=CPN1234567890123"));
+        assert!(pb.contains("c=WEB_REMIX"));
+        assert!(pb.contains("list=PLtest99"));
+        assert!(pb.contains("cmt=0"));
+        assert!(!pb.contains("final=1"));
+
+        let wt = build_videostats_url(
+            "https://s.youtube.com/api/stats/watchtime?docid=abc&ver=2",
+            "CPN1234567890123",
+            Some("MPREb_album"),
+            Some(210),
+            true,
+        );
+        assert!(wt.starts_with("https://music.youtube.com/api/stats/watchtime?"));
+        assert!(wt.contains("st=0.000"));
+        assert!(wt.contains("et=35.000"));
+        assert!(wt.contains("final=1"));
+        assert!(!wt.contains("list="));
+        assert_eq!(wt.matches("ver=2").count(), 1);
     }
 }

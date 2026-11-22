@@ -27,17 +27,26 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.BlurredEdgeTreatment
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInRoot
@@ -50,6 +59,10 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
+import dev.sonata.android.LocalAppBackdrop
+import dev.sonata.android.backdrop.backdrops.layerBackdrop
+import dev.sonata.android.backdrop.backdrops.rememberLayerBackdrop
+import dev.sonata.android.sonataThemeGlassButton
 import dev.sonata.android.ui.CARD_ART_PX
 import dev.sonata.android.ui.HEADER_ART_PX
 import dev.sonata.android.ui.PAGE_GUTTER
@@ -58,6 +71,7 @@ import dev.sonata.android.ui.SonataAccent
 import dev.sonata.android.ui.SonataIcons
 import dev.sonata.android.ui.artworkAt
 import dev.sonata.android.ui.rememberArtworkRequest
+import dev.sonata.android.ui.theme.LocalLunariaColors
 import dev.sonata.android.ui.theme.sonataGlassSurface
 import uniffi.sonata_android.AndroidTrack
 
@@ -173,7 +187,10 @@ fun SonataLastPlayedSquareCard(
     onLongClick: ((Rect?) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
-    val cardShape = remember { RoundedCornerShape(12.dp) }
+    val themeTokens = LocalLunariaColors.current
+    val cardSize = if (themeTokens.isMoonflower) 116.dp else 142.dp
+    val cornerRadius = if (themeTokens.isMoonflower) 18.dp else 14.dp
+    val cardShape = remember(cornerRadius) { RoundedCornerShape(cornerRadius) }
     val sizedUrl = remember(artworkUrl) { artworkUrl.artworkAt(CARD_ART_PX) }
     val request = rememberArtworkRequest(sizedUrl, 360, 360)
     val haptics = LocalHapticFeedback.current
@@ -181,7 +198,7 @@ fun SonataLastPlayedSquareCard(
 
     Column(
         modifier = modifier
-            .width(148.dp)
+            .width(cardSize)
             .onGloballyPositioned { cardBounds = it.boundsInRoot() }
             .combinedClickable(
                 onClick = onClick,
@@ -197,12 +214,25 @@ fun SonataLastPlayedSquareCard(
     ) {
         Box(
             modifier = Modifier
-                .size(148.dp)
+                .size(cardSize)
+                .then(
+                    if (themeTokens.isViolet) {
+                        Modifier.shadow(
+                            elevation = 8.dp,
+                            shape = cardShape,
+                            clip = false,
+                            ambientColor = themeTokens.glassShadowColor,
+                            spotColor = themeTokens.glassShadowColor,
+                        )
+                    } else {
+                        Modifier
+                    },
+                )
                 .clip(cardShape)
                 .background(MaterialTheme.colorScheme.surfaceVariant)
                 .border(
-                    width = if (isCurrent) 1.5.dp else 0.5.dp,
-                    color = if (isCurrent) SonataAccent else Color.White.copy(alpha = 0.08f),
+                    width = if (isCurrent) 1.5.dp else 0.75.dp,
+                    color = if (isCurrent) themeTokens.petalLavender else themeTokens.cardStroke,
                     shape = cardShape,
                 ),
             contentAlignment = Alignment.Center,
@@ -231,8 +261,8 @@ fun SonataLastPlayedSquareCard(
                 fontSize = 13.5.sp,
                 lineHeight = 17.sp,
             ),
-            color = if (isCurrent) SonataAccent else MaterialTheme.colorScheme.onBackground,
-            maxLines = 2,
+            color = if (isCurrent) themeTokens.petalLavender else MaterialTheme.colorScheme.onBackground,
+            maxLines = if (themeTokens.isMoonflower) 1 else 2,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.fillMaxWidth(),
         )
@@ -255,8 +285,9 @@ fun SonataEditorialCard(
     onLongClick: ((Rect?) -> Unit)? = null,
     width: Dp = 148.dp,
 ) {
+    val themeTokens = LocalLunariaColors.current
     val haptics = LocalHapticFeedback.current
-    val cardShape = remember { RoundedCornerShape(12.dp) }
+    val cardShape = themeTokens.cardShape
     val sizedUrl = remember(artworkUrl) { artworkUrl.artworkAt(CARD_ART_PX) }
     val request = rememberArtworkRequest(sizedUrl, 360, 360)
     var cardBounds by remember { mutableStateOf<Rect?>(null) }
@@ -279,9 +310,22 @@ fun SonataEditorialCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(1f)
+                .then(
+                    if (themeTokens.isViolet) {
+                        Modifier.shadow(
+                            elevation = 8.dp,
+                            shape = cardShape,
+                            clip = false,
+                            ambientColor = themeTokens.glassShadowColor,
+                            spotColor = themeTokens.glassShadowColor,
+                        )
+                    } else {
+                        Modifier
+                    },
+                )
                 .clip(cardShape)
                 .background(MaterialTheme.colorScheme.surfaceVariant)
-                .border(0.5.dp, Color.White.copy(alpha = 0.08f), cardShape),
+                .border(0.75.dp, themeTokens.cardStroke, cardShape),
         ) {
             if (request != null) {
                 AsyncImage(
@@ -340,6 +384,7 @@ fun SonataArtistCircleCard(
     modifier: Modifier = Modifier,
     diameter: Dp = 124.dp,
 ) {
+    val themeTokens = LocalLunariaColors.current
     val sizedUrl = remember(artworkUrl) { artworkUrl.artworkAt(CARD_ART_PX) }
     val request = rememberArtworkRequest(sizedUrl, 320, 320)
 
@@ -356,15 +401,15 @@ fun SonataArtistCircleCard(
                 .clip(CircleShape)
                 .background(
                     Brush.radialGradient(
-                        0f to SonataAccent.copy(alpha = 0.16f),
+                        0f to themeTokens.petalLavender.copy(alpha = 0.16f),
                         1f to MaterialTheme.colorScheme.surfaceVariant,
                     ),
                 )
                 .border(
                     width = 1.5.dp,
                     brush = Brush.linearGradient(
-                        0f to Color.White.copy(alpha = 0.28f),
-                        1f to SonataAccent.copy(alpha = 0.22f),
+                        0f to themeTokens.glassRimTopLeft.copy(alpha = 0.50f),
+                        1f to themeTokens.petalLavender.copy(alpha = 0.24f),
                     ),
                     shape = CircleShape,
                 )
@@ -418,6 +463,8 @@ fun SonataSplitHeroHeader(
     artworkUrl: String?,
     accentColor: Color,
     washColor: Color,
+    contentColor: Color = Color.White,
+    topInset: Dp = 64.dp,
     onPlayAll: () -> Unit,
     onShuffleAll: () -> Unit,
     onDownloadAll: (() -> Unit)? = null,
@@ -427,214 +474,354 @@ fun SonataSplitHeroHeader(
     onOpenArtist: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
-    val coverShape = remember { RoundedCornerShape(18.dp) }
-    val sizedUrl = remember(artworkUrl) { artworkUrl.artworkAt(CARD_ART_PX) }
-    val request = rememberArtworkRequest(sizedUrl, 360, 360)
+    val themeTokens = LocalLunariaColors.current
+    val sizedUrl = remember(artworkUrl) { artworkUrl.artworkAt(HEADER_ART_PX) }
+    val request = rememberArtworkRequest(sizedUrl, 800, 800)
     val metaLine = remember(kindLabel, year, trackCount) {
         buildList {
             kindLabel?.takeIf { it.isNotBlank() }?.let { add(it) }
             year?.takeIf { it.isNotBlank() }?.let { add(it) }
             if (trackCount > 0) add("$trackCount tracks")
-        }.joinToString(" · ")
+        }.joinToString(" • ")
     }
+    val isOfflineLibrary = kindLabel.equals("Offline Library", ignoreCase = true)
+    val pillShape = remember { RoundedCornerShape(percent = 50) }
+    val heroBackdrop = rememberLayerBackdrop()
+    val buttonContentTint = themeTokens.onSurfacePrimary
+    val playPillTint = if (themeTokens.isDark) {
+        themeTokens.glassTint.copy(alpha = 0.62f)
+    } else {
+        Color.White.copy(alpha = 0.78f)
+    }
+    val playFallbackBg = if (themeTokens.isDark) themeTokens.eclipseCard else Color.White
+    val useFramedStackLayout = themeTokens.isMoonflower || request == null
+    val violetHeroHeight = 290.dp + topInset
 
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .background(
-                Brush.verticalGradient(
-                    0f to washColor.copy(alpha = 0.85f),
-                    1f to Color.Transparent,
-                ),
-            )
-            .padding(horizontal = PAGE_GUTTER, vertical = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+    Box(
+        modifier = modifier.fillMaxWidth(),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
+        if (!useFramedStackLayout) {
+            // Violet full-bleed hero with soft blurred lower dissolve above the metadata stack.
             Box(
                 modifier = Modifier
-                    .size(134.dp)
-                    .shadow(18.dp, coverShape, ambientColor = Color.Black, spotColor = Color.Black)
-                    .clip(coverShape)
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .border(0.5.dp, Color.White.copy(alpha = 0.12f), coverShape),
-                contentAlignment = Alignment.Center,
+                    .fillMaxWidth()
+                    .height(violetHeroHeight)
+                    .layerBackdrop(heroBackdrop),
             ) {
-                if (request != null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
+                        .drawWithCache {
+                            val dissolveMask = Brush.verticalGradient(
+                                0.0f to Color.Black,
+                                0.44f to Color.Black,
+                                0.76f to Color.Black.copy(alpha = 0.34f),
+                                0.96f to Color.Transparent,
+                                1.0f to Color.Transparent,
+                            )
+                            onDrawWithContent {
+                                drawContent()
+                                drawRect(brush = dissolveMask, blendMode = BlendMode.DstIn)
+                            }
+                        },
+                ) {
                     AsyncImage(
                         model = request,
                         contentDescription = title,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize(),
                     )
-                } else {
-                    Icon(
-                        imageVector = SonataIcons.MusicNote,
+                    AsyncImage(
+                        model = request,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(40.dp),
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .blur(26.dp, BlurredEdgeTreatment.Unbounded)
+                            .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
+                            .drawWithCache {
+                                val blurMask = Brush.verticalGradient(
+                                    0.0f to Color.Transparent,
+                                    0.38f to Color.Transparent,
+                                    0.64f to Color.Black.copy(alpha = 0.85f),
+                                    0.92f to Color.Black,
+                                    1.0f to Color.Transparent,
+                                )
+                                onDrawWithContent {
+                                    drawContent()
+                                    drawRect(brush = blurMask, blendMode = BlendMode.DstIn)
+                                }
+                            },
                     )
                 }
-            }
-
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                if (metaLine.isNotBlank()) {
-                    Text(
-                        text = metaLine.uppercase(),
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontSize = 10.sp,
-                            letterSpacing = 0.8.sp,
-                            fontWeight = FontWeight.Bold,
-                        ),
-                        color = accentColor,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.headlineMedium.copy(
-                        fontSize = 22.sp,
-                        fontWeight = FontWeight.Bold,
-                        lineHeight = 26.sp,
-                    ),
-                    color = MaterialTheme.colorScheme.onBackground,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (!subtitle.isNullOrBlank()) {
-                    Text(
-                        text = subtitle,
-                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp),
-                        color = if (onOpenArtist != null) accentColor else MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = if (onOpenArtist != null) {
-                            Modifier
-                                .clip(RoundedCornerShape(6.dp))
-                                .clickable(onClick = onOpenArtist)
-                        } else {
-                            Modifier
-                        },
-                    )
-                }
-            }
-        }
-
-        // Action pill strip
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            val pillShape = remember { RoundedCornerShape(percent = 50) }
-            Row(
-                modifier = Modifier
-                    .weight(1f)
-                    .height(44.dp)
-                    .clip(pillShape)
-                    .background(accentColor)
-                    .clickable(onClick = onPlayAll),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    imageVector = SonataIcons.Play,
-                    contentDescription = null,
-                    tint = Color.Black,
-                    modifier = Modifier.size(16.dp),
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    text = "Play",
-                    style = MaterialTheme.typography.labelMedium.copy(
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                    ),
-                    color = Color.Black,
-                )
-            }
-
-            Row(
-                modifier = Modifier
-                    .weight(1f)
-                    .height(44.dp)
-                    .sonataGlassSurface(shape = pillShape)
-                    .clip(pillShape)
-                    .clickable(onClick = onShuffleAll),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    imageVector = SonataIcons.Shuffle,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.size(16.dp),
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    text = "Shuffle",
-                    style = MaterialTheme.typography.labelMedium.copy(
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.SemiBold,
-                    ),
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-            }
-
-            if (onDownloadAll != null) {
                 Box(
                     modifier = Modifier
-                        .size(44.dp)
-                        .sonataGlassSurface(shape = CircleShape)
-                        .clip(CircleShape)
-                        .clickable(enabled = !isDownloading, onClick = onDownloadAll),
+                        .fillMaxWidth()
+                        .height(92.dp)
+                        .align(Alignment.TopCenter)
+                        .background(
+                            Brush.verticalGradient(
+                                0.0f to Color.Black.copy(alpha = 0.28f),
+                                0.6f to Color.Black.copy(alpha = 0.08f),
+                                1.0f to Color.Transparent,
+                            ),
+                        ),
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(128.dp)
+                        .align(Alignment.BottomCenter)
+                        .background(
+                            Brush.verticalGradient(
+                                0.0f to Color.Transparent,
+                                0.55f to washColor.copy(alpha = 0.58f),
+                                1.0f to washColor.copy(alpha = 0.92f),
+                            ),
+                        ),
+                )
+            }
+        } else {
+            // Soft ambient halo backdrop for Moonflower & placeholder/Downloads headers.
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .layerBackdrop(heroBackdrop)
+                    .background(
+                        Brush.radialGradient(
+                            colors = listOf(
+                                accentColor.copy(alpha = 0.24f),
+                                washColor.copy(alpha = 0.30f),
+                                Color.Transparent,
+                            ),
+                        ),
+                    ),
+            )
+        }
+
+        // Strict non-overlapping Column layout: cover box sits ABOVE metadata + action buttons.
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(
+                    top = if (useFramedStackLayout) topInset + 14.dp else 238.dp + topInset,
+                    start = PAGE_GUTTER,
+                    end = PAGE_GUTTER,
+                    bottom = 22.dp,
+                ),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            if (useFramedStackLayout) {
+                val artShape = RoundedCornerShape(if (themeTokens.isMoonflower) 24.dp else 18.dp)
+                val placeholderBrush = Brush.linearGradient(
+                    listOf(
+                        themeTokens.eclipseCard,
+                        accentColor.copy(alpha = if (themeTokens.isDark) 0.42f else 0.34f),
+                    ),
+                )
+                Box(
+                    modifier = Modifier
+                        .size(204.dp)
+                        .shadow(
+                            elevation = 20.dp,
+                            shape = artShape,
+                            clip = false,
+                            ambientColor = themeTokens.glassShadowColor,
+                            spotColor = themeTokens.glassShadowColor,
+                        )
+                        .clip(artShape)
+                        .then(
+                            if (request != null) {
+                                Modifier.background(washColor)
+                            } else {
+                                Modifier.background(placeholderBrush)
+                            },
+                        )
+                        .border(0.9.dp, themeTokens.glassRimTopLeft, artShape),
                     contentAlignment = Alignment.Center,
                 ) {
-                    when {
-                        isDownloading -> CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp,
-                            color = accentColor,
+                    if (request != null) {
+                        AsyncImage(
+                            model = request,
+                            contentDescription = title,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize(),
                         )
-                        allDownloaded -> Icon(
-                            imageVector = SonataIcons.Check,
-                            contentDescription = "All Downloaded",
-                            tint = accentColor,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        else -> Icon(
-                            imageVector = SonataIcons.Download,
-                            contentDescription = "Download All",
-                            tint = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.size(18.dp),
+                    } else {
+                        Icon(
+                            imageVector = if (isOfflineLibrary) SonataIcons.Download else SonataIcons.MusicNote,
+                            contentDescription = null,
+                            tint = themeTokens.onSurfacePrimary.copy(alpha = 0.78f),
+                            modifier = Modifier.size(56.dp),
                         )
                     }
                 }
+                Spacer(Modifier.height(14.dp))
             }
 
-            if (onMoreOptions != null) {
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .sonataGlassSurface(shape = CircleShape)
-                        .clip(CircleShape)
-                        .clickable(onClick = onMoreOptions),
-                    contentAlignment = Alignment.Center,
+            Text(
+                text = title,
+                style = MaterialTheme.typography.headlineMedium.copy(
+                    fontSize = 26.sp,
+                    fontWeight = FontWeight.Bold,
+                    lineHeight = 31.sp,
+                ),
+                color = contentColor,
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+
+            if (!subtitle.isNullOrBlank()) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontSize = 15.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    ),
+                    color = contentColor.copy(alpha = 0.88f),
+                    textAlign = TextAlign.Center,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = if (onOpenArtist != null) {
+                        Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(onClick = onOpenArtist)
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    } else {
+                        Modifier
+                    },
+                )
+            }
+
+            if (metaLine.isNotBlank()) {
+                Text(
+                    text = metaLine.uppercase(),
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = 11.5.sp,
+                        letterSpacing = 0.8.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    ),
+                    color = accentColor.copy(alpha = 0.90f),
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
+            Spacer(Modifier.height(10.dp))
+
+            // Centered Liquid Glass action row: [Shuffle] [▶ Play] [Download] [⋯]
+            CompositionLocalProvider(LocalAppBackdrop provides heroBackdrop) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(
-                        imageVector = SonataIcons.MoreHoriz,
-                        contentDescription = "More options",
-                        tint = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(18.dp),
-                    )
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .sonataThemeGlassButton(
+                                shape = CircleShape,
+                                fallbackColor = themeTokens.eclipseSurface,
+                            )
+                            .clickable(onClick = onShuffleAll),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = SonataIcons.Shuffle,
+                            contentDescription = "Shuffle",
+                            tint = buttonContentTint,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .height(48.dp)
+                            .widthIn(min = 148.dp)
+                            .sonataThemeGlassButton(
+                                shape = pillShape,
+                                surfaceTint = playPillTint,
+                                fallbackColor = playFallbackBg,
+                                shadowElevation = 12.dp,
+                            )
+                            .clickable(onClick = onPlayAll)
+                            .padding(horizontal = 26.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = SonataIcons.Play,
+                            contentDescription = null,
+                            tint = buttonContentTint,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(7.dp))
+                        Text(
+                            text = "Play",
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontSize = 15.5.sp,
+                                fontWeight = FontWeight.Bold,
+                            ),
+                            color = buttonContentTint,
+                        )
+                    }
+
+                    if (onDownloadAll != null) {
+                        Box(
+                            modifier = Modifier
+                                .size(48.dp)
+                                .sonataThemeGlassButton(
+                                    shape = CircleShape,
+                                    fallbackColor = themeTokens.eclipseSurface,
+                                )
+                                .clickable(enabled = !isDownloading, onClick = onDownloadAll),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            when {
+                                isDownloading -> CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = buttonContentTint,
+                                )
+                                allDownloaded -> Icon(
+                                    imageVector = SonataIcons.Check,
+                                    contentDescription = "All Downloaded",
+                                    tint = accentColor,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                                else -> Icon(
+                                    imageVector = SonataIcons.Download,
+                                    contentDescription = "Download All",
+                                    tint = buttonContentTint,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
+                        }
+                    }
+
+                    if (onMoreOptions != null) {
+                        Box(
+                            modifier = Modifier
+                                .size(48.dp)
+                                .sonataThemeGlassButton(
+                                    shape = CircleShape,
+                                    fallbackColor = themeTokens.eclipseSurface,
+                                )
+                                .clickable(onClick = onMoreOptions),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                imageVector = SonataIcons.MoreHoriz,
+                                contentDescription = "More options",
+                                tint = buttonContentTint,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                    }
                 }
             }
         }
