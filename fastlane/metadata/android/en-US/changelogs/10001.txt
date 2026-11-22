@@ -1,0 +1,8 @@
+v1.0.1:
+- Lunaria Moonflower theme & bundled Plus Jakarta Sans typography
+- Full-screen Artist pages with hero dissolve, Latest Release card & Popular tracks
+- Redesigned Editorial Explore and Material 3 Expressive Search pages
+- Radio & Mixes tab with real YouTube Music mixes
+- In-app Downloads playlist, downloaded badges & album/playlist downloads
+- Optional Modules -> JioSaavn 320 kbps AAC source
+- 60/90/120 Hz optimizations & F-Droid/IzzyOnDroid build support

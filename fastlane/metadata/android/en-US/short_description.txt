@@ -1,0 +1,1 @@
+Rust-powered music player with synced lyrics, Liquid Glass UI & offline mode

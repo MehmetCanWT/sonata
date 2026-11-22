@@ -85,6 +85,13 @@ android {
             useLegacyPackaging = false
         }
     }
+
+    // Omit Google Play's encrypted dependency metadata block for F-Droid / IzzyOnDroid
+    // compliance and deterministic, reproducible APK builds.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
 }
 
 composeCompiler {

@@ -1,0 +1,8 @@
+Sonata is an open-source, high-performance music player for Android (phone & tablet) powered by a native Rust core (sonata-core via UniFFI) and Media3 ExoPlayer.
+
+Key Features:
+• High-Fidelity Playback: Stream up to 256–321 kbps Opus Extreme and 256 kbps AAC with gapless playback, mid-track stream recovery, and optional JioSaavn 320 kbps AAC upgrade module.
+• Word-Synced & Duet Karaoke Lyrics: Real-time word-by-word and overlapping background vocal lyrics from multiple providers (Apple Music TTML, BetterLyrics, LyricsPlus, LRCLIB) with optional romanization, translation, and per-track timing offset.
+• Liquid Glass & Material 3 Expressive UI: Smooth 60 / 90 / 120 Hz adaptive interface for both phones and tablets (portrait & landscape), animated album covers, Lunaria Moonflower theme, and held long-press context menus.
+• Full In-App Library & Offline Downloads: Browse personalized Home, Editorial Explore, Radio Mixes, full-screen Artist pages, and save tracks or entire albums/playlists offline in a dedicated in-app Downloads playlist.
+• Privacy-First & Open Source: Zero trackers, zero ads, zero Google Play Services or Firebase dependencies, and 100% MIT-licensed source code.

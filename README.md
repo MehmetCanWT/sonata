@@ -7,7 +7,6 @@
     <a href="https://github.com/MehmetCanWT/sonata/actions/workflows/release-builds.yml"><img src="https://img.shields.io/badge/builds-AppImage%20%7C%20Android%20APK-38bdf8?style=flat-square" alt="Release Builds" /></a>
     <img src="https://img.shields.io/badge/engine-Rust%20%2B%20UniFFI-f97316?style=flat-square" alt="Rust + UniFFI" />
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22c55e?style=flat-square" alt="MIT License" /></a>
-    <a href="https://github.com/sponsors/MehmetCanWT"><img src="https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ea4aaa?style=flat-square&logo=githubsponsors&logoColor=white" alt="GitHub Sponsors" /></a>
   </p>
 </div>
 
@@ -56,22 +55,29 @@ Sonata pairs a single shared Rust core (`sonata-core`) with three native clients
 
 ## Installation
 
-### 1. Android APK (Mobile & Tablet)
+### 1. Android (Mobile & Tablet)
 
-Download the latest **`Sonata-v1.0.0-arm64.apk`** directly from [GitHub Releases](https://github.com/MehmetCanWT/sonata/releases/latest) and install it on any `arm64-v8a` Android 8.0+ phone or tablet.
+- **Obtainium (Recommended — Auto-Updates Directly from GitHub Releases):**
+  1. Install [Obtainium](https://github.com/ImranR98/Obtainium).
+  2. Tap **Add App** and paste `https://github.com/MehmetCanWT/sonata`.
+  3. Set **APK Filter** to `Sonata-.*-arm64\.apk$` and tap **Add** — Obtainium will automatically track and install signed updates in-place.
+- **Droid-ify / IzzyOnDroid & F-Droid:**
+  - Open [Droid-ify](https://github.com/Droid-ify/client) (with the **IzzyOnDroid** repository enabled) or **F-Droid**, search for **Sonata** (`dev.sonata.android`), and tap **Install**.
+- **Direct APK Download:**
+  - Download the latest signed **`Sonata-v1.0.1-arm64.apk`** directly from [GitHub Releases](https://github.com/MehmetCanWT/sonata/releases/latest) and install it on any `arm64-v8a` Android 8.0+ phone or tablet.
 
 ### 2. Linux Desktop GUI (`sonata-desktop`)
 
 #### Prebuilt AppImage (Recommended — No Compilation Needed)
 
-Download **`Sonata-v1.0.0-x86_64.AppImage`** from [GitHub Releases](https://github.com/MehmetCanWT/sonata/releases/latest):
+Download **`Sonata-v1.0.1-x86_64.AppImage`** from [GitHub Releases](https://github.com/MehmetCanWT/sonata/releases/latest):
 
 ```sh
-chmod +x Sonata-v1.0.0-x86_64.AppImage
-./Sonata-v1.0.0-x86_64.AppImage
+chmod +x Sonata-v1.0.1-x86_64.AppImage
+./Sonata-v1.0.1-x86_64.AppImage
 
 # Tip: the same AppImage also bundles the TUI client:
-./Sonata-v1.0.0-x86_64.AppImage --tui
+./Sonata-v1.0.1-x86_64.AppImage --tui
 ```
 
 #### Arch Linux / AUR (`PKGBUILD.desktop`)
