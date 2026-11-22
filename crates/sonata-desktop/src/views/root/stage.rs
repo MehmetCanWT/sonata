@@ -6,8 +6,8 @@
 
 use super::super::{
     artist, cached_thumb_path, fullscreen, home, render_cover_art, render_cover_surface,
-    render_icon_button, render_track_row, search, settings, ui_icon, CenterMode, FluentDivExt,
-    SonataDesktopView,
+    render_icon_button, render_quality_tag, render_track_row, search, settings, ui_icon,
+    CenterMode, FluentDivExt, SonataDesktopView,
 };
 use crate::backend::{BackendCmd, NavTarget};
 use crate::theme_bridge::{DesktopSkin, GlassPalette};
@@ -551,6 +551,11 @@ fn render_lyrics_stage(
                             let dist = active.map(|a| a.abs_diff(idx)).unwrap_or(10);
                             let target_secs = line.time_secs;
                             let next_start = lines.get(idx + 1).map(|next| next.time_secs);
+                            let align_right = line.voice == LyricVoice::Counter;
+                            let trimmed = line.text.trim();
+                            let is_bg = trimmed.starts_with('(')
+                                && trimmed.ends_with(')')
+                                && trimmed.len() > 2;
 
                             let (row_bg, row_opacity, row_content) = if dist == 0 {
                                 let end_secs = super::fullscreen::sheet::estimate_verse_end_secs(
@@ -558,9 +563,12 @@ fn render_lyrics_stage(
                                     next_start,
                                     this.snapshot.duration_secs,
                                 );
-                                let body = if line.text.trim().is_empty() {
+                                let body = if trimmed.is_empty() {
                                     div()
-                                        .text_size(px(24.0))
+                                        .w_full()
+                                        .flex()
+                                        .when(align_right, |el| el.justify_end())
+                                        .text_size(px(22.0))
                                         .font_weight(FontWeight::BOLD)
                                         .text_color(p.lyrics_active)
                                         .child("♪")
@@ -571,10 +579,10 @@ fn render_lyrics_stage(
                                         this.snapshot.position_secs,
                                         end_secs,
                                         super::fullscreen::sheet::KaraokePalette {
-                                            font_size: 24.0,
-                                            line_height: 30.0,
-                                            align_right: line.voice == LyricVoice::Counter,
-                                            is_background: false,
+                                            font_size: if is_bg { 19.0 } else { 22.0 },
+                                            line_height: if is_bg { 24.0 } else { 28.0 },
+                                            align_right,
+                                            is_background: is_bg,
                                             dim_color: p.lyrics_inactive,
                                             lit_color: p.lyrics_active,
                                             active_glow_color: p.accent,
@@ -585,10 +593,20 @@ fn render_lyrics_stage(
                                 (p.ambient_glow, 1.0f32, body)
                             } else {
                                 let (color, size_px, weight, opacity) = match dist {
-                                    1 => (p.lyrics_mid, 18.0, FontWeight::MEDIUM, 0.72),
-                                    _ => (p.lyrics_inactive, 16.0, FontWeight::NORMAL, 0.52),
+                                    1 => (
+                                        p.lyrics_mid,
+                                        if is_bg { 15.0 } else { 17.5 },
+                                        FontWeight::MEDIUM,
+                                        if is_bg { 0.58 } else { 0.78 },
+                                    ),
+                                    _ => (
+                                        p.lyrics_inactive,
+                                        if is_bg { 14.0 } else { 16.0 },
+                                        FontWeight::NORMAL,
+                                        if is_bg { 0.42 } else { 0.56 },
+                                    ),
                                 };
-                                let text = if line.text.trim().is_empty() {
+                                let text = if trimmed.is_empty() {
                                     "♪".to_string()
                                 } else {
                                     line.text.clone()
@@ -597,7 +615,11 @@ fn render_lyrics_stage(
                                     gpui_kit::transparent_black(),
                                     opacity,
                                     div()
+                                        .w_full()
+                                        .whitespace_normal()
+                                        .when(align_right, |el| el.text_right())
                                         .text_size(px(size_px))
+                                        .line_height(px(size_px * 1.25))
                                         .font_weight(weight)
                                         .text_color(color)
                                         .child(text)
@@ -609,9 +631,9 @@ fn render_lyrics_stage(
                                 div()
                                     .id(SharedString::from(format!("lyr-row-{idx}")))
                                     .w_full()
-                                    .min_h(px(50.0))
+                                    .min_h(px(46.0))
                                     .px_4()
-                                    .py_2()
+                                    .py(px(6.0))
                                     .rounded_xl()
                                     .bg(row_bg)
                                     .opacity(row_opacity)
@@ -688,34 +710,7 @@ fn render_lyrics_stage(
                         .flex_wrap()
                         .justify_center()
                         .gap_2()
-                        .child(
-                            div()
-                                .px_3()
-                                .py(px(4.0))
-                                .rounded_full()
-                                .bg(p.pill_bg)
-                                .border_1()
-                                .border_color(p.border_subtle)
-                                .text_xs()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(p.success)
-                                .child(snap.stream_badge.clone()),
-                        )
-                        .when(view.has_animated_cover(), |el| {
-                            el.child(
-                                div()
-                                    .px_2()
-                                    .py(px(4.0))
-                                    .rounded_full()
-                                    .bg(p.accent_soft)
-                                    .border_1()
-                                    .border_color(p.accent)
-                                    .text_xs()
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(p.accent)
-                                    .child("MOTION"),
-                            )
-                        }),
+                        .child(render_quality_tag(view, p, false)),
                 ),
         )
         .child(

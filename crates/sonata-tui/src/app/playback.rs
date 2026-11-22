@@ -1,6 +1,6 @@
 //! Playback orchestration, mpv event handling, lyrics/artwork loading, and status export for the TUI.
 //!
-//! 1. **Transport & Queue**: play selection, next/previous transitions, pause, seek, volume, shuffle, repeat, and enhancer controls.
+//! 1. **Transport & Queue**: play selection, next/previous transitions, pause, seek, volume, shuffle, and repeat controls.
 //! 2. **Stream & Precache**: fast stream resolution, background Hi-Fi upgrades, recovery retries, and lookahead next-track precaching.
 //! 3. **Mpv Events**: handles position, duration, pause, start, track-end, and playback-error notifications from `MpvController`.
 //! 4. **Media & Export**: fetches lyrics and cover art, renders Kitty terminal graphics, and writes deduplicated now-playing JSON state.
@@ -124,25 +124,27 @@ impl App {
                         None
                     };
                     if let Some((vid, duration)) = telemetry {
-                        let ytm = self.ytm.clone();
-                        let playlist_id = self
-                            .current_playlist_id
-                            .as_ref()
-                            .filter(|_| self.visible_tracks.iter().any(|t| t.id == vid))
-                            .cloned();
-                        tokio::spawn(async move {
-                            if let Err(err) = ytm
-                                .report_playback(&vid, playlist_id.as_deref(), duration)
-                                .await
-                            {
-                                tracing::debug!(
-                                    client = "tui",
-                                    track_id = %vid,
-                                    error = %err,
-                                    "ytm playback reporting failed"
-                                );
-                            }
-                        });
+                        if !vid.starts_with(sonata_core::providers::jiosaavn::ID_PREFIX) {
+                            let ytm = self.ytm.clone();
+                            let playlist_id = self
+                                .current_playlist_id
+                                .as_ref()
+                                .filter(|_| self.visible_tracks.iter().any(|t| t.id == vid))
+                                .cloned();
+                            tokio::spawn(async move {
+                                if let Err(err) = ytm
+                                    .report_playback(&vid, playlist_id.as_deref(), duration)
+                                    .await
+                                {
+                                    tracing::debug!(
+                                        client = "tui",
+                                        track_id = %vid,
+                                        error = %err,
+                                        "ytm playback reporting failed"
+                                    );
+                                }
+                            });
+                        }
                     }
                 }
                 self.start_hifi_upgrade();
@@ -445,6 +447,7 @@ impl App {
             self.kitty_motion_uploaded_track = None;
             self.kitty_motion_count = 0;
             self.kitty_motion_last_drawn = None;
+            self.kitty_motion_buf_slot = 0;
         }
     }
 
@@ -466,59 +469,55 @@ impl App {
             return;
         }
 
-        if !self.anim_art_frames.is_empty() && !self.config.reduce_motion {
-            if self.kitty_motion_uploaded_track.as_deref() != Some(track_id.as_str()) {
-                self.clear_kitty_images();
-                let mut out = std::io::stdout();
-                let mut uploaded = 0usize;
-                for (idx, (_, png)) in self.anim_art_frames.iter().enumerate() {
-                    if png.is_empty() {
-                        continue;
-                    }
-                    let img_id = 2001 + idx;
-                    let b64 = base64::engine::general_purpose::STANDARD.encode(png);
-                    let chunks: Vec<&[u8]> = b64.as_bytes().chunks(4096).collect();
-                    for (c_idx, chunk) in chunks.iter().enumerate() {
-                        let more = usize::from(c_idx + 1 < chunks.len());
-                        if c_idx == 0 {
-                            let _ = write!(out, "\x1b_Ga=t,f=100,i={img_id},q=2,m={more};");
-                        } else {
-                            let _ = write!(out, "\x1b_Gm={more};");
-                        }
-                        let _ = out.write_all(chunk);
-                        let _ = out.write_all(b"\x1b\\");
-                    }
-                    uploaded += 1;
-                }
-                let _ = out.flush();
-                self.kitty_motion_uploaded_track = Some(track_id);
-                self.kitty_motion_count = uploaded;
-            }
-            if self.kitty_motion_count == 0 {
+        if !self.anim_art_frames.is_empty()
+            && self.config.motion_covers
+            && !self.config.reduce_motion
+        {
+            let count = self.anim_art_frames.len();
+            let idx = self.anim_art_idx % count;
+            if self.kitty_motion_uploaded_track.as_deref() == Some(track_id.as_str())
+                && self.kitty_motion_last_drawn == Some((idx, rect))
+            {
                 return;
             }
-            let idx = self.anim_art_idx % self.kitty_motion_count;
-            if self.kitty_motion_last_drawn == Some((idx, rect)) {
+            let png = &self.anim_art_frames[idx].1;
+            if png.is_empty() {
                 return;
             }
-            let prev_id = self
-                .kitty_motion_last_drawn
-                .map(|(prev_idx, _)| 2001 + prev_idx);
-            let new_id = 2001 + idx;
+
+            let next_id: u32 = if self.kitty_motion_buf_slot == 0 {
+                2
+            } else {
+                3
+            };
+            let prev_id: u32 = if next_id == 2 { 3 } else { 2 };
             let mut out = std::io::stdout();
-            let _ = write!(
-                out,
-                "\x1b[s\x1b[{};{}H\x1b_Ga=p,i={},p=1,c={},r={},C=1,q=2\x1b\\\x1b[u",
-                rect.y + 1,
-                rect.x + 1,
-                new_id,
-                rect.width,
-                rect.height
-            );
-            if let Some(old_id) = prev_id.filter(|&old| old != new_id) {
-                let _ = write!(out, "\x1b_Ga=d,d=i,i={old_id},p=1,q=2\x1b\\");
+            if self.kitty_drawn_track.is_some() {
+                let _ = out.write_all(b"\x1b_Ga=d,d=i,i=1,q=2\x1b\\");
+                self.kitty_drawn_track = None;
             }
+            let b64 = base64::engine::general_purpose::STANDARD.encode(png);
+            let chunks: Vec<&[u8]> = b64.as_bytes().chunks(4096).collect();
+            let _ = write!(out, "\x1b[s\x1b[{};{}H", rect.y + 1, rect.x + 1);
+            for (c_idx, chunk) in chunks.iter().enumerate() {
+                let more = usize::from(c_idx + 1 < chunks.len());
+                if c_idx == 0 {
+                    let _ = write!(
+                        out,
+                        "\x1b_Ga=T,f=100,i={next_id},p=1,c={},r={},C=1,z=-1,q=2,m={more};",
+                        rect.width, rect.height
+                    );
+                } else {
+                    let _ = write!(out, "\x1b_Gm={more};");
+                }
+                let _ = out.write_all(chunk);
+                let _ = out.write_all(b"\x1b\\");
+            }
+            let _ = write!(out, "\x1b[u\x1b_Ga=d,d=i,i={prev_id},q=2\x1b\\");
             let _ = out.flush();
+            self.kitty_motion_buf_slot = 1 - self.kitty_motion_buf_slot;
+            self.kitty_motion_uploaded_track = Some(track_id);
+            self.kitty_motion_count = count;
             self.kitty_motion_last_drawn = Some((idx, rect));
             return;
         }
@@ -724,20 +723,26 @@ impl App {
                 }
             });
         }
+        self.start_cover_enrichment();
 
-        if !self.config.reduce_motion {
+        if self.config.motion_covers && !self.config.reduce_motion {
             let anim_tx = self.tx.clone();
             let anim_http = http.clone();
             let anim_track = track.clone();
             let picker = self.picker.clone();
             let need_kitty_png = picker.protocol_type() == ProtocolType::Kitty;
+            let (max_dim, target_fps, max_frames) = if need_kitty_png {
+                (360, 15.0, 45)
+            } else {
+                (480, 18.0, 48)
+            };
             self.playback_tasks.spawn(async move {
                 let Some(motion) = sonata_core::motion::resolve_motion_cover(
                     &anim_http,
                     &anim_track,
-                    640,
-                    20.0,
-                    60,
+                    max_dim,
+                    target_fps,
+                    max_frames,
                 )
                 .await
                 else {
@@ -828,7 +833,8 @@ impl App {
             next_id,
             self.playback.position_secs,
             self.playback.duration_secs,
-            self.config.cache_limit_gb > 0 && self.config.hifi_substitution,
+            self.config.cache_limit_gb > 0
+                && (self.config.hifi_substitution || self.config.jiosaavn_enabled),
         ) else {
             return;
         };
@@ -940,17 +946,6 @@ impl App {
                 result,
             });
         });
-    }
-
-    pub fn cycle_enhancer(&mut self) {
-        let next = self.playback.enhancer.next();
-        self.playback.enhancer = next;
-        self.config.enhancer_mode = next;
-        let _ = self.config.save();
-        self.status_line = format!("Audio Enhancer: {}", next.label());
-        if let Some(mpv) = &self.mpv {
-            mpv.set_enhancer(next);
-        }
     }
 
     pub fn toggle_pause(&mut self) {

@@ -230,7 +230,7 @@ fn line_end_estimate(line: &LyricLine) -> f64 {
 
 /// Returns the index of the active lyric line for `position_secs`.
 pub fn active_line_index(lines: &[LyricLine], position_secs: f64) -> Option<usize> {
-    const LOOKAHEAD_SECS: f64 = 0.24;
+    const LOOKAHEAD_SECS: f64 = 0.05;
     if lines.is_empty() {
         return None;
     }

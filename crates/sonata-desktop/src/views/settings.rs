@@ -1,10 +1,10 @@
 use super::{render_avatar, render_pill_button, ui_icon, FluentDivExt, SonataDesktopView};
 use crate::backend::BackendCmd;
-use crate::theme_bridge::{rgb_hsla, DesktopSkin, GlassPalette};
+use crate::theme_bridge::GlassPalette;
 use gpui_kit::assets::IconName;
 use gpui_kit::{
     div, px, AnyElement, Context, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, WindowBackgroundAppearance,
+    StatefulInteractiveElement, Styled, WindowBackgroundAppearance,
 };
 use sonata_core::config::AppConfig;
 use sonata_core::hyprland;
@@ -246,14 +246,18 @@ pub fn render_settings_page(
             p,
         ))
         .child(setting_row(
-            "Audio Enhancer DSP",
-            "SoXR resampling & mpv acoustic preset filter chain",
+            "JioSaavn 320kbps Audio Module",
+            "Include JioSaavn catalog in search and upgrade <300kbps streams to 320kbps AAC",
             render_pill_button(
-                "set-dsp",
-                snap.enhancer.label().to_string(),
-                true,
+                "set-jiosaavn",
+                if cfg.jiosaavn_enabled {
+                    "Enabled".to_string()
+                } else {
+                    "Disabled".to_string()
+                },
+                cfg.jiosaavn_enabled,
                 p,
-                |this, _, _| this.backend.send(BackendCmd::CycleEnhancer),
+                |this, _, _| this.backend.send(BackendCmd::ToggleJioSaavn),
                 cx,
             ),
             p,
@@ -356,94 +360,6 @@ pub fn render_settings_page(
             .into_any_element()
     };
 
-    let mut theme_chips = div().w_full().flex().flex_wrap().gap_3();
-    for (idx, t) in snap.themes.iter().enumerate() {
-        let selected = t.name.eq_ignore_ascii_case(&snap.base_theme.name);
-        let bg_swatch = rgb_hsla(t.bg.to_rgb((0x12, 0x12, 0x16)), 1.0);
-        let surface_swatch = rgb_hsla(t.surface.to_rgb((0x1c, 0x1c, 0x22)), 1.0);
-        let accent_swatch = rgb_hsla(t.accent.to_rgb((0xfa, 0x2d, 0x48)), 1.0);
-        let skin_badge = DesktopSkin::from_theme_name(&t.name).badge_label();
-        let t_name = t.name.clone();
-        let t_transparent = t.transparent_bg;
-        theme_chips = theme_chips.child(
-            div()
-                .id(SharedString::from(format!("set-theme-{idx}")))
-                .min_w(px(172.0))
-                .px_3()
-                .py(px(10.0))
-                .rounded_xl()
-                .bg(if selected { p.accent_soft } else { p.pill_bg })
-                .border_1()
-                .border_color(if selected { p.accent } else { p.border_subtle })
-                .hover(|s| s.bg(p.card_hover))
-                .cursor_pointer()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .on_click(cx.listener(move |this, _, window, _| {
-                    let next_transparent =
-                        t_transparent.unwrap_or(this.snapshot.config.transparent_bg);
-                    window.set_background_appearance(if next_transparent {
-                        WindowBackgroundAppearance::Blurred
-                    } else {
-                        WindowBackgroundAppearance::Opaque
-                    });
-                    this.backend.send(BackendCmd::SelectTheme(t_name.clone()));
-                }))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_2()
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(4.0))
-                                .child(
-                                    div()
-                                        .size(px(12.0))
-                                        .rounded_full()
-                                        .bg(bg_swatch)
-                                        .border_1()
-                                        .border_color(p.border_subtle),
-                                )
-                                .child(
-                                    div()
-                                        .size(px(12.0))
-                                        .rounded_full()
-                                        .bg(surface_swatch)
-                                        .border_1()
-                                        .border_color(p.border_subtle),
-                                )
-                                .child(div().size(px(12.0)).rounded_full().bg(accent_swatch)),
-                        )
-                        .child(
-                            div()
-                                .px_2()
-                                .py(px(1.0))
-                                .rounded_full()
-                                .bg(p.card_bg)
-                                .text_xs()
-                                .text_color(if selected { p.accent } else { p.muted })
-                                .child(skin_badge),
-                        ),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .font_weight(if selected {
-                            FontWeight::BOLD
-                        } else {
-                            FontWeight::MEDIUM
-                        })
-                        .text_color(if selected { p.highlight_fg } else { p.text })
-                        .child(t.name.clone()),
-                ),
-        );
-    }
-
     let appearance_card = section_card("APPEARANCE & HYPRLAND GLASS", p)
         .child(setting_row(
             "Transparent Glass Window",
@@ -481,6 +397,23 @@ pub fn render_settings_page(
             p,
         ))
         .child(setting_row(
+            "Animated Album Artwork",
+            "Display looping Apple Music, Tidal & Community motion covers in players",
+            render_pill_button(
+                "set-motion-covers",
+                if cfg.motion_covers && !cfg.reduce_motion {
+                    "Enabled".to_string()
+                } else {
+                    "Disabled".to_string()
+                },
+                cfg.motion_covers && !cfg.reduce_motion,
+                p,
+                |this, _, _| this.backend.send(BackendCmd::ToggleMotionCovers),
+                cx,
+            ),
+            p,
+        ))
+        .child(setting_row(
             "Reduce Motion",
             "Disable fullscreen motion and automatic control hiding",
             render_pill_button(
@@ -496,22 +429,7 @@ pub fn render_settings_page(
                 cx,
             ),
             p,
-        ))
-        .child(
-            div()
-                .pt_2()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .child(
-                    div()
-                        .text_xs()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(p.muted)
-                        .child("Desktop Theme & Skin (independent from TUI)"),
-                )
-                .child(theme_chips),
-        );
+        ));
 
     // 4. Integrations — Spotify Placeholder
     let spotify_card = section_card("CONNECTED SERVICES", p)

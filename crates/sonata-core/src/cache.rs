@@ -172,8 +172,9 @@ impl CacheDb {
         }
         if let Err(error) = conn.execute(
             "UPDATE track_enrichment SET cover_url = NULL, cover_source = 'none'
-             WHERE lower(COALESCE(cover_url, '')) LIKE '%saavncdn%'
-                OR lower(COALESCE(cover_url, '')) LIKE '%jiosaavn%'",
+             WHERE track_id NOT LIKE 'jiosaavn:%'
+               AND (lower(COALESCE(cover_url, '')) LIKE '%saavncdn%'
+                 OR lower(COALESCE(cover_url, '')) LIKE '%jiosaavn%')",
             [],
         ) {
             tracing::warn!("[sonata:cache] legacy-cover-invalidation failed error={error}");
@@ -562,10 +563,11 @@ fn invalidate_legacy_covers(conn: &Connection) {
             };
             let mut changed = false;
             for track in &mut tracks {
-                if track
-                    .thumbnail_url
-                    .as_deref()
-                    .is_some_and(is_legacy_cover_url)
+                if !track.is_jiosaavn()
+                    && track
+                        .thumbnail_url
+                        .as_deref()
+                        .is_some_and(is_legacy_cover_url)
                 {
                     track.thumbnail_url = None;
                     changed = true;

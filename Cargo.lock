@@ -7060,7 +7060,7 @@ dependencies = [
 
 [[package]]
 name = "sonata-core"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -7086,7 +7086,7 @@ dependencies = [
 
 [[package]]
 name = "sonata-desktop"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "cosmic-text",
@@ -7103,7 +7103,7 @@ dependencies = [
 
 [[package]]
 name = "sonata-tui"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

@@ -27,21 +27,29 @@ install_standalone_ytdlp() {
 }
 
 install_system_deps() {
-    if command -v pacman >/dev/null 2>&1; then
-        run_as_root pacman -S --needed --noconfirm base-devel ca-certificates curl ffmpeg git mpv nodejs yt-dlp
+    if [ -e /etc/NIXOS ] || command -v nix >/dev/null 2>&1; then
+        if command -v nix >/dev/null 2>&1; then
+            echo "Nix/NixOS detected. Installing Sonata TUI via Nix Flakes..."
+            if nix --extra-experimental-features "nix-command flakes" profile install "github:MehmetCanWT/sonata#sonata"; then
+                echo "Installed sonata via Nix Flakes."
+                exit 0
+            fi
+        fi
+    elif command -v pacman >/dev/null 2>&1; then
+        run_as_root pacman -S --needed --noconfirm base-devel pkgconf openssl sqlite ca-certificates curl ffmpeg git mpv nodejs yt-dlp
     elif command -v apt-get >/dev/null 2>&1; then
         run_as_root apt-get update
-        run_as_root apt-get install -y build-essential ca-certificates curl ffmpeg git mpv nodejs python3
+        run_as_root apt-get install -y build-essential pkg-config libssl-dev libsqlite3-dev ca-certificates curl ffmpeg git mpv nodejs python3
         if ! run_as_root apt-get install -y yt-dlp; then
             echo "apt-get yt-dlp unavailable; installing standalone yt-dlp binary..." >&2
             install_standalone_ytdlp
         fi
     elif command -v dnf >/dev/null 2>&1; then
-        if ! run_as_root dnf install -y gcc gcc-c++ make ca-certificates curl ffmpeg-free git mpv nodejs yt-dlp; then
-            run_as_root dnf install -y gcc gcc-c++ make ca-certificates curl ffmpeg git mpv nodejs yt-dlp
+        if ! run_as_root dnf install -y gcc gcc-c++ make pkgconf-pkg-config openssl-devel sqlite-devel ca-certificates curl ffmpeg-free git mpv nodejs yt-dlp; then
+            run_as_root dnf install -y gcc gcc-c++ make pkgconf-pkg-config openssl-devel sqlite-devel ca-certificates curl ffmpeg git mpv nodejs yt-dlp
         fi
     elif command -v zypper >/dev/null 2>&1; then
-        run_as_root zypper --non-interactive install -y gcc gcc-c++ make ca-certificates curl ffmpeg git mpv nodejs yt-dlp
+        run_as_root zypper --non-interactive install -y gcc gcc-c++ make pkg-config libopenssl-devel sqlite3-devel ca-certificates curl ffmpeg git mpv nodejs yt-dlp
     elif command -v brew >/dev/null 2>&1; then
         brew install ffmpeg mpv node yt-dlp git curl
     else

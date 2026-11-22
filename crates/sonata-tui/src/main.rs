@@ -145,7 +145,7 @@ async fn main() -> Result<()> {
 
     let mut app = App::new(config.clone(), picker, app_tx.clone());
 
-    match MpvController::spawn(config.volume, config.enhancer_mode, mpv_tx).await {
+    match MpvController::spawn(config.volume, mpv_tx).await {
         Ok(ctrl) => app.mpv = Some(Arc::new(ctrl)),
         Err(e) => app.status_line = format!("Warning: {e}"),
     }

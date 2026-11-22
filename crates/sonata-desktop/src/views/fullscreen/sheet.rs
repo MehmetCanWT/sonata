@@ -670,7 +670,7 @@ pub(in crate::views) fn render_active_karaoke_verse_styled(
     line_end_secs: f64,
     style: KaraokePalette,
 ) -> AnyElement {
-    const KARAOKE_LEAD_SECS: f64 = 0.22;
+    const KARAOKE_LEAD_SECS: f64 = 0.0;
 
     let weight = if style.is_background {
         FontWeight::SEMIBOLD
@@ -688,20 +688,19 @@ pub(in crate::views) fn render_active_karaoke_verse_styled(
             .enumerate()
             .map(|(i, w)| {
                 let start = w.start_secs;
-                let raw_end = w
+                let effective_end = w
                     .end_secs
-                    .or_else(|| line.words.get(i + 1).map(|next| next.start_secs))
-                    .unwrap_or(line_end_secs)
+                    .filter(|&e| e > start)
+                    .or_else(|| {
+                        line.words
+                            .get(i + 1)
+                            .map(|next| next.start_secs)
+                            .filter(|&ns| ns > start)
+                    })
+                    .unwrap_or_else(|| line_end_secs.max(start + 0.35))
                     .max(start + 0.14);
-                let max_word_span = (w.text.chars().count().max(2) as f64 * 0.11).clamp(0.28, 1.35);
-                let effective_end = if w.end_secs.is_some() {
-                    raw_end
-                } else {
-                    raw_end.min(start + max_word_span)
-                };
-                let linear = ((sweep_pos - start) / (effective_end - start).max(0.12))
+                let share = ((sweep_pos - start) / (effective_end - start).max(0.12))
                     .clamp(0.0, 1.0) as f32;
-                let share = linear.powf(0.68);
                 let mut label = w.text.clone();
                 if i + 1 < count {
                     label.push(' ');
@@ -727,12 +726,11 @@ pub(in crate::views) fn render_active_karaoke_verse_styled(
                     let w_start = cursor;
                     let w_end = (cursor + weight).min(1.0);
                     cursor = w_end;
-                    let linear = if w_end > w_start {
+                    let share = if w_end > w_start {
                         ((line_progress - w_start) / (w_end - w_start)).clamp(0.0, 1.0) as f32
                     } else {
                         1.0
                     };
-                    let share = linear.powf(0.72);
                     let mut label = w.to_string();
                     if i + 1 < count {
                         label.push(' ');

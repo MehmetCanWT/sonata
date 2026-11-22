@@ -87,19 +87,15 @@ pub(super) fn cached_audio_stream(track_id: &str) -> Option<ResolvedStream> {
     }
     let badge = std::fs::read_to_string(&badge_path)
         .ok()
-        .map(|value| value.trim().to_string())
+        .map(|value| value.trim().trim_end_matches(" · Cached").to_string())
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "YTM · Cached".to_string());
+        .unwrap_or_else(|| "YTM".to_string());
     // Filesystems commonly mount with noatime. The badge is a small sidecar
     // whose modification time is the explicit LRU access marker.
     let _ = std::fs::write(&badge_path, &badge);
     Some(ResolvedStream {
         url: audio_path.to_string_lossy().into_owned(),
-        badge: if badge.contains("Cached") {
-            badge
-        } else {
-            format!("{badge} · Cached")
-        },
+        badge,
         headers: Vec::new(),
     })
 }

@@ -3,7 +3,7 @@
 //! 1. **Submodules**: `coordinator` (command-to-transition logic), `mpv` (IPC controller), `precache`
 //!    (next-track prefetch state), and `tasks` (background playback task tracking).
 //! 2. **Repeat Mode**: `RepeatMode` cycles off/all/one and provides display labels.
-//! 3. **PlaybackState**: queue, current index, volume, enhancer mode, and the active and upgraded Hi-Fi streams.
+//! 3. **PlaybackState**: queue, current index, volume, and the active and upgraded Hi-Fi streams.
 //! 4. **Navigation**: `commit_play`, `next_index`, `prev_index`, and `peek_next_index` (with a cached
 //!    shuffle choice) plus `pop_prev_index` for history-based Previous.
 //! 5. **Stream Swapping**: base and upgraded streams are tracked so a Hi-Fi upgrade can be applied or reverted.
@@ -13,7 +13,6 @@ pub mod mpv;
 pub mod precache;
 pub mod tasks;
 
-use crate::config::EnhancerMode;
 use crate::providers::hifi::ResolvedStream;
 use crate::providers::Track;
 pub use mpv::{MpvController, MpvEvent};
@@ -60,7 +59,6 @@ pub struct PlaybackState {
     pub volume: u8,
     pub shuffle: bool,
     pub repeat: RepeatMode,
-    pub enhancer: EnhancerMode,
     pub stream_badge: String,
     pub loading_track: bool,
     pub active_stream: Option<ResolvedStream>,
@@ -68,7 +66,7 @@ pub struct PlaybackState {
 }
 
 impl PlaybackState {
-    pub fn new(volume: u8, enhancer: EnhancerMode) -> Self {
+    pub fn new(volume: u8) -> Self {
         Self {
             queue: Vec::new(),
             current_index: None,
@@ -80,7 +78,6 @@ impl PlaybackState {
             volume,
             shuffle: false,
             repeat: RepeatMode::Off,
-            enhancer,
             stream_badge: "Idle".to_string(),
             loading_track: false,
             active_stream: None,
@@ -123,7 +120,7 @@ impl PlaybackState {
         let Some(active) = self.active_stream.take() else {
             return false;
         };
-        if active.url == stream.url {
+        if active.url == stream.url && active.badge == stream.badge {
             self.active_stream = Some(active);
             return false;
         }
@@ -239,7 +236,7 @@ mod tests {
 
     #[test]
     fn peek_next_and_history_stay_consistent_in_shuffle() {
-        let mut st = PlaybackState::new(80, EnhancerMode::HiResCrystal);
+        let mut st = PlaybackState::new(80);
         st.queue = vec![
             dummy_track("t0"),
             dummy_track("t1"),

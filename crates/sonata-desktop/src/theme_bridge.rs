@@ -29,14 +29,6 @@ impl DesktopSkin {
             Self::Sonata
         }
     }
-
-    pub fn badge_label(self) -> &'static str {
-        match self {
-            Self::Sonata => "Glass",
-            Self::Spotify => "Spotify UI",
-            Self::YouTubeMusic => "YTM UI",
-        }
-    }
 }
 
 #[derive(Clone, Debug)]

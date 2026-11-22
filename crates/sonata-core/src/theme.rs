@@ -383,15 +383,9 @@ impl Theme {
         ]
     }
 
-    /// Built-in desktop themes tailored for `sonata-desktop`.
+    /// Built-in desktop theme tailored for `sonata-desktop`.
     pub fn desktop_builtins() -> Vec<Self> {
-        vec![
-            Self::sonata_glass(),
-            Self::spotify_desktop(),
-            Self::youtube_music_desktop(),
-            Self::spotify_light(),
-            Self::youtube_music_light(),
-        ]
+        vec![Self::sonata_glass()]
     }
 
     pub fn builtins() -> Vec<Self> {
@@ -474,10 +468,8 @@ impl Theme {
         themes
     }
 
-    pub fn load_for_desktop(themes_dir: &Path) -> Vec<Self> {
-        let mut themes = Self::desktop_builtins();
-        Self::append_custom_themes(&mut themes, themes_dir);
-        themes
+    pub fn load_for_desktop(_themes_dir: &Path) -> Vec<Self> {
+        vec![Self::sonata_glass()]
     }
 
     pub fn load_all(themes_dir: &Path) -> Vec<Self> {
@@ -568,11 +560,6 @@ mod tests {
             .into_iter()
             .map(|theme| theme.name)
             .collect();
-        assert!(desktop_names.contains(&"Sonata Glass".to_string()));
-        assert!(desktop_names.contains(&"Spotify".to_string()));
-        assert!(desktop_names.contains(&"YouTube Music".to_string()));
-        assert!(desktop_names.contains(&"Spotify Light".to_string()));
-        assert!(desktop_names.contains(&"YouTube Music Light".to_string()));
-        assert!(!desktop_names.contains(&"Catppuccin Mocha".to_string()));
+        assert_eq!(desktop_names, vec!["Sonata Glass".to_string()]);
     }
 }

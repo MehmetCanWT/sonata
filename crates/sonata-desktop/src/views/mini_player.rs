@@ -2,11 +2,11 @@
 //!
 //! 1. **3-Tier Layout (`MiniTier`)**: adapts between Ultra-compact (`< 380x160`), Medium compact (`< 560x280`), and Expanded mini player (`< 760x460`).
 //! 2. **Live Karaoke Lyrics**: renders progressive word-by-word karaoke highlighting using `LyricLine` word timings or proportional line sweeps.
-//! 3. **Animated Artwork & Controls**: displays `active_cover_art_path()` with a `MOTION` pill when animated frames are active, plus progress, transport, volume, and clean expand-to-workspace handling.
+//! 3. **Animated Artwork & Controls**: displays animated cover art when available alongside progress, transport, volume, and clean expand-to-workspace handling.
 
 use super::{
-    render_cover_surface, render_icon_button, render_progress_slider, render_volume_slider,
-    ui_icon, FluentDivExt, SonataDesktopView,
+    render_cover_surface, render_icon_button, render_progress_slider, render_quality_tag,
+    render_volume_slider, ui_icon, FluentDivExt, SonataDesktopView,
 };
 use crate::backend::BackendCmd;
 use crate::theme_bridge::GlassPalette;
@@ -68,7 +68,6 @@ pub fn render_mini_player(
         IconName::Repeat
     };
     let motion_tex = view.active_motion_texture();
-    let has_motion = motion_tex.is_some();
     let cover_path = view.snapshot.art_path.clone();
 
     let inner = match tier {
@@ -83,7 +82,6 @@ pub fn render_mini_player(
             play_icon,
             cover_path.as_ref(),
             motion_tex,
-            has_motion,
             vh,
             cx,
         ),
@@ -96,7 +94,6 @@ pub fn render_mini_player(
             repeat_icon,
             cover_path.as_ref(),
             motion_tex,
-            has_motion,
             cx,
         ),
     };
@@ -267,7 +264,6 @@ fn render_medium_compact(
     play_icon: IconName,
     cover_path: Option<&std::path::PathBuf>,
     motion_tex: Option<Arc<RenderImage>>,
-    has_motion: bool,
     vh: f32,
     cx: &mut Context<SonataDesktopView>,
 ) -> AnyElement {
@@ -277,7 +273,7 @@ fn render_medium_compact(
         .flex_col()
         .justify_between()
         .gap_2()
-        .child(render_mini_header(view, p, has_motion, false, cx))
+        .child(render_mini_header(view, p, false, cx))
         .child(
             div()
                 .w_full()
@@ -373,7 +369,6 @@ fn render_expanded_mini(
     repeat_icon: IconName,
     cover_path: Option<&std::path::PathBuf>,
     motion_tex: Option<Arc<RenderImage>>,
-    has_motion: bool,
     cx: &mut Context<SonataDesktopView>,
 ) -> AnyElement {
     let snap = &view.snapshot;
@@ -384,7 +379,7 @@ fn render_expanded_mini(
         .flex_col()
         .justify_between()
         .gap_3()
-        .child(render_mini_header(view, p, has_motion, true, cx))
+        .child(render_mini_header(view, p, true, cx))
         .child(
             div()
                 .flex_1()
@@ -535,7 +530,6 @@ fn render_expanded_mini(
 fn render_mini_header(
     view: &SonataDesktopView,
     p: &GlassPalette,
-    has_motion: bool,
     show_fullscreen_btn: bool,
     cx: &mut Context<SonataDesktopView>,
 ) -> AnyElement {
@@ -562,31 +556,7 @@ fn render_mini_header(
                         .text_color(p.muted)
                         .child("Sonata Mini"),
                 )
-                .child(
-                    div()
-                        .px_2()
-                        .py(px(1.0))
-                        .rounded_full()
-                        .bg(p.pill_bg)
-                        .text_xs()
-                        .text_color(p.accent)
-                        .child(view.snapshot.stream_badge.clone()),
-                )
-                .when(has_motion, |el| {
-                    el.child(
-                        div()
-                            .px(px(6.0))
-                            .py(px(1.0))
-                            .rounded_full()
-                            .bg(p.accent_soft)
-                            .border_1()
-                            .border_color(p.accent)
-                            .text_size(px(9.5))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(p.accent)
-                            .child("MOTION"),
-                    )
-                }),
+                .child(render_quality_tag(view, p, false)),
         )
         .child(
             div()

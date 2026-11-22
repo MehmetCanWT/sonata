@@ -80,52 +80,71 @@ pub async fn fetch_lyrics(
     let artist = clean_artist.as_str();
     let (lrc_path, txt_path, check_path) = cache_paths(artist, &clean_title);
     let cache_key = format!("{}::{}", artist.to_lowercase(), clean_title.to_lowercase());
-    let is_ytm = track.source == ProviderSource::YouTubeMusic;
+    let is_ytm = track.source == ProviderSource::YouTubeMusic && !track.is_jiosaavn();
 
     let mut cached_synced_fallback: Option<Vec<LyricLine>> = None;
     let mut cached_plain_fallback: Option<Vec<String>> = None;
 
-    if is_ytm {
-        if let Some(metadata) = cache_db.and_then(|db| db.get_track_enrichment(&track.id)) {
-            if metadata.lyrics_status == "FOUND" {
-                if let Some(synced) = metadata.synced_lyrics.as_deref() {
-                    if let Some(parsed) = usable_synced_lyrics(parse_lrc(synced), track) {
+    let is_truncated_for_duration = |lines: &[LyricLine]| -> bool {
+        let Some(dur) = track.duration_secs.filter(|&d| d >= 90) else {
+            return false;
+        };
+        let last_ts = lines
+            .iter()
+            .map(|l| {
+                l.words
+                    .iter()
+                    .map(|w| w.end_secs.unwrap_or(w.start_secs))
+                    .fold(l.time_secs, f64::max)
+            })
+            .fold(0.0_f64, f64::max);
+        lines.len() >= 4 && last_ts < (dur as f64) * 0.45
+    };
+
+    if let Some(metadata) = cache_db.and_then(|db| db.get_track_enrichment(&track.id)) {
+        if metadata.lyrics_status == "FOUND" {
+            if let Some(synced) = metadata.synced_lyrics.as_deref() {
+                if let Some(parsed) = usable_synced_lyrics(parse_lrc(synced), track) {
+                    if !is_truncated_for_duration(&parsed) {
                         if has_rich_timing(&parsed) {
                             return LyricsState::Synced(parsed);
                         }
                         cached_synced_fallback = Some(parsed);
                     }
                 }
-                if cached_synced_fallback.is_none() {
-                    if let Some(plain) = metadata.plain_lyrics.as_deref() {
-                        if let Some(lines) =
-                            usable_plain_lyrics(plain.lines().map(str::to_string), track)
-                        {
-                            cached_plain_fallback = Some(lines);
-                        }
+            }
+            if cached_synced_fallback.is_none() {
+                if let Some(plain) = metadata.plain_lyrics.as_deref() {
+                    if let Some(lines) =
+                        usable_plain_lyrics(plain.lines().map(str::to_string), track)
+                    {
+                        cached_plain_fallback = Some(lines);
                     }
                 }
             }
-            let now = now_secs();
-            if metadata.lyrics_status == "NOT_FOUND"
-                && metadata.updated_at >= 0
-                && now >= metadata.updated_at as u64
-                && now - (metadata.updated_at as u64) < 7 * 24 * 60 * 60
-            {
-                return LyricsState::NotFound;
-            }
+        }
+        let now = now_secs();
+        if metadata.lyrics_status == "NOT_FOUND"
+            && track.duration_secs.is_some()
+            && metadata.updated_at >= 0
+            && now >= metadata.updated_at as u64
+            && now - (metadata.updated_at as u64) < 7 * 24 * 60 * 60
+        {
+            return LyricsState::NotFound;
         }
     }
 
     if AppConfig::active_cache_limit_bytes() > 0 {
         if let Ok(cached) = tokio::fs::read_to_string(&lrc_path).await {
             if let Some(parsed) = usable_synced_lyrics(parse_lrc(&cached), track) {
-                if has_rich_timing(&parsed) {
-                    persist_lyrics(cache_db, track, Some(&parsed), None, "FOUND");
-                    return LyricsState::Synced(parsed);
-                }
-                if cached_synced_fallback.is_none() {
-                    cached_synced_fallback = Some(parsed);
+                if !is_truncated_for_duration(&parsed) {
+                    if has_rich_timing(&parsed) {
+                        persist_lyrics(cache_db, track, Some(&parsed), None, "FOUND");
+                        return LyricsState::Synced(parsed);
+                    }
+                    if cached_synced_fallback.is_none() {
+                        cached_synced_fallback = Some(parsed);
+                    }
                 }
             }
         }
@@ -216,8 +235,10 @@ pub async fn fetch_lyrics(
     .flatten()
     {
         if has_rich_timing(lines) {
-            save_lrc(&lrc_path, lines).await;
-            persist_lyrics(cache_db, track, Some(lines), None, "FOUND");
+            if track.duration_secs.is_some() || lines.len() >= 8 {
+                save_lrc(&lrc_path, lines).await;
+                persist_lyrics(cache_db, track, Some(lines), None, "FOUND");
+            }
             return LyricsState::Synced(lines.clone());
         }
     }
@@ -251,8 +272,10 @@ pub async fn fetch_lyrics(
         if !has_rich_timing(&best_lines) {
             mark_word_upgrade_checked(&cache_key, &check_path).await;
         }
-        save_lrc(&lrc_path, &best_lines).await;
-        persist_lyrics(cache_db, track, Some(&best_lines), None, "FOUND");
+        if track.duration_secs.is_some() || best_lines.len() >= 8 {
+            save_lrc(&lrc_path, &best_lines).await;
+            persist_lyrics(cache_db, track, Some(&best_lines), None, "FOUND");
+        }
         return LyricsState::Synced(best_lines);
     }
 
@@ -421,9 +444,6 @@ fn persist_lyrics(
     plain: Option<&[String]>,
     status: &str,
 ) {
-    if track.source != ProviderSource::YouTubeMusic {
-        return;
-    }
     let Some(cache_db) = cache_db else {
         return;
     };

@@ -17,7 +17,8 @@ pub mod search;
 pub mod settings;
 
 use crate::backend::{BackendCmd, BackendHandle, DesktopSnapshot, NavTarget};
-use crate::theme_bridge::GlassPalette;
+use crate::theme_bridge::{rgb_hsla, GlassPalette};
+use crate::LOSSLESS_WAVE_ICON_PATH;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::{
@@ -241,11 +242,16 @@ impl SonataDesktopView {
     }
 
     pub fn has_animated_cover(&self) -> bool {
-        !self.motion_textures.is_empty() && !self.snapshot.config.reduce_motion
+        !self.motion_textures.is_empty()
+            && self.snapshot.config.motion_covers
+            && !self.snapshot.config.reduce_motion
     }
 
     pub fn active_motion_texture(&self) -> Option<Arc<RenderImage>> {
-        if self.motion_textures.is_empty() || self.snapshot.config.reduce_motion {
+        if self.motion_textures.is_empty()
+            || !self.snapshot.config.motion_covers
+            || self.snapshot.config.reduce_motion
+        {
             return None;
         }
         let fps = self.motion_fps.max(1.0);
@@ -983,7 +989,84 @@ pub fn render_track_row(
         .into_any_element()
 }
 
-pub fn render_progress_slider(
+pub fn quality_tag_label(snap: &DesktopSnapshot) -> String {
+    if snap.upgrading_quality {
+        return "Upgrading Quality".to_string();
+    }
+    let clean = snap
+        .stream_badge
+        .strip_suffix(" · Cached")
+        .unwrap_or(&snap.stream_badge)
+        .trim();
+    if snap.loading_track && (clean.is_empty() || clean == "Idle" || clean == "Stopped") {
+        return "Resolving...".to_string();
+    }
+    if clean.is_empty() {
+        "Lossless".to_string()
+    } else {
+        clean.to_string()
+    }
+}
+
+pub fn render_quality_tag(
+    view: &SonataDesktopView,
+    p: &GlassPalette,
+    fullscreen_glass: bool,
+) -> AnyElement {
+    let label = quality_tag_label(&view.snapshot);
+    let bg = if fullscreen_glass {
+        rgb_hsla((255, 255, 255), 0.14)
+    } else {
+        p.pill_bg
+    };
+    let border = if fullscreen_glass {
+        rgb_hsla((255, 255, 255), 0.18)
+    } else {
+        p.border_subtle
+    };
+    let fg = if fullscreen_glass {
+        rgb_hsla((255, 255, 255), 0.72)
+    } else {
+        p.text
+    };
+    let icon_fg = if fullscreen_glass {
+        rgb_hsla((255, 255, 255), 0.64)
+    } else {
+        p.accent
+    };
+
+    div()
+        .flex_shrink_0()
+        .pl(px(9.0))
+        .pr(px(8.0))
+        .py(px(2.5))
+        .rounded_full()
+        .bg(bg)
+        .border_1()
+        .border_color(border)
+        .flex()
+        .items_center()
+        .justify_center()
+        .gap(px(5.0))
+        .child(
+            svg()
+                .path(LOSSLESS_WAVE_ICON_PATH)
+                .flex_shrink_0()
+                .w(px(14.0))
+                .h(px(8.0))
+                .text_color(icon_fg),
+        )
+        .child(
+            div()
+                .text_size(px(11.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(fg)
+                .child(label),
+        )
+        .into_any_element()
+}
+
+pub fn render_progress_track(
     view: &SonataDesktopView,
     p: &GlassPalette,
     id: &'static str,
@@ -995,9 +1078,64 @@ pub fn render_progress_slider(
     } else {
         0.0
     };
+    let bounds_cell = view.progress_bounds.clone();
+
+    div()
+        .w_full()
+        .h(px(if compact { 14.0 } else { 18.0 }))
+        .on_children_prepainted(move |children, _, _| {
+            if let Some(first) = children.first() {
+                bounds_cell.set(Some(*first));
+            }
+        })
+        .child(
+            div()
+                .id(id)
+                .size_full()
+                .flex()
+                .items_center()
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, ev: &MouseDownEvent, _, _| {
+                        this.dragging_progress = true;
+                        this.seek_at_x(ev.position.x);
+                    }),
+                )
+                .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, _| {
+                    if this.dragging_progress && ev.pressed_button == Some(MouseButton::Left) {
+                        this.seek_at_x(ev.position.x);
+                    }
+                }))
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(if compact { 4.0 } else { 5.0 }))
+                        .rounded_full()
+                        .bg(p.pill_bg)
+                        .overflow_hidden()
+                        .relative()
+                        .child(
+                            div()
+                                .h_full()
+                                .w(relative(ratio))
+                                .rounded_full()
+                                .bg(p.accent),
+                        ),
+                ),
+        )
+        .into_any_element()
+}
+
+pub fn render_progress_slider(
+    view: &SonataDesktopView,
+    p: &GlassPalette,
+    id: &'static str,
+    compact: bool,
+    cx: &mut Context<SonataDesktopView>,
+) -> AnyElement {
     let cur_str = format_mm_ss(view.snapshot.position_secs.max(0.0).floor() as u64);
     let dur_str = format_mm_ss(view.snapshot.duration_secs.max(0.0).floor() as u64);
-    let bounds_cell = view.progress_bounds.clone();
 
     div()
         .w_full()
@@ -1015,50 +1153,7 @@ pub fn render_progress_slider(
         .child(
             div()
                 .flex_1()
-                .h(px(if compact { 14.0 } else { 18.0 }))
-                .on_children_prepainted(move |children, _, _| {
-                    if let Some(first) = children.first() {
-                        bounds_cell.set(Some(*first));
-                    }
-                })
-                .child(
-                    div()
-                        .id(id)
-                        .size_full()
-                        .flex()
-                        .items_center()
-                        .cursor_pointer()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, ev: &MouseDownEvent, _, _| {
-                                this.dragging_progress = true;
-                                this.seek_at_x(ev.position.x);
-                            }),
-                        )
-                        .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, _| {
-                            if this.dragging_progress
-                                && ev.pressed_button == Some(MouseButton::Left)
-                            {
-                                this.seek_at_x(ev.position.x);
-                            }
-                        }))
-                        .child(
-                            div()
-                                .w_full()
-                                .h(px(if compact { 4.0 } else { 5.0 }))
-                                .rounded_full()
-                                .bg(p.pill_bg)
-                                .overflow_hidden()
-                                .relative()
-                                .child(
-                                    div()
-                                        .h_full()
-                                        .w(relative(ratio))
-                                        .rounded_full()
-                                        .bg(p.accent),
-                                ),
-                        ),
-                ),
+                .child(render_progress_track(view, p, id, compact, cx)),
         )
         .child(
             div()
@@ -1069,6 +1164,64 @@ pub fn render_progress_slider(
                 .flex()
                 .justify_end()
                 .child(dur_str),
+        )
+        .into_any_element()
+}
+
+pub fn render_fullscreen_progress_section(
+    view: &SonataDesktopView,
+    p: &GlassPalette,
+    cx: &mut Context<SonataDesktopView>,
+) -> AnyElement {
+    let pos_secs = view.snapshot.position_secs.max(0.0);
+    let dur_secs = view.snapshot.duration_secs.max(0.0);
+    let shown_secs = pos_secs.floor() as u64;
+    let remaining_secs = (dur_secs - pos_secs).max(0.0).floor() as u64;
+    let cur_str = format_mm_ss(shown_secs);
+    let rem_str = format!("-{}", format_mm_ss(remaining_secs));
+
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .child(render_progress_track(
+            view,
+            p,
+            "fullscreen-progress",
+            false,
+            cx,
+        ))
+        .child(
+            div()
+                .w_full()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .justify_start()
+                        .text_xs()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(p.muted)
+                        .child(cur_str),
+                )
+                .child(render_quality_tag(view, p, true))
+                .child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .text_xs()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(p.muted)
+                        .child(rem_str),
+                ),
         )
         .into_any_element()
 }
@@ -1178,5 +1331,63 @@ mod tests {
         let tex = rgba_to_render_image(1, 1, &[10, 20, 30, 255]).expect("valid 1x1 texture");
         let bytes = tex.as_bytes(0).expect("bgra bytes");
         assert_eq!(bytes, &[30, 20, 10, 255]);
+    }
+
+    #[test]
+    fn quality_tag_label_strips_cached_and_shows_upgrading() {
+        let mut snap = DesktopSnapshot {
+            config: sonata_core::config::AppConfig::default(),
+            base_theme: sonata_core::theme::Theme::sonata_glass(),
+            active_nav: NavTarget::Home,
+            status_line: String::new(),
+            available_browsers: Vec::new(),
+            signed_in_browser: None,
+            user_profile: None,
+            user_avatar_path: None,
+            signing_in: false,
+            sign_in_error: None,
+            ytm_playlists: Vec::new(),
+            home_shelves: Vec::new(),
+            home_loading: false,
+            home_error: None,
+            search_query: String::new(),
+            search_results: Vec::new(),
+            search_loading: false,
+            playlist_id: None,
+            playlist_heading: String::new(),
+            playlist_subtitle: String::new(),
+            playlist_cover_url: None,
+            playlist_editable: false,
+            playlist_tracks: Vec::new(),
+            playlist_loading: false,
+            artist_page: None,
+            artist_loading: false,
+            artist_error: None,
+            queue: Vec::new(),
+            current_index: None,
+            paused: true,
+            muted: false,
+            position_secs: 0.0,
+            duration_secs: 0.0,
+            volume: 85,
+            shuffle: false,
+            repeat: sonata_core::player::RepeatMode::Off,
+            stream_badge: "OPUS 256kbps · Extreme · Cached".to_string(),
+            upgrading_quality: false,
+            loading_track: false,
+            lyrics: sonata_core::lyrics::LyricsState::Idle,
+            art_path: None,
+            motion_cover: None,
+            ambient_rgb: (0, 0, 0),
+            spotify_notice: None,
+            update_info: None,
+            checking_updates: false,
+        };
+        assert_eq!(quality_tag_label(&snap), "OPUS 256kbps · Extreme");
+        snap.upgrading_quality = true;
+        assert_eq!(quality_tag_label(&snap), "Upgrading Quality");
+        snap.upgrading_quality = false;
+        snap.stream_badge.clear();
+        assert_eq!(quality_tag_label(&snap), "Lossless");
     }
 }

@@ -55,6 +55,7 @@ pub struct App {
     pub kitty_motion_uploaded_track: Option<String>,
     pub kitty_motion_count: usize,
     pub kitty_motion_last_drawn: Option<(usize, Rect)>,
+    pub kitty_motion_buf_slot: u8,
     pub lyrics: LyricsState,
     pub playback: PlaybackState,
     pub focus: FocusPane,
@@ -130,7 +131,7 @@ impl App {
         let spotify = SpotifyClient::new(http.clone(), None);
         let resolver =
             StreamResolver::new(http.clone(), ytm.clone(), cookies.clone(), cache_db.clone());
-        let mut playback = PlaybackState::new(config.volume, config.enhancer_mode);
+        let mut playback = PlaybackState::new(config.volume);
         playback.shuffle = config.shuffle;
         playback.repeat = config.repeat_mode;
 
@@ -172,6 +173,7 @@ impl App {
             kitty_motion_uploaded_track: None,
             kitty_motion_count: 0,
             kitty_motion_last_drawn: None,
+            kitty_motion_buf_slot: 0,
             lyrics: LyricsState::Idle,
             playback,
             focus: FocusPane::Sidebar,
@@ -591,6 +593,7 @@ impl App {
                     self.kitty_motion_uploaded_track = None;
                     self.kitty_motion_count = 0;
                     self.kitty_motion_last_drawn = None;
+                    self.kitty_motion_buf_slot = 0;
                     self.album_art_track_id = Some(track_id);
                 }
             }
@@ -607,12 +610,12 @@ impl App {
             }
             AppEvent::UpdateChecked(info) => {
                 if info.update_available {
-                    self.status_line = format!(
-                        "Update v{} available (current v{}) — {}",
-                        info.latest_version, info.current_version, info.release_url
-                    );
+                    if self.status_line == "Checking for updates..." {
+                        self.status_line =
+                            "Update available — see details in Settings (S)".to_string();
+                    }
                 } else if self.status_line == "Checking for updates..." {
-                    self.status_line = format!("Sonata v{} is up to date", info.current_version);
+                    self.status_line = "Sonata is up to date".to_string();
                 }
                 self.update_info = Some(info);
             }
@@ -657,6 +660,7 @@ impl App {
         let step_interval =
             std::time::Duration::from_secs_f32(1.0 / self.anim_fps.clamp(8.0, 24.0));
         if !self.anim_art_frames.is_empty()
+            && self.config.motion_covers
             && !self.config.reduce_motion
             && self.last_anim_step.elapsed() >= step_interval
         {

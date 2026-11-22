@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-11-23
+
+### Added
+
+- **Optional JioSaavn 320kbps AAC Module (`sonata-core`, `sonata-tui`, `sonata-desktop`)**: Added pure-Rust DES-ECB JioSaavn stream decryption, catalog search integration, and automatic background quality upgrades (`<300kbps -> 320kbps AAC`), toggleable from Settings in both TUI and Desktop.
+- **Multi-Provider Animated Album Artwork (`sonata-core`)**: Expanded motion cover resolution to query Apple Music AMP catalog `editorialVideo` (via anonymous web-player JWT), Apple Music HTML fallback, Tidal `album.videoCover` (`1280x1280.mp4`), and Community Canvas JSON manifest, with HLS `ffmpeg` fallback alongside byte-range fMP4 segment downloads.
+- **Android-Style Now Playing Quality Tag (`sonata-desktop`)**: Added the frosted lossless-wave quality pill (`Upgrading Quality` while upgrading, then active stream codec/bitrate) centered beneath the progress bar between elapsed and remaining time in Fullscreen Now Playing, as well as the player bar, lyrics stage, and mini player.
+- **Categorized TUI Settings & Toggleable Motion Artwork**: Redesigned the TUI Settings modal into categorized sections (`AUDIO & SOURCES`, `APPEARANCE & COMPOSITOR`, `STORAGE & SYSTEM`) with color swatches, visual opacity slider bar, contextual setting descriptions, full mouse scroll support, and an **Animated Album Artwork** toggle in both TUI and Desktop Settings.
+- **NixOS Flake & AppImage `zsync` Auto-Updates**: Added `flake.nix` for NixOS/Nix builds, expanded `install.sh` / `install-desktop.sh` and browser cookie discovery for NixOS, Arch, Fedora (Flatpak), and Ubuntu (Snap/Flatpak), and configured AppImage `.zsync` update metadata in `.github/workflows/release-builds.yml` for Gear Lever automatic updates.
+
+### Changed
+
+- **Direct Bit-Perfect Audio Playback (`sonata-core`, `sonata-tui`, `sonata-desktop`)**: Completely removed `EnhancerMode` / `--af` lavfi DSP filters so audio plays directly unfiltered as decoded.
+- **Default Desktop Theme Only (`sonata-core`, `sonata-desktop`)**: Removed extra built-in desktop theme variants (`Spotify`, `YouTube Music`, light skins, and theme selector chips) so `sonata-desktop` uses the default `Sonata Glass` theme exclusively, while keeping custom/built-in TUI themes intact.
+- **Cleaner Quality Badges (`sonata-core`, `sonata-desktop`, `sonata-tui`)**: Removed `" · Cached"` suffixes from cached stream badges across Desktop and TUI (showing only the quality in TUI) and removed `"MOTION"` pills from Desktop artwork/chrome.
+- **Background Quality Upgrade From Local Cache**: `StreamResolver::resolve_fast` returns local cached audio immediately while `resolve_hifi_upgrade` and `PlaybackState::set_upgraded_stream` still upgrade cached tracks in place to peak YTM Extreme or JioSaavn 320kbps AAC when available.
+- **TUI Player Bar & Version Hygiene**: Removed version strings from the main TUI player bar/footer so only the unclipped stream quality badge is shown, while keeping version and update details inside Settings (with a compact version-free update indicator on the Settings footer hint when an update is available).
+- **Android-Aligned Lyrics Sync & Desktop/TUI Rendering**: Aligned `active_line_index` and word-by-word karaoke sweep timing (`0.05s` line lookahead, linear `0ms`-lead word sweeps without artificial span truncation), validated `.lrc` and SQLite caches against newly discovered track durations, enabled counter-voice alignment & italic background-vocal styling in Desktop root stage lyrics, and switched TUI lyrics to theme-aware palette colors.
+
+### Fixed
+
+- **Fedora PipeWire / `ffmpeg-free` No-Audio Issue (#1)**: Fixed silent playback on Fedora Linux by removing `--af` DSP filters and launching `mpv` with `--no-config`, `--ao=pipewire,pulse,alsa`, `--audio-client-name=Sonata`, `--aid=auto`, and `--mute=no`.
+- **TUI Kitty Animated Artwork Rendering**: Fixed `last_art_rect` detection when motion frames arrive and replaced the 60-frame bulk Kitty pre-upload with compact double-buffered (`i=2`/`i=3`) `360x360` transmission to prevent terminal graphics memory overflow and event-loop stalls.
+
 ## [1.0.3] - 2026-11-22
 
 ### Performance

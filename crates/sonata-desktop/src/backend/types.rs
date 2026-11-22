@@ -6,7 +6,7 @@
 //! 4. **Internal Events**: `InternalEvent` and `ExportFingerprint` carry async task completions and deduplicate now-playing exports.
 
 use sonata_core::auth::{BrowserOption, ExtractedCookies};
-use sonata_core::config::{AppConfig, EnhancerMode};
+use sonata_core::config::AppConfig;
 use sonata_core::lyrics::{active_line_index, LyricsState};
 use sonata_core::motion::MotionCover;
 use sonata_core::player::RepeatMode;
@@ -75,13 +75,13 @@ pub enum BackendCmd {
     SetShuffle(bool),
     CycleRepeat,
     SetRepeat(RepeatMode),
-    CycleEnhancer,
     ToggleHiFi,
+    ToggleJioSaavn,
     StepCacheLimit(bool),
     ToggleTransparentBg,
+    ToggleMotionCovers,
     ToggleReduceMotion,
     StepHyprlandOpacity(bool),
-    SelectTheme(String),
     ToggleLike(Track),
     CreateYtmPlaylist(String),
     AddTrackToPlaylist {
@@ -100,7 +100,6 @@ pub enum BackendCmd {
 #[derive(Debug, Clone)]
 pub struct DesktopSnapshot {
     pub config: AppConfig,
-    pub themes: Vec<Theme>,
     pub base_theme: Theme,
     pub active_nav: NavTarget,
     pub status_line: String,
@@ -136,8 +135,9 @@ pub struct DesktopSnapshot {
     pub volume: u8,
     pub shuffle: bool,
     pub repeat: RepeatMode,
-    pub enhancer: EnhancerMode,
     pub stream_badge: String,
+    pub upgrading_quality: bool,
+    pub loading_track: bool,
     pub lyrics: LyricsState,
     pub art_path: Option<PathBuf>,
     pub motion_cover: Option<Arc<MotionCover>>,
@@ -280,6 +280,9 @@ pub(super) enum InternalEvent {
         play_seq: u64,
         track_id: String,
         stream: ResolvedStream,
+    },
+    UpgradeFinished {
+        play_seq: u64,
     },
     StreamError {
         play_seq: u64,

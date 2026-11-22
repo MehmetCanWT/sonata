@@ -1,15 +1,14 @@
-//! mpv process management and IPC control for Sonata playback.
+//! mpv process management and IPC control for Sonata bit-perfect playback.
 //!
-//! 1. **Process Spawn**: starts a headless `mpv` (`--idle`, no video, gapless, `--ytdl=no`) with a
-//!    per-process JSON IPC socket in the runtime directory.
+//! 1. **Process Spawn**: starts a headless `mpv` (`--no-config`, `--idle`, direct PipeWire/PulseAudio/ALSA output, gapless, `--ytdl=no`) with a
+//!    per-process JSON IPC socket in the runtime directory and zero DSP audio filters.
 //! 2. **Event Stream**: a reader task parses IPC messages into `MpvEvent`s sent to the front-end;
 //!    mpv's stderr is forwarded to tracing after redaction.
-//! 3. **Commands**: `MpvController` exposes load, stop, pause, seek, volume, and audio-enhancer changes.
+//! 3. **Commands**: `MpvController` exposes load, stop, pause, seek, and volume changes.
 //! 4. **Stream Loading**: `load_stream_at` applies resolved URLs and any required HTTP headers, with
 //!    sensitive values redacted from logs.
 //! 5. **Lifecycle**: `shutdown` and `Drop` terminate the child process and clean up the socket.
 
-use crate::config::EnhancerMode;
 use crate::providers::hifi::ResolvedStream;
 use crate::redaction::{
     json_payload as sanitize_payload, sensitive_text, stream_url as redact_mpv_url,
@@ -40,40 +39,34 @@ pub struct MpvController {
 }
 
 impl MpvController {
-    pub async fn spawn(
-        volume: u8,
-        enhancer: EnhancerMode,
-        event_tx: mpsc::Sender<MpvEvent>,
-    ) -> Result<Self> {
-        Self::spawn_inner(volume, enhancer, event_tx).await
+    pub async fn spawn(volume: u8, event_tx: mpsc::Sender<MpvEvent>) -> Result<Self> {
+        Self::spawn_inner(volume, event_tx).await
     }
 
-    pub async fn spawn_desktop(
-        volume: u8,
-        enhancer: EnhancerMode,
-        event_tx: mpsc::Sender<MpvEvent>,
-    ) -> Result<Self> {
-        Self::spawn_inner(volume, enhancer, event_tx).await
+    pub async fn spawn_desktop(volume: u8, event_tx: mpsc::Sender<MpvEvent>) -> Result<Self> {
+        Self::spawn_inner(volume, event_tx).await
     }
 
-    async fn spawn_inner(
-        volume: u8,
-        enhancer: EnhancerMode,
-        event_tx: mpsc::Sender<MpvEvent>,
-    ) -> Result<Self> {
+    async fn spawn_inner(volume: u8, event_tx: mpsc::Sender<MpvEvent>) -> Result<Self> {
         let pid = std::process::id();
         let sock_dir = dirs::runtime_dir().unwrap_or_else(crate::config::AppConfig::cache_dir);
         let _ = std::fs::create_dir_all(&sock_dir);
         let sock_path = sock_dir.join(format!("sonata-mpv-{pid}.sock"));
         let _ = std::fs::remove_file(&sock_path);
 
-        let mut cmd = Command::new("mpv");
+        let mpv_bin = crate::config::resolve_distro_binary("mpv");
+        let mut cmd = Command::new(&mpv_bin);
         cmd.args([
+            "--no-config",
             "--idle=yes",
             "--no-video",
             "--audio-display=no",
             "--really-quiet",
             "--gapless-audio=yes",
+            "--ao=pipewire,pulse,alsa",
+            "--audio-client-name=Sonata",
+            "--aid=auto",
+            "--mute=no",
             "--cache=yes",
             "--cache-secs=30",
             "--demuxer-max-bytes=64M",
@@ -85,10 +78,6 @@ impl MpvController {
         ]);
         // The resolver supplies a direct media URL; mpv must not re-resolve it as a page.
         cmd.arg("--ytdl=no");
-        let af = enhancer.mpv_af();
-        if !af.is_empty() {
-            cmd.arg(format!("--af={af}"));
-        }
         cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
@@ -310,6 +299,7 @@ impl MpvController {
         } else {
             self.send(json!(["loadfile", url, "replace"]));
         }
+        self.send(json!(["set_property", "mute", false]));
         self.send(json!(["set_property", "pause", false]));
     }
 
@@ -331,10 +321,6 @@ impl MpvController {
 
     pub fn set_volume(&self, volume: u8) {
         self.send(json!(["set_property", "volume", volume as f64]));
-    }
-
-    pub fn set_enhancer(&self, mode: EnhancerMode) {
-        self.send(json!(["set_property", "af", mode.mpv_af()]));
     }
 
     pub async fn shutdown(&self) {

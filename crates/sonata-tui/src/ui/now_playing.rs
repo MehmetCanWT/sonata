@@ -11,7 +11,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 use ratatui_image::picker::ProtocolType;
 use ratatui_image::{FilterType, Resize, StatefulImage};
-use sonata_core::lyrics::{active_line_index, LyricLine, LyricsState};
+use sonata_core::lyrics::{active_line_index, LyricLine, LyricVoice, LyricsState};
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     app.ui_rects.left_col_area = area;
@@ -50,7 +50,8 @@ fn center_square_area(inner: Rect, font_size: (u16, u16)) -> Rect {
 
 pub fn render_artwork(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     app.ui_rects.album_art_box = area;
-    let has_motion = !app.anim_art_frames.is_empty() && !app.config.reduce_motion;
+    let has_motion =
+        !app.anim_art_frames.is_empty() && app.config.motion_covers && !app.config.reduce_motion;
     let art_title = if has_motion {
         " ✦ Motion Cover "
     } else {
@@ -80,7 +81,7 @@ pub fn render_artwork(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     }
 
     if app.picker.protocol_type() == ProtocolType::Kitty {
-        if app.kitty_art_png.is_some() {
+        if app.kitty_art_png.is_some() || has_motion {
             app.last_art_rect = Some(center_square_area(inner, app.picker.font_size()));
         } else {
             app.last_art_rect = None;
@@ -228,27 +229,35 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 used += r;
                 if dist == 0 {
                     let next_time = lines.get(i + 1).map(|next| next.time_secs);
-                    rendered.push(render_active_tui_lyric_line(
-                        item,
-                        next_time,
-                        pos,
-                        app.theme.accent,
-                    ));
+                    let mut active_line =
+                        render_active_tui_lyric_line(item, next_time, pos, app.theme.lyrics_active);
+                    if item.voice == LyricVoice::Counter {
+                        active_line = active_line.alignment(Alignment::Right);
+                    }
+                    rendered.push(active_line);
                     if use_spacers && used + 1 < visible_rows {
                         rendered.push(Line::raw(""));
                         used += 1;
                     }
                 } else {
-                    let style = match dist {
-                        1 => Style::default().fg(Color::Rgb(108, 116, 134)),
+                    let is_bg = text.starts_with('(') && text.ends_with(')');
+                    let mut style = match dist {
+                        1 => Style::default().fg(app.theme.lyrics_inactive),
                         2 => Style::default()
-                            .fg(Color::Rgb(72, 78, 92))
+                            .fg(app.theme.lyrics_inactive)
                             .add_modifier(Modifier::DIM),
                         _ => Style::default()
-                            .fg(Color::Rgb(48, 52, 64))
+                            .fg(app.theme.muted)
                             .add_modifier(Modifier::DIM),
                     };
-                    rendered.push(Line::from(Span::styled(text, style)));
+                    if is_bg || item.voice == LyricVoice::Counter {
+                        style = style.add_modifier(Modifier::ITALIC);
+                    }
+                    let mut l = Line::from(Span::styled(text, style));
+                    if item.voice == LyricVoice::Counter {
+                        l = l.alignment(Alignment::Right);
+                    }
+                    rendered.push(l);
                 }
                 if used >= visible_rows {
                     break;
@@ -274,7 +283,7 @@ pub fn active_karaoke_line(app: &App) -> Option<Line<'_>> {
                 item,
                 next_time,
                 pos,
-                app.theme.accent,
+                app.theme.lyrics_active,
             ))
         }
         LyricsState::Plain(lines) if !lines.is_empty() => {
@@ -333,7 +342,7 @@ fn render_active_tui_lyric_line(
         ]);
     }
 
-    let sweep_pos = position_secs + 0.24;
+    let sweep_pos = position_secs;
     let sung_style = Style::default()
         .fg(Color::Rgb(255, 255, 255))
         .add_modifier(Modifier::BOLD);
@@ -347,8 +356,8 @@ fn render_active_tui_lyric_line(
     let line_end_secs = next_time_secs
         .map(|ns| {
             let est = item.time_secs + estimate_tui_sung_duration(&item.text);
-            let gap_cap = item.time_secs + ((ns - item.time_secs) * 0.85).max(0.45);
-            est.min(gap_cap)
+            let gap_cap = item.time_secs + ((ns - item.time_secs) * 0.92).max(0.45);
+            est.max(gap_cap)
         })
         .unwrap_or_else(|| item.time_secs + estimate_tui_sung_duration(&item.text));
 
@@ -357,17 +366,17 @@ fn render_active_tui_lyric_line(
             .iter()
             .enumerate()
             .map(|(idx, w)| {
-                let raw_end = w
+                let end = w
                     .end_secs
-                    .or_else(|| item.words.get(idx + 1).map(|n| n.start_secs))
-                    .unwrap_or(line_end_secs)
+                    .filter(|&e| e > w.start_secs)
+                    .or_else(|| {
+                        item.words
+                            .get(idx + 1)
+                            .map(|n| n.start_secs)
+                            .filter(|&ns| ns > w.start_secs)
+                    })
+                    .unwrap_or_else(|| line_end_secs.max(w.start_secs + 0.35))
                     .max(w.start_secs + 0.14);
-                let max_word_span = (w.text.chars().count().max(2) as f64 * 0.11).clamp(0.28, 1.35);
-                let end = if w.end_secs.is_some() {
-                    raw_end
-                } else {
-                    raw_end.min(w.start_secs + max_word_span)
-                };
                 let share =
                     ((sweep_pos - w.start_secs) / (end - w.start_secs).max(0.12)).clamp(0.0, 1.0);
                 (w.text.as_str(), share)

@@ -53,22 +53,37 @@ impl App {
         self.status_line = format!("Searching for \"{q}\"...");
         let ytm = self.ytm.clone();
         let spotify = self.spotify.clone();
+        let http = self.http.clone();
+        let jiosaavn_enabled = self.config.jiosaavn_enabled;
         let mode = self.config.provider_mode;
         let tx = self.tx.clone();
         tokio::spawn(async move {
             let mut combined = Vec::new();
+            let jio_fut = async {
+                if jiosaavn_enabled {
+                    sonata_core::providers::jiosaavn::search_tracks(&http, &q, 8).await
+                } else {
+                    Vec::new()
+                }
+            };
             match mode {
                 ProviderMode::Both => {
-                    let (ytm_tracks, spot_tracks) =
-                        tokio::join!(ytm.search_songs(&q), spotify.search_tracks(&q));
+                    let (ytm_tracks, spot_tracks, jio_tracks) =
+                        tokio::join!(ytm.search_songs(&q), spotify.search_tracks(&q), jio_fut);
                     combined.extend(ytm_tracks.unwrap_or_default());
                     combined.extend(spot_tracks.unwrap_or_default());
+                    combined.extend(jio_tracks);
                 }
                 ProviderMode::YouTubeMusic => {
-                    combined.extend(ytm.search_songs(&q).await.unwrap_or_default());
+                    let (ytm_tracks, jio_tracks) = tokio::join!(ytm.search_songs(&q), jio_fut);
+                    combined.extend(ytm_tracks.unwrap_or_default());
+                    combined.extend(jio_tracks);
                 }
                 ProviderMode::Spotify => {
-                    combined.extend(spotify.search_tracks(&q).await.unwrap_or_default());
+                    let (spot_tracks, jio_tracks) =
+                        tokio::join!(spotify.search_tracks(&q), jio_fut);
+                    combined.extend(spot_tracks.unwrap_or_default());
+                    combined.extend(jio_tracks);
                 }
             }
             let _ = tx.send(AppEvent::TracksLoaded {
@@ -303,16 +318,15 @@ impl App {
         );
 
         tokio::spawn(async move {
-            let video_id = match track.source {
-                ProviderSource::YouTubeMusic => Some(track.id),
-                ProviderSource::Spotify => {
-                    let q = format!("{} {}", track.artist, track.title);
-                    ytm.search_songs(&q)
-                        .await
-                        .ok()
-                        .and_then(|v| v.into_iter().next())
-                        .map(|t| t.id)
-                }
+            let video_id = if track.source == ProviderSource::YouTubeMusic && !track.is_jiosaavn() {
+                Some(track.id)
+            } else {
+                let q = format!("{} {}", track.artist, track.title);
+                ytm.search_songs(&q)
+                    .await
+                    .ok()
+                    .and_then(|v| v.into_iter().next())
+                    .map(|t| t.id)
             };
             let Some(vid) = video_id else {
                 let _ = tx.send(AppEvent::StatusMessage(
@@ -370,16 +384,15 @@ impl App {
         self.status_line = format!("Adding \"{}\" to {}...", track.title, pl.name);
 
         tokio::spawn(async move {
-            let video_id = match track.source {
-                ProviderSource::YouTubeMusic => Some(track.id),
-                ProviderSource::Spotify => {
-                    let q = format!("{} {}", track.artist, track.title);
-                    ytm.search_songs(&q)
-                        .await
-                        .ok()
-                        .and_then(|v| v.into_iter().next())
-                        .map(|t| t.id)
-                }
+            let video_id = if track.source == ProviderSource::YouTubeMusic && !track.is_jiosaavn() {
+                Some(track.id)
+            } else {
+                let q = format!("{} {}", track.artist, track.title);
+                ytm.search_songs(&q)
+                    .await
+                    .ok()
+                    .and_then(|v| v.into_iter().next())
+                    .map(|t| t.id)
             };
             let Some(vid) = video_id else {
                 let _ = tx.send(AppEvent::StatusMessage(

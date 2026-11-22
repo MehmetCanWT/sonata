@@ -103,7 +103,6 @@ impl PlaybackCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::EnhancerMode;
     use crate::providers::ProviderSource;
 
     fn track(id: &str, duration_secs: u64) -> Track {
@@ -125,7 +124,7 @@ mod tests {
 
     #[test]
     fn shared_commands_keep_queue_and_transport_consistent() {
-        let mut state = PlaybackState::new(80, EnhancerMode::HiResCrystal);
+        let mut state = PlaybackState::new(80);
         PlaybackCoordinator::apply(
             &mut state,
             PlaybackCommand::QueueChanged(vec![track("a", 100), track("b", 200)]),

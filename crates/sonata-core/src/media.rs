@@ -152,16 +152,24 @@ pub async fn resolve_track_cover(
     cache_db: Option<&CacheDb>,
     track: &Track,
 ) -> Option<(String, String)> {
-    let fallback_source = match track.source {
-        ProviderSource::YouTubeMusic => "ytm",
-        ProviderSource::Spotify => "spotify",
+    let is_jio = track.is_jiosaavn();
+    let fallback_source = if is_jio {
+        "jiosaavn"
+    } else {
+        match track.source {
+            ProviderSource::YouTubeMusic => "ytm",
+            ProviderSource::Spotify => "spotify",
+        }
     };
     if let Some(metadata) = cache_db.and_then(|db| db.get_track_enrichment(&track.id)) {
         if matches!(
             metadata.cover_source.as_str(),
-            "deezer" | "apple" | "ytm" | "spotify"
+            "deezer" | "apple" | "ytm" | "spotify" | "jiosaavn"
         ) {
-            if let Some(url) = metadata.cover_url.filter(|url| !is_legacy_cover(url)) {
+            if let Some(url) = metadata
+                .cover_url
+                .filter(|url| is_jio || !is_legacy_cover(url))
+            {
                 return Some((upscale_artwork_url(&url), metadata.cover_source));
             }
         }
@@ -177,7 +185,7 @@ pub async fn resolve_track_cover(
             let url = track
                 .thumbnail_url
                 .as_deref()
-                .filter(|url| !is_legacy_cover(url))
+                .filter(|url| is_jio || !is_legacy_cover(url))
                 .map(upscale_artwork_url)?;
             (url, fallback_source)
         }
@@ -185,7 +193,7 @@ pub async fn resolve_track_cover(
         let url = track
             .thumbnail_url
             .as_deref()
-            .filter(|url| !is_legacy_cover(url))
+            .filter(|url| is_jio || !is_legacy_cover(url))
             .map(upscale_artwork_url)?;
         (url, fallback_source)
     };
@@ -452,7 +460,8 @@ pub async fn resolve_animated_cover_frames(http: &Client, track: &Track) -> Opti
         return None;
     }
     let out_pattern = dir.join("frame_%02d.png");
-    let mut cmd = tokio::process::Command::new("ffmpeg");
+    let ffmpeg_bin = crate::config::resolve_distro_binary("ffmpeg");
+    let mut cmd = tokio::process::Command::new(&ffmpeg_bin);
     cmd.args([
         "-y",
         "-loglevel",
@@ -693,7 +702,7 @@ fn normalize_for_match(text: &str) -> String {
         .join(" ")
 }
 
-/// Upgrades provider thumbnail URLs (YouTube/Google, Spotify, iTunes) to high resolution.
+/// Upgrades provider thumbnail URLs (YouTube/Google, Spotify, iTunes, JioSaavn) to high resolution.
 pub fn upscale_artwork_url(url: &str) -> String {
     let lower = url.to_ascii_lowercase();
     if lower.contains("googleusercontent.com") || lower.contains("ggpht.com") {
@@ -710,6 +719,16 @@ pub fn upscale_artwork_url(url: &str) -> String {
         return url
             .replace("ab67616d00001e02", "ab67616d0000b273")
             .replace("ab67616d00004851", "ab67616d0000b273");
+    }
+    if lower.contains("saavncdn.com") {
+        let https = if url.starts_with("http://") {
+            url.replacen("http://", "https://", 1)
+        } else {
+            url.to_string()
+        };
+        return https
+            .replace("150x150", "500x500")
+            .replace("50x50", "500x500");
     }
     if url.contains("100x100bb") {
         let upgraded = url.replace("100x100bb", "1200x1200bb");

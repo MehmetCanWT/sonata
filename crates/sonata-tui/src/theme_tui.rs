@@ -1,3 +1,8 @@
+//! Ratatui color adapter translating `sonata_core::theme::Theme` palettes into TUI styles.
+//!
+//! 1. **Color Conversion**: Maps `RgbColor` variants (`Rgb`, `Reset`, `Ansi`) to `ratatui::style::Color`.
+//! 2. **Palette Fields**: Exposes background, foreground, accent, highlight, semantic, and lyrics colors.
+
 use ratatui::style::Color;
 use sonata_core::theme::{AnsiColor, RgbColor, Theme};
 
@@ -31,6 +36,8 @@ pub struct TuiTheme {
     pub border: Color,
     pub highlight_bg: Color,
     pub highlight_fg: Color,
+    pub lyrics_active: Color,
+    pub lyrics_inactive: Color,
     pub success: Color,
     pub warning: Color,
     pub error: Color,
@@ -48,6 +55,8 @@ impl TuiTheme {
             border: to_ratatui_color(theme.border),
             highlight_bg: to_ratatui_color(theme.highlight_bg),
             highlight_fg: to_ratatui_color(theme.highlight_fg),
+            lyrics_active: to_ratatui_color(theme.lyrics_active),
+            lyrics_inactive: to_ratatui_color(theme.lyrics_inactive),
             success: to_ratatui_color(theme.success),
             warning: to_ratatui_color(theme.warning),
             error: to_ratatui_color(theme.error),

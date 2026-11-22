@@ -114,9 +114,13 @@ pub(super) fn should_upgrade_candidate(current_badge: &str, candidate_badge: &st
 
 fn quality_rank(badge: &str) -> u8 {
     let lower = badge.to_ascii_lowercase();
-    if lower.contains("hi-res") || lower.contains("lossless") || lower.contains("flac") {
+    if lower.contains("hi-res")
+        || lower.contains("lossless")
+        || lower.contains("flac")
+        || lower.contains("alac")
+    {
         3
-    } else if lower.contains("extreme") {
+    } else if lower.contains("extreme") || extract_badge_kbps(badge).is_some_and(|k| k >= 300) {
         2
     } else if lower.contains("hq") {
         1

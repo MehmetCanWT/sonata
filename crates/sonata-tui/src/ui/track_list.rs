@@ -120,7 +120,7 @@ fn render_tracks_table(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                 Cell::from(title_cell),
                 Cell::from(track.artist.as_str()).style(Style::default().fg(app.theme.muted)),
                 Cell::from(Line::from(format_duration(track.duration_secs)).centered()),
-                Cell::from(Line::from(track.source.short_tag()).centered()),
+                Cell::from(Line::from(track.source_tag()).centered()),
             ])
             .style(row_style)
         })

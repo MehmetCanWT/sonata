@@ -39,12 +39,7 @@ use types::{ExportFingerprint, InternalEvent};
 
 pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Result<BackendHandle> {
     let config = AppConfig::load();
-    let themes = Theme::load_for_desktop(&AppConfig::themes_dir());
-    let base_theme = themes
-        .iter()
-        .find(|t| t.name.eq_ignore_ascii_case(&config.desktop_theme))
-        .cloned()
-        .unwrap_or_else(Theme::sonata_glass);
+    let base_theme = Theme::sonata_glass();
     let available_browsers = list_supported_browsers();
 
     let cache_db = CacheDb::open_default();
@@ -58,13 +53,12 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
         Vec::new()
     };
 
-    let mut playback = PlaybackState::new(config.volume, config.enhancer_mode);
+    let mut playback = PlaybackState::new(config.volume);
     playback.shuffle = config.shuffle;
     playback.repeat = config.repeat_mode;
 
     let initial_snapshot = Arc::new(DesktopSnapshot {
         config: config.clone(),
-        themes: themes.clone(),
         base_theme: base_theme.clone(),
         active_nav: NavTarget::Home,
         status_line: "Loading YouTube Music home...".to_string(),
@@ -100,8 +94,9 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
         volume: config.volume,
         shuffle: config.shuffle,
         repeat: config.repeat_mode,
-        enhancer: config.enhancer_mode,
         stream_badge: "Idle".to_string(),
+        upgrading_quality: false,
+        loading_track: false,
         lyrics: LyricsState::Idle,
         art_path: None,
         motion_cover: None,
@@ -130,7 +125,6 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
             };
             rt.block_on(run_backend_loop(
                 config,
-                themes,
                 base_theme,
                 cache_db,
                 available_browsers,
@@ -154,7 +148,6 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
 
 struct BackendEngine {
     pub(super) config: AppConfig,
-    pub(super) themes: Vec<Theme>,
     pub(super) base_theme: Theme,
     pub(super) http: Client,
     pub(super) cookies: ExtractedCookies,
@@ -218,6 +211,7 @@ struct BackendEngine {
     pub(super) pending_auto_advance: Option<(u64, String)>,
     pub(super) awaiting_playback_start: bool,
     pub(super) upgrade_started_play_seq: Option<u64>,
+    pub(super) upgrading_quality: bool,
     pub(super) cover_started_play_seq: Option<u64>,
     pub(super) config_dirty: bool,
     pub(super) last_exported_state: Option<ExportFingerprint>,
@@ -229,7 +223,6 @@ struct BackendEngine {
 #[allow(clippy::too_many_arguments)]
 async fn run_backend_loop(
     config: AppConfig,
-    themes: Vec<Theme>,
     base_theme: Theme,
     cache_db: Option<CacheDb>,
     available_browsers: Vec<BrowserOption>,
@@ -259,18 +252,16 @@ async fn run_backend_loop(
     });
 
     let (mpv_tx, mut mpv_rx) = mpsc::channel(64);
-    let (mpv, initial_status) =
-        match MpvController::spawn_desktop(config.volume, config.enhancer_mode, mpv_tx).await {
-            Ok(ctrl) => (Some(Arc::new(ctrl)), "Loading YouTube Music...".to_string()),
-            Err(e) => (None, format!("Audio warning: {e}")),
-        };
+    let (mpv, initial_status) = match MpvController::spawn_desktop(config.volume, mpv_tx).await {
+        Ok(ctrl) => (Some(Arc::new(ctrl)), "Loading YouTube Music...".to_string()),
+        Err(e) => (None, format!("Audio warning: {e}")),
+    };
 
     let (int_tx, mut int_rx) = mpsc::unbounded_channel();
     let tray_handle = spawn_tray(cmd_tx, win_tx).await;
 
     let mut engine = BackendEngine {
         config,
-        themes,
         base_theme,
         http,
         cookies,
@@ -334,6 +325,7 @@ async fn run_backend_loop(
         pending_auto_advance: None,
         awaiting_playback_start: false,
         upgrade_started_play_seq: None,
+        upgrading_quality: false,
         cover_started_play_seq: None,
         config_dirty: false,
         last_exported_state: None,
@@ -517,6 +509,7 @@ impl BackendEngine {
                 self.next_precache.take();
                 self.playback.paused = true;
                 self.playback.loading_track = false;
+                self.upgrading_quality = false;
                 self.playback.position_secs = 0.0;
                 self.pos_anchor = None;
                 self.playback.stream_badge = "Stopped".to_string();
@@ -594,16 +587,6 @@ impl BackendEngine {
                 self.config.repeat_mode = mode;
                 let _ = self.config.save();
             }
-            BackendCmd::CycleEnhancer => {
-                let next = self.playback.enhancer.next();
-                self.playback.enhancer = next;
-                self.config.enhancer_mode = next;
-                let _ = self.config.save();
-                if let Some(mpv) = &self.mpv {
-                    mpv.set_enhancer(next);
-                }
-                self.status_line = format!("Audio Enhancer: {}", next.label());
-            }
             BackendCmd::ToggleHiFi => {
                 self.config.hifi_substitution = !self.config.hifi_substitution;
                 let _ = self.config.save();
@@ -613,6 +596,22 @@ impl BackendEngine {
                 self.status_line = format!(
                     "YouTube Music Quality Upgrade: {}",
                     if self.config.hifi_substitution {
+                        "Enabled"
+                    } else {
+                        "Disabled"
+                    }
+                );
+            }
+            BackendCmd::ToggleJioSaavn => {
+                self.config.jiosaavn_enabled = !self.config.jiosaavn_enabled;
+                AppConfig::set_jiosaavn_enabled(self.config.jiosaavn_enabled);
+                let _ = self.config.save();
+                if self.config.jiosaavn_enabled {
+                    self.start_hifi_upgrade();
+                }
+                self.status_line = format!(
+                    "JioSaavn 320kbps module: {}",
+                    if self.config.jiosaavn_enabled {
                         "Enabled"
                     } else {
                         "Disabled"
@@ -646,6 +645,25 @@ impl BackendEngine {
                 self.status_line = format!(
                     "Transparent Glass UI: {}",
                     if self.config.transparent_bg {
+                        "Enabled"
+                    } else {
+                        "Disabled"
+                    }
+                );
+            }
+            BackendCmd::ToggleMotionCovers => {
+                self.config.motion_covers = !self.config.motion_covers;
+                AppConfig::set_motion_covers_enabled(self.config.motion_covers);
+                let _ = self.config.save();
+                if !self.config.motion_covers {
+                    self.motion_cover = None;
+                } else {
+                    self.cover_started_play_seq = None;
+                    self.start_cover_enrichment();
+                }
+                self.status_line = format!(
+                    "Animated album artwork: {}",
+                    if self.config.motion_covers {
                         "Enabled"
                     } else {
                         "Disabled"
@@ -695,9 +713,6 @@ impl BackendEngine {
                         self.config.hyprland_opacity * 100.0
                     );
                 }
-            }
-            BackendCmd::SelectTheme(name) => {
-                self.apply_theme_by_name(&name);
             }
             BackendCmd::ToggleLike(track) => {
                 self.toggle_like_track(track);
@@ -944,6 +959,7 @@ impl BackendEngine {
                 );
                 self.playback.set_active_stream(stream.clone());
                 self.playback.loading_track = false;
+                self.upgrading_quality = false;
                 self.playback.paused = true;
                 self.awaiting_playback_start = true;
                 let resume_at = if self.retried_play_seq == play_seq {
@@ -1006,6 +1022,7 @@ impl BackendEngine {
                 if play_seq != self.play_seq {
                     return;
                 }
+                self.upgrading_quality = false;
                 if !self
                     .playback
                     .current_track()
@@ -1039,6 +1056,11 @@ impl BackendEngine {
                 }
                 self.status_line = format!("Upgraded audio quality: {}", stream.badge);
             }
+            InternalEvent::UpgradeFinished { play_seq } => {
+                if play_seq == self.play_seq {
+                    self.upgrading_quality = false;
+                }
+            }
             InternalEvent::StreamError {
                 play_seq,
                 track_id,
@@ -1066,6 +1088,7 @@ impl BackendEngine {
                     "stream resolution failed"
                 );
                 self.playback.loading_track = false;
+                self.upgrading_quality = false;
                 self.playback.paused = true;
                 self.pos_anchor = None;
                 self.playback.stream_badge = "Error".to_string();
@@ -1220,7 +1243,6 @@ impl BackendEngine {
 
         let snap = Arc::new(DesktopSnapshot {
             config: self.config.clone(),
-            themes: self.themes.clone(),
             base_theme: self.base_theme.clone(),
             active_nav: self.active_nav.clone(),
             status_line: self.status_line.clone(),
@@ -1256,8 +1278,9 @@ impl BackendEngine {
             volume: self.playback.volume,
             shuffle: self.playback.shuffle,
             repeat: self.playback.repeat,
-            enhancer: self.playback.enhancer,
             stream_badge: self.playback.stream_badge.clone(),
+            upgrading_quality: self.upgrading_quality,
+            loading_track: self.playback.loading_track,
             lyrics: self.lyrics.clone(),
             art_path: self.art_path.clone(),
             motion_cover: self.motion_cover.clone(),
@@ -1357,7 +1380,6 @@ mod tests {
         let (win_tx, _win_rx) = mpsc::unbounded_channel();
         let (_snap_tx, snap_rx) = watch::channel(Arc::new(DesktopSnapshot {
             config: AppConfig::default(),
-            themes: Vec::new(),
             base_theme: Theme::default(),
             active_nav: NavTarget::Home,
             status_line: String::new(),
@@ -1393,8 +1415,9 @@ mod tests {
             volume: 80,
             shuffle: false,
             repeat: sonata_core::player::RepeatMode::Off,
-            enhancer: sonata_core::config::EnhancerMode::default(),
             stream_badge: String::new(),
+            upgrading_quality: false,
+            loading_track: false,
             lyrics: LyricsState::Idle,
             art_path: None,
             motion_cover: None,

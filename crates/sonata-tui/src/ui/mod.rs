@@ -322,17 +322,23 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 
     app.ui_rects.progress_bar = rows[1];
 
+    let quality_badge = app
+        .playback
+        .stream_badge
+        .strip_suffix(" · Cached")
+        .unwrap_or(&app.playback.stream_badge);
+
     // Symmetric side widths keep the center title and mode toggles dead-center in the terminal.
-    let badge_chars = app.playback.stream_badge.chars().count() as u16 + 3;
+    let badge_chars = quality_badge.chars().count() as u16 + 4;
     let desired_side = badge_chars.max(36);
     let side_w = if inner.width >= 96 {
         desired_side
             .max(inner.width * 28 / 100)
-            .min(44)
+            .min(56)
             .min(inner.width.saturating_sub(24) / 2)
     } else {
-        (inner.width * 30 / 100)
-            .clamp(18, 42)
+        desired_side
+            .clamp(18, 48)
             .min(inner.width.saturating_sub(12) / 2)
     };
 
@@ -410,24 +416,10 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         top_cols[1],
     );
 
-    let mut badge_spans = Vec::new();
-    if let Some(info) = app
-        .update_info
-        .as_ref()
-        .filter(|info| info.update_available)
-    {
-        badge_spans.push(Span::styled(
-            format!("[Update v{}] ", info.latest_version),
-            Style::default()
-                .fg(app.theme.warning)
-                .add_modifier(Modifier::BOLD),
-        ));
-    }
-    badge_spans.push(Span::styled(
-        format!("[{}] ", app.playback.stream_badge),
+    let badges = Line::from(vec![Span::styled(
+        format!("[{quality_badge}] "),
         Style::default().fg(app.theme.success),
-    ));
-    let badges = Line::from(badge_spans);
+    )]);
     frame.render_widget(
         Paragraph::new(badges).alignment(Alignment::Right),
         top_cols[2],
@@ -530,28 +522,52 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         bot_cols[1],
     );
 
+    let has_update = app
+        .update_info
+        .as_ref()
+        .is_some_and(|info| info.update_available);
     let right_footer = if !app.status_line.trim().is_empty() {
         Line::from(Span::styled(
             format!("{} ", app.status_line),
             Style::default().fg(app.theme.fg),
         ))
     } else if bot_cols[2].width >= 36 {
-        Line::from(vec![
+        let mut spans = Vec::new();
+        if has_update {
+            spans.push(Span::styled(
+                "● Update · ",
+                Style::default()
+                    .fg(app.theme.warning)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        spans.extend([
             Span::styled("Theme ", Style::default().fg(app.theme.muted)),
             Span::styled("(t)", Style::default().fg(app.theme.fg)),
             Span::styled(" · Settings ", Style::default().fg(app.theme.muted)),
             Span::styled("(S)", Style::default().fg(app.theme.fg)),
             Span::styled(" · Keys ", Style::default().fg(app.theme.muted)),
             Span::styled("(k) ", Style::default().fg(app.theme.fg)),
-        ])
+        ]);
+        Line::from(spans)
     } else {
-        Line::from(vec![
+        let mut spans = Vec::new();
+        if has_update {
+            spans.push(Span::styled(
+                "● ",
+                Style::default()
+                    .fg(app.theme.warning)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        spans.extend([
             Span::styled("(t)", Style::default().fg(app.theme.fg)),
             Span::styled(" · ", Style::default().fg(app.theme.muted)),
             Span::styled("(S)", Style::default().fg(app.theme.fg)),
             Span::styled(" · ", Style::default().fg(app.theme.muted)),
             Span::styled("(k) ", Style::default().fg(app.theme.fg)),
-        ])
+        ]);
+        Line::from(spans)
     };
     frame.render_widget(
         Paragraph::new(right_footer).alignment(Alignment::Right),

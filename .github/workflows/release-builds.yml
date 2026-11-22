@@ -134,7 +134,8 @@ jobs:
             librsvg2-bin \
             pkg-config \
             fuse \
-            file
+            file \
+            zsync
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -172,7 +173,7 @@ jobs:
           EOF
           chmod +x Sonata.AppDir/AppRun
 
-          cat <<'EOF' > Sonata.AppDir/dev.sonata.Sonata.desktop
+          cat <<EOF > Sonata.AppDir/dev.sonata.Sonata.desktop
           [Desktop Entry]
           Type=Application
           Name=Sonata
@@ -182,6 +183,7 @@ jobs:
           Categories=AudioVideo;Audio;Music;Player;
           Terminal=false
           StartupWMClass=sonata-desktop
+          X-AppImage-Version=${VERSION}
           EOF
           cp Sonata.AppDir/dev.sonata.Sonata.desktop Sonata.AppDir/usr/share/applications/dev.sonata.Sonata.desktop
 
@@ -213,7 +215,7 @@ jobs:
           cp Sonata.AppDir/sonata.png Sonata.AppDir/usr/share/icons/hicolor/256x256/apps/sonata.png
           cp assets/sonata-logo.svg Sonata.AppDir/usr/share/icons/hicolor/scalable/apps/sonata.svg
 
-      - name: Build AppImage
+      - name: Build AppImage (with Gear Lever zsync update metadata)
         env:
           ARTIFACT_TAG: ${{ needs.version.outputs.artifact_tag }}
         run: |
@@ -221,15 +223,22 @@ jobs:
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x appimagetool-x86_64.AppImage
           OUT="Sonata-${ARTIFACT_TAG}-x86_64.AppImage"
-          ARCH=x86_64 ./appimagetool-x86_64.AppImage --appimage-extract-and-run Sonata.AppDir "${OUT}"
+          UPDATE_INFO="gh-releases-zsync|${GITHUB_REPOSITORY_OWNER}|sonata|latest|Sonata-*-x86_64.AppImage.zsync"
+          ARCH=x86_64 ./appimagetool-x86_64.AppImage --appimage-extract-and-run \
+            -u "${UPDATE_INFO}" Sonata.AppDir "${OUT}"
           chmod +x "${OUT}"
-          ls -lh "${OUT}"
+          if [ ! -f "${OUT}.zsync" ]; then
+            zsyncmake -u "${OUT}" -o "${OUT}.zsync" "${OUT}"
+          fi
+          ls -lh "${OUT}" "${OUT}.zsync"
 
       - name: Upload Linux AppImage artifact
         uses: actions/upload-artifact@v7
         with:
           name: Sonata-Linux-AppImage
-          path: Sonata-*-x86_64.AppImage
+          path: |
+            Sonata-*-x86_64.AppImage
+            Sonata-*-x86_64.AppImage.zsync
           if-no-files-found: error
 
   android-apk:

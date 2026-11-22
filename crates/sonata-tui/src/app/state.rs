@@ -235,6 +235,41 @@ impl App {
         }
     }
 
+    pub fn toggle_jiosaavn(&mut self) {
+        self.config.jiosaavn_enabled = !self.config.jiosaavn_enabled;
+        sonata_core::config::AppConfig::set_jiosaavn_enabled(self.config.jiosaavn_enabled);
+        let _ = self.config.save();
+        if self.config.jiosaavn_enabled {
+            self.start_hifi_upgrade();
+        }
+        self.status_line = format!(
+            "JioSaavn 320kbps Module: {}",
+            if self.config.jiosaavn_enabled {
+                "Enabled"
+            } else {
+                "Disabled"
+            }
+        );
+    }
+
+    pub fn toggle_motion_covers(&mut self) {
+        self.config.motion_covers = !self.config.motion_covers;
+        sonata_core::config::AppConfig::set_motion_covers_enabled(self.config.motion_covers);
+        let _ = self.config.save();
+        if !self.config.motion_covers {
+            self.anim_art_frames.clear();
+            self.clear_kitty_images();
+        }
+        self.status_line = format!(
+            "Animated Album Artwork: {}",
+            if self.config.motion_covers {
+                "Enabled"
+            } else {
+                "Disabled"
+            }
+        );
+    }
+
     pub fn toggle_transparent_bg(&mut self) {
         self.config.transparent_bg = !self.config.transparent_bg;
         self.base_theme.transparent_bg = None;

@@ -102,6 +102,10 @@ impl StreamResolver {
         }
     }
 
+    pub fn http_client(&self) -> &Client {
+        &self.http
+    }
+
     pub async fn warm(&self) {
         let home_req = self
             .http
@@ -128,6 +132,21 @@ impl StreamResolver {
     #[tracing::instrument(level = "debug", skip(self, track), fields(track_id = %track.id, provider = ?track.source))]
     pub async fn resolve_recovery(&self, track: &Track) -> Result<ResolvedStream> {
         self.invalidate_stream(&track.id).await;
+        if track.is_jiosaavn() {
+            let js = crate::providers::jiosaavn::resolve_by_id(&self.http, &track.id)
+                .await
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Failed to recover JioSaavn stream for \"{}\"", track.title)
+                })?;
+            let stream = ResolvedStream {
+                url: js.url,
+                badge: js.badge,
+                headers: Vec::new(),
+            };
+            self.put_cached(format!("jio:{}", track.id), stream.clone())
+                .await;
+            return Ok(stream);
+        }
         if cfg!(target_os = "android") {
             let stream = self
                 .resolve_youtube_best_innertube(track, self.cookies.has_ytm_auth())
@@ -165,7 +184,7 @@ impl StreamResolver {
     pub fn needs_hifi_upgrade(badge: &str, url: &str) -> bool {
         let is_local = !url.starts_with("http");
         let lower = badge.to_ascii_lowercase();
-        if lower.contains("flac") || lower.contains("alac") {
+        if lower.contains("flac") || lower.contains("alac") || lower.contains("lossless") {
             return false;
         }
         let kbps = extract_badge_kbps(badge).unwrap_or(0);
@@ -179,30 +198,52 @@ impl StreamResolver {
         !(is_aac_320 || is_lossless_local || is_top_youtube_quality)
     }
 
-    /// Resolve an immediately playable YouTube stream before any quality upgrade starts.
+    fn can_upgrade_with_jiosaavn(badge: &str) -> bool {
+        if cfg!(target_os = "android") || !AppConfig::jiosaavn_enabled() {
+            return false;
+        }
+        let lower = badge.to_ascii_lowercase();
+        if lower.contains("flac") || lower.contains("alac") || lower.contains("lossless") {
+            return false;
+        }
+        extract_badge_kbps(badge).unwrap_or(0) < 300
+    }
+
+    /// Resolve an immediately playable stream before any background quality upgrade starts.
     #[tracing::instrument(level = "debug", skip(self, track), fields(track_id = %track.id, provider = ?track.source))]
     pub async fn resolve_fast(&self, track: &Track) -> Result<ResolvedStream> {
         if AppConfig::active_cache_limit_bytes() > 0 {
             if let Some(local) = cached_audio_stream(&track.id) {
-                if !self.cookies.has_ytm_auth()
-                    || !Self::needs_hifi_upgrade(&local.badge, &local.url)
-                {
-                    tracing::debug!(
-                        "[sonata:resolver] cache-hit=local track_id={} source=local",
-                        track.id
-                    );
-                    self.cache_average_bitrate(&track.id, &local.badge);
-                    return Ok(local);
-                }
+                tracing::debug!(
+                    "[sonata:resolver] cache-hit=local track_id={} source=local badge={}",
+                    track.id,
+                    local.badge
+                );
+                self.cache_average_bitrate(&track.id, &local.badge);
+                return Ok(local);
             }
         }
+        if track.is_jiosaavn() {
+            let js = crate::providers::jiosaavn::resolve_by_id(&self.http, &track.id)
+                .await
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Failed to resolve JioSaavn stream for \"{}\"", track.title)
+                })?;
+            let stream = ResolvedStream {
+                url: js.url,
+                badge: js.badge,
+                headers: Vec::new(),
+            };
+            self.cache_average_bitrate(&track.id, &stream.badge);
+            self.put_cached(format!("jio:{}", track.id), stream.clone())
+                .await;
+            return Ok(stream);
+        }
+
         let key = format!("yt:{}", track.id);
         if let Some(stream) = self.get_cached_fresh(&key).await {
-            if !self.cookies.has_ytm_auth() || !Self::needs_hifi_upgrade(&stream.badge, &stream.url)
-            {
-                self.cache_average_bitrate(&track.id, &stream.badge);
-                return Ok(stream);
-            }
+            self.cache_average_bitrate(&track.id, &stream.badge);
+            return Ok(stream);
         }
 
         let stream = self.resolve_youtube_fast(track).await?;
@@ -211,7 +252,7 @@ impl StreamResolver {
         Ok(stream)
     }
 
-    /// Cache a higher-bitrate YTM format before switching playback.
+    /// Cache a higher-bitrate YTM or JioSaavn format before switching playback.
     #[tracing::instrument(
         level = "debug",
         skip(self, track, current),
@@ -226,60 +267,111 @@ impl StreamResolver {
         if AppConfig::active_cache_limit_bytes() == 0 {
             return None;
         }
-        if track.source == ProviderSource::Spotify {
-            if !allow_hifi || !Self::needs_hifi_upgrade(&current.badge, &current.url) {
-                return None;
+        if track.is_jiosaavn() {
+            if current.url.starts_with("http") {
+                let _ = self.download_to_audio_cache(&track.id, current).await;
             }
-            let mut candidate = None;
-            if self.cookies.has_ytm_auth() {
-                candidate = self.resolve_youtube_ytdlp(track, true, false).await.ok();
-            }
-            if candidate.is_none() {
-                candidate = self.resolve_youtube_ytdlp(track, false, false).await.ok();
-            }
-            let candidate = candidate
-                .filter(|stream| should_upgrade_candidate(&current.badge, &stream.badge))?;
-            let local = self.download_to_audio_cache(&track.id, &candidate).await?;
-            self.cache_average_bitrate(&track.id, &candidate.badge);
-            return (local.url != current.url && local.badge != current.badge).then_some(local);
+            return None;
         }
         if let Some(local) = cached_audio_stream(&track.id) {
             if local.url != current.url && should_upgrade_candidate(&current.badge, &local.badge) {
                 return Some(local);
             }
         }
-        if allow_hifi && Self::needs_hifi_upgrade(&current.badge, &current.url) {
-            let mut candidate = None;
-            if cfg!(target_os = "android") {
-                candidate = self
-                    .resolve_youtube_best_innertube(track, self.cookies.has_ytm_auth())
-                    .await;
-            } else {
-                if self.cookies.has_ytm_auth() {
-                    candidate = self.resolve_youtube_best_innertube(track, true).await;
-                    if candidate.is_none() {
-                        candidate = self.resolve_youtube_ytdlp(track, true, false).await.ok();
+
+        let can_try_ytm = allow_hifi && Self::needs_hifi_upgrade(&current.badge, &current.url);
+        let can_try_jiosaavn = Self::can_upgrade_with_jiosaavn(&current.badge);
+
+        if can_try_ytm || can_try_jiosaavn {
+            let mut candidate: Option<ResolvedStream> = None;
+
+            if can_try_ytm {
+                if track.source == ProviderSource::Spotify {
+                    if self.cookies.has_ytm_auth() {
+                        candidate = self
+                            .resolve_youtube_ytdlp(track, true, false)
+                            .await
+                            .ok()
+                            .filter(|s| should_upgrade_candidate(&current.badge, &s.badge));
                     }
-                }
-                if candidate.is_none() {
-                    candidate = self.resolve_youtube_ytdlp(track, false, false).await.ok();
+                    if candidate.is_none() {
+                        candidate = self
+                            .resolve_youtube_ytdlp(track, false, false)
+                            .await
+                            .ok()
+                            .filter(|s| should_upgrade_candidate(&current.badge, &s.badge));
+                    }
+                } else if cfg!(target_os = "android") {
+                    candidate = self
+                        .resolve_youtube_best_innertube(track, self.cookies.has_ytm_auth())
+                        .await
+                        .filter(|s| should_upgrade_candidate(&current.badge, &s.badge));
+                } else {
+                    if self.cookies.has_ytm_auth() {
+                        candidate = self
+                            .resolve_youtube_best_innertube(track, true)
+                            .await
+                            .filter(|s| should_upgrade_candidate(&current.badge, &s.badge));
+                        if candidate.is_none() {
+                            candidate = self
+                                .resolve_youtube_ytdlp(track, true, false)
+                                .await
+                                .ok()
+                                .filter(|s| should_upgrade_candidate(&current.badge, &s.badge));
+                        }
+                    }
+                    if candidate.is_none() {
+                        candidate = self
+                            .resolve_youtube_ytdlp(track, false, false)
+                            .await
+                            .ok()
+                            .filter(|s| should_upgrade_candidate(&current.badge, &s.badge));
+                    }
                 }
             }
-            if let Some(candidate) =
-                candidate.filter(|stream| should_upgrade_candidate(&current.badge, &stream.badge))
-            {
-                if candidate.url.starts_with("http") {
-                    if let Some(local) = self.download_to_audio_cache(&track.id, &candidate).await {
-                        self.cache_average_bitrate(&track.id, &candidate.badge);
-                        return Some(local);
+
+            if can_try_jiosaavn {
+                let best_badge = candidate
+                    .as_ref()
+                    .map(|c| c.badge.as_str())
+                    .unwrap_or(&current.badge);
+                let best_kbps = extract_badge_kbps(best_badge).unwrap_or(0);
+                if best_kbps < 300 {
+                    if let Some(js) = crate::providers::jiosaavn::find_higher_quality_stream(
+                        &self.http, track, best_kbps,
+                    )
+                    .await
+                    {
+                        let js_stream = ResolvedStream {
+                            url: js.url,
+                            badge: js.badge,
+                            headers: Vec::new(),
+                        };
+                        if should_upgrade_candidate(best_badge, &js_stream.badge) {
+                            candidate = Some(js_stream);
+                        }
                     }
-                    if cfg!(target_os = "android") {
-                        self.cache_average_bitrate(&track.id, &candidate.badge);
-                        return Some(candidate);
+                }
+            }
+
+            if let Some(cand) =
+                candidate.filter(|s| should_upgrade_candidate(&current.badge, &s.badge))
+            {
+                if cand.url.starts_with("http") {
+                    if let Some(local) = self.download_to_audio_cache(&track.id, &cand).await {
+                        self.cache_average_bitrate(&track.id, &cand.badge);
+                        if local.url != current.url || local.badge != current.badge {
+                            return Some(local);
+                        }
+                    }
+                    if cfg!(target_os = "android") || cand.badge.contains("JioSaavn") {
+                        self.cache_average_bitrate(&track.id, &cand.badge);
+                        return Some(cand);
                     }
                 }
             }
         }
+
         if track.source == ProviderSource::YouTubeMusic
             && current.url.starts_with("http")
             && !is_bounded_fast_start_url(&current.url)
@@ -304,7 +396,9 @@ impl StreamResolver {
             return None;
         }
         if let Some(local) = cached_audio_stream(&track.id) {
-            if !Self::needs_hifi_upgrade(&local.badge, &local.url) {
+            if !Self::needs_hifi_upgrade(&local.badge, &local.url)
+                && !Self::can_upgrade_with_jiosaavn(&local.badge)
+            {
                 tracing::info!(
                     event = "next_precache_cache_hit",
                     track_id = %track.id,
@@ -326,7 +420,9 @@ impl StreamResolver {
         };
         let result = async {
             let fast = self.resolve_fast(track).await.ok()?;
-            self.resolve_hifi_upgrade(track, &fast, true).await
+            self.resolve_hifi_upgrade(track, &fast, true)
+                .await
+                .or_else(|| cached_audio_stream(&track.id))
         }
         .await;
         drop(guard);
@@ -373,6 +469,14 @@ mod tests {
         assert!(!should_upgrade_candidate(
             "OPUS 253kbps · Extreme",
             "OPUS 253kbps · Extreme · Cached"
+        ));
+        assert!(should_upgrade_candidate(
+            "OPUS 137kbps · HQ · Cached",
+            "OPUS 256kbps · Extreme · Cached"
+        ));
+        assert!(should_upgrade_candidate(
+            "OPUS 256kbps · Extreme · Cached",
+            "AAC 320kbps · JioSaavn"
         ));
     }
 

@@ -41,16 +41,24 @@ install_standalone_ytdlp() {
 }
 
 install_system_deps() {
-    if command -v pacman >/dev/null 2>&1; then
+    if [ -e /etc/NIXOS ] || command -v nix >/dev/null 2>&1; then
+        if command -v nix >/dev/null 2>&1; then
+            echo "Nix/NixOS detected. Installing Sonata Desktop flake or dev dependencies..."
+            if nix --extra-experimental-features "nix-command flakes" profile install "github:MehmetCanWT/sonata#sonata-desktop"; then
+                echo "Installed sonata-desktop via Nix Flakes."
+                exit 0
+            fi
+        fi
+    elif command -v pacman >/dev/null 2>&1; then
         run_as_root pacman -S --needed --noconfirm \
-            base-devel pkgconf ca-certificates curl ffmpeg git mpv nodejs yt-dlp \
+            base-devel pkgconf openssl sqlite ca-certificates curl ffmpeg git mpv nodejs yt-dlp \
             wayland vulkan-icd-loader libxkbcommon libxkbcommon-x11 libxcb fontconfig alsa-lib dbus
     elif command -v apt-get >/dev/null 2>&1; then
         run_as_root apt-get update
         run_as_root apt-get install -y \
             build-essential pkg-config ca-certificates curl ffmpeg git mpv nodejs python3 \
             libwayland-dev libvulkan-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev \
-            libfontconfig1-dev libasound2-dev libdbus-1-dev libssl-dev
+            libfontconfig1-dev libasound2-dev libdbus-1-dev libssl-dev libsqlite3-dev
         if ! run_as_root apt-get install -y yt-dlp; then
             echo "apt-get yt-dlp unavailable; installing standalone yt-dlp binary..." >&2
             install_standalone_ytdlp
@@ -59,17 +67,17 @@ install_system_deps() {
         if ! run_as_root dnf install -y \
             gcc gcc-c++ make pkgconf-pkg-config ca-certificates curl ffmpeg-free git mpv nodejs yt-dlp \
             wayland-devel vulkan-loader-devel libxkbcommon-devel libxkbcommon-x11-devel libxcb-devel \
-            fontconfig-devel alsa-lib-devel dbus-devel openssl-devel; then
+            fontconfig-devel alsa-lib-devel dbus-devel openssl-devel sqlite-devel; then
             run_as_root dnf install -y \
                 gcc gcc-c++ make pkgconf-pkg-config ca-certificates curl ffmpeg git mpv nodejs yt-dlp \
                 wayland-devel vulkan-loader-devel libxkbcommon-devel libxkbcommon-x11-devel libxcb-devel \
-                fontconfig-devel alsa-lib-devel dbus-devel openssl-devel
+                fontconfig-devel alsa-lib-devel dbus-devel openssl-devel sqlite-devel
         fi
     elif command -v zypper >/dev/null 2>&1; then
         run_as_root zypper --non-interactive install -y \
             gcc gcc-c++ make pkg-config ca-certificates curl ffmpeg git mpv nodejs yt-dlp \
             wayland-devel vulkan-devel libxkbcommon-devel libxkbcommon-x11-devel libxcb-devel \
-            fontconfig-devel alsa-devel dbus-1-devel libopenssl-devel
+            fontconfig-devel alsa-devel dbus-1-devel libopenssl-devel sqlite3-devel
     else
         echo "Unsupported package manager. Install mpv, yt-dlp, ffmpeg, nodejs, Wayland/Vulkan/XKB/ALSA/D-Bus dev libraries, git, curl, and a C compiler first." >&2
         exit 1

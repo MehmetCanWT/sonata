@@ -66,6 +66,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             return;
         }
         ActiveModal::Settings(sel) => {
+            let n = crate::ui::modals::SETTINGS_ROW_COUNT;
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('S') => {
                     app.modal = ActiveModal::None;
@@ -73,29 +74,35 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                 KeyCode::Char('u') => {
                     app.check_for_updates();
                 }
-                KeyCode::Down | KeyCode::Char('j') => *sel = (*sel + 1) % 9,
-                KeyCode::Up | KeyCode::Char('k') => *sel = (*sel + 8) % 9,
+                KeyCode::Char('r') => {
+                    app.refresh_account();
+                }
+                KeyCode::Down | KeyCode::Char('j') => *sel = (*sel + 1) % n,
+                KeyCode::Up | KeyCode::Char('k') => *sel = (*sel + n - 1) % n,
                 KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter | KeyCode::Char(' ') => {
                     match *sel {
                         0 => app.cycle_provider_mode(true),
                         1 => app.toggle_hifi_substitution(),
-                        2 => app.cycle_enhancer(),
-                        3 => app.toggle_transparent_bg(),
-                        4 => app.cycle_hyprland_opacity(true),
-                        5 => app.step_cache_limit(true),
-                        6 => app.cycle_theme(true),
-                        8 => app.check_for_updates(),
+                        2 => app.toggle_jiosaavn(),
+                        3 => app.cycle_theme(true),
+                        4 => app.toggle_motion_covers(),
+                        5 => app.toggle_transparent_bg(),
+                        6 => app.cycle_hyprland_opacity(true),
+                        7 => app.step_cache_limit(true),
+                        8 => app.refresh_account(),
+                        9 => app.check_for_updates(),
                         _ => {}
                     }
                 }
                 KeyCode::Left | KeyCode::Char('h') => match *sel {
                     0 => app.cycle_provider_mode(false),
                     1 => app.toggle_hifi_substitution(),
-                    2 => app.cycle_enhancer(),
-                    3 => app.toggle_transparent_bg(),
-                    4 => app.cycle_hyprland_opacity(false),
-                    5 => app.step_cache_limit(false),
-                    6 => app.cycle_theme(false),
+                    2 => app.toggle_jiosaavn(),
+                    3 => app.cycle_theme(false),
+                    4 => app.toggle_motion_covers(),
+                    5 => app.toggle_transparent_bg(),
+                    6 => app.cycle_hyprland_opacity(false),
+                    7 => app.step_cache_limit(false),
                     _ => {}
                 },
                 _ => {}
@@ -218,7 +225,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('<') | KeyCode::Char(',') => app.seek(-5.0),
         KeyCode::Char('+') | KeyCode::Char('=') => app.adjust_volume(5),
         KeyCode::Char('-') | KeyCode::Char('_') => app.adjust_volume(-5),
-        KeyCode::Char('e') => app.cycle_enhancer(),
         KeyCode::Char('s') => app.toggle_shuffle(),
         KeyCode::Char('r') => app.cycle_repeat(),
         KeyCode::Char('t') => {
@@ -257,7 +263,8 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) {
                 app.apply_theme_by_index(next);
             }
             ActiveModal::Settings(sel) => {
-                *sel = ((*sel as isize + delta).rem_euclid(8)) as usize;
+                let n = crate::ui::modals::SETTINGS_ROW_COUNT as isize;
+                *sel = ((*sel as isize + delta).rem_euclid(n)) as usize;
             }
             ActiveModal::AddToPlaylist(sel) if writable_count > 0 => {
                 *sel = ((*sel as isize + delta).rem_euclid(writable_count as isize)) as usize;

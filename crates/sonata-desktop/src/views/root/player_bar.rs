@@ -6,7 +6,7 @@
 
 use super::super::{
     format_mm_ss, render_cover_surface, render_icon_button, render_progress_slider,
-    render_volume_slider, CenterMode, SonataDesktopView,
+    render_quality_tag, render_volume_slider, CenterMode, FluentDivExt, SonataDesktopView,
 };
 use crate::backend::BackendCmd;
 use crate::theme_bridge::{DesktopSkin, GlassPalette};
@@ -135,6 +135,7 @@ fn render_sonata_player_bar(
                 .child(
                     div()
                         .flex_1()
+                        .min_w(px(240.0))
                         .max_w(px(520.0))
                         .flex()
                         .flex_col()
@@ -210,11 +211,15 @@ fn render_sonata_player_bar(
                 )
                 .child(
                     div()
-                        .w(px(280.0))
+                        .min_w(px(280.0))
+                        .flex_shrink_0()
                         .flex()
                         .items_center()
                         .justify_end()
-                        .gap_1()
+                        .gap_2()
+                        .when(snap.current_track().is_some(), |el| {
+                            el.child(render_quality_tag(view, p, false))
+                        })
                         .child(render_icon_button(
                             "pb-lyrics",
                             IconName::MicVocal,

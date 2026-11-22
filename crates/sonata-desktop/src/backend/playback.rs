@@ -59,6 +59,7 @@ impl BackendEngine {
 
         let play_seq = self.play_seq;
         self.upgrade_started_play_seq = Some(play_seq);
+        self.upgrading_quality = true;
         tracing::info!(
             event = "upgrade_resolving",
             client = "desktop",
@@ -84,6 +85,7 @@ impl BackendEngine {
                     stream: upgraded,
                 });
             } else {
+                let _ = int_tx.send(InternalEvent::UpgradeFinished { play_seq });
                 tracing::info!(
                     event = "upgrade_unavailable",
                     client = "desktop",
@@ -130,17 +132,19 @@ impl BackendEngine {
                 ambient_rgb,
             });
         });
-        self.playback_tasks.spawn(async move {
-            if let Some(cover) =
-                motion::resolve_motion_cover(&anim_http, &anim_track, 768, 24.0, 96).await
-            {
-                let _ = anim_tx.send(InternalEvent::AnimatedArtworkReady {
-                    play_seq,
-                    track_id: anim_track.id,
-                    cover: Arc::new(cover),
-                });
-            }
-        });
+        if self.config.motion_covers && !self.config.reduce_motion {
+            self.playback_tasks.spawn(async move {
+                if let Some(cover) =
+                    motion::resolve_motion_cover(&anim_http, &anim_track, 768, 24.0, 96).await
+                {
+                    let _ = anim_tx.send(InternalEvent::AnimatedArtworkReady {
+                        play_seq,
+                        track_id: anim_track.id,
+                        cover: Arc::new(cover),
+                    });
+                }
+            });
+        }
     }
 
     pub(super) fn interpolated_position(&self) -> f64 {
@@ -227,6 +231,7 @@ impl BackendEngine {
         self.stream_loaded_at = None;
         self.retried_play_seq = 0;
         self.upgrade_started_play_seq = None;
+        self.upgrading_quality = false;
         self.lyrics = LyricsState::Loading;
         self.motion_cover = None;
 
@@ -376,7 +381,8 @@ impl BackendEngine {
             next_id,
             self.playback.position_secs,
             self.playback.duration_secs,
-            self.config.cache_limit_gb > 0 && self.config.hifi_substitution,
+            self.config.cache_limit_gb > 0
+                && (self.config.hifi_substitution || self.config.jiosaavn_enabled),
         ) else {
             return;
         };
@@ -626,25 +632,27 @@ impl BackendEngine {
                         None
                     };
                     if let Some((vid, duration)) = telemetry {
-                        let ytm = self.ytm.clone();
-                        let playlist_id = self
-                            .playlist_id
-                            .as_ref()
-                            .filter(|_| self.playlist_tracks.iter().any(|t| t.id == vid))
-                            .cloned();
-                        tokio::spawn(async move {
-                            if let Err(err) = ytm
-                                .report_playback(&vid, playlist_id.as_deref(), duration)
-                                .await
-                            {
-                                tracing::debug!(
-                                    client = "desktop",
-                                    track_id = %vid,
-                                    error = %err,
-                                    "ytm playback reporting failed"
-                                );
-                            }
-                        });
+                        if !vid.starts_with(sonata_core::providers::jiosaavn::ID_PREFIX) {
+                            let ytm = self.ytm.clone();
+                            let playlist_id = self
+                                .playlist_id
+                                .as_ref()
+                                .filter(|_| self.playlist_tracks.iter().any(|t| t.id == vid))
+                                .cloned();
+                            tokio::spawn(async move {
+                                if let Err(err) = ytm
+                                    .report_playback(&vid, playlist_id.as_deref(), duration)
+                                    .await
+                                {
+                                    tracing::debug!(
+                                        client = "desktop",
+                                        track_id = %vid,
+                                        error = %err,
+                                        "ytm playback reporting failed"
+                                    );
+                                }
+                            });
+                        }
                     }
                 }
                 self.start_hifi_upgrade();
@@ -781,6 +789,7 @@ impl BackendEngine {
                     if Self::should_attempt_recovery(self.retried_play_seq, self.play_seq) {
                         self.retried_play_seq = self.play_seq;
                         self.upgrade_started_play_seq = None;
+                        self.upgrading_quality = false;
                         let play_seq = self.play_seq;
                         self.playback_tasks.restart();
                         if let Some((_, task)) = self.next_prefetch_task.take() {
@@ -831,6 +840,7 @@ impl BackendEngine {
                     }
                 }
                 self.playback.loading_track = false;
+                self.upgrading_quality = false;
                 self.playback.paused = true;
                 self.awaiting_playback_start = false;
                 self.pos_anchor = None;

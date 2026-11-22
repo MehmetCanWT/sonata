@@ -2,7 +2,7 @@
 //!
 //! 1. **Auth & Account**: `start_sign_in`, `refresh_account`, and `sign_out` manage browser cookie extraction and YouTube Music profile state.
 //! 2. **Feeds & Collections**: `load_home_feed`, `open_artist`, `open_collection`, and `execute_search` run stale-guarded background queries.
-//! 3. **Library Mutations & UI Sync**: handles likes, playlist edits, thumbnail prefetching, themes, and Hyprland opacity updates.
+//! 3. **Library Mutations & UI Sync**: handles likes, playlist edits, thumbnail prefetching, and Hyprland opacity updates.
 
 use super::types::{InternalEvent, NavTarget};
 use super::BackendEngine;
@@ -387,13 +387,28 @@ impl BackendEngine {
         self.search_loading = true;
         self.search_req_id = self.search_req_id.wrapping_add(1);
         let req_id = self.search_req_id;
-        self.status_line = format!("Searching YouTube Music for \"{q}\"...");
+        let jiosaavn_enabled = self.config.jiosaavn_enabled;
+        self.status_line = if jiosaavn_enabled {
+            format!("Searching YouTube Music & JioSaavn for \"{q}\"...")
+        } else {
+            format!("Searching YouTube Music for \"{q}\"...")
+        };
 
         let ytm = self.ytm.clone();
+        let http = self.http.clone();
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
-            match ytm.search_songs(&q).await {
-                Ok(tracks) => {
+            let jio_fut = async {
+                if jiosaavn_enabled {
+                    sonata_core::providers::jiosaavn::search_tracks(&http, &q, 10).await
+                } else {
+                    Vec::new()
+                }
+            };
+            let (ytm_res, jio_tracks) = tokio::join!(ytm.search_songs(&q), jio_fut);
+            match ytm_res {
+                Ok(mut tracks) => {
+                    tracks.extend(jio_tracks);
                     let _ = int_tx.send(InternalEvent::SearchLoaded {
                         req_id,
                         tracks,
@@ -401,29 +416,22 @@ impl BackendEngine {
                     });
                 }
                 Err(e) => {
-                    let _ = int_tx.send(InternalEvent::SearchLoaded {
-                        req_id,
-                        tracks: Vec::new(),
-                        error: Some(e.to_string()),
-                    });
+                    if !jio_tracks.is_empty() {
+                        let _ = int_tx.send(InternalEvent::SearchLoaded {
+                            req_id,
+                            tracks: jio_tracks,
+                            error: None,
+                        });
+                    } else {
+                        let _ = int_tx.send(InternalEvent::SearchLoaded {
+                            req_id,
+                            tracks: Vec::new(),
+                            error: Some(e.to_string()),
+                        });
+                    }
                 }
             }
         });
-    }
-
-    pub(super) fn apply_theme_by_name(&mut self, name: &str) {
-        if let Some(t) = self
-            .themes
-            .iter()
-            .find(|t| t.name.eq_ignore_ascii_case(name))
-            .cloned()
-        {
-            self.base_theme = t;
-            self.config.desktop_theme = self.base_theme.name.clone();
-            let _ = self.config.save();
-            self.sync_hyprland_opacity();
-            self.status_line = format!("Theme: {}", self.base_theme.name);
-        }
     }
 
     pub(super) fn sync_hyprland_opacity(&mut self) {
@@ -482,7 +490,23 @@ impl BackendEngine {
         let cache_db = self.cache_db.clone();
         let title = track.title.clone();
         tokio::spawn(async move {
-            match ytm.set_like_status(&track.id, target_liked).await {
+            let vid = if track.source == ProviderSource::YouTubeMusic && !track.is_jiosaavn() {
+                Some(track.id)
+            } else {
+                let q = format!("{} {}", track.artist, track.title);
+                ytm.search_songs(&q)
+                    .await
+                    .ok()
+                    .and_then(|v| v.into_iter().next())
+                    .map(|t| t.id)
+            };
+            let Some(vid) = vid else {
+                let _ = int_tx.send(InternalEvent::StatusMessage(
+                    "Could not match track on YouTube Music".to_string(),
+                ));
+                return;
+            };
+            match ytm.set_like_status(&vid, target_liked).await {
                 Ok(()) => {
                     if let Some(db) = &cache_db {
                         db.invalidate_playlist(Some("YTM:VLLM"));
@@ -551,7 +575,23 @@ impl BackendEngine {
         let int_tx = self.int_tx.clone();
         self.status_line = format!("Adding \"{}\" to {}...", track.title, playlist_name);
         tokio::spawn(async move {
-            match ytm.add_to_playlist(&playlist_id, &track.id).await {
+            let vid = if track.source == ProviderSource::YouTubeMusic && !track.is_jiosaavn() {
+                Some(track.id)
+            } else {
+                let q = format!("{} {}", track.artist, track.title);
+                ytm.search_songs(&q)
+                    .await
+                    .ok()
+                    .and_then(|v| v.into_iter().next())
+                    .map(|t| t.id)
+            };
+            let Some(vid) = vid else {
+                let _ = int_tx.send(InternalEvent::StatusMessage(
+                    "Could not match track on YouTube Music".to_string(),
+                ));
+                return;
+            };
+            match ytm.add_to_playlist(&playlist_id, &vid).await {
                 Ok(()) => {
                     if let Some(db) = &cache_db {
                         db.invalidate_playlist(Some(&format!("YTM:{playlist_id}")));

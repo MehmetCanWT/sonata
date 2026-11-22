@@ -43,6 +43,9 @@ pub fn sized_popup(min_w: u16, max_w: u16, target_h: u16, area: Rect) -> Rect {
     }
 }
 
+pub const SETTINGS_ROW_COUNT: usize = 10;
+
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn settings_popup_rect(area: Rect, row_count: usize) -> Rect {
     let target_h = (row_count as u16 + 5).min(area.height);
     sized_popup(40, 84, target_h, area)
@@ -233,67 +236,140 @@ fn render_create_playlist(frame: &mut Frame<'_>, area: Rect, app: &App, input: &
     frame.render_widget(p, popup);
 }
 
+enum SettingValueKind {
+    Toggle(bool, &'static str, &'static str),
+    Text(String),
+    OpacityBar(f32, bool),
+    ThemeSwatch(String),
+    UpdateBadge(String, bool),
+}
+
+struct SettingEntry {
+    section: Option<&'static str>,
+    label: &'static str,
+    description: &'static str,
+    value: SettingValueKind,
+    adjustable: bool,
+}
+
 fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize) {
-    let transparent_label = if app.effective_transparent_bg() {
-        "Enabled (Glass)"
-    } else {
-        "Disabled (Solid)"
-    };
+    let selected = selected.min(SETTINGS_ROW_COUNT - 1);
+    let transparent = app.effective_transparent_bg();
     let on_hyprland = hyprland::is_hyprland();
-    let opacity_label = if on_hyprland {
-        format!("{:.0}%", app.effective_hyprland_opacity() * 100.0)
-    } else {
-        "Solid (100% · Locked)".to_string()
-    };
+    let opacity = app.effective_hyprland_opacity();
 
-    let update_label = match &app.update_info {
-        Some(info) if info.update_available => {
+    let (update_label, has_update) = match &app.update_info {
+        Some(info) if info.update_available => (
             format!(
-                "v{CURRENT_VERSION} · Update v{} available",
+                "v{CURRENT_VERSION} → Update v{} available",
                 info.latest_version
-            )
-        }
-        Some(_) => format!("v{CURRENT_VERSION} · Up to date"),
-        None => format!("v{CURRENT_VERSION} · Press (u) to check"),
+            ),
+            true,
+        ),
+        Some(_) => (format!("v{CURRENT_VERSION} · Up to date"), false),
+        None => (
+            format!("v{CURRENT_VERSION} · Press Enter/u to check"),
+            false,
+        ),
     };
 
-    let rows = [
-        (
-            "Music Providers",
-            app.config.provider_mode.label().to_string(),
-            true,
-        ),
-        (
-            "YouTube Music Quality Upgrade",
-            if app.config.hifi_substitution {
-                "Enabled".to_string()
-            } else {
-                "Disabled".to_string()
-            },
-            true,
-        ),
-        (
-            "Audio Enhancer DSP",
-            app.playback.enhancer.label().to_string(),
-            true,
-        ),
-        ("Transparent TUI Bg", transparent_label.to_string(), true),
-        ("Hyprland Opacity", opacity_label, on_hyprland),
-        (
-            "Media Cache Limit",
-            AppConfig::cache_limit_label(app.config.cache_limit_gb),
-            true,
-        ),
-        ("Color Theme", app.base_theme.name.clone(), true),
-        ("Browser Session", app.browser_label.clone(), false),
-        ("Sonata Updates", update_label, true),
+    let entries = [
+        SettingEntry {
+            section: Some("AUDIO & SOURCES"),
+            label: "Music Providers",
+            description: "Choose which catalogs appear in Library and Search results.",
+            value: SettingValueKind::Text(app.config.provider_mode.label().to_string()),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: None,
+            label: "YouTube Music Quality Upgrade",
+            description:
+                "Upgrade cached and live streams in the background to Extreme / peak bitrate.",
+            value: SettingValueKind::Toggle(app.config.hifi_substitution, "Enabled", "Disabled"),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: None,
+            label: "JioSaavn 320kbps Module",
+            description:
+                "Include JioSaavn results in search and upgrade <300kbps tracks to 320kbps AAC.",
+            value: SettingValueKind::Toggle(
+                app.config.jiosaavn_enabled,
+                "Enabled (320k)",
+                "Disabled",
+            ),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: Some("APPEARANCE & COMPOSITOR"),
+            label: "Color Theme",
+            description:
+                "Live-switch TUI color palette or load custom *.toml themes from config/themes.",
+            value: SettingValueKind::ThemeSwatch(app.base_theme.name.clone()),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: None,
+            label: "Animated Album Artwork",
+            description:
+                "Display looping Apple Music, Tidal & Community motion covers via Kitty/Sixel.",
+            value: SettingValueKind::Toggle(
+                app.config.motion_covers && !app.config.reduce_motion,
+                "Enabled",
+                "Static",
+            ),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: None,
+            label: "Transparent TUI Background",
+            description:
+                "Use terminal background alpha/glass compositing instead of an opaque surface fill.",
+            value: SettingValueKind::Toggle(transparent, "Enabled (Glass)", "Solid"),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: None,
+            label: "Hyprland Window Opacity",
+            description:
+                "Adjust dynamic compositor window opacity via hyprctl when running inside Hyprland.",
+            value: SettingValueKind::OpacityBar(opacity, on_hyprland),
+            adjustable: on_hyprland,
+        },
+        SettingEntry {
+            section: Some("STORAGE & SYSTEM"),
+            label: "Media Cache Limit",
+            description:
+                "Cap on-disk audio, cover art & lyrics cache size (1–10 GB). Shared with Desktop.",
+            value: SettingValueKind::Text(AppConfig::cache_limit_label(app.config.cache_limit_gb)),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: None,
+            label: "Browser Account Session",
+            description:
+                "Synced cookies for library, Liked Songs & YTM Extreme. Press Enter/r to rescan.",
+            value: SettingValueKind::Text(app.browser_label.clone()),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: None,
+            label: "Version & Updates",
+            description:
+                "Installed Sonata version and GitHub release checker (Enter or u to check now).",
+            value: SettingValueKind::UpdateBadge(update_label, has_update),
+            adjustable: true,
+        },
     ];
 
-    let popup = settings_popup_rect(area, rows.len());
+    // Total inner rows: 3 section headers + 10 items + 2 spacers + divider + description + footer = 18..23.
+    let target_h = (entries.len() as u16 + 11).min(area.height);
+    let popup = sized_popup(44, 86, target_h, area);
     frame.render_widget(Clear, popup);
 
     let block = Block::default()
-        .title(" Settings ")
+        .title(" ✦ Sonata Settings ")
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -302,119 +378,277 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
-    if inner.height == 0 || inner.width == 0 {
+    if inner.height < 4 || inner.width < 12 {
         return;
     }
 
-    let mut constraints = Vec::with_capacity(rows.len() + 3);
-    constraints.push(Constraint::Length(1));
-    for _ in &rows {
-        constraints.push(Constraint::Length(1));
+    let show_desc = inner.height >= 20;
+    let show_sections = inner.height >= 17;
+    let bottom_reserved: u16 = if show_desc { 4 } else { 2 };
+    let list_avail_h = inner.height.saturating_sub(bottom_reserved);
+
+    // Flatten visual lines (optional section headers + setting rows), tracking selected visual row.
+    enum VisualRow<'a> {
+        Section(&'static str),
+        Setting(usize, &'a SettingEntry),
     }
-    constraints.push(Constraint::Length(1));
-    constraints.push(Constraint::Length(1));
 
-    let layout_areas = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(constraints)
-        .split(inner);
-
-    for (index, (label, value, adjustable)) in rows.iter().enumerate() {
-        let Some(row) = layout_areas.get(index + 1) else {
-            break;
-        };
-        if row.height == 0 || row.width < 8 {
-            continue;
+    let mut visual_rows: Vec<VisualRow<'_>> = Vec::with_capacity(entries.len() + 3);
+    let mut selected_visual_idx = 0usize;
+    for (idx, entry) in entries.iter().enumerate() {
+        if show_sections {
+            if let Some(sec) = entry.section {
+                visual_rows.push(VisualRow::Section(sec));
+            }
         }
-        let is_selected = index == selected;
-        let row_style = if is_selected {
-            Style::default().bg(app.theme.highlight_bg)
-        } else {
-            Style::default().bg(app.theme.surface)
+        if idx == selected {
+            selected_visual_idx = visual_rows.len();
+        }
+        visual_rows.push(VisualRow::Setting(idx, entry));
+    }
+
+    let max_rows = list_avail_h as usize;
+    let scroll_start = if visual_rows.len() <= max_rows || selected_visual_idx < max_rows / 2 {
+        0
+    } else {
+        (selected_visual_idx - max_rows / 2).min(visual_rows.len() - max_rows)
+    };
+
+    for (v_offset, v_row) in visual_rows
+        .iter()
+        .skip(scroll_start)
+        .take(max_rows)
+        .enumerate()
+    {
+        let row_rect = Rect {
+            x: inner.x,
+            y: inner.y + v_offset as u16,
+            width: inner.width,
+            height: 1,
         };
-        frame.render_widget(Block::default().style(row_style), *row);
+        match v_row {
+            VisualRow::Section(title) => {
+                let title_len = title.chars().count();
+                let rule_w = row_rect.width.saturating_sub(title_len as u16 + 6) as usize;
+                let line = Line::from(vec![
+                    Span::styled(" ── ", Style::default().fg(app.theme.border)),
+                    Span::styled(
+                        *title,
+                        Style::default()
+                            .fg(app.theme.accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!(" {}", "─".repeat(rule_w)),
+                        Style::default().fg(app.theme.border),
+                    ),
+                ]);
+                frame.render_widget(Paragraph::new(line), row_rect);
+            }
+            VisualRow::Setting(index, entry) => {
+                let is_selected = *index == selected;
+                let row_style = if is_selected {
+                    Style::default().bg(app.theme.highlight_bg)
+                } else {
+                    Style::default().bg(app.theme.surface)
+                };
+                frame.render_widget(Block::default().style(row_style), row_rect);
 
-        let label_w = settings_label_width(row.width);
-        let cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(1),
-                Constraint::Length(2),
-                Constraint::Length(label_w),
-                Constraint::Min(10),
-                Constraint::Length(1),
-            ])
-            .split(*row);
+                let label_w = settings_label_width(row_rect.width);
+                let cols = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([
+                        Constraint::Length(1),
+                        Constraint::Length(2),
+                        Constraint::Length(label_w),
+                        Constraint::Min(10),
+                        Constraint::Length(1),
+                    ])
+                    .split(row_rect);
 
-        let marker = if is_selected { "▶ " } else { "  " };
+                let marker = if is_selected { "▎" } else { " " };
+                frame.render_widget(
+                    Paragraph::new(Span::styled(
+                        marker,
+                        row_style.fg(app.theme.accent).add_modifier(Modifier::BOLD),
+                    )),
+                    cols[0],
+                );
+                frame.render_widget(
+                    Paragraph::new(Span::styled(
+                        if is_selected { "▶" } else { "·" },
+                        row_style.fg(if is_selected {
+                            app.theme.accent
+                        } else {
+                            app.theme.muted
+                        }),
+                    )),
+                    cols[1],
+                );
+
+                let label_style = if is_selected {
+                    row_style
+                        .fg(app.theme.highlight_fg)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    row_style.fg(app.theme.fg)
+                };
+                frame.render_widget(
+                    Paragraph::new(Span::styled(entry.label, label_style)),
+                    cols[2],
+                );
+
+                let arrow_style = if is_selected {
+                    row_style.fg(app.theme.accent).add_modifier(Modifier::BOLD)
+                } else {
+                    row_style.fg(app.theme.muted)
+                };
+
+                let mut val_spans: Vec<Span<'_>> = Vec::new();
+                if entry.adjustable && is_selected {
+                    val_spans.push(Span::styled("◀ ", arrow_style));
+                }
+                match &entry.value {
+                    SettingValueKind::Toggle(enabled, on_lbl, off_lbl) => {
+                        let (dot, lbl, color) = if *enabled {
+                            ("● ", *on_lbl, app.theme.success)
+                        } else {
+                            ("○ ", *off_lbl, app.theme.muted)
+                        };
+                        val_spans.push(Span::styled(
+                            dot,
+                            row_style.fg(color).add_modifier(Modifier::BOLD),
+                        ));
+                        val_spans.push(Span::styled(
+                            lbl,
+                            row_style
+                                .fg(if *enabled { color } else { app.theme.muted })
+                                .add_modifier(if is_selected {
+                                    Modifier::BOLD
+                                } else {
+                                    Modifier::empty()
+                                }),
+                        ));
+                    }
+                    SettingValueKind::Text(text) => {
+                        let color = if entry.adjustable {
+                            app.theme.accent
+                        } else {
+                            app.theme.muted
+                        };
+                        val_spans.push(Span::styled(
+                            text.clone(),
+                            row_style.fg(color).add_modifier(if is_selected {
+                                Modifier::BOLD
+                            } else {
+                                Modifier::empty()
+                            }),
+                        ));
+                    }
+                    SettingValueKind::ThemeSwatch(name) => {
+                        val_spans.push(Span::styled("█", row_style.fg(app.theme.accent)));
+                        val_spans.push(Span::styled("█", row_style.fg(app.theme.success)));
+                        val_spans.push(Span::styled("█ ", row_style.fg(app.theme.highlight_fg)));
+                        val_spans.push(Span::styled(
+                            name.clone(),
+                            row_style.fg(app.theme.accent).add_modifier(Modifier::BOLD),
+                        ));
+                    }
+                    SettingValueKind::OpacityBar(val, unlocked) => {
+                        if *unlocked {
+                            let pct = (val * 100.0).round() as u32;
+                            let steps = ((val - 0.5).clamp(0.0, 0.5) / 0.5 * 8.0).round() as usize;
+                            let fill = "━".repeat(steps.min(8));
+                            let rest = "─".repeat(8usize.saturating_sub(steps.min(8)));
+                            val_spans.push(Span::styled(fill, row_style.fg(app.theme.accent)));
+                            val_spans.push(Span::styled("●", row_style.fg(app.theme.highlight_fg)));
+                            val_spans.push(Span::styled(rest, row_style.fg(app.theme.border)));
+                            val_spans.push(Span::styled(
+                                format!(" {pct}%"),
+                                row_style.fg(app.theme.fg).add_modifier(Modifier::BOLD),
+                            ));
+                        } else {
+                            val_spans.push(Span::styled(
+                                "Solid (100% · Locked)",
+                                row_style.fg(app.theme.muted),
+                            ));
+                        }
+                    }
+                    SettingValueKind::UpdateBadge(text, is_new) => {
+                        let color = if *is_new {
+                            app.theme.warning
+                        } else {
+                            app.theme.success
+                        };
+                        val_spans.push(Span::styled(
+                            text.clone(),
+                            row_style.fg(color).add_modifier(Modifier::BOLD),
+                        ));
+                    }
+                }
+                if entry.adjustable && is_selected {
+                    val_spans.push(Span::styled(" ▶", arrow_style));
+                }
+
+                frame.render_widget(
+                    Paragraph::new(Line::from(val_spans)).alignment(Alignment::Right),
+                    cols[3],
+                );
+            }
+        }
+    }
+
+    let footer_start_y = inner.y + inner.height.saturating_sub(bottom_reserved);
+    let divider_rect = Rect {
+        x: inner.x,
+        y: footer_start_y,
+        width: inner.width,
+        height: 1,
+    };
+    if divider_rect.width > 2 {
+        let rule = "─".repeat(divider_rect.width.saturating_sub(2) as usize);
+        frame.render_widget(
+            Paragraph::new(Span::styled(rule, Style::default().fg(app.theme.border)))
+                .alignment(Alignment::Center),
+            divider_rect,
+        );
+    }
+
+    if show_desc {
+        let desc_rect = Rect {
+            x: inner.x + 1,
+            y: footer_start_y + 1,
+            width: inner.width.saturating_sub(2),
+            height: 2,
+        };
+        let desc_text = entries.get(selected).map(|e| e.description).unwrap_or("");
         frame.render_widget(
             Paragraph::new(Span::styled(
-                marker,
-                row_style.fg(app.theme.accent).add_modifier(Modifier::BOLD),
-            )),
-            cols[1],
-        );
-
-        let label_style = if is_selected {
-            row_style
-                .fg(app.theme.highlight_fg)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            row_style.fg(app.theme.fg)
-        };
-        frame.render_widget(Paragraph::new(Span::styled(*label, label_style)), cols[2]);
-
-        let value_line = if *adjustable {
-            let arrow_style = if is_selected {
-                row_style.fg(app.theme.accent).add_modifier(Modifier::BOLD)
-            } else {
-                row_style.fg(app.theme.muted)
-            };
-            let val_style = if is_selected {
-                row_style.fg(app.theme.accent).add_modifier(Modifier::BOLD)
-            } else {
-                row_style.fg(app.theme.accent)
-            };
-            Line::from(vec![
-                Span::styled("◀  ", arrow_style),
-                Span::styled(value.as_str(), val_style),
-                Span::styled("  ▶", arrow_style),
-            ])
-        } else {
-            Line::from(vec![
-                Span::styled(value.as_str(), row_style.fg(app.theme.muted)),
-                Span::raw("   "),
-            ])
-        };
-        frame.render_widget(
-            Paragraph::new(value_line).alignment(Alignment::Right),
-            cols[3],
+                desc_text,
+                Style::default().fg(app.theme.muted),
+            ))
+            .wrap(Wrap { trim: true })
+            .alignment(Alignment::Center),
+            desc_rect,
         );
     }
 
-    if let Some(divider_area) = layout_areas.get(rows.len() + 1) {
-        if divider_area.width > 2 {
-            let rule = "─".repeat(divider_area.width.saturating_sub(2) as usize);
-            frame.render_widget(
-                Paragraph::new(Span::styled(rule, Style::default().fg(app.theme.border)))
-                    .alignment(Alignment::Center),
-                *divider_area,
-            );
-        }
-    }
-
-    if let Some(hint_area) = layout_areas.get(rows.len() + 2) {
-        let hint = if hint_area.width >= 58 {
-            "↑/↓: Navigate   ←/→/Enter: Change   u: Check Updates   Esc/S: Close"
-        } else {
-            "↑/↓ Nav  ←/→ Change  u Updates  Esc Close"
-        };
-        frame.render_widget(
-            Paragraph::new(Span::styled(hint, Style::default().fg(app.theme.muted)))
-                .alignment(Alignment::Center),
-            *hint_area,
-        );
-    }
+    let hint_rect = Rect {
+        x: inner.x,
+        y: inner.y + inner.height.saturating_sub(1),
+        width: inner.width,
+        height: 1,
+    };
+    let hint = if hint_rect.width >= 66 {
+        "↑/↓ Navigate   ←/→/Enter Toggle   u Check Updates   r Rescan Browser   Esc Close"
+    } else {
+        "↑/↓ Nav  ←/→/Enter Change  u Update  Esc Close"
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(hint, Style::default().fg(app.theme.muted)))
+            .alignment(Alignment::Center),
+        hint_rect,
+    );
 }
 
 fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -424,13 +658,12 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
         "Search:      /             Search       |  Enter     Play",
         "Playback:    Space         Play/Pause   |  n / p     Next / Prev",
         "Seek/Vol:    < / >         Seek ±5s     |  - / +     Volume ±5%",
-        "Audio DSP:   e             Cycle Enhancer (Hi-Res Crystal / Spatial / Bass / Bit-Perfect)",
         "Queue Modes: s             Shuffle      |  r         Repeat (Off/All/One)",
         "YTM Sync:    y             Like / Unlike on YouTube Music account",
         "             a / x (Del)   Add to / Remove from YTM playlist",
         "             c / R         Create YTM playlist / Refresh account",
         "Spotify:     i             Import any Spotify playlist URL",
-        "Settings:    S             Providers, Hi-Fi, DSP, Transparency, Cache & Theme",
+        "Settings:    S             Providers, Hi-Fi, Transparency, Cache & Theme",
         "Keybinds:    k / ?         Show or close this Keybindings menu",
         "Mini Mode:   m / Dbl-Click Toggle Mini Mode (Art + Lyrics / Art / Mini Player)",
         "Themes:      t             Open Theme Picker (live preview)",

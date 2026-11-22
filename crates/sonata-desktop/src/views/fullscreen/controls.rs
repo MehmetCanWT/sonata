@@ -5,8 +5,8 @@
 //! 3. **Layout Stability**: a fixed-height `CONTROLS_DOCK_HEIGHT` container prevents artwork jumping when controls auto-hide.
 
 use super::super::{
-    render_cover_surface, render_icon_button, render_progress_slider, render_volume_slider,
-    FluentDivExt, SonataDesktopView,
+    render_cover_surface, render_fullscreen_progress_section, render_icon_button,
+    render_volume_slider, FluentDivExt, SonataDesktopView,
 };
 use crate::backend::BackendCmd;
 use crate::theme_bridge::{rgb_hsla, GlassPalette};
@@ -17,7 +17,7 @@ use gpui_kit::{
 };
 use std::sync::Arc;
 
-const CONTROLS_DOCK_HEIGHT: f32 = 84.0;
+const CONTROLS_DOCK_HEIGHT: f32 = 96.0;
 
 pub(super) fn has_explicit_marker(title: &str) -> bool {
     let lower = title.to_ascii_lowercase();
@@ -147,15 +147,9 @@ fn render_left_controls(
 
     dock.id("fullscreen-controls")
         .pt(px(4.0))
-        .gap(px(12.0))
+        .gap(px(10.0))
         .on_click(|_, _, cx| cx.stop_propagation())
-        .child(render_progress_slider(
-            view,
-            &ctrl_p,
-            "fullscreen-progress",
-            false,
-            cx,
-        ))
+        .child(render_fullscreen_progress_section(view, &ctrl_p, cx))
         .child(bottom_row)
         .into_any_element()
 }
@@ -233,25 +227,7 @@ pub(super) fn render_cover_column(
                     cover_size,
                     cover_radius,
                     p,
-                ))
-                .when(has_motion, |el| {
-                    el.child(
-                        div()
-                            .absolute()
-                            .top(px(10.0))
-                            .left(px(10.0))
-                            .px(px(7.0))
-                            .py(px(2.0))
-                            .rounded_full()
-                            .bg(rgb_hsla((12, 10, 18), 0.62))
-                            .border_1()
-                            .border_color(rgb_hsla((255, 255, 255), 0.18))
-                            .text_size(px(9.5))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb_hsla((255, 255, 255), 0.88))
-                            .child("MOTION"),
-                    )
-                }),
+                )),
         )
         .child(
             div()

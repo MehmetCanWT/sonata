@@ -284,7 +284,8 @@ fn detect_cli_cipher_runtime() -> Option<&'static str> {
     static CLI_RUNTIME: OnceLock<Option<&'static str>> = OnceLock::new();
     *CLI_RUNTIME.get_or_init(|| {
         ["node", "bun", "deno"].into_iter().find(|&candidate| {
-            std::process::Command::new(candidate)
+            let bin = crate::config::resolve_distro_binary(candidate);
+            std::process::Command::new(&bin)
                 .arg("--version")
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
@@ -314,7 +315,8 @@ async fn solve_via_cli_runtime(
     let sig_arg = sig.unwrap_or("").to_string();
     let n_arg = n.unwrap_or("").to_string();
 
-    let mut cmd = tokio::process::Command::new(runtime);
+    let runtime_bin = crate::config::resolve_distro_binary(runtime);
+    let mut cmd = tokio::process::Command::new(&runtime_bin);
     cmd.kill_on_drop(true);
     if runtime == "deno" {
         cmd.args([

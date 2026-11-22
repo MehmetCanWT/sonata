@@ -1,9 +1,15 @@
+//! Application configuration and cross-distro path helpers for Sonata.
+//!
+//! 1. **Configuration Model**: `AppConfig` stores playback, provider, cache, theme, and glass settings in `config.toml`.
+//! 2. **Atomic Process State**: Tracks active cache limits, JioSaavn enablement, and motion-cover toggles across async workers.
+//! 3. **Distro Binary Resolution**: `resolve_distro_binary` locates runtime dependencies (`mpv`, `ffmpeg`, `yt-dlp`, JS runtimes) across NixOS, Arch, Fedora, and Ubuntu paths.
+
 use crate::player::RepeatMode;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::OnceLock;
 
 static ANDROID_DIRS: OnceLock<(PathBuf, PathBuf)> = OnceLock::new();
@@ -13,52 +19,56 @@ pub const MAX_CACHE_LIMIT_GB: u8 = 10;
 const GIGABYTE: u64 = 1024 * 1024 * 1024;
 
 static ACTIVE_CACHE_LIMIT_GB: AtomicU8 = AtomicU8::new(DEFAULT_CACHE_LIMIT_GB);
+static ACTIVE_JIOSAAVN_ENABLED: AtomicBool = AtomicBool::new(false);
+static ACTIVE_MOTION_COVERS: AtomicBool = AtomicBool::new(true);
 
-/// Audio DSP enhancer presets used by the shared playback engine.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum EnhancerMode {
-    #[default]
-    HiResCrystal,
-    SpatialWide,
-    WarmBass,
-    BitPerfect,
+fn default_true() -> bool {
+    true
 }
 
-impl EnhancerMode {
-    pub fn next(self) -> Self {
-        match self {
-            Self::HiResCrystal => Self::SpatialWide,
-            Self::SpatialWide => Self::WarmBass,
-            Self::WarmBass => Self::BitPerfect,
-            Self::BitPerfect => Self::HiResCrystal,
+/// Resolves an external CLI dependency across standard Linux, NixOS, Flatpak, and Snap binary paths.
+pub fn resolve_distro_binary(bin_name: &str) -> String {
+    if bin_name.is_empty() || bin_name.contains('/') {
+        return bin_name.to_string();
+    }
+
+    if let Some(path_var) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(bin_name);
+            if candidate.is_file() {
+                return candidate.to_string_lossy().into_owned();
+            }
         }
     }
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::HiResCrystal => "Hi-Res Crystal",
-            Self::SpatialWide => "Spatial Wide",
-            Self::WarmBass => "Warm Bass",
-            Self::BitPerfect => "Bit-Perfect",
+    let mut fallback_dirs: Vec<PathBuf> = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        fallback_dirs.push(home.join(".local/bin"));
+        fallback_dirs.push(home.join(".nix-profile/bin"));
+        fallback_dirs.push(home.join(".local/state/nix/profiles/profile/bin"));
+        fallback_dirs.push(home.join(".local/share/flatpak/exports/bin"));
+    }
+    if let Ok(user) = std::env::var("USER") {
+        if !user.is_empty() && !user.contains('/') {
+            fallback_dirs.push(PathBuf::from(format!("/etc/profiles/per-user/{user}/bin")));
+        }
+    }
+    fallback_dirs.push(PathBuf::from("/run/current-system/sw/bin"));
+    fallback_dirs.push(PathBuf::from("/nix/var/nix/profiles/default/bin"));
+    fallback_dirs.push(PathBuf::from("/usr/local/bin"));
+    fallback_dirs.push(PathBuf::from("/usr/bin"));
+    fallback_dirs.push(PathBuf::from("/bin"));
+    fallback_dirs.push(PathBuf::from("/var/lib/flatpak/exports/bin"));
+    fallback_dirs.push(PathBuf::from("/snap/bin"));
+
+    for dir in fallback_dirs {
+        let candidate = dir.join(bin_name);
+        if candidate.is_file() {
+            return candidate.to_string_lossy().into_owned();
         }
     }
 
-    /// Returns the mpv `--af` audio filter chain for this preset.
-    pub fn mpv_af(self) -> &'static str {
-        match self {
-            Self::HiResCrystal => {
-                "lavfi=[aresample=96000:resampler=soxr:precision=28,crystalizer=i=1.4,extrastereo=m=1.18,alimiter=limit=0.95:level=false]"
-            }
-            Self::SpatialWide => {
-                "lavfi=[extrastereo=m=2.0,bs2b=fcut=700:feed=65,alimiter=limit=0.95:level=false]"
-            }
-            Self::WarmBass => {
-                "lavfi=[bass=g=4.5:f=95:w=0.6,crystalizer=i=1.2,alimiter=limit=0.95:level=false]"
-            }
-            Self::BitPerfect => "",
-        }
-    }
+    bin_name.to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -113,11 +123,14 @@ pub struct AppConfig {
     pub shuffle: bool,
     pub repeat_mode: RepeatMode,
     pub provider_mode: ProviderMode,
-    pub enhancer_mode: EnhancerMode,
     pub hifi_substitution: bool,
+    #[serde(default)]
+    pub jiosaavn_enabled: bool,
     /// Maximum retained media cache size in GiB. Zero disables persistent caching.
     pub cache_limit_gb: u8,
     pub transparent_bg: bool,
+    #[serde(default = "default_true")]
+    pub motion_covers: bool,
     pub reduce_motion: bool,
     pub hyprland_opacity: f32,
     pub left_pane_pct: u16,
@@ -138,10 +151,11 @@ impl Default for AppConfig {
             shuffle: false,
             repeat_mode: RepeatMode::Off,
             provider_mode: ProviderMode::Both,
-            enhancer_mode: EnhancerMode::HiResCrystal,
             hifi_substitution: true,
+            jiosaavn_enabled: false,
             cache_limit_gb: DEFAULT_CACHE_LIMIT_GB,
             transparent_bg: true,
+            motion_covers: true,
             reduce_motion: false,
             hyprland_opacity: 0.90,
             left_pane_pct: 32,
@@ -156,6 +170,26 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    /// Returns whether the optional JioSaavn 320kbps AAC module is enabled in this process.
+    pub fn jiosaavn_enabled() -> bool {
+        ACTIVE_JIOSAAVN_ENABLED.load(Ordering::Relaxed)
+    }
+
+    /// Updates the process-wide JioSaavn toggle state.
+    pub fn set_jiosaavn_enabled(enabled: bool) {
+        ACTIVE_JIOSAAVN_ENABLED.store(enabled, Ordering::Relaxed);
+    }
+
+    /// Returns whether animated album artwork covers are enabled in this process.
+    pub fn motion_covers_enabled() -> bool {
+        ACTIVE_MOTION_COVERS.load(Ordering::Relaxed)
+    }
+
+    /// Updates the process-wide animated album artwork toggle state.
+    pub fn set_motion_covers_enabled(enabled: bool) {
+        ACTIVE_MOTION_COVERS.store(enabled, Ordering::Relaxed);
+    }
+
     /// Return the active process-wide cache limit used by media and database caches.
     pub fn active_cache_limit_bytes() -> u64 {
         u64::from(ACTIVE_CACHE_LIMIT_GB.load(Ordering::Relaxed)) * GIGABYTE
@@ -262,6 +296,8 @@ error = "#f38ba8"
             if let Ok(mut cfg) = toml::from_str::<Self>(&raw) {
                 cfg.cache_limit_gb = cfg.cache_limit_gb.min(MAX_CACHE_LIMIT_GB);
                 ACTIVE_CACHE_LIMIT_GB.store(cfg.cache_limit_gb, Ordering::Relaxed);
+                Self::set_jiosaavn_enabled(cfg.jiosaavn_enabled);
+                Self::set_motion_covers_enabled(cfg.motion_covers);
                 return cfg;
             }
         }
@@ -275,6 +311,8 @@ error = "#f38ba8"
         let mut persisted = self.clone();
         persisted.cache_limit_gb = persisted.cache_limit_gb.min(MAX_CACHE_LIMIT_GB);
         ACTIVE_CACHE_LIMIT_GB.store(persisted.cache_limit_gb, Ordering::Relaxed);
+        Self::set_jiosaavn_enabled(persisted.jiosaavn_enabled);
+        Self::set_motion_covers_enabled(persisted.motion_covers);
         let body = toml::to_string_pretty(&persisted)?;
         let path = Self::config_path();
         let tmp = path.with_extension("toml.tmp");

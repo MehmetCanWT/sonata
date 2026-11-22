@@ -1,4 +1,10 @@
+//! Shared music provider models, HTTP client builder, and submodule exports.
+//!
+//! 1. **Provider Modules**: `hifi` (stream resolution), `jiosaavn` (optional 320kbps AAC module), `spotify`, and `ytmusic`.
+//! 2. **Core Models**: `Track`, `Playlist`, and `ProviderSource` represent cross-provider items uniformly.
+
 pub mod hifi;
+pub mod jiosaavn;
 pub mod spotify;
 pub mod ytmusic;
 
@@ -42,6 +48,22 @@ pub struct Track {
     /// Whether YouTube Music marks this track with `MUSIC_EXPLICIT_BADGE`.
     #[serde(default)]
     pub is_explicit: bool,
+}
+
+impl Track {
+    /// Returns true when this track originates from the optional JioSaavn module.
+    pub fn is_jiosaavn(&self) -> bool {
+        self.id.starts_with(jiosaavn::ID_PREFIX)
+    }
+
+    /// Returns the short 3-letter source badge displayed in track lists (`YTM`, `SPF`, `JIO`).
+    pub fn source_tag(&self) -> &'static str {
+        if self.is_jiosaavn() {
+            "JIO"
+        } else {
+            self.source.short_tag()
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

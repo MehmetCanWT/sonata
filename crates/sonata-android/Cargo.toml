@@ -1,6 +1,6 @@
 [package]
 name = "sonata-android"
-version.workspace = true
+version = "1.0.3"
 edition.workspace = true
 license.workspace = true
 description = "UniFFI Android bridge for the Sonata music player engine"

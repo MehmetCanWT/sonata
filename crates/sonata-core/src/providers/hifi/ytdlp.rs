@@ -53,7 +53,8 @@ impl StreamResolver {
             }
         );
 
-        let mut command = Command::new("yt-dlp");
+        let ytdlp_bin = crate::config::resolve_distro_binary("yt-dlp");
+        let mut command = Command::new(&ytdlp_bin);
         command.kill_on_drop(true);
         command.args([
             "--no-playlist",
@@ -164,7 +165,8 @@ pub(super) fn detect_js_runtime() -> Option<&'static str> {
         ["deno", "node", "bun", "quickjs"]
             .into_iter()
             .find(|&candidate| {
-                std::process::Command::new(candidate)
+                let bin = crate::config::resolve_distro_binary(candidate);
+                std::process::Command::new(&bin)
                     .arg("--version")
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
