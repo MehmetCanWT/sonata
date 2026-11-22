@@ -38,6 +38,7 @@ import dev.sonata.android.data.CanvasResolver
 import dev.sonata.android.data.DownloadQualityTier
 import dev.sonata.android.data.DownloadedTrackInput
 import dev.sonata.android.data.DownloadedTrackRecord
+import dev.sonata.android.data.JioSaavnSource
 import dev.sonata.android.data.SonataDownloadManager
 import dev.sonata.android.data.SonataPreferences
 import dev.sonata.android.data.SonataSettingsState
@@ -254,6 +255,7 @@ data class SonataUiState(
     val playlists: List<AndroidPlaylist> = emptyList(),
     val tracks: List<AndroidTrack> = emptyList(),
     val listTitle: String = "Quick Picks",
+    val collectionBrowseId: String? = null,
     val collectionTitle: String? = null,
     val collectionCoverUrl: String? = null,
     val collectionSubtitle: String? = null,
@@ -1322,6 +1324,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update {
             it.copy(
                 activeTab = tab,
+                collectionBrowseId = null,
                 collectionTitle = null,
                 collectionCoverUrl = null,
                 collectionSubtitle = null,
@@ -1338,6 +1341,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
     fun closeCollection() {
         _uiState.update {
             it.copy(
+                collectionBrowseId = null,
                 collectionTitle = null,
                 collectionCoverUrl = null,
                 collectionSubtitle = null,
@@ -1407,17 +1411,52 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
     fun downloadTrack(track: AndroidTrack, collectionId: String? = null) {
         viewModelScope.launch(Dispatchers.IO) {
             if (downloadManager.isDownloaded(track.id)) {
-                _uiState.update { it.copy(status = "Already downloaded: ${track.title}") }
+                _uiState.update {
+                    it.copy(
+                        status = "Already downloaded: ${track.title}",
+                        addToPlaylistStatus = "Already downloaded",
+                    )
+                }
                 return@launch
             }
+            _uiState.update {
+                it.copy(
+                    status = "Downloading ${track.title}...",
+                    addToPlaylistStatus = "Downloading ${track.title}...",
+                )
+            }
             val engine = requireEngine()
-            var stream = getCachedStream(track.id) ?: runCatching { engine.resolveStream(track) }
-                .onSuccess { putCachedStream(track.id, it) }
-                .getOrElse { err ->
-                    _uiState.update { it.copy(status = "Download failed: ${err.message}") }
+            var stream = if (track.id.startsWith("jiosaavn:")) {
+                JioSaavnSource.resolveById(track.id)?.let { js ->
+                    AndroidResolvedStream(
+                        url = js.url,
+                        badge = "AAC ${js.bitrateKbps}kbps · JioSaavn",
+                        headers = emptyList(),
+                    )
+                } ?: run {
+                    _uiState.update {
+                        it.copy(
+                            status = "Download failed: JioSaavn unavailable",
+                            addToPlaylistStatus = "Download failed",
+                        )
+                    }
                     return@launch
                 }
-            if (settings.value.downloadQuality == DownloadQualityTier.HIGH &&
+            } else {
+                getCachedStream(track.id) ?: runCatching { engine.resolveStream(track) }
+                    .onSuccess { putCachedStream(track.id, it) }
+                    .getOrElse { err ->
+                        _uiState.update {
+                            it.copy(
+                                status = "Download failed: ${err.message}",
+                                addToPlaylistStatus = "Download failed",
+                            )
+                        }
+                        return@launch
+                    }
+            }
+            if (!track.id.startsWith("jiosaavn:") &&
+                settings.value.downloadQuality == DownloadQualityTier.HIGH &&
                 shouldUpgradeStreamBadge(stream.badge, _uiState.value.signedIn)
             ) {
                 runCatching { engine.resolveHifiUpgrade(track, stream) }
@@ -1427,6 +1466,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                         putCachedStream(track.id, upgraded)
                     }
             }
+            val cleanUrl = stripRangeQueryParam(stream.url)
             val input = DownloadedTrackInput(
                 videoId = track.id,
                 title = track.title,
@@ -1436,15 +1476,39 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                 coverUrl = track.thumbnailUrl,
                 codec = stream.badge.ifBlank { null },
             )
-            downloadManager.downloadTrack(
+            var result = downloadManager.downloadTrack(
                 track = input,
-                streamUrl = stream.url,
+                streamUrl = cleanUrl,
                 exportToMusic = settings.value.exportDownloads,
                 collectionId = collectionId,
-            ).onSuccess {
-                _uiState.update { it.copy(status = "Downloaded ${track.title}") }
+            )
+            if (result.isFailure && !track.id.startsWith("jiosaavn:")) {
+                val recovered = runCatching { engine.resolveRecovery(track) }.getOrNull()
+                if (recovered != null) {
+                    putCachedStream(track.id, recovered)
+                    result = downloadManager.downloadTrack(
+                        track = input.copy(codec = recovered.badge.ifBlank { input.codec }),
+                        streamUrl = stripRangeQueryParam(recovered.url),
+                        exportToMusic = settings.value.exportDownloads,
+                        collectionId = collectionId,
+                    )
+                }
+            }
+            result.onSuccess {
+                _uiState.update {
+                    it.copy(
+                        status = "Downloaded ${track.title}",
+                        addToPlaylistStatus = "Downloaded ${track.title}",
+                    )
+                }
             }.onFailure { err ->
-                _uiState.update { it.copy(status = "Download failed: ${err.message}") }
+                Log.w("SonataDownload", "downloadTrack failed id=${track.id}: ${err.message}")
+                _uiState.update {
+                    it.copy(
+                        status = "Download failed: ${err.message}",
+                        addToPlaylistStatus = "Download failed",
+                    )
+                }
             }
         }
     }
@@ -1453,14 +1517,39 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         if (tracks.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {
             val unique = tracks.distinctBy { it.id }
+            val pending = unique.filterNot { downloadManager.isDownloaded(it.id) }
+            if (pending.isEmpty()) {
+                _uiState.update {
+                    it.copy(
+                        status = "All ${unique.size} tracks already downloaded",
+                        addToPlaylistStatus = "All tracks already downloaded",
+                    )
+                }
+                return@launch
+            }
+            _uiState.update {
+                it.copy(
+                    status = "Downloading ${pending.size} tracks...",
+                    addToPlaylistStatus = "Downloading ${pending.size} tracks...",
+                )
+            }
             val engine = requireEngine()
             var savedCount = 0
-            for (track in unique) {
+            for (track in pending) {
                 if (!isActive) break
-                if (downloadManager.isDownloaded(track.id)) continue
-                val stream = getCachedStream(track.id) ?: runCatching { engine.resolveStream(track) }
+                var stream = getCachedStream(track.id) ?: runCatching { engine.resolveStream(track) }
                     .onSuccess { putCachedStream(track.id, it) }
                     .getOrNull() ?: continue
+                if (settings.value.downloadQuality == DownloadQualityTier.HIGH &&
+                    shouldUpgradeStreamBadge(stream.badge, _uiState.value.signedIn)
+                ) {
+                    runCatching { engine.resolveHifiUpgrade(track, stream) }
+                        .getOrNull()
+                        ?.let { upgraded ->
+                            stream = upgraded
+                            putCachedStream(track.id, upgraded)
+                        }
+                }
                 val input = DownloadedTrackInput(
                     videoId = track.id,
                     title = track.title,
@@ -1470,19 +1559,53 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                     coverUrl = track.thumbnailUrl,
                     codec = stream.badge.ifBlank { null },
                 )
-                val res = downloadManager.downloadTrack(
+                var res = downloadManager.downloadTrack(
                     track = input,
-                    streamUrl = stream.url,
+                    streamUrl = stripRangeQueryParam(stream.url),
                     exportToMusic = settings.value.exportDownloads,
                     collectionId = collectionId,
                 )
-                if (res.isSuccess) savedCount++
+                if (res.isFailure) {
+                    val recovered = runCatching { engine.resolveRecovery(track) }.getOrNull()
+                    if (recovered != null) {
+                        putCachedStream(track.id, recovered)
+                        res = downloadManager.downloadTrack(
+                            track = input.copy(codec = recovered.badge.ifBlank { input.codec }),
+                            streamUrl = stripRangeQueryParam(recovered.url),
+                            exportToMusic = settings.value.exportDownloads,
+                            collectionId = collectionId,
+                        )
+                    }
+                }
+                if (res.isSuccess) {
+                    savedCount++
+                } else {
+                    Log.w("SonataDownload", "downloadCollection track failed id=${track.id}: ${res.exceptionOrNull()?.message}")
+                }
             }
-            if (savedCount > 0) {
-                _uiState.update { it.copy(status = "Downloaded $savedCount tracks") }
+            val msg = if (savedCount > 0) {
+                "Downloaded $savedCount of ${pending.size} tracks"
+            } else {
+                "Download failed"
             }
+            _uiState.update { it.copy(status = msg, addToPlaylistStatus = msg) }
         }
     }
+
+    private fun stripRangeQueryParam(url: String): String {
+        if (!url.contains("range=", ignoreCase = true)) return url
+        return url
+            .replace(Regex("([?&])range=[^&]*&?"), "$1")
+            .trimEnd('&', '?')
+    }
+
+    private fun parseBitrateKbps(badge: String): Int =
+        Regex("(\\d{2,4})\\s*kbps", RegexOption.IGNORE_CASE)
+            .find(badge)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+            ?: 0
 
     fun cancelDownload(videoId: String) {
         downloadManager.cancelDownload(videoId)
@@ -2062,10 +2185,12 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         speculativePrefetchJob?.cancel()
         viewModelScope.launch(Dispatchers.IO) {
             val engine = requireEngine()
+            val includeJioSaavn = settings.value.jioSaavnEnabled
             _uiState.update { state ->
                 val updatedHistory = (listOf(q) + state.recentSearches.filterNot { it.equals(q, ignoreCase = true) }).take(12)
                 state.copy(
                     activeTab = AndroidTab.Search,
+                    collectionBrowseId = null,
                     collectionTitle = null,
                     collectionCoverUrl = null,
                     collectionSubtitle = null,
@@ -2079,21 +2204,60 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                     status = "Searching \"$q\"..."
                 )
             }
-            runCatching { engine.searchSongs(q) }
-                .onSuccess { results ->
+            val (ytResult, jioTracks) = coroutineScope {
+                val ytDeferred = async { runCatching { engine.searchSongs(q) } }
+                val jioDeferred = if (includeJioSaavn) {
+                    async {
+                        withTimeoutOrNull(4_000L) {
+                            JioSaavnSource.searchTracks(q, limit = 6)
+                        }.orEmpty()
+                    }
+                } else {
+                    null
+                }
+                ytDeferred.await() to (jioDeferred?.await().orEmpty())
+            }
+            ytResult
+                .onSuccess { ytTracks ->
+                    val merged = if (jioTracks.isEmpty()) {
+                        ytTracks
+                    } else {
+                        val seenKeys = ytTracks.mapTo(HashSet()) {
+                            "${it.title.trim().lowercase()}|${it.artist.trim().lowercase()}"
+                        }
+                        val extraJio = jioTracks.filter { js ->
+                            seenKeys.add("${js.title.trim().lowercase()}|${js.artist.trim().lowercase()}")
+                        }
+                        ytTracks + extraJio
+                    }
                     _uiState.update {
                         it.copy(
                             loading = false,
-                            tracks = results,
+                            tracks = merged,
                             listTitle = "Search: $q",
-                            status = "${results.size} songs found"
+                            status = if (includeJioSaavn && jioTracks.isNotEmpty()) {
+                                "${merged.size} songs found (YTM + JioSaavn)"
+                            } else {
+                                "${merged.size} songs found"
+                            }
                         )
                     }
-                    prefetchStreams(results.take(2), delayMs = 1_500L)
+                    prefetchStreams(ytTracks.take(2), delayMs = 1_500L)
                 }
                 .onFailure { err ->
-                    _uiState.update {
-                        it.copy(loading = false, status = "Search error: ${err.message}")
+                    if (jioTracks.isNotEmpty()) {
+                        _uiState.update {
+                            it.copy(
+                                loading = false,
+                                tracks = jioTracks,
+                                listTitle = "Search: $q",
+                                status = "${jioTracks.size} songs found (JioSaavn)"
+                            )
+                        }
+                    } else {
+                        _uiState.update {
+                            it.copy(loading = false, status = "Search error: ${err.message}")
+                        }
                     }
                 }
         }
@@ -2353,6 +2517,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                 it.copy(
                     artistPage = null,
                     artistLoading = false,
+                    collectionBrowseId = id,
                     collectionTitle = "Downloads",
                     collectionCoverUrl = coverUrl ?: offlineTracks.firstOrNull()?.thumbnailUrl,
                     collectionSubtitle = "${offlineTracks.size} offline songs",
@@ -2371,6 +2536,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                 it.copy(
                     artistPage = null,
                     artistLoading = false,
+                    collectionBrowseId = id,
                     collectionTitle = title,
                     collectionCoverUrl = coverUrl ?: localTracks.firstOrNull { t -> !t.thumbnailUrl.isNullOrBlank() }?.thumbnailUrl,
                     collectionSubtitle = "${localTracks.size} offline playlist songs",
@@ -2389,6 +2555,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                 it.copy(
                     artistPage = null,
                     artistLoading = false,
+                    collectionBrowseId = id,
                     collectionTitle = title,
                     collectionCoverUrl = coverUrl,
                     collectionSubtitle = subtitle,
@@ -2413,6 +2580,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                         val resolvedHeaderCover = state.collectionCoverUrl ?: fallbackCover
                         state.copy(
                             loading = false,
+                            collectionBrowseId = id,
                             collectionTitle = title,
                             collectionCoverUrl = resolvedHeaderCover,
                             collectionTracks = tracks,
@@ -2577,7 +2745,22 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                 fetchLyricsInBackground(track)
             }
 
-            val (effectiveTrack, effectiveQueue, streamResult) = coroutineScope {
+            val (effectiveTrack, effectiveQueue, streamResult) = if (track.id.startsWith("jiosaavn:")) {
+                val resolved = if (cachedStream != null) {
+                    Result.success(cachedStream)
+                } else {
+                    runCatching {
+                        val js = JioSaavnSource.resolveById(track.id)
+                            ?: error("JioSaavn stream unavailable")
+                        AndroidResolvedStream(
+                            url = js.url,
+                            badge = "AAC ${js.bitrateKbps}kbps · JioSaavn",
+                            headers = emptyList(),
+                        )
+                    }.onSuccess { putCachedStream(track.id, it) }
+                }
+                Triple(track, updatedQueue, resolved)
+            } else coroutineScope {
                 val baseStreamDeferred = async {
                     if (cachedStream != null) {
                         Result.success(cachedStream)
@@ -2672,19 +2855,55 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                         prefetchStreams(upcoming, delayMs = 1_500L, cancelPrevious = true)
                     }
 
-                    // Upgrade in background if user wants high quality and we are not yet on an Extreme/Lossless stream.
+                    // Upgrade in background if user wants high quality (YTM Hi-Fi and/or JioSaavn 320kbps module).
                     val qualityCeiling = settings.value.audioQuality
                     val wantsHighQuality = _uiState.value.preferHighQuality &&
                         (qualityCeiling == AudioQualityTier.LOSSLESS || qualityCeiling == AudioQualityTier.HIGH)
-                    if (wantsHighQuality && shouldUpgradeStreamBadge(stream.badge, _uiState.value.signedIn)) {
+                    val tryYtmHifi = !effectiveTrack.id.startsWith("jiosaavn:") &&
+                        wantsHighQuality &&
+                        shouldUpgradeStreamBadge(stream.badge, _uiState.value.signedIn)
+                    val initialBitrate = parseBitrateKbps(stream.badge)
+                    val initialIsLossless = stream.badge.contains("FLAC", ignoreCase = true) ||
+                        stream.badge.contains("Lossless", ignoreCase = true)
+                    val tryJioSaavnUpgrade = settings.value.jioSaavnEnabled &&
+                        !effectiveTrack.id.startsWith("jiosaavn:") &&
+                        !initialIsLossless &&
+                        initialBitrate < 320
+                    if (tryYtmHifi || tryJioSaavnUpgrade) {
                         _uiState.update {
                             if (it.activeTrack?.id == effectiveTrack.id) it.copy(isUpgradingQuality = true) else it
                         }
                         launch(Dispatchers.IO) {
                             try {
-                                val upgraded = runCatching {
-                                    engine.resolveHifiUpgrade(effectiveTrack, stream)
-                                }.getOrNull()
+                                var upgraded: AndroidResolvedStream? = if (tryYtmHifi) {
+                                    runCatching {
+                                        engine.resolveHifiUpgrade(effectiveTrack, stream)
+                                    }.getOrNull()
+                                } else {
+                                    null
+                                }
+                                if (tryJioSaavnUpgrade && isActive && _uiState.value.activeTrack?.id == effectiveTrack.id) {
+                                    val bestSoFar = upgraded ?: stream
+                                    val bestIsLossless = bestSoFar.badge.contains("FLAC", ignoreCase = true) ||
+                                        bestSoFar.badge.contains("Lossless", ignoreCase = true)
+                                    val bestKbps = parseBitrateKbps(bestSoFar.badge)
+                                    if (!bestIsLossless && bestKbps < 320) {
+                                        val jioMatch = runCatching {
+                                            JioSaavnSource.findHigherQualityStream(effectiveTrack, bestKbps)
+                                        }.getOrNull()
+                                        if (jioMatch != null && jioMatch.bitrateKbps > bestKbps) {
+                                            Log.i(
+                                                "SonataStream",
+                                                "JioSaavn quality upgrade for '${effectiveTrack.title}': ${bestKbps}kbps -> ${jioMatch.bitrateKbps}kbps"
+                                            )
+                                            upgraded = AndroidResolvedStream(
+                                                url = jioMatch.url,
+                                                badge = "AAC ${jioMatch.bitrateKbps}kbps · JioSaavn",
+                                                headers = emptyList(),
+                                            )
+                                        }
+                                    }
+                                }
                                 if (upgraded != null && isActive && _uiState.value.activeTrack?.id == effectiveTrack.id) {
                                     putCachedStream(effectiveTrack.id, upgraded)
                                     _uiState.update { it.copy(streamBadge = upgraded.badge) }

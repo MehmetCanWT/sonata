@@ -122,11 +122,11 @@ fun NowPlayingOptionsMenu(
         visible = visible,
         enter = fadeIn() + scaleIn(
             initialScale = 0.90f,
-            transformOrigin = TransformOrigin(0.92f, 0.85f),
+            transformOrigin = TransformOrigin(0.92f, 0.14f),
         ),
         exit = fadeOut() + scaleOut(
             targetScale = 0.90f,
-            transformOrigin = TransformOrigin(0.92f, 0.85f),
+            transformOrigin = TransformOrigin(0.92f, 0.14f),
         ),
         modifier = modifier.fillMaxSize(),
     ) {
@@ -143,8 +143,8 @@ fun NowPlayingOptionsMenu(
                 )
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 18.dp),
-            contentAlignment = Alignment.BottomEnd,
+                .padding(start = 16.dp, end = 18.dp, top = 56.dp, bottom = 20.dp),
+            contentAlignment = Alignment.TopEnd,
         ) {
             CompositionLocalProvider(LocalAppBackdrop provides targetBackdrop) {
             val menuShape = RoundedCornerShape(24.dp)
@@ -152,14 +152,12 @@ fun NowPlayingOptionsMenu(
             val cardModifier = if (glassOn) {
                 Modifier
                     .widthIn(min = 276.dp, max = 312.dp)
-                    .heightIn(max = 580.dp)
                     .shadow(24.dp, menuShape, clip = false)
                     .liquidGlass(shape = menuShape, surfaceTint = PopoverGlassTint)
                     .sonataSpecularRim(shape = menuShape, strokeWidth = 0.75.dp)
             } else {
                 Modifier
                     .widthIn(min = 276.dp, max = 312.dp)
-                    .heightIn(max = 580.dp)
                     .shadow(24.dp, menuShape, clip = false)
                     .clip(menuShape)
                     .background(PopoverSurfaceColor.copy(alpha = 0.95f), menuShape)

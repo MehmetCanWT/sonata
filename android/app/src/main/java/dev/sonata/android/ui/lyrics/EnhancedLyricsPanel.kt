@@ -251,7 +251,6 @@ fun EnhancedLyricsPanel(
                         items = lyrics,
                         key = { idx, line -> "${idx}_${line.timeSecs}" },
                     ) { index, line ->
-                        val isActive = index == activeIndex
                         val dist = abs(index - activeIndex)
                         val rawTrimmed = line.text.trim()
                         val isCounter = line.isCounterVoice ||
@@ -261,9 +260,42 @@ fun EnhancedLyricsPanel(
                         val isBackground = cleanText.startsWith("(") && cleanText.endsWith(")") && cleanText.length > 2
 
                         val lineStartMs = (line.timeSecs * 1000.0).toLong()
-                        val nextStartMs = lyrics.getOrNull(index + 1)?.let { (it.timeSecs * 1000.0).toLong() }
+                        val baseNextStartMs = lyrics.getOrNull(index + 1)?.let { (it.timeSecs * 1000.0).toLong() }
                             ?: durationMs.takeIf { it > lineStartMs + 600L }
                             ?: (lineStartMs + 4_000L)
+                        val wordMaxEndMs = remember(line.words) {
+                            line.words.mapNotNull { it.endSecs }.maxOrNull()?.let { (it * 1000.0).toLong() }
+                        }
+                        val nextStartMs = when {
+                            wordMaxEndMs != null && wordMaxEndMs > lineStartMs ->
+                                maxOf(wordMaxEndMs, if (isBackground) lineStartMs + 1_200L else lineStartMs + 400L)
+                            isBackground ->
+                                maxOf(baseNextStartMs, lineStartMs + 1_600L).coerceAtMost(lineStartMs + 3_200L)
+                            else -> baseNextStartMs
+                        }
+
+                        val isActive by remember(index, lineStartMs, nextStartMs, isBackground, isCounter) {
+                            derivedStateOf {
+                                if (index == activeIndex) {
+                                    true
+                                } else {
+                                    val pos = adjustedClockMs.value + LYRIC_SYNC_LEAD_MS
+                                    val withinWindow = pos in lineStartMs..(nextStartMs + 260L)
+                                    if (!withinWindow) {
+                                        false
+                                    } else if (isBackground || isCounter || line.words.isNotEmpty()) {
+                                        true
+                                    } else {
+                                        val currentActive = lyrics.getOrNull(activeIndex)
+                                        val activeTrim = currentActive?.text?.trim().orEmpty()
+                                        currentActive != null && (
+                                            currentActive.isCounterVoice ||
+                                                (activeTrim.startsWith("(") && activeTrim.endsWith(")"))
+                                            )
+                                    }
+                                }
+                            }
+                        }
 
                         val interactionSource = remember { MutableInteractionSource() }
                         val isPressed by interactionSource.collectIsPressedAsState()

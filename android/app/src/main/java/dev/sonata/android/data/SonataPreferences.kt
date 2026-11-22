@@ -91,6 +91,9 @@ data class SonataSettingsState(
     val wifiOnlyDownloads: Boolean = true,
     val exportDownloads: Boolean = false,
     val autoDownloadLiked: Boolean = false,
+
+    // Modules
+    val jioSaavnEnabled: Boolean = false,
 )
 
 /**
@@ -199,6 +202,7 @@ class SonataPreferences(context: Context) {
             put(KEY_WIFI_ONLY_DOWNLOADS, current.wifiOnlyDownloads)
             put(KEY_EXPORT_DOWNLOADS, current.exportDownloads)
             put(KEY_AUTO_DOWNLOAD_LIKED, current.autoDownloadLiked)
+            put(KEY_JIOSAAVN_ENABLED, current.jioSaavnEnabled)
         }
 
         val offsetsObj = JSONObject().apply {
@@ -280,6 +284,7 @@ class SonataPreferences(context: Context) {
                     wifiOnlyDownloads = settingsObj.optBoolean(KEY_WIFI_ONLY_DOWNLOADS, defaults.wifiOnlyDownloads),
                     exportDownloads = settingsObj.optBoolean(KEY_EXPORT_DOWNLOADS, defaults.exportDownloads),
                     autoDownloadLiked = settingsObj.optBoolean(KEY_AUTO_DOWNLOAD_LIKED, defaults.autoDownloadLiked),
+                    jioSaavnEnabled = settingsObj.optBoolean(KEY_JIOSAAVN_ENABLED, defaults.jioSaavnEnabled),
                 ),
             )
 
@@ -360,6 +365,7 @@ class SonataPreferences(context: Context) {
                 wifiOnlyDownloads = prefs.getBoolean(KEY_WIFI_ONLY_DOWNLOADS, defaults.wifiOnlyDownloads),
                 exportDownloads = prefs.getBoolean(KEY_EXPORT_DOWNLOADS, defaults.exportDownloads),
                 autoDownloadLiked = prefs.getBoolean(KEY_AUTO_DOWNLOAD_LIKED, defaults.autoDownloadLiked),
+                jioSaavnEnabled = prefs.getBoolean(KEY_JIOSAAVN_ENABLED, defaults.jioSaavnEnabled),
             ),
         )
     }
@@ -399,6 +405,7 @@ class SonataPreferences(context: Context) {
             .putBoolean(KEY_WIFI_ONLY_DOWNLOADS, state.wifiOnlyDownloads)
             .putBoolean(KEY_EXPORT_DOWNLOADS, state.exportDownloads)
             .putBoolean(KEY_AUTO_DOWNLOAD_LIKED, state.autoDownloadLiked)
+            .putBoolean(KEY_JIOSAAVN_ENABLED, state.jioSaavnEnabled)
 
         if (trackOffsetsOverride != null) {
             editor.putString(KEY_TRACK_LYRIC_OFFSETS, encodeTrackOffsets(trackOffsetsOverride))
@@ -543,6 +550,7 @@ class SonataPreferences(context: Context) {
         private const val KEY_WIFI_ONLY_DOWNLOADS = "wifi_only_downloads"
         private const val KEY_EXPORT_DOWNLOADS = "export_downloads"
         private const val KEY_AUTO_DOWNLOAD_LIKED = "auto_download_liked"
+        private const val KEY_JIOSAAVN_ENABLED = "jiosaavn_enabled"
 
         private const val KEY_TRACK_LYRIC_OFFSETS = "track_lyric_offsets"
     }

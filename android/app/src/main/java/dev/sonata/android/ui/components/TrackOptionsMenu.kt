@@ -192,7 +192,6 @@ fun TrackOptionsMenu(
                 val glassOn = LocalLiquidGlassEnabled.current && isGlassSupported() && !LocalReduceDynamicBlur.current
                 val baseModifier = anchoredOffsetModifier
                     .width(256.dp)
-                    .heightIn(max = 560.dp)
                     .onSizeChanged { menuHeightPx = it.height }
                     .shadow(24.dp, menuShape, clip = false)
                 val cardModifier = if (glassOn) {

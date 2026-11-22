@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -345,7 +346,6 @@ fun SonataArtistCircleCard(
     Column(
         modifier = modifier
             .width(diameter + 8.dp)
-            .clip(RoundedCornerShape(14.dp))
             .clickable(onClick = onClick)
             .padding(vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -421,7 +421,9 @@ fun SonataSplitHeroHeader(
     onPlayAll: () -> Unit,
     onShuffleAll: () -> Unit,
     onDownloadAll: (() -> Unit)? = null,
-    onShare: (() -> Unit)? = null,
+    isDownloading: Boolean = false,
+    allDownloaded: Boolean = false,
+    onMoreOptions: (() -> Unit)? = null,
     onOpenArtist: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
@@ -593,30 +595,43 @@ fun SonataSplitHeroHeader(
                         .size(44.dp)
                         .sonataGlassSurface(shape = CircleShape)
                         .clip(CircleShape)
-                        .clickable(onClick = onDownloadAll),
+                        .clickable(enabled = !isDownloading, onClick = onDownloadAll),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(
-                        imageVector = SonataIcons.Download,
-                        contentDescription = "Download All",
-                        tint = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(18.dp),
-                    )
+                    when {
+                        isDownloading -> CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = accentColor,
+                        )
+                        allDownloaded -> Icon(
+                            imageVector = SonataIcons.Check,
+                            contentDescription = "All Downloaded",
+                            tint = accentColor,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        else -> Icon(
+                            imageVector = SonataIcons.Download,
+                            contentDescription = "Download All",
+                            tint = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
                 }
             }
 
-            if (onShare != null) {
+            if (onMoreOptions != null) {
                 Box(
                     modifier = Modifier
                         .size(44.dp)
                         .sonataGlassSurface(shape = CircleShape)
                         .clip(CircleShape)
-                        .clickable(onClick = onShare),
+                        .clickable(onClick = onMoreOptions),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
                         imageVector = SonataIcons.MoreHoriz,
-                        contentDescription = "Share",
+                        contentDescription = "More options",
                         tint = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.size(18.dp),
                     )

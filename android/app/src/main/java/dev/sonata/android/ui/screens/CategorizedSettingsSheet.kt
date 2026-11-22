@@ -119,6 +119,13 @@ enum class SettingsCategory(
         accent = Color(0xFFE5E5EA),
         keywords = "downloads offline storage wifi export music liked cache clear backup json import",
     ),
+    MODULES(
+        title = "Modules",
+        subtitle = "External audio sources (JioSaavn)",
+        icon = SonataIcons.Sparkles,
+        accent = Color(0xFFE5E5EA),
+        keywords = "modules sources jiosaavn external audio 320kbps aac higher quality stream search",
+    ),
     ACCOUNT(
         title = "Account & Updates",
         subtitle = "YouTube Music session & app updates",
@@ -417,6 +424,10 @@ private fun SettingsCategoryNavigator(
                     onClearMediaCache = onClearMediaCache,
                     onExportBackup = onExportBackup,
                     onImportBackup = onImportBackup,
+                )
+                SettingsCategory.MODULES -> ModulesSettingsPage(
+                    settings = settings,
+                    onUpdate = onUpdateSettings,
                 )
                 SettingsCategory.ACCOUNT -> AccountUpdatesSettingsPage(
                     signedIn = signedIn,
@@ -1032,6 +1043,49 @@ private fun DownloadsStorageSettingsPage(
                     subtitle = "Restore preferences from a previously exported file",
                     onClick = onImportBackup,
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModulesSettingsPage(
+    settings: SonataSettingsState,
+    onUpdate: ((SonataSettingsState) -> SonataSettingsState) -> Unit,
+) {
+    LazyColumn(
+        contentPadding = PaddingValues(bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        item(key = "modules_jiosaavn") {
+            SettingsSection("EXTERNAL AUDIO MODULES") {
+                SettingsToggleRow(
+                    title = "JioSaavn",
+                    subtitle = "Also search JioSaavn and upgrade playback when a higher-bitrate (up to 320 kbps AAC) stream is found",
+                    checked = settings.jioSaavnEnabled,
+                    onCheckedChange = { enabled -> onUpdate { it.copy(jioSaavnEnabled = enabled) } },
+                )
+                SettingsDivider()
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        text = "Matching Notice",
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            letterSpacing = 0.3.sp,
+                        ),
+                        color = Color(0xFFFFB74D),
+                    )
+                    Text(
+                        text = "JioSaavn may occasionally match a different version, cover, or album on tracks with similar titles. Streams are only substituted when JioSaavn provides a strictly higher bitrate than YouTube Music.",
+                        style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
+                        color = Color.White.copy(alpha = 0.65f),
+                    )
+                }
             }
         }
     }
