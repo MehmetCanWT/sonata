@@ -8,7 +8,6 @@
 //!    without authentication.
 //! 5. **Search**: track search returning Sonata's shared `Track` model.
 
-use crate::config::AppConfig;
 use crate::providers::{Playlist, ProviderSource, Track};
 use anyhow::{anyhow, Result};
 use base64::Engine as _;
@@ -87,6 +86,7 @@ struct SessionTokens {
 pub struct SpotifyClient {
     http: Client,
     sp_dc: Option<String>,
+    paths: crate::paths::CorePaths,
     state: Arc<Mutex<SpotifySession>>,
 }
 
@@ -98,10 +98,11 @@ struct SpotifySession {
 }
 
 impl SpotifyClient {
-    pub fn new(http: Client, sp_dc: Option<String>) -> Self {
+    pub fn with_paths(http: Client, sp_dc: Option<String>, paths: crate::paths::CorePaths) -> Self {
         Self {
             http,
             sp_dc,
+            paths,
             state: Arc::new(Mutex::new(SpotifySession::default())),
         }
     }
@@ -120,14 +121,14 @@ impl SpotifyClient {
             }
         }
 
-        let cache_path = AppConfig::cache_dir().join("spotify_webplayer.json");
+        let cache_path = self.paths.spotify_webplayer_cache_path();
         let now_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
 
         if !force {
-            if let Ok(raw) = std::fs::read_to_string(&cache_path) {
+            if let Ok(raw) = tokio::fs::read_to_string(&cache_path).await {
                 if let Ok(cached) = serde_json::from_str::<WebPlayerMeta>(&raw) {
                     if now_secs.saturating_sub(cached.fetched_at_secs) < 12 * 3600 {
                         let mut guard = self.state.lock().await;
@@ -181,7 +182,10 @@ impl SpotifyClient {
 
         meta.fetched_at_secs = now_secs;
         if let Ok(serialized) = serde_json::to_string(&meta) {
-            let _ = std::fs::write(&cache_path, serialized);
+            if let Some(parent) = cache_path.parent() {
+                let _ = tokio::fs::create_dir_all(parent).await;
+            }
+            let _ = tokio::fs::write(&cache_path, serialized).await;
         }
 
         let mut guard = self.state.lock().await;

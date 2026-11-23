@@ -611,12 +611,14 @@ internal fun DetailScreen(
     modifier: Modifier = Modifier,
     isDownloading: Boolean = false,
     allDownloaded: Boolean = false,
+    fullScreenDetailCover: Boolean = false,
     onPlayTrack: (AndroidTrack) -> Unit,
     onTrackOptions: (AndroidTrack, Rect?) -> Unit = { _, _ -> },
     onTrackLongClick: (AndroidTrack, Int, Rect?) -> Unit = { _, _, _ -> },
     onPlayAll: () -> Unit,
     onShuffleAll: () -> Unit,
     onDownloadAll: (() -> Unit)? = null,
+    onEditPlaylist: (() -> Unit)? = null,
     onMoreOptions: (() -> Unit)? = null,
     onOpenArtist: ((String) -> Unit)? = null,
 ) {
@@ -680,11 +682,15 @@ internal fun DetailScreen(
         modifier = modifier
             .fillMaxSize()
             .background(
-                Brush.verticalGradient(
-                    0.0f to palette.wash,
-                    0.48f to midWash,
-                    1.0f to bottomWash,
-                ),
+                if (themeTokens.isBasic) {
+                    Brush.verticalGradient(listOf(themeTokens.eclipseBase, themeTokens.eclipseBase))
+                } else {
+                    Brush.verticalGradient(
+                        0.0f to palette.wash,
+                        0.48f to midWash,
+                        1.0f to bottomWash,
+                    )
+                },
             ),
     ) {
         SonataShimmerHost {
@@ -701,25 +707,46 @@ internal fun DetailScreen(
                     val subtitleArtist = state.collectionSubtitle?.takeIf {
                         it.isNotBlank() && state.collectionKindLabel != "Offline Library"
                     }
-                    SonataSplitHeroHeader(
-                        title = state.collectionTitle.orEmpty(),
-                        subtitle = state.collectionSubtitle,
-                        kindLabel = state.collectionKindLabel,
-                        year = state.collectionYear,
-                        trackCount = state.collectionTracks.size,
-                        artworkUrl = state.collectionCoverUrl,
-                        accentColor = palette.accent,
-                        contentColor = palette.onBackground,
-                        washColor = palette.wash,
-                        topInset = detailTopInset,
-                        onPlayAll = onPlayAll,
-                        onShuffleAll = onShuffleAll,
-                        onDownloadAll = onDownloadAll?.takeIf { state.collectionTracks.isNotEmpty() },
-                        isDownloading = isDownloading,
-                        allDownloaded = allDownloaded,
-                        onMoreOptions = onMoreOptions,
-                        onOpenArtist = subtitleArtist?.let { artist -> { onOpenArtist?.invoke(artist) } },
-                    )
+                    if (themeTokens.isBasic) {
+                        dev.sonata.android.ui.screens.BasicDetailHeroHeader(
+                            title = state.collectionTitle.orEmpty(),
+                            subtitle = state.collectionSubtitle,
+                            kindLabel = state.collectionKindLabel,
+                            year = state.collectionYear,
+                            trackCount = state.collectionTracks.size,
+                            artworkUrl = state.collectionCoverUrl,
+                            topInset = detailTopInset,
+                            onPlayAll = onPlayAll,
+                            onShuffleAll = onShuffleAll,
+                            onDownloadAll = onDownloadAll?.takeIf { state.collectionTracks.isNotEmpty() },
+                            isDownloading = isDownloading,
+                            allDownloaded = allDownloaded,
+                            onEditPlaylist = onEditPlaylist,
+                            onOpenArtist = subtitleArtist?.let { artist -> { onOpenArtist?.invoke(artist) } },
+                            fullScreenDetailCover = fullScreenDetailCover,
+                        )
+                    } else {
+                        SonataSplitHeroHeader(
+                            title = state.collectionTitle.orEmpty(),
+                            subtitle = state.collectionSubtitle,
+                            kindLabel = state.collectionKindLabel,
+                            year = state.collectionYear,
+                            trackCount = state.collectionTracks.size,
+                            artworkUrl = state.collectionCoverUrl,
+                            accentColor = palette.accent,
+                            contentColor = palette.onBackground,
+                            washColor = palette.wash,
+                            topInset = detailTopInset,
+                            onPlayAll = onPlayAll,
+                            onShuffleAll = onShuffleAll,
+                            onDownloadAll = onDownloadAll?.takeIf { state.collectionTracks.isNotEmpty() },
+                            isDownloading = isDownloading,
+                            allDownloaded = allDownloaded,
+                            onEditPlaylist = onEditPlaylist,
+                            onMoreOptions = onMoreOptions,
+                            onOpenArtist = subtitleArtist?.let { artist -> { onOpenArtist?.invoke(artist) } },
+                        )
+                    }
                 }
 
                 if (state.loading && state.collectionTracks.isEmpty()) {
@@ -744,9 +771,10 @@ internal fun DetailScreen(
                                 onOptionsClick = { bounds -> onTrackOptions(track, bounds) },
                                 onLongClick = { bounds -> onTrackLongClick(track, idx + 1, bounds) },
                             )
-                            if (themeTokens.isMoonflower) {
+                            if (themeTokens.isMoonflower || themeTokens.isBasic) {
                                 HorizontalDivider(
                                     color = palette.divider,
+                                    thickness = 0.5.dp,
                                     modifier = Modifier.padding(start = 84.dp),
                                 )
                             }

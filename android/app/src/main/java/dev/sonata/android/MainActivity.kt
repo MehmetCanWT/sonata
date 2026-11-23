@@ -2,10 +2,12 @@ package dev.sonata.android
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.StrictMode
 import android.view.WindowManager
 import androidx.core.content.ContextCompat
 import androidx.activity.ComponentActivity
@@ -307,6 +309,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if ((applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+            StrictMode.setThreadPolicy(
+                StrictMode.ThreadPolicy.Builder()
+                    .detectDiskReads()
+                    .detectDiskWrites()
+                    .detectNetwork()
+                    .penaltyLog()
+                    .build(),
+            )
+        }
         SingletonImageLoader.setSafe { appCtx ->
             ImageLoader.Builder(appCtx)
                 .components {
@@ -411,6 +423,7 @@ fun SonataApp(vm: SonataViewModel = viewModel()) {
         darkTheme = darkTheme,
         amoled = amoled,
         designTheme = resolvedDesign,
+        appLanguage = settings.appLanguage,
     ) {
         SystemBarIcons(dark = !darkTheme)
         val themeTokens = LocalLunariaColors.current
@@ -473,6 +486,7 @@ private fun SonataAppContent(
     var showAudioPipeline by remember { mutableStateOf(false) }
     var showSleepTimer by remember { mutableStateOf(false) }
     var showAudioControls by remember { mutableStateOf(false) }
+    var showEditPlaylistDialog by remember { mutableStateOf(false) }
     var trackOptionsTarget by remember { mutableStateOf<TrackMenuRequest?>(null) }
     var heldContextTarget by remember { mutableStateOf<HeldContextTarget?>(null) }
     var shareTarget by remember { mutableStateOf<SonataShareTarget?>(null) }
@@ -722,6 +736,25 @@ private fun SonataAppContent(
         )
     }
 
+    if (showEditPlaylistDialog && !state.collectionBrowseId.isNullOrBlank()) {
+        dev.sonata.android.ui.components.EditPlaylistDialog(
+            initialTitle = state.collectionTitle.orEmpty(),
+            currentCoverUrl = state.collectionCoverUrl,
+            onDismiss = { showEditPlaylistDialog = false },
+            onSave = { newTitle, newDesc, newPrivacy, coverBytes, mimeType, onComplete ->
+                vm.editPlaylist(
+                    playlistId = state.collectionBrowseId!!,
+                    title = newTitle,
+                    description = newDesc,
+                    privacy = newPrivacy,
+                    coverBytes = coverBytes,
+                    mimeType = mimeType,
+                    onComplete = onComplete,
+                )
+            },
+        )
+    }
+
     if (state.showUpdateDialog && state.updateInfo?.updateAvailable == true) {
         UpdateAvailableDialog(
             info = state.updateInfo!!,
@@ -826,6 +859,7 @@ private fun SonataAppContent(
                         modifier = Modifier.nestedScroll(navBarScroll),
                         isDownloading = detailIsDownloading,
                         allDownloaded = detailAllDownloaded,
+                        fullScreenDetailCover = settings.fullScreenDetailCover,
                         onPlayTrack = { track -> vm.playTrack(track, state.collectionTracks) },
                         onTrackOptions = { track, bounds -> trackOptionsTarget = TrackMenuRequest(track, bounds) },
                         onTrackLongClick = { track, trackNum, bounds -> openTrackHeldMenu(track, trackNum, bounds) },
@@ -840,6 +874,16 @@ private fun SonataAppContent(
                                 tracks = state.collectionTracks,
                                 collectionId = state.collectionBrowseId ?: state.collectionTitle ?: "collection",
                             )
+                        },
+                        onEditPlaylist = if (
+                            dev.sonata.android.ui.components.isEditableUserPlaylist(
+                                browseId = state.collectionBrowseId,
+                                signedIn = state.signedIn,
+                            )
+                        ) {
+                            { showEditPlaylistDialog = true }
+                        } else {
+                            null
                         },
                         onMoreOptions = {
                             heldContextTarget = HeldContextTarget.AlbumOrPlaylistCard(
@@ -1372,6 +1416,8 @@ private fun SonataAppContent(
                     ThemeMode.VIOLET_DARK,
                     ThemeMode.MOONFLOWER_LIGHT,
                     ThemeMode.MOONFLOWER_DARK,
+                    ThemeMode.BASIC_LIGHT,
+                    ThemeMode.BASIC_DARK,
                 )
                 val next = modes[(modes.indexOf(settings.themeMode).coerceAtLeast(-1) + 1) % modes.size]
                 vm.updateSettings {
@@ -1379,6 +1425,7 @@ private fun SonataAppContent(
                         themeMode = next,
                         designTheme = when (next) {
                             ThemeMode.VIOLET_LIGHT, ThemeMode.VIOLET_DARK -> DesignTheme.VIOLET
+                            ThemeMode.BASIC_LIGHT, ThemeMode.BASIC_DARK -> DesignTheme.BASIC
                             else -> DesignTheme.MOONFLOWER
                         },
                     )
@@ -1387,7 +1434,7 @@ private fun SonataAppContent(
             onRefreshLibrary = vm::loadHome,
         )
 
-        // Full-screen Flat Neutral Settings Page (zero Liquid Glass)
+        // Full-screen monochrome grouped Settings Page
         AnimatedVisibility(
             visible = state.showSettingsSheet,
             enter = slideInVertically(tween(240)) { it / 8 } + fadeIn(tween(180)),
@@ -1395,6 +1442,35 @@ private fun SonataAppContent(
             modifier = Modifier.fillMaxSize(),
         ) {
             BackHandler(enabled = state.showSettingsSheet) { vm.dismissSettingsSheet() }
+            val settingsDownloads by vm.downloads.collectAsStateWithLifecycle()
+            val settingsDownloadBytes by vm.downloadsTotalBytes.collectAsStateWithLifecycle()
+            val initialStorageStats = remember(
+                settings.downloadStorageLocation,
+                settingsDownloads.size,
+                settingsDownloadBytes,
+            ) {
+                dev.sonata.android.data.SonataDownloadManager.DownloadStorageStats(
+                    trackCount = settingsDownloads.size,
+                    downloadedBytes = settingsDownloadBytes,
+                    availableBytes = 0L,
+                    totalBytes = 0L,
+                    locationLabel = if (settings.downloadStorageLocation == dev.sonata.android.data.DownloadStorageLocation.EXTERNAL) {
+                        "External · Music/Sonata"
+                    } else {
+                        "Internal · Private App Storage"
+                    },
+                )
+            }
+            val downloadStorageStats by androidx.compose.runtime.produceState(
+                initialValue = initialStorageStats,
+                key1 = settings.downloadStorageLocation,
+                key2 = settingsDownloads.size,
+                key3 = settingsDownloadBytes,
+            ) {
+                value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    vm.queryDownloadStorageStats()
+                }
+            }
             SonataSettingsScreen(
                 settings = settings,
                 signedIn = state.signedIn,
@@ -1404,10 +1480,13 @@ private fun SonataAppContent(
                 updateInfo = state.updateInfo,
                 checkingUpdates = state.checkingUpdates,
                 installedVersionName = state.installedVersionName,
+                downloadStorageStats = downloadStorageStats,
                 onUpdateSettings = vm::updateSettings,
                 onSignIn = vm::openLoginSheet,
                 onSignOut = vm::signOut,
                 onClearMediaCache = vm::clearMediaCache,
+                onClearImageCache = vm::clearImageCache,
+                onClearAllDownloads = vm::clearAllDownloads,
                 onExportBackup = { exportBackupLauncher.launch("sonata-backup.json") },
                 onImportBackup = { importBackupLauncher.launch(arrayOf("application/json", "*/*")) },
                 onCheckForUpdates = { vm.checkForUpdates(autoPopup = true, isManual = true) },

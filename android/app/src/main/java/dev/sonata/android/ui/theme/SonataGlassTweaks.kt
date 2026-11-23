@@ -193,11 +193,7 @@ fun Modifier.sonataGlassSurface(
     if (liveBackdrop && glassOn && !reduceBlur) {
         return liquidGlass(
             shape = shape,
-            surfaceTint = baseTint,
-        ).sonataSpecularRim(
-            shape = shape,
-            strokeWidth = 0.75.dp,
-            accentGlow = accentGlow,
+            surfaceTint = tintOverride,
         )
     }
 

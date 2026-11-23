@@ -12,9 +12,9 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
 };
 use ratatui::Frame;
-use sonata_core::config::AppConfig;
-use sonata_core::hyprland;
 use sonata_core::updater::CURRENT_VERSION;
+use sonata_runtime::config::AppConfig;
+use sonata_runtime::hyprland;
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
     match &app.modal {
@@ -43,7 +43,7 @@ pub fn sized_popup(min_w: u16, max_w: u16, target_h: u16, area: Rect) -> Rect {
     }
 }
 
-pub const SETTINGS_ROW_COUNT: usize = 10;
+pub const SETTINGS_ROW_COUNT: usize = 11;
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn settings_popup_rect(area: Rect, row_count: usize) -> Rect {
@@ -253,6 +253,7 @@ struct SettingEntry {
 }
 
 fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize) {
+    let s = sonata_runtime::i18n::strings(app.config.language);
     let selected = selected.min(SETTINGS_ROW_COUNT - 1);
     let transparent = app.effective_transparent_bg();
     let on_hyprland = hyprland::is_hyprland();
@@ -260,116 +261,111 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
 
     let (update_label, has_update) = match &app.update_info {
         Some(info) if info.update_available => (
-            format!(
-                "v{CURRENT_VERSION} → Update v{} available",
-                info.latest_version
-            ),
+            format!("v{CURRENT_VERSION} → v{}", info.latest_version),
             true,
         ),
-        Some(_) => (format!("v{CURRENT_VERSION} · Up to date"), false),
+        Some(_) => (format!("v{CURRENT_VERSION} · {}", s.up_to_date), false),
         None => (
-            format!("v{CURRENT_VERSION} · Press Enter/u to check"),
+            format!("v{CURRENT_VERSION} · {}", s.check_update_hint),
             false,
         ),
     };
 
     let entries = [
         SettingEntry {
-            section: Some("AUDIO & SOURCES"),
-            label: "Music Providers",
-            description: "Choose which catalogs appear in Library and Search results.",
+            section: Some(s.tui_sec_audio),
+            label: s.tui_providers,
+            description: s.tui_providers_desc,
             value: SettingValueKind::Text(app.config.provider_mode.label().to_string()),
             adjustable: true,
         },
         SettingEntry {
             section: None,
-            label: "YouTube Music Quality Upgrade",
-            description:
-                "Upgrade cached and live streams in the background to Extreme / peak bitrate.",
-            value: SettingValueKind::Toggle(app.config.hifi_substitution, "Enabled", "Disabled"),
+            label: s.hifi_upgrade,
+            description: s.hifi_upgrade_desc,
+            value: SettingValueKind::Toggle(app.config.hifi_substitution, s.enabled, s.disabled),
             adjustable: true,
         },
         SettingEntry {
             section: None,
-            label: "JioSaavn 320kbps Module",
-            description:
-                "Include JioSaavn results in search and upgrade <300kbps tracks to 320kbps AAC.",
+            label: s.jiosaavn_module,
+            description: s.jiosaavn_module_desc,
             value: SettingValueKind::Toggle(
                 app.config.jiosaavn_enabled,
-                "Enabled (320k)",
-                "Disabled",
+                s.enabled_320k,
+                s.disabled,
             ),
             adjustable: true,
         },
         SettingEntry {
-            section: Some("APPEARANCE & COMPOSITOR"),
-            label: "Color Theme",
-            description:
-                "Live-switch TUI color palette or load custom *.toml themes from config/themes.",
+            section: Some(s.tui_sec_appearance),
+            label: s.language,
+            description: s.language_desc,
+            value: SettingValueKind::Text(app.config.language.label().to_string()),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: None,
+            label: s.color_theme,
+            description: s.color_theme_desc,
             value: SettingValueKind::ThemeSwatch(app.base_theme.name.clone()),
             adjustable: true,
         },
         SettingEntry {
             section: None,
-            label: "Animated Album Artwork",
-            description:
-                "Display looping Apple Music, Tidal & Community motion covers via Kitty/Sixel.",
+            label: s.motion_covers,
+            description: s.motion_covers_desc,
             value: SettingValueKind::Toggle(
                 app.config.motion_covers && !app.config.reduce_motion,
-                "Enabled",
-                "Static",
+                s.enabled,
+                s.static_label,
             ),
             adjustable: true,
         },
         SettingEntry {
             section: None,
-            label: "Transparent TUI Background",
-            description:
-                "Use terminal background alpha/glass compositing instead of an opaque surface fill.",
-            value: SettingValueKind::Toggle(transparent, "Enabled (Glass)", "Solid"),
+            label: s.tui_transparent_bg,
+            description: s.tui_transparent_bg_desc,
+            value: SettingValueKind::Toggle(transparent, s.enabled_glass, s.solid_label),
             adjustable: true,
         },
         SettingEntry {
             section: None,
-            label: "Hyprland Window Opacity",
-            description:
-                "Adjust dynamic compositor window opacity via hyprctl when running inside Hyprland.",
+            label: s.tui_hypr_opacity,
+            description: s.tui_hypr_opacity_desc,
             value: SettingValueKind::OpacityBar(opacity, on_hyprland),
             adjustable: on_hyprland,
         },
         SettingEntry {
-            section: Some("STORAGE & SYSTEM"),
-            label: "Media Cache Limit",
-            description:
-                "Cap on-disk audio, cover art & lyrics cache size (1–10 GB). Shared with Desktop.",
+            section: Some(s.tui_sec_storage),
+            label: s.cache_limit,
+            description: s.cache_limit_desc,
             value: SettingValueKind::Text(AppConfig::cache_limit_label(app.config.cache_limit_gb)),
             adjustable: true,
         },
         SettingEntry {
             section: None,
-            label: "Browser Account Session",
-            description:
-                "Synced cookies for library, Liked Songs & YTM Extreme. Press Enter/r to rescan.",
+            label: s.tui_browser_session,
+            description: s.tui_browser_session_desc,
             value: SettingValueKind::Text(app.browser_label.clone()),
             adjustable: true,
         },
         SettingEntry {
             section: None,
-            label: "Version & Updates",
-            description:
-                "Installed Sonata version and GitHub release checker (Enter or u to check now).",
+            label: s.tui_version_updates,
+            description: s.tui_version_updates_desc,
             value: SettingValueKind::UpdateBadge(update_label, has_update),
             adjustable: true,
         },
     ];
 
-    // Total inner rows: 3 section headers + 10 items + 2 spacers + divider + description + footer = 18..23.
+    // Total inner rows: 3 section headers + 11 items + 2 spacers + divider + description + footer.
     let target_h = (entries.len() as u16 + 11).min(area.height);
     let popup = sized_popup(44, 86, target_h, area);
     frame.render_widget(Clear, popup);
 
     let block = Block::default()
-        .title(" ✦ Sonata Settings ")
+        .title(s.tui_settings_title)
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)

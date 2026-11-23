@@ -216,13 +216,15 @@ impl SonataDesktopView {
             }
 
             if !matches_hist.is_empty() {
+                let hist_arc: std::sync::Arc<[sonata_core::providers::Track]> =
+                    std::sync::Arc::from(matches_hist.as_slice());
                 let mut rows = div().flex().flex_col().gap(px(2.0));
-                let total = matches_hist.len().min(20);
+                let total = hist_arc.len().min(20);
                 for i in 0..total {
                     rows = rows.child(self.render_track_row(
                         "srch-l-tr",
                         i,
-                        &matches_hist,
+                        &hist_arc,
                         TrackRowOpts {
                             show_album: true,
                             ..Default::default()
@@ -264,13 +266,15 @@ impl SonataDesktopView {
             let show_all = self.search_category == SearchCategory::All;
 
             if (show_all || self.search_category == SearchCategory::Songs) && !songs.is_empty() {
+                let songs_arc: std::sync::Arc<[sonata_core::providers::Track]> =
+                    std::sync::Arc::from(songs.as_slice());
                 let mut rows = div().flex().flex_col().gap(px(2.0));
-                let limit = songs.len().min(if show_all { 8 } else { 30 });
+                let limit = songs_arc.len().min(if show_all { 8 } else { 30 });
                 for i in 0..limit {
                     rows = rows.child(self.render_track_row(
                         "srch-tr",
                         i,
-                        &songs,
+                        &songs_arc,
                         TrackRowOpts {
                             show_album: true,
                             ..Default::default()
@@ -352,13 +356,15 @@ impl SonataDesktopView {
             if (show_all || self.search_category == SearchCategory::Videos)
                 && !rich.videos.is_empty()
             {
+                let videos_arc: std::sync::Arc<[sonata_core::providers::Track]> =
+                    std::sync::Arc::from(rich.videos.as_slice());
                 let mut rows = div().flex().flex_col().gap(px(2.0));
-                let limit = rich.videos.len().min(if show_all { 6 } else { 20 });
+                let limit = videos_arc.len().min(if show_all { 6 } else { 20 });
                 for i in 0..limit {
                     rows = rows.child(self.render_track_row(
                         "srch-vid",
                         i,
-                        &rich.videos,
+                        &videos_arc,
                         TrackRowOpts::default(),
                         cx,
                     ));

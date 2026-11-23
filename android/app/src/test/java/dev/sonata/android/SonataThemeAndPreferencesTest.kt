@@ -4,10 +4,13 @@ import androidx.compose.ui.graphics.Color
 import dev.sonata.android.data.AudioQualityTier
 import dev.sonata.android.data.DesignTheme
 import dev.sonata.android.data.DownloadQualityTier
+import dev.sonata.android.data.DownloadStorageLocation
 import dev.sonata.android.data.PlayerBackdropMode
 import dev.sonata.android.data.SonataPreferences
 import dev.sonata.android.data.SonataSettingsState
 import dev.sonata.android.data.ThemeMode
+import dev.sonata.android.ui.theme.BasicDarkTokens
+import dev.sonata.android.ui.theme.BasicLightTokens
 import dev.sonata.android.ui.theme.MoonflowerAmoledTokens
 import dev.sonata.android.ui.theme.MoonflowerDarkTokens
 import dev.sonata.android.ui.theme.MoonflowerDesignMetrics
@@ -27,11 +30,11 @@ import org.junit.Test
 class SonataThemeAndPreferencesTest {
 
     @Test
-    fun defaultSettingsMatchVioletSystemTheme() {
+    fun defaultSettingsMatchBasicSystemTheme() {
         val defaults = SonataSettingsState()
-        assertEquals(DesignTheme.VIOLET, defaults.designTheme)
+        assertEquals(DesignTheme.BASIC, defaults.designTheme)
         assertEquals(ThemeMode.SYSTEM, defaults.themeMode)
-        assertEquals(DesignTheme.VIOLET, defaults.resolvedDesignTheme())
+        assertEquals(DesignTheme.BASIC, defaults.resolvedDesignTheme())
         assertFalse(defaults.isDarkActive(systemDark = false))
         assertTrue(defaults.isDarkActive(systemDark = true))
         assertTrue(defaults.liquidGlassEnabled)
@@ -138,7 +141,7 @@ class SonataThemeAndPreferencesTest {
     }
 
     @Test
-    fun violetAndMoonflowerThemesRemainStructurallyDistinctWithPinkishGlassPills() {
+    fun violetAndMoonflowerThemesRemainStructurallyDistinctWithNeutralLiquidGlass() {
         assertEquals(VioletLightTokens, lunariaTokens(darkTheme = false, amoled = false, designTheme = DesignTheme.VIOLET))
         assertEquals(VioletDarkTokens, lunariaTokens(darkTheme = true, amoled = false, designTheme = DesignTheme.VIOLET))
         assertEquals(VioletAmoledTokens, lunariaTokens(darkTheme = true, amoled = true, designTheme = DesignTheme.VIOLET))
@@ -162,12 +165,171 @@ class SonataThemeAndPreferencesTest {
         assertEquals(Color.Black, lunariaColorScheme(darkTheme = true, amoled = true, designTheme = DesignTheme.VIOLET).background)
         assertEquals(Color.Black, lunariaColorScheme(darkTheme = true, amoled = true, designTheme = DesignTheme.MOONFLOWER).background)
 
-        // Pinkish translucent Liquid Glass active tab pill on both Violet and Moonflower light/dark.
-        val glassPills = listOf(VioletLightTokens, VioletDarkTokens, MoonflowerLightTokens, MoonflowerDarkTokens)
-        for (token in glassPills) {
-            assertTrue("Pinkish pill indicator should have red channel dominant over green", token.pillIndicatorColor.red > token.pillIndicatorColor.green)
-            assertTrue("Pinkish pill indicator should have red channel >= blue", token.pillIndicatorColor.red >= token.pillIndicatorColor.blue)
-            assertTrue("Liquid Glass pill should remain translucent", token.pillIndicatorColor.alpha in 0.20f..0.45f)
+        // Crystal-clear neutral Liquid Glass (zero pink/purple tint) across all themes & modes.
+        val allGlassTokens = listOf(
+            VioletLightTokens,
+            VioletDarkTokens,
+            MoonflowerLightTokens,
+            MoonflowerDarkTokens,
+            BasicLightTokens,
+            BasicDarkTokens,
+        )
+        for (token in allGlassTokens) {
+            assertEquals("Liquid Glass tint must be neutral (R == G)", token.glassTint.red, token.glassTint.green, 0.001f)
+            assertEquals("Liquid Glass tint must be neutral (G == B)", token.glassTint.green, token.glassTint.blue, 0.001f)
+            assertEquals("Glass pill indicator must be pure white", 1f, token.pillIndicatorColor.red, 0.001f)
+            assertEquals("Glass pill indicator must be pure white", 1f, token.pillIndicatorColor.green, 0.001f)
+            assertEquals("Glass pill indicator must be pure white", 1f, token.pillIndicatorColor.blue, 0.001f)
+            assertTrue("Liquid Glass pill should remain translucent", token.pillIndicatorColor.alpha in 0.10f..0.55f)
         }
+    }
+
+    @Test
+    fun backupJsonExcludesAllSessionCookiesAndCredentials() {
+        val json = SonataPreferences.formatBackupJson(
+            current = SonataSettingsState(jioSaavnEnabled = true),
+            offsets = mapOf("vid_123" to 250L),
+            exportedAtMs = 1_700_000_000_000L,
+        )
+        val lowered = json.lowercase()
+        val forbiddenTokens = listOf(
+            "cookie",
+            "sapisid",
+            "sp_dc",
+            "authorization",
+            "bearer",
+            "ytm_session",
+            "password",
+            "secret",
+            "token",
+        )
+        for (token in forbiddenTokens) {
+            assertFalse("Backup JSON must never contain credential field `$token`", lowered.contains(token))
+        }
+        assertTrue(json.contains("\"jiosaavn_enabled\": true"))
+        assertTrue(json.contains("\"vid_123\": 250"))
+    }
+
+    @Test
+    fun basicThemeTokensAndDownloadSettingsBehaveAsExpected() {
+        assertEquals(BasicDarkTokens, lunariaTokens(darkTheme = true, amoled = false, designTheme = DesignTheme.BASIC))
+        assertEquals(BasicLightTokens, lunariaTokens(darkTheme = false, amoled = false, designTheme = DesignTheme.BASIC))
+        assertTrue(BasicDarkTokens.isBasic)
+        assertFalse(BasicDarkTokens.isViolet)
+        assertFalse(BasicDarkTokens.isMoonflower)
+        assertEquals(Color.Black, BasicDarkTokens.eclipseBase)
+        assertEquals(Color.White, BasicLightTokens.eclipseBase)
+
+        val basicDark = SonataSettingsState(designTheme = DesignTheme.VIOLET, themeMode = ThemeMode.BASIC_DARK)
+        assertEquals(DesignTheme.BASIC, basicDark.resolvedDesignTheme())
+        assertTrue(basicDark.isDarkActive(systemDark = false))
+
+        val basicLight = SonataSettingsState(designTheme = DesignTheme.VIOLET, themeMode = ThemeMode.BASIC_LIGHT)
+        assertEquals(DesignTheme.BASIC, basicLight.resolvedDesignTheme())
+        assertFalse(basicLight.isDarkActive(systemDark = true))
+
+        // Download quality tiers ordered strictly Highest -> Lowest with MB/song metadata.
+        val tiers = DownloadQualityTier.entries
+        assertEquals(DownloadQualityTier.HIGHEST, tiers.first())
+        assertEquals(DownloadQualityTier.LOW, tiers.last())
+        for (i in 0 until tiers.lastIndex) {
+            assertTrue(tiers[i].maxBitrateKbps > tiers[i + 1].maxBitrateKbps)
+            assertTrue(tiers[i].approxMbPerSong.contains("MB"))
+        }
+        assertTrue(tiers.last().approxMbPerSong.contains("MB"))
+
+        // Storage location helper & backup serialization (including extended Appearance/Content/Misc fields).
+        val externalState = SonataSettingsState(
+            downloadQuality = DownloadQualityTier.HIGHEST,
+            downloadIncludeJioSaavn = true,
+            downloadStorageLocation = DownloadStorageLocation.EXTERNAL,
+            hideRecents = true,
+            hideTopPicks = true,
+            hideHomeMoods = true,
+            hideHomeVideos = true,
+            squareVideoThumbnails = true,
+            fullScreenCoverArt = false,
+            fullScreenDetailCover = true,
+            showTotalDuration = true,
+            animatedArtworkCellular = false,
+            hideLyricsPreview = true,
+            sleepTimerFadeOut = false,
+            hideStatusBarInPlayer = true,
+            hideSongStatus = true,
+            stopMusicOnClose = true,
+            showNerdStats = true,
+        )
+        assertTrue(externalState.usesExternalDownloadStorage())
+        val backup = SonataPreferences.formatBackupJson(externalState, emptyMap(), 1_700_000_000_000L)
+        assertTrue(backup.contains("\"download_include_jiosaavn\": true"))
+        assertTrue(backup.contains("\"download_storage_location\": \"EXTERNAL\""))
+        assertTrue(backup.contains("\"hide_recents\": true"))
+        assertTrue(backup.contains("\"hide_top_picks\": true"))
+        assertTrue(backup.contains("\"square_video_thumbnails\": true"))
+        assertTrue(backup.contains("\"full_screen_cover_art\": false"))
+        assertTrue(backup.contains("\"full_screen_detail_cover\": true"))
+        assertTrue(backup.contains("\"show_total_duration\": true"))
+        assertTrue(backup.contains("\"hide_lyrics_preview\": true"))
+        assertTrue(backup.contains("\"sleep_timer_fade_out\": false"))
+        assertTrue(backup.contains("\"hide_status_bar_in_player\": true"))
+        assertTrue(backup.contains("\"stop_music_on_close\": true"))
+        assertTrue(backup.contains("\"show_nerd_stats\": true"))
+        assertTrue(backup.contains("\"app_language\": \"SYSTEM\""))
+    }
+
+    @Test
+    fun androidLanguageDefaultsToSystemAndResolvesTurkishAndEnglish() {
+        assertEquals(dev.sonata.android.data.AppLanguage.SYSTEM, SonataSettingsState().appLanguage)
+
+        val trSystem = dev.sonata.android.ui.i18n.resolveSonataStrings(
+            dev.sonata.android.data.AppLanguage.SYSTEM,
+            java.util.Locale("tr", "TR"),
+        )
+        assertEquals("Ana Sayfa", trSystem.tabHome)
+        assertEquals("Ayarlar", trSystem.settingsTitle)
+
+        val enSystem = dev.sonata.android.ui.i18n.resolveSonataStrings(
+            dev.sonata.android.data.AppLanguage.SYSTEM,
+            java.util.Locale.US,
+        )
+        assertEquals("Home", enSystem.tabHome)
+        assertEquals("Settings", enSystem.settingsTitle)
+
+        val forcedEn = dev.sonata.android.ui.i18n.resolveSonataStrings(
+            dev.sonata.android.data.AppLanguage.ENGLISH,
+            java.util.Locale("tr", "TR"),
+        )
+        assertEquals("Home", forcedEn.tabHome)
+
+        val forcedTr = dev.sonata.android.ui.i18n.resolveSonataStrings(
+            dev.sonata.android.data.AppLanguage.TURKISH,
+            java.util.Locale.US,
+        )
+        assertEquals("Ana Sayfa", forcedTr.tabHome)
+
+        val ruSystem = dev.sonata.android.ui.i18n.resolveSonataStrings(
+            dev.sonata.android.data.AppLanguage.SYSTEM,
+            java.util.Locale("ru", "RU"),
+        )
+        assertEquals("Главная", ruSystem.tabHome)
+        assertEquals("Настройки", ruSystem.settingsTitle)
+
+        val forcedRu = dev.sonata.android.ui.i18n.resolveSonataStrings(
+            dev.sonata.android.data.AppLanguage.RUSSIAN,
+            java.util.Locale.US,
+        )
+        assertEquals("Главная", forcedRu.tabHome)
+    }
+
+    @Test
+    fun editableUserPlaylistGuardRejectsLikedSongsAndAlbums() {
+        assertTrue(dev.sonata.android.ui.components.isEditableUserPlaylist("VLPL1234567890", signedIn = true))
+        assertTrue(dev.sonata.android.ui.components.isEditableUserPlaylist("PL1234567890", signedIn = true))
+        assertFalse(dev.sonata.android.ui.components.isEditableUserPlaylist("VLPL1234567890", signedIn = false))
+        assertFalse(dev.sonata.android.ui.components.isEditableUserPlaylist("VLLM", signedIn = true))
+        assertFalse(dev.sonata.android.ui.components.isEditableUserPlaylist("LM", signedIn = true))
+        assertFalse(dev.sonata.android.ui.components.isEditableUserPlaylist("MPREb_album123", signedIn = true))
+        assertFalse(dev.sonata.android.ui.components.isEditableUserPlaylist("RDCLAK5uy_mix", signedIn = true))
+        assertFalse(dev.sonata.android.ui.components.isEditableUserPlaylist(null, signedIn = true))
     }
 }

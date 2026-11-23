@@ -5,7 +5,7 @@
 //! 3. **Shared Track Row (`render_track_row`)**: renders standardized `56 pt` rows with index/artwork, hover `play_overlay`, explicit `[E]` tag, clickable artist & album links, like/queue buttons, and duration.
 
 use super::{ContextMenuKind, ContextMenuState, SonataDesktopView};
-use crate::backend::{ytm_extra::MoodChip, BackendCmd};
+use crate::backend::{BackendCmd, MoodChip};
 use crate::settings::{ART_SIZE, CARD_STRETCH_MAX, CARD_W, PAGE_INSET_X, ROW_HEIGHT};
 use crate::ui::components::{
     artist_links_row, cover_art_tile, delayed_skeleton_block, explicit_badge, mood_art_tile,
@@ -670,7 +670,7 @@ impl SonataDesktopView {
         &mut self,
         id_prefix: &str,
         index: usize,
-        all_tracks: &[Track],
+        all_tracks: &std::sync::Arc<[Track]>,
         opts: TrackRowOpts,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -689,7 +689,8 @@ impl SonataDesktopView {
         } else {
             None
         };
-        let play_tracks = all_tracks.to_vec();
+        let play_tracks = std::sync::Arc::clone(all_tracks);
+        let cover_tracks = std::sync::Arc::clone(all_tracks);
         let track_like = track.clone();
         let track_menu = track.clone();
         let track_more = track.clone();
@@ -718,7 +719,7 @@ impl SonataDesktopView {
             .on_click(cx.listener(move |this, ev: &gpui_kit::ClickEvent, _, _| {
                 if !dbl || ev.click_count() >= 2 {
                     this.backend.send(BackendCmd::PlayTracks {
-                        tracks: play_tracks.clone(),
+                        tracks: play_tracks.to_vec(),
                         start_index: index,
                         shuffle: false,
                     });
@@ -773,13 +774,12 @@ impl SonataDesktopView {
                     is_cur && !self.snapshot.paused,
                     Some(Rc::new({
                         let b = self.backend.clone();
-                        let tracks_c = all_tracks.to_vec();
                         move |_, _| {
                             if is_cur {
                                 b.send(BackendCmd::TogglePause);
                             } else {
                                 b.send(BackendCmd::PlayTracks {
-                                    tracks: tracks_c.clone(),
+                                    tracks: cover_tracks.to_vec(),
                                     start_index: index,
                                     shuffle: false,
                                 });

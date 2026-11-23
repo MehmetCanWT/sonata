@@ -7098,7 +7098,7 @@ dependencies = [
 
 [[package]]
 name = "sonata-android"
-version = "1.0.5"
+version = "1.0.6"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -7112,14 +7112,12 @@ dependencies = [
 
 [[package]]
 name = "sonata-core"
-version = "1.0.5"
+version = "1.0.6"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
- "dirs 6.0.0",
  "flate2",
  "hmac",
- "image",
  "regex",
  "reqwest",
  "roxmltree 0.21.2",
@@ -7127,18 +7125,16 @@ dependencies = [
  "serde",
  "serde_json",
  "sha1",
+ "thiserror 2.0.21",
  "tokio",
  "tokio-util",
- "toml 0.8.23",
  "tracing",
- "tracing-appender",
- "tracing-subscriber",
  "urlencoding",
 ]
 
 [[package]]
 name = "sonata-desktop"
-version = "1.0.5"
+version = "1.0.6"
 dependencies = [
  "anyhow",
  "cosmic-text",
@@ -7152,14 +7148,34 @@ dependencies = [
  "serde",
  "serde_json",
  "sonata-core",
+ "sonata-runtime",
  "tokio",
  "tracing",
  "urlencoding",
 ]
 
 [[package]]
+name = "sonata-runtime"
+version = "1.0.6"
+dependencies = [
+ "anyhow",
+ "dirs 6.0.0",
+ "image",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sonata-core",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "sonata-tui"
-version = "1.0.5"
+version = "1.0.6"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -7169,10 +7185,13 @@ dependencies = [
  "ratatui",
  "ratatui-image",
  "reqwest",
+ "serde",
  "serde_json",
  "sonata-core",
+ "sonata-runtime",
  "tachyonfx",
  "tokio",
+ "toml 0.8.23",
  "tracing",
 ]
 

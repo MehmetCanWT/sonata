@@ -196,7 +196,10 @@ import dev.sonata.android.PlaybackClockState
 import dev.sonata.android.R
 import dev.sonata.android.SquirclePillShape
 import dev.sonata.android.data.CanvasMedia
+import dev.sonata.android.data.AppLanguage
 import dev.sonata.android.data.DesignTheme
+import dev.sonata.android.ui.i18n.LocalSonataStrings
+import dev.sonata.android.ui.i18n.resolveSonataStrings
 import dev.sonata.android.lightweightLiquidGlass
 import dev.sonata.android.ui.components.SonataMoodAnimatedArt
 import dev.sonata.android.ui.player.CardCanvasSurface
@@ -267,7 +270,8 @@ val SonataTypography = Typography(
 fun SonataTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     amoled: Boolean = false,
-    designTheme: DesignTheme = DesignTheme.VIOLET,
+    designTheme: DesignTheme = DesignTheme.BASIC,
+    appLanguage: AppLanguage = AppLanguage.SYSTEM,
     content: @Composable () -> Unit,
 ) {
     val tokens = lunariaTokens(
@@ -275,7 +279,13 @@ fun SonataTheme(
         amoled = amoled,
         designTheme = designTheme,
     )
-    CompositionLocalProvider(LocalLunariaColors provides tokens) {
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val systemLocale = configuration.locales.get(0) ?: java.util.Locale.getDefault()
+    val strings = resolveSonataStrings(appLanguage = appLanguage, systemLocale = systemLocale)
+    CompositionLocalProvider(
+        LocalLunariaColors provides tokens,
+        LocalSonataStrings provides strings,
+    ) {
         MaterialTheme(
             colorScheme = lunariaColorScheme(
                 darkTheme = darkTheme,
@@ -589,12 +599,12 @@ fun ArtistCollageArt(
     ) {
         val slots = when (images.size) {
             0 -> emptyList()
-            1 -> listOf(Triple(0.5f, 0.34f, 0.64f))
-            2 -> listOf(Triple(0.40f, 0.28f, 0.58f), Triple(0.72f, 0.52f, 0.35f))
+            1 -> listOf(Triple(0.5f, 0.31f, 0.60f))
+            2 -> listOf(Triple(0.38f, 0.25f, 0.54f), Triple(0.72f, 0.44f, 0.32f))
             else -> listOf(
-                Triple(0.37f, 0.257f, 0.58f),
-                Triple(0.76f, 0.48f, 0.32f),
-                Triple(0.457f, 0.608f, 0.28f),
+                Triple(0.36f, 0.22f, 0.54f),
+                Triple(0.75f, 0.40f, 0.30f),
+                Triple(0.46f, 0.49f, 0.24f),
             )
         }
         slots.zip(images).forEach { (slot, url) ->
@@ -627,6 +637,21 @@ fun ArtistCollageArt(
                     .aspectRatio(1f),
             )
         }
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(h * 0.48f)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            Color.Transparent,
+                            palette.bottom.copy(alpha = 0.72f),
+                            palette.bottom.copy(alpha = 0.94f),
+                        ),
+                    ),
+                ),
+        )
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)

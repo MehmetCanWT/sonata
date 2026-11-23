@@ -437,6 +437,19 @@ internal fun ExploreTabContent(
     val viralColumns = remember(viralHitsTracks) { viralHitsTracks.chunked(4) }
 
     val moodRows = remember(moodSleeves, moodColumns) { moodSleeves.chunked(moodColumns) }
+    if (LocalLunariaColors.current.isBasic) {
+        dev.sonata.android.ui.screens.BasicExploreScreen(
+            moodCards = moodSleeves,
+            artPool = artPool,
+            listState = listState,
+            refreshing = state.refreshing,
+            onRefresh = onRefresh,
+            onOpenMood = onOpenMood,
+            contentPadding = contentPadding,
+            modifier = modifier,
+        )
+        return
+    }
     val heroRowState = rememberLazyListState()
     val heroSnap = rememberSnapFlingBehavior(lazyListState = heroRowState)
     val viralRowState = rememberLazyListState()

@@ -131,6 +131,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathFillType
@@ -428,9 +429,23 @@ internal fun NowPlayingScreen(
 
     val isLandscapePlayer = screenWidth > screenHeight && screenWidth >= 560.dp
     val compactLandscape = isLandscapePlayer && screenHeight < 440.dp
-    // All portrait viewports (phones and portrait tablets) use the full-bleed hero artwork style.
-    val playerFillsWindow = !isLandscapePlayer
-    val showPortraitHero = !panelOpen && !isLandscapePlayer
+    // Portrait viewports use full-bleed hero artwork unless user switches to framed cover art.
+    val playerFillsWindow = !isLandscapePlayer && settings.fullScreenCoverArt
+    val showPortraitHero = playerFillsWindow && !panelOpen
+
+    val playerView = androidx.compose.ui.platform.LocalView.current
+    DisposableEffect(settings.hideStatusBarInPlayer, playerView) {
+        val window = (playerView.context as? android.app.Activity)?.window
+        val insetsController = window?.let { androidx.core.view.WindowCompat.getInsetsController(it, playerView) }
+        if (settings.hideStatusBarInPlayer) {
+            insetsController?.hide(androidx.core.view.WindowInsetsCompat.Type.statusBars())
+        }
+        onDispose {
+            if (settings.hideStatusBarInPlayer) {
+                insetsController?.show(androidx.core.view.WindowInsetsCompat.Type.statusBars())
+            }
+        }
+    }
     val heroUrl = remember(track.thumbnailUrl) { track.thumbnailUrl.artworkAt(PLAYER_ART_PX) }
     val heroPlaceholderKey = remember(track.thumbnailUrl) {
         artworkMemoryCacheKey(track.thumbnailUrl.artworkAt(CARD_ART_PX), 360, 360)
@@ -612,6 +627,22 @@ internal fun NowPlayingScreen(
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
+                // Top scrim keeps white status-bar icons legible over bright/white album covers.
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .height(statusBarTop + 36.dp)
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(
+                                    Color.Black.copy(alpha = 0.42f),
+                                    Color.Black.copy(alpha = 0.16f),
+                                    Color.Transparent,
+                                ),
+                            ),
+                        ),
+                )
             }
         }
 
@@ -946,6 +977,11 @@ internal fun NowPlayingProgressSection(
         loading = isBuffering,
     )
 
+    val extras = LocalNowPlayingExtras.current
+    val showTotalDuration = extras.settings.showTotalDuration
+    val hideSongStatus = extras.settings.hideSongStatus
+    val showNerdStats = extras.settings.showNerdStats
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -962,23 +998,61 @@ internal fun NowPlayingProgressSection(
                 color = Color.White.copy(alpha = 0.58f),
             )
             Text(
-                text = "-${formatDurationMs(remainingMs)}",
+                text = if (showTotalDuration) formatDurationMs(durationMs) else "-${formatDurationMs(remainingMs)}",
                 style = MaterialTheme.typography.labelMedium,
                 color = Color.White.copy(alpha = 0.58f),
             )
         }
         val upgrading = isBuffering || isUpgradingQuality
-        LosslessLabel(
-            label = if (upgrading) {
-                "Upgrading Quality"
-            } else {
-                streamBadge.ifBlank { "Lossless" }
-            },
-            pulsing = upgrading,
+        if (upgrading || !hideSongStatus) {
+            LosslessLabel(
+                label = if (upgrading) {
+                    "Upgrading Quality"
+                } else {
+                    streamBadge.ifBlank { "Lossless" }
+                },
+                pulsing = upgrading,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 6.dp),
+            )
+        }
+    }
+    if (showNerdStats) {
+        val pipelineInfo by dev.sonata.android.data.AudioPipelineBus.info.collectAsStateWithLifecycle()
+        val statsText = remember(pipelineInfo, streamBadge) {
+            val parts = buildList {
+                if (pipelineInfo.codec.isNotBlank() && pipelineInfo.codec != "—") add(pipelineInfo.codec)
+                if (pipelineInfo.bitrateKbps > 0) add("${pipelineInfo.bitrateKbps} kbps")
+                if (pipelineInfo.sampleRateHz > 0) add(pipelineInfo.sampleRateLabel)
+                if (pipelineInfo.channelCount > 0) add(pipelineInfo.channelLabel)
+                if (pipelineInfo.fromOfflineDownload) add("Offline")
+                else if (pipelineInfo.fromCache) add("Cached")
+            }
+            if (parts.isNotEmpty()) parts.joinToString(" · ") else streamBadge.ifBlank { pipelineInfo.sourceLabel }
+        }
+        Box(
             modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = 6.dp),
-        )
+                .fillMaxWidth()
+                .padding(top = 2.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = statsText,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    fontSize = 10.5.sp,
+                ),
+                color = Color.White.copy(alpha = 0.62f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(percent = 50))
+                    .background(Color.White.copy(alpha = 0.10f))
+                    .clickable(onClick = extras.onOpenAudioPipeline)
+                    .padding(horizontal = 10.dp, vertical = 3.dp),
+            )
+        }
     }
 }
 
@@ -1700,6 +1774,10 @@ internal fun CurrentLyricStrip(
     clock: PlaybackClockState,
     onClick: () -> Unit,
 ) {
+    if (LocalNowPlayingExtras.current.settings.hideLyricsPreview) {
+        Spacer(Modifier.height(10.dp))
+        return
+    }
     val durationMs = clock.durationMs
     var showUnavailable by remember(trackId) { mutableStateOf(false) }
 
@@ -2051,6 +2129,7 @@ internal fun UpdateAvailableDialog(
     val changelogEntries = remember(info.releaseNotes) {
         parseChangelogEntries(info.releaseNotes)
     }
+    val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
     val dialogSurface = MaterialTheme.colorScheme.surface
     val dialogInk = MaterialTheme.colorScheme.onSurface
     val dialogMuted = MaterialTheme.colorScheme.onSurfaceVariant
@@ -2091,7 +2170,7 @@ internal fun UpdateAvailableDialog(
                 }
                 Column(Modifier.weight(1f)) {
                     Text(
-                        text = "Update Available",
+                        text = strings.updateAvailable,
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                         color = dialogInk,
                     )
@@ -2208,7 +2287,7 @@ internal fun UpdateAvailableDialog(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
-                            text = detail.ifBlank { "Downloading APK..." },
+                            text = detail.ifBlank { strings.downloadingApk },
                             style = MaterialTheme.typography.labelMedium,
                             color = dialogMuted,
                         )
@@ -2254,12 +2333,13 @@ internal fun UpdateAvailableDialog(
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
-                        text = if (downloading) "Cancel" else if (hasDownloadedApk) "Close" else "Later",
+                        text = if (downloading) strings.cancel else if (hasDownloadedApk) strings.close else strings.later,
                         style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
                         color = dialogInk,
                     )
                 }
-                if (!downloading && !hasDownloadedApk) {
+                if (!downloading) {
+                    val primaryBtnInk = if (themeTokens.petalLavender.luminance() > 0.55f) Color.Black else Color.White
                     Box(
                         modifier = Modifier
                             .weight(1.35f)
@@ -2270,9 +2350,9 @@ internal fun UpdateAvailableDialog(
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
-                            text = "Download APK",
+                            text = if (hasDownloadedApk) strings.installNow else strings.downloadNow,
                             style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-                            color = Color.White,
+                            color = primaryBtnInk,
                         )
                     }
                 }

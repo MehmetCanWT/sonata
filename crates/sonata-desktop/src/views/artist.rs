@@ -262,13 +262,15 @@ impl SonataDesktopView {
             .gap(px(26.0));
 
         if !artist.popular_tracks.is_empty() {
+            let pop_tracks: std::sync::Arc<[sonata_core::providers::Track]> =
+                std::sync::Arc::from(artist.popular_tracks.as_slice());
             let show_split = !you_liked.is_empty() && content_w >= 760.0;
             let mut top_rows = div().flex().flex_col().gap(px(2.0));
-            for i in 0..artist.popular_tracks.len().min(8) {
+            for i in 0..pop_tracks.len().min(8) {
                 top_rows = top_rows.child(self.render_track_row(
                     "art-pop",
                     i,
-                    &artist.popular_tracks,
+                    &pop_tracks,
                     TrackRowOpts {
                         show_index: true,
                         show_thumb: true,
@@ -280,12 +282,14 @@ impl SonataDesktopView {
             }
 
             if show_split {
+                let liked_arc: std::sync::Arc<[sonata_core::providers::Track]> =
+                    std::sync::Arc::from(you_liked.as_slice());
                 let mut liked_rows = div().flex().flex_col().gap(px(2.0));
-                for i in 0..you_liked.len() {
+                for i in 0..liked_arc.len() {
                     liked_rows = liked_rows.child(self.render_track_row(
                         "art-lik",
                         i,
-                        &you_liked,
+                        &liked_arc,
                         TrackRowOpts::default(),
                         cx,
                     ));

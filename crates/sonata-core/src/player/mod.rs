@@ -1,7 +1,7 @@
 //! Playback state for Sonata: queue, history, shuffle, and repeat, independent of any audio backend.
 //!
-//! 1. **Submodules**: `coordinator` (command-to-transition logic), `mpv` (IPC controller), `precache`
-//!    (next-track prefetch state), and `tasks` (background playback task tracking).
+//! 1. **Submodules**: `coordinator` (command-to-transition logic), `precache` (next-track prefetch
+//!    state), and `tasks` (background playback task tracking).
 //! 2. **Repeat Mode**: `RepeatMode` cycles off/all/one and provides display labels.
 //! 3. **PlaybackState**: queue, current index, volume, and the active and upgraded Hi-Fi streams.
 //! 4. **Navigation**: `commit_play`, `next_index`, `prev_index`, and `peek_next_index` (with a cached
@@ -9,16 +9,47 @@
 //! 5. **Stream Swapping**: base and upgraded streams are tracked so a Hi-Fi upgrade can be applied or reverted.
 
 pub mod coordinator;
-pub mod mpv;
 pub mod precache;
 pub mod tasks;
 
 use crate::providers::hifi::ResolvedStream;
 use crate::providers::Track;
-pub use mpv::{MpvController, MpvEvent};
 pub use precache::{NextTrackPrecache, NextTrackPrecacheState, PrecacheKey};
 use serde::{Deserialize, Serialize};
 pub use tasks::{PlaybackTask, PlaybackTaskSet};
+
+/// Monotonically increasing request generation isolating stale async playback work.
+///
+/// Increment on every new play request, including replaying the same track ID.
+///
+/// # Examples
+///
+/// ```
+/// use sonata_core::player::PlaybackGeneration;
+///
+/// let mut gen = PlaybackGeneration::default();
+/// let first = gen.advance();
+/// let second = gen.advance();
+/// assert!(second > first);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct PlaybackGeneration(pub u64);
+
+impl PlaybackGeneration {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+
+    /// Advances the counter by one and returns the newly allocated generation.
+    pub fn advance(&mut self) -> Self {
+        self.0 = self.0.wrapping_add(1);
+        *self
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]

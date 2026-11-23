@@ -13,7 +13,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::{Icon, Sizable as _, TitleBar};
 use gpui_kit::{
-    div, img, prelude::FluentBuilder as _, px, AnyElement, Context, FontWeight,
+    canvas, div, img, prelude::FluentBuilder as _, px, AnyElement, Context, FontWeight,
     InteractiveElement as _, IntoElement, MouseButton, ObjectFit, ParentElement as _, SharedString,
     StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window,
 };
@@ -32,7 +32,9 @@ impl SonataDesktopView {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "Account".to_string());
 
+        let search_bounds_cell = self.search_bar_bounds.clone();
         let center_search = div()
+            .relative()
             .w(px(420.0))
             .max_w_full()
             .h(px(36.0))
@@ -49,6 +51,16 @@ impl SonataDesktopView {
                 window.prevent_default();
                 cx.stop_propagation();
             })
+            .child(
+                canvas(
+                    move |bounds, _, _| {
+                        search_bounds_cell.set(bounds);
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            )
             .child(
                 Icon::new(IconName::Search)
                     .size(px(15.0))
@@ -131,10 +143,13 @@ impl SonataDesktopView {
                     .child(if signed_in {
                         profile_name
                     } else {
-                        "Sign in".to_string()
+                        sonata_runtime::i18n::strings(self.settings.language)
+                            .sign_in
+                            .to_string()
                     }),
             );
 
+        let s = sonata_runtime::i18n::strings(self.settings.language);
         let left_nav = div()
             .flex()
             .flex_row()
@@ -149,7 +164,7 @@ impl SonataDesktopView {
                     .ghost()
                     .small()
                     .icon(IconName::ChevronLeft)
-                    .tooltip("Back (Alt+Left)")
+                    .tooltip(s.back)
                     .when(!can_back, |b| b.opacity(0.35))
                     .on_click(cx.listener(|this, _, _, cx| this.go_back(cx))),
             )
@@ -158,7 +173,7 @@ impl SonataDesktopView {
                     .ghost()
                     .small()
                     .icon(IconName::ChevronRight)
-                    .tooltip("Forward (Alt+Right)")
+                    .tooltip(s.forward)
                     .when(!can_fwd, |b| b.opacity(0.35))
                     .on_click(cx.listener(|this, _, _, cx| this.go_forward(cx))),
             )
@@ -167,7 +182,7 @@ impl SonataDesktopView {
                     .ghost()
                     .small()
                     .icon(IconName::RefreshCw)
-                    .tooltip("Refresh current view")
+                    .tooltip(s.refresh)
                     .on_click(cx.listener(|this, _, _, cx| {
                         match this.snapshot.active_nav {
                             NavTarget::Explore => this.backend.send(BackendCmd::RefreshExplore),
@@ -243,17 +258,19 @@ impl SonataDesktopView {
         if suggestions.is_empty() && recents.is_empty() {
             return div().into_any_element();
         }
-        let width = 420.0_f32.min((vp_w - 40.0).max(260.0));
-        // Account for TitleBar horizontal insets + right window controls so the dropdown stays locked under the search bar.
-        let right_inset = if self.decorated || cfg!(target_os = "macos") {
-            10.0
+        let sb = self.search_bar_bounds.get();
+        let measured_w: f32 = sb.size.width.into();
+        let measured_x: f32 = sb.origin.x.into();
+        let measured_bottom: f32 = sb.bottom().into();
+        let (drop_x, drop_y, width) = if measured_w > 60.0 {
+            let w = measured_w.min((vp_w - 24.0).max(260.0));
+            let x = measured_x.clamp(12.0, (vp_w - w - 12.0).max(12.0));
+            let y = (measured_bottom + 6.0).max(TITLEBAR_H);
+            (x, y, w)
         } else {
-            116.0
-        };
-        let left_inset = if cfg!(target_os = "macos") {
-            80.0
-        } else {
-            12.0
+            let w = 420.0_f32.min((vp_w - 40.0).max(260.0));
+            let x = ((vp_w - w) * 0.5).max(12.0);
+            (x, TITLEBAR_H + 2.0, w)
         };
 
         div()
@@ -268,70 +285,17 @@ impl SonataDesktopView {
                 }),
             )
             .child(
-                div()
-                    .absolute()
-                    .top(px(TITLEBAR_H + 2.0))
-                    .left(px(left_inset))
-                    .right(px(right_inset))
-                    .flex()
-                    .justify_center()
-                    .child(
-                        popup_panel(&self.palette)
-                            .id("search-dropdown-card")
-                            .w(px(width))
-                            .p(px(8.0))
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                cx.stop_propagation();
-                            })
-                            .when(
-                                !query.trim().is_empty() && !suggestions.is_empty(),
-                                |card| {
-                                    card.child(
-                                        div()
-                                            .px(px(10.0))
-                                            .py(px(4.0))
-                                            .text_size(px(11.0))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(self.palette.dim)
-                                            .child("Suggestions"),
-                                    )
-                                    .children(
-                                        suggestions.into_iter().enumerate().map(|(i, s)| {
-                                            let picked = s.clone();
-                                            div()
-                                                .id(SharedString::from(format!("sug-{i}")))
-                                                .px(px(10.0))
-                                                .py(px(8.0))
-                                                .rounded(px(self.palette.radii.item))
-                                                .cursor_pointer()
-                                                .hover(|st| st.bg(self.palette.surface_hover))
-                                                .flex()
-                                                .flex_row()
-                                                .items_center()
-                                                .gap(px(10.0))
-                                                .on_click(cx.listener(
-                                                    move |this, _, window, cx| {
-                                                        this.search_dropdown_open = false;
-                                                        let q = picked.clone();
-                                                        this.search_input.update(cx, |st, cx| {
-                                                            st.set_value(q.clone(), window, cx)
-                                                        });
-                                                        this.navigate_to(NavTarget::Search, cx);
-                                                        this.backend.send(BackendCmd::Search(q));
-                                                    },
-                                                ))
-                                                .child(
-                                                    Icon::new(IconName::Search)
-                                                        .size(px(14.0))
-                                                        .text_color(self.palette.dim),
-                                                )
-                                                .child(div().text_size(px(13.0)).child(s))
-                                        }),
-                                    )
-                                },
-                            )
-                            .when(query.trim().is_empty() && !recents.is_empty(), |card| {
-                                let _ = window;
+                div().absolute().top(px(drop_y)).left(px(drop_x)).child(
+                    popup_panel(&self.palette)
+                        .id("search-dropdown-card")
+                        .w(px(width))
+                        .p(px(8.0))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                            cx.stop_propagation();
+                        })
+                        .when(
+                            !query.trim().is_empty() && !suggestions.is_empty(),
+                            |card| {
                                 card.child(
                                     div()
                                         .px(px(10.0))
@@ -339,13 +303,13 @@ impl SonataDesktopView {
                                         .text_size(px(11.0))
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(self.palette.dim)
-                                        .child("Recent searches"),
+                                        .child("Suggestions"),
                                 )
                                 .children(
-                                    recents.into_iter().take(6).enumerate().map(|(i, r)| {
-                                        let picked = r.clone();
+                                    suggestions.into_iter().enumerate().map(|(i, s)| {
+                                        let picked = s.clone();
                                         div()
-                                            .id(SharedString::from(format!("rec-s-{i}")))
+                                            .id(SharedString::from(format!("sug-{i}")))
                                             .px(px(10.0))
                                             .py(px(8.0))
                                             .rounded(px(self.palette.radii.item))
@@ -365,15 +329,59 @@ impl SonataDesktopView {
                                                 this.backend.send(BackendCmd::Search(q));
                                             }))
                                             .child(
-                                                Icon::new(IconName::Clock)
+                                                Icon::new(IconName::Search)
                                                     .size(px(14.0))
                                                     .text_color(self.palette.dim),
                                             )
-                                            .child(div().text_size(px(13.0)).child(r))
+                                            .child(div().text_size(px(13.0)).child(s))
                                     }),
                                 )
-                            }),
-                    ),
+                            },
+                        )
+                        .when(query.trim().is_empty() && !recents.is_empty(), |card| {
+                            let _ = window;
+                            card.child(
+                                div()
+                                    .px(px(10.0))
+                                    .py(px(4.0))
+                                    .text_size(px(11.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(self.palette.dim)
+                                    .child("Recent searches"),
+                            )
+                            .children(
+                                recents.into_iter().take(6).enumerate().map(|(i, r)| {
+                                    let picked = r.clone();
+                                    div()
+                                        .id(SharedString::from(format!("rec-s-{i}")))
+                                        .px(px(10.0))
+                                        .py(px(8.0))
+                                        .rounded(px(self.palette.radii.item))
+                                        .cursor_pointer()
+                                        .hover(|st| st.bg(self.palette.surface_hover))
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap(px(10.0))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.search_dropdown_open = false;
+                                            let q = picked.clone();
+                                            this.search_input.update(cx, |st, cx| {
+                                                st.set_value(q.clone(), window, cx)
+                                            });
+                                            this.navigate_to(NavTarget::Search, cx);
+                                            this.backend.send(BackendCmd::Search(q));
+                                        }))
+                                        .child(
+                                            Icon::new(IconName::Clock)
+                                                .size(px(14.0))
+                                                .text_color(self.palette.dim),
+                                        )
+                                        .child(div().text_size(px(13.0)).child(r))
+                                }),
+                            )
+                        }),
+                ),
             )
             .into_any_element()
     }

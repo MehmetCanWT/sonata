@@ -2,9 +2,11 @@ package dev.sonata.android.data
 
 import android.content.ContentValues
 import android.content.Context
+import android.content.SharedPreferences
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.StatFs
 import android.os.SystemClock
 import android.provider.MediaStore
 import androidx.compose.runtime.Immutable
@@ -79,7 +81,9 @@ data class ActiveDownload(
 class SonataDownloadManager(private val context: Context) {
 
     private val appContext = context.applicationContext
-    private val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val prefs: SharedPreferences by lazy {
+        appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    }
     private val indexLock = Any()
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile
@@ -683,6 +687,42 @@ class SonataDownloadManager(private val context: Context) {
         mimeType.contains("mpeg") || mimeType.contains("mp3") -> "mp3"
         mimeType.contains("ogg") -> "ogg"
         else -> "m4a"
+    }
+
+    /** Snapshot of offline download usage and free space on the selected storage target. */
+    @Immutable
+    data class DownloadStorageStats(
+        val trackCount: Int,
+        val downloadedBytes: Long,
+        val availableBytes: Long,
+        val totalBytes: Long,
+        val locationLabel: String,
+    )
+
+    fun queryStorageStats(location: DownloadStorageLocation): DownloadStorageStats {
+        val records = _downloads.value
+        val used = _totalBytes.value
+        val targetDir = when (location) {
+            DownloadStorageLocation.INTERNAL -> appContext.filesDir
+            DownloadStorageLocation.EXTERNAL -> appContext.getExternalFilesDir(Environment.DIRECTORY_MUSIC)
+                ?: Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC)
+                ?: appContext.filesDir
+        }
+        val (avail, total) = runCatching {
+            val stat = StatFs(targetDir.absolutePath)
+            stat.availableBytes to stat.totalBytes
+        }.getOrDefault(0L to 0L)
+        val label = when (location) {
+            DownloadStorageLocation.INTERNAL -> "Internal · Private App Storage"
+            DownloadStorageLocation.EXTERNAL -> "External · Music/Sonata"
+        }
+        return DownloadStorageStats(
+            trackCount = records.size,
+            downloadedBytes = used,
+            availableBytes = avail,
+            totalBytes = total,
+            locationLabel = label,
+        )
     }
 
     private fun sanitizeId(id: String): String =

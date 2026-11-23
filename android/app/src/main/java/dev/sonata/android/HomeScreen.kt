@@ -578,24 +578,36 @@ internal fun HomeTabContent(
                     }
                 }
             } else {
+                val isBasicHome = LocalLunariaColors.current.isBasic
+                LaunchedEffect(isBasicHome) {
+                    if (isBasicHome && listState.firstVisibleItemIndex <= 1) {
+                        listState.scrollToItem(0)
+                    }
+                }
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = contentPadding,
                 ) {
+                    if (isBasicHome) {
+                        item(key = "basic_home_title", contentType = "basic_home_title") {
+                            dev.sonata.android.ui.screens.BasicHomeTitle(title = "Home")
+                        }
+                    }
                     if (state.authInitialized && !state.signedIn) {
                         item(key = "home_sign_in_banner", contentType = "sign_in_banner") {
                             SignInBanner(
                                 onSignIn = onSignIn,
-                                modifier = Modifier.padding(top = 18.dp, bottom = 14.dp),
+                                modifier = Modifier.padding(top = 56.dp, bottom = 14.dp),
                             )
                         }
                     }
 
                     // Shelf 1: Top Picks for You (exact-fit portrait cards, edge-to-edge scrolling)
-                    item(key = "top_picks_shelf", contentType = "top_picks_shelf") {
+                    if (!settings.hideTopPicks) {
+                        item(key = "top_picks_shelf", contentType = "top_picks_shelf") {
                         Column(Modifier.padding(bottom = 26.dp)) {
-                            SectionHeader(title = "Top Picks for You")
+                            SectionHeader(title = dev.sonata.android.ui.i18n.LocalSonataStrings.current.topPicksForYou)
                             LazyRow(
                                 state = topPicksRowState,
                                 flingBehavior = topPicksSnap,
@@ -885,13 +897,14 @@ internal fun HomeTabContent(
                             }
                         }
                     }
+                    }
 
                     // Shelf 2a: Last Played (156.dp square cover + title strip, ZERO glass)
-                    if (lastPlayedTracks.isNotEmpty()) {
+                    if (!settings.hideRecents && lastPlayedTracks.isNotEmpty()) {
                         item(key = "last_played_square_strip", contentType = "last_played_strip") {
                             val activeId = state.activeTrack?.id
                             Column(Modifier.padding(bottom = 24.dp)) {
-                                SectionHeader(title = "Last Played")
+                                SectionHeader(title = dev.sonata.android.ui.i18n.LocalSonataStrings.current.lastPlayed)
                                 LazyRow(
                                     contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
                                     horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -914,8 +927,8 @@ internal fun HomeTabContent(
                         }
                     }
 
-                    // Shelf 2b: Smooth Classic "Son Dinlenenler" 4-rows-per-column pager (theme-distinct framing)
-                    if (recentsShelf != null && recentsColumns.isNotEmpty()) {
+                    // Shelf 2b: Smooth Classic "Recently Played" 4-rows-per-column pager (theme-distinct framing)
+                    if (!settings.hideRecents && recentsShelf != null && recentsColumns.isNotEmpty()) {
                         item(key = "recents_shelf", contentType = "recents_shelf") {
                             val tokens = LocalLunariaColors.current
                             val activeId = state.activeTrack?.id
@@ -971,8 +984,16 @@ internal fun HomeTabContent(
                         }
                     }
 
-                    // Shelf 3: Find Your Mood (always-animated SonataMoodAnimatedArt, exact-fit width & taller cards)
+                    // Shelf 3: Find Your Mood (duotone sleeves in Basic; animated art in Violet/Moonflower)
+                    if (!settings.hideHomeMoods) {
                     item(key = "find_your_mood_shelf", contentType = "mood_shelf") {
+                        val isBasicTheme = LocalLunariaColors.current.isBasic
+                        val homeArtPool = remember(state.shelves, state.tracks) {
+                            (
+                                state.shelves.flatMap { s -> s.cards.mapNotNull { it.thumbnailUrl } } +
+                                    state.tracks.mapNotNull { it.thumbnailUrl }
+                                ).distinct()
+                        }
                         Column(Modifier.padding(bottom = 26.dp)) {
                             SectionHeader(
                                 title = "Find Your Mood",
@@ -988,17 +1009,32 @@ internal fun HomeTabContent(
                                 items(
                                     items = TopPickMood.entries,
                                     key = { it.name },
-                                    contentType = { "mood_tile" },
+                                    contentType = { if (isBasicTheme) "basic_mood_tile" else "mood_tile" },
                                 ) { mood ->
-                                    MoodTile(
-                                        mood = mood,
-                                        tileWidth = moodTileWidth,
-                                        tileHeight = moodTileHeight,
-                                        onClick = { _, label -> onOpenMood(label) },
-                                    )
+                                    if (isBasicTheme) {
+                                        val art = homeArtPool.getOrNull(
+                                            mood.ordinal % homeArtPool.size.coerceAtLeast(1),
+                                        )
+                                        dev.sonata.android.ui.screens.BasicMoodSleeveCard(
+                                            title = mood.displayName,
+                                            artworkUrl = art,
+                                            onClick = { onOpenMood(mood.displayName) },
+                                            modifier = Modifier
+                                                .width(196.dp)
+                                                .height(114.dp),
+                                        )
+                                    } else {
+                                        MoodTile(
+                                            mood = mood,
+                                            tileWidth = moodTileWidth,
+                                            tileHeight = moodTileHeight,
+                                            onClick = { _, label -> onOpenMood(label) },
+                                        )
+                                    }
                                 }
                             }
                         }
+                    }
                     }
 
                     // Shelf 4: Personal Playlists
@@ -1036,9 +1072,12 @@ internal fun HomeTabContent(
                         key = { shelf -> "shelf_${shelf.title}" },
                         contentType = { "home_shelf" },
                     ) { shelf ->
-                        val cards = remember(shelf.cards) {
+                        val cards = remember(shelf.cards, settings.hideHomeVideos) {
                             shelf.cards
-                                .filter { it.kind != AndroidHomeCardKind.MOOD }
+                                .filter { card ->
+                                    card.kind != AndroidHomeCardKind.MOOD &&
+                                        (!settings.hideHomeVideos || card.kind != AndroidHomeCardKind.VIDEO)
+                                }
                                 .distinctBy { "${it.kind}_${it.id}_${it.title}" }
                         }
                         if (cards.isNotEmpty()) {
@@ -1054,12 +1093,22 @@ internal fun HomeTabContent(
                                     items(
                                         items = cards,
                                         key = { card -> "${card.kind}_${card.id}_${card.title}" },
-                                        contentType = { if (isVideoShelf) "video_card" else "home_card" },
+                                        contentType = {
+                                            if (isVideoShelf && !settings.squareVideoThumbnails) "video_card" else "home_card"
+                                        },
                                     ) { card ->
                                         val activeId = state.activeTrack?.id
                                         val current = activeId != null && card.track?.id == activeId
-                                        if (isVideoShelf) {
+                                        if (isVideoShelf && !settings.squareVideoThumbnails) {
                                             VideoShelfCard(
+                                                card = card,
+                                                isCurrent = current,
+                                                isPlaying = current && state.isPlaying,
+                                                onClick = { onOpenCard(card, shelf.tracks) },
+                                                onLongClick = { bounds -> onCardLongClick(card, "VIDEO", false, bounds) },
+                                            )
+                                        } else if (isVideoShelf) {
+                                            ShelfCard(
                                                 card = card,
                                                 isCurrent = current,
                                                 isPlaying = current && state.isPlaying,

@@ -1,3 +1,9 @@
+//! Search-title cleanup, track matching, and audio quality badge classification.
+//!
+//! 1. **Track Matching**: Normalizes titles and durations to pair cross-provider candidates.
+//! 2. **Quality Ranking**: Builds human-readable codec/bitrate badges and determines upgrade
+//!    eligibility between stream candidates.
+
 use super::*;
 use regex::Regex;
 use std::sync::OnceLock;
@@ -10,10 +16,7 @@ pub fn clean_search_title(title: &str) -> String {
     re.replace_all(title, "").trim().to_string()
 }
 
-pub(super) fn pick_best_ytm_match<'a>(
-    target: &Track,
-    candidates: &'a [Track],
-) -> Option<&'a Track> {
+pub fn pick_best_ytm_match<'a>(target: &Track, candidates: &'a [Track]) -> Option<&'a Track> {
     if candidates.is_empty() {
         return None;
     }
@@ -48,7 +51,7 @@ fn normalize_cmp(value: &str) -> String {
         .join(" ")
 }
 
-pub(super) fn audio_quality_badge(
+pub fn audio_quality_badge(
     source: ProviderSource,
     format_id: &str,
     codec: &str,
@@ -74,7 +77,7 @@ pub(super) fn audio_quality_badge(
     }
 }
 
-pub(super) fn extract_badge_kbps(badge: &str) -> Option<u32> {
+pub fn extract_badge_kbps(badge: &str) -> Option<u32> {
     if let Some(kbps) = badge.split_whitespace().find_map(|token| {
         let lower = token.to_ascii_lowercase();
         lower
@@ -105,7 +108,7 @@ pub(super) fn extract_badge_kbps(badge: &str) -> Option<u32> {
     None
 }
 
-pub(super) fn should_upgrade_candidate(current_badge: &str, candidate_badge: &str) -> bool {
+pub fn should_upgrade_candidate(current_badge: &str, candidate_badge: &str) -> bool {
     let current_kbps = extract_badge_kbps(current_badge).unwrap_or(0);
     let candidate_kbps = extract_badge_kbps(candidate_badge).unwrap_or(0);
     quality_rank(candidate_badge) > quality_rank(current_badge)

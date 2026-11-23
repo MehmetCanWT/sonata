@@ -223,6 +223,7 @@ import dev.sonata.android.ui.SonataIcons
 import dev.sonata.android.ui.SonataShimmerHost
 import dev.sonata.android.ui.SonataTheme
 import dev.sonata.android.ui.theme.LunariaColors
+import dev.sonata.android.ui.i18n.LocalSonataStrings
 import dev.sonata.android.ui.theme.LocalLunariaColors
 import dev.sonata.android.ui.theme.drawThemeAtmosphericBackdrop
 import dev.sonata.android.ui.SweptKaraokeLyricText
@@ -608,10 +609,12 @@ internal fun SonataGlassNavBar(
 ) {
     val themeTokens = LocalLunariaColors.current
     val glassSupported = LocalLiquidGlassEnabled.current && isGlassSupported()
+    val reduceBlur = LocalReduceDynamicBlur.current
     val contentColor = glassContentColor()
     val selectedColor = contentColor
     val unselectedColor = contentColor.copy(alpha = 0.62f)
     val fallbackSurface = themeTokens.eclipseSurface
+    val strings = LocalSonataStrings.current
     val selectedIndex = PrimaryTabs.indexOfFirst { it.tab == selectedTab }.coerceAtLeast(0)
     val tabClickCallbacks = remember(onTabSelected) {
         PrimaryTabs.map { spec -> { onTabSelected(spec.tab) } }
@@ -623,11 +626,13 @@ internal fun SonataGlassNavBar(
         fallbackSurface,
         themeTokens.designTheme,
         themeTokens.isDark,
+        glassSupported,
+        reduceBlur,
     ) {
         {
             Modifier.adaptiveLiquidGlass(
                 shape = navBarShape,
-                fallbackColor = fallbackSurface.copy(alpha = 0.94f),
+                fallbackColor = fallbackSurface,
             )
         }
     }
@@ -636,11 +641,13 @@ internal fun SonataGlassNavBar(
         fallbackSurface,
         themeTokens.designTheme,
         themeTokens.isDark,
+        glassSupported,
+        reduceBlur,
     ) {
         {
             Modifier.adaptiveLiquidGlass(
                 shape = miniPlayerShape,
-                fallbackColor = fallbackSurface.copy(alpha = 0.94f),
+                fallbackColor = fallbackSurface,
             )
         }
     }
@@ -710,11 +717,18 @@ internal fun SonataGlassNavBar(
                 bottom = 4.dp,
             ),
         ),
-        contentKey = remember(selectedIndex, contentColor) {
-            listOf(selectedIndex, contentColor)
+        contentKey = remember(selectedIndex, contentColor, strings) {
+            listOf(selectedIndex, contentColor, strings)
         },
     ) {
         PrimaryTabs.forEachIndexed { index, spec ->
+            val tabLabel = when (spec.tab) {
+                AndroidTab.Home -> strings.tabHome
+                AndroidTab.Explore -> strings.tabExplore
+                AndroidTab.Radio -> strings.tabRadio
+                AndroidTab.Library -> strings.tabLibrary
+                AndroidTab.Search -> strings.tabSearch
+            }
             val isSelected = index == selectedIndex
             val tint = if (isSelected) selectedColor else unselectedColor
             val onClick = tabClickCallbacks[index]
@@ -724,7 +738,7 @@ internal fun SonataGlassNavBar(
                     icon = {
                         Icon(
                             imageVector = spec.icon,
-                            contentDescription = spec.label,
+                            contentDescription = tabLabel,
                             tint = tint,
                             modifier = Modifier.size(SonataTabIconSize),
                         )
@@ -732,7 +746,7 @@ internal fun SonataGlassNavBar(
                     onClick = onClick,
                     title = {
                         Text(
-                            text = spec.label,
+                            text = tabLabel,
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontSize = 10.sp,
                                 fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
@@ -750,14 +764,14 @@ internal fun SonataGlassNavBar(
                     icon = {
                         Icon(
                             imageVector = spec.icon,
-                            contentDescription = spec.label,
+                            contentDescription = tabLabel,
                             tint = tint,
                             modifier = Modifier.size(SonataTabIconSize),
                         )
                     },
                     title = {
                         Text(
-                            text = spec.label,
+                            text = tabLabel,
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontSize = 10.sp,
                                 fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
@@ -888,7 +902,7 @@ internal fun GlassMiniPlayer(
                 }
             }
             Spacer(Modifier.width(if (isInline) 8.dp else 12.dp))
-            if (isViolet || isInline) {
+            if (isViolet || themeTokens.isBasic || isInline) {
                 // Violet stacked two-line layout (`Violet.png`): Bold title above soft orchid artist.
                 Column(
                     modifier = Modifier

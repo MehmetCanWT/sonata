@@ -23,6 +23,7 @@ reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sonata-core = { path = "../sonata-core" }
+sonata-runtime = { path = "../sonata-runtime" }
 tokio.workspace = true
 tracing.workspace = true
 urlencoding.workspace = true

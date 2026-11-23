@@ -5,14 +5,14 @@
 //! 3. **Library Mutations & UI Sync**: handles likes, playlist edits, thumbnail prefetching, and Hyprland opacity updates.
 
 use super::types::{InternalEvent, NavTarget};
-use super::ytm_extra::{ExtraYtmClient, MoodChip};
 use super::BackendEngine;
-use sonata_core::auth::{extract_ytm_cookies_from_browser, ExtractedCookies};
-use sonata_core::hyprland;
-use sonata_core::media;
-use sonata_core::providers::hifi::StreamResolver;
-use sonata_core::providers::ytmusic::YtMusicClient;
+use sonata_core::auth::ExtractedCookies;
+use sonata_core::providers::ytmusic::{MoodChip, YtMusicClient};
 use sonata_core::providers::{Playlist, ProviderSource, Track};
+use sonata_runtime::auth::extract_ytm_cookies_from_browser;
+use sonata_runtime::hyprland;
+use sonata_runtime::media;
+use sonata_runtime::process::LinuxStreamResolver;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -108,6 +108,8 @@ impl BackendEngine {
         }
 
         let http = self.http.clone();
+        let paths = self.paths.clone();
+        let cache_limit = self.config.cache_limit_bytes();
         let int_tx = self.int_tx.clone();
         let in_flight = self.in_flight_thumbs.clone();
         let slots = self.thumbnail_slots.clone();
@@ -116,13 +118,14 @@ impl BackendEngine {
             for url in candidates {
                 let slots = slots.clone();
                 let http = http.clone();
+                let paths = paths.clone();
                 let in_flight = in_flight.clone();
                 let done_tx = done_tx.clone();
                 tokio::spawn(async move {
                     let Ok(_permit) = slots.acquire().await else {
                         return;
                     };
-                    let _ = media::fetch_and_decode_art(&http, &url).await;
+                    let _ = media::fetch_and_decode_art(&http, &url, &paths, cache_limit).await;
                     if let Ok(mut guard) = in_flight.lock() {
                         guard.remove(&url);
                     }
@@ -148,6 +151,8 @@ impl BackendEngine {
         self.status_line = format!("Signing in via {browser_id}...");
 
         let http = self.http.clone();
+        let paths = self.paths.clone();
+        let cache_limit = self.config.cache_limit_bytes();
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
             let bid = browser_id.clone();
@@ -181,8 +186,8 @@ impl BackendEngine {
             let profile = profile_res.ok();
             let mut avatar_path = None;
             if let Some(url) = profile.as_ref().and_then(|p| p.avatar_url.as_ref()) {
-                let _ = media::fetch_and_decode_art(&http, url).await;
-                let path = media::art_cache_path(url);
+                let _ = media::fetch_and_decode_art(&http, url, &paths, cache_limit).await;
+                let path = media::art_cache_path_in(&paths, url);
                 if path.exists() {
                     avatar_path = Some(path);
                 }
@@ -208,6 +213,8 @@ impl BackendEngine {
         }
         let ytm = self.ytm.clone();
         let http = self.http.clone();
+        let paths = self.paths.clone();
+        let cache_limit = self.config.cache_limit_bytes();
         let int_tx = self.int_tx.clone();
         if let Some(db) = &self.cache_db {
             db.invalidate_playlist(None);
@@ -221,8 +228,8 @@ impl BackendEngine {
             let profile = profile_res.ok();
             let mut avatar_path = None;
             if let Some(url) = profile.as_ref().and_then(|p| p.avatar_url.as_ref()) {
-                let _ = media::fetch_and_decode_art(&http, url).await;
-                let path = media::art_cache_path(url);
+                let _ = media::fetch_and_decode_art(&http, url, &paths, cache_limit).await;
+                let path = media::art_cache_path_in(&paths, url);
                 if path.exists() {
                     avatar_path = Some(path);
                 }
@@ -240,17 +247,25 @@ impl BackendEngine {
         self.load_listening_history();
     }
 
-    pub(super) fn sign_out(&mut self) {
+    pub(super) async fn sign_out(&mut self) {
         self.config.desktop_ytm_browser = None;
         let _ = self.config.save();
         self.cookies = ExtractedCookies::default();
         self.ytm = YtMusicClient::new(self.http.clone(), self.cookies.clone());
-        self.resolver = StreamResolver::new(
+        self.resolver = LinuxStreamResolver::with_profile(
             self.http.clone(),
             self.ytm.clone(),
             self.cookies.clone(),
             self.cache_db.clone(),
+            super::linux_core_paths(),
+            super::linux_resolver_profile(&self.config),
         );
+        let _ = self
+            .session
+            .send(sonata_runtime::player::SessionCommand::UpdateStreamSource(
+                std::sync::Arc::new(self.resolver.clone()),
+            ))
+            .await;
         self.signed_in_browser = None;
         self.user_profile = None;
         self.user_avatar_path = None;
@@ -302,10 +317,10 @@ impl BackendEngine {
         self.explore_req_id = self.explore_req_id.wrapping_add(1);
         let req_id = self.explore_req_id;
         self.explore_loading = true;
-        let extra = ExtraYtmClient::new(self.http.clone(), self.cookies.clone());
+        let ytm = self.ytm.clone();
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
-            if let Ok((shelves, mood_tiles)) = extra.fetch_explore().await {
+            if let Ok((shelves, mood_tiles)) = ytm.fetch_explore().await {
                 let _ = int_tx.send(InternalEvent::ExploreLoaded {
                     req_id,
                     shelves,
@@ -332,10 +347,10 @@ impl BackendEngine {
         self.mood_page_title = title.clone();
         self.mood_page_shelves.clear();
         self.mood_page_loading = true;
-        let extra = ExtraYtmClient::new(self.http.clone(), self.cookies.clone());
+        let ytm = self.ytm.clone();
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
-            let shelves = extra
+            let shelves = ytm
                 .fetch_mood_category(&browse_id, &params)
                 .await
                 .unwrap_or_default();
@@ -352,10 +367,10 @@ impl BackendEngine {
             return;
         }
         self.library_extras_loading = true;
-        let extra = ExtraYtmClient::new(self.http.clone(), self.cookies.clone());
+        let ytm = self.ytm.clone();
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
-            let (albums, artists) = extra.fetch_library_albums_and_artists().await;
+            let (albums, artists) = ytm.fetch_library_albums_and_artists().await;
             let _ = int_tx.send(InternalEvent::LibraryExtrasLoaded { albums, artists });
         });
     }
@@ -378,11 +393,10 @@ impl BackendEngine {
         self.active_home_chip = chip.clone();
 
         let ytm = self.ytm.clone();
-        let extra = ExtraYtmClient::new(self.http.clone(), self.cookies.clone());
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
             if let Some(ref c) = chip {
-                match extra.fetch_home_with_chips(Some(&c.params)).await {
+                match ytm.fetch_home_with_chips(Some(&c.params)).await {
                     Ok((chips, shelves)) => {
                         let _ = int_tx.send(InternalEvent::HomeLoaded {
                             req_id,
@@ -404,7 +418,7 @@ impl BackendEngine {
                 }
             } else {
                 let (chips_res, feed_res) =
-                    tokio::join!(extra.fetch_home_with_chips(None), ytm.fetch_home_feed());
+                    tokio::join!(ytm.fetch_home_with_chips(None), ytm.fetch_home_feed());
                 let chips = chips_res.map(|(c, _)| c).unwrap_or_default();
                 match feed_res {
                     Ok(shelves) => {
@@ -440,12 +454,11 @@ impl BackendEngine {
         self.artist_banner_url = None;
         self.status_line = "Loading artist...".to_string();
         let ytm = self.ytm.clone();
-        let extra = ExtraYtmClient::new(self.http.clone(), self.cookies.clone());
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
             let (artist_res, banner_url) = tokio::join!(
                 ytm.fetch_artist_page(&browse_id),
-                extra.fetch_artist_banner(&browse_id),
+                ytm.fetch_artist_banner(&browse_id),
             );
             match artist_res {
                 Ok(artist) => {
@@ -492,13 +505,12 @@ impl BackendEngine {
         self.artist_banner_url = None;
         self.status_line = format!("Loading artist {clean}...");
         let ytm = self.ytm.clone();
-        let extra = ExtraYtmClient::new(self.http.clone(), self.cookies.clone());
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
             let mut resolved = ytm.fetch_artist_by_name(&clean).await.ok();
             // Secondary lookup via categorized artist search so we open the Artist page directly instead of Search.
             if resolved.is_none() {
-                if let Ok(cat) = extra.search_rich(&clean).await {
+                if let Ok(cat) = ytm.search_rich(&clean).await {
                     if let Some(first_artist) =
                         cat.artists.into_iter().find(|a| a.id.starts_with("UC"))
                     {
@@ -508,7 +520,7 @@ impl BackendEngine {
             }
             match resolved {
                 Some(artist) => {
-                    let banner_url = extra.fetch_artist_banner(&artist.id).await;
+                    let banner_url = ytm.fetch_artist_banner(&artist.id).await;
                     let _ = int_tx.send(InternalEvent::ArtistLoaded {
                         req_id,
                         artist: Some(artist),
@@ -555,10 +567,10 @@ impl BackendEngine {
                     title.trim()
                 }
             );
-            let extra = ExtraYtmClient::new(self.http.clone(), self.cookies.clone());
+            let ytm = self.ytm.clone();
             let int_tx = self.int_tx.clone();
             tokio::spawn(async move {
-                match extra.fetch_album_detail(&id).await {
+                match ytm.fetch_album_detail(&id).await {
                     Ok(album) => {
                         let _ = int_tx.send(InternalEvent::AlbumDetailLoaded {
                             req_id,
@@ -603,12 +615,11 @@ impl BackendEngine {
         let req_id = self.album_req_id;
         self.status_line = format!("Opening album {clean_title}...");
         let ytm = self.ytm.clone();
-        let extra = ExtraYtmClient::new(self.http.clone(), self.cookies.clone());
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
             match ytm.resolve_album_browse_id(&clean_title, &artist).await {
                 Ok(Some(resolved_id)) if resolved_id.starts_with("MPRE") => {
-                    match extra.fetch_album_detail(&resolved_id).await {
+                    match ytm.fetch_album_detail(&resolved_id).await {
                         Ok(album) => {
                             let _ = int_tx.send(InternalEvent::AlbumDetailLoaded {
                                 req_id,
@@ -825,10 +836,10 @@ impl BackendEngine {
         }
         self.suggest_req_id = self.suggest_req_id.wrapping_add(1);
         let req_id = self.suggest_req_id;
-        let extra = ExtraYtmClient::new(self.http.clone(), self.cookies.clone());
+        let ytm = self.ytm.clone();
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
-            let suggestions = extra.fetch_search_suggestions(&q).await;
+            let suggestions = ytm.fetch_search_suggestions(&q).await;
             let _ = int_tx.send(InternalEvent::SearchSuggestionsLoaded {
                 req_id,
                 suggestions,
@@ -861,7 +872,6 @@ impl BackendEngine {
         };
 
         let ytm = self.ytm.clone();
-        let extra = ExtraYtmClient::new(self.http.clone(), self.cookies.clone());
         let http = self.http.clone();
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
@@ -873,7 +883,7 @@ impl BackendEngine {
                 }
             };
             let (ytm_res, rich_res, jio_tracks) =
-                tokio::join!(ytm.search_songs(&q), extra.search_rich(&q), jio_fut);
+                tokio::join!(ytm.search_songs(&q), ytm.search_rich(&q), jio_fut);
             let mut rich = rich_res.unwrap_or_default();
             match ytm_res {
                 Ok(mut tracks) => {
@@ -917,12 +927,12 @@ impl BackendEngine {
             self.status_line = "Sign in to YouTube Music to rate songs".to_string();
             return;
         }
-        let extra = ExtraYtmClient::new(self.http.clone(), self.cookies.clone());
+        let ytm = self.ytm.clone();
         let int_tx = self.int_tx.clone();
         let id = track.id.clone();
         let title = track.title.clone();
         tokio::spawn(async move {
-            match extra.set_dislike_status(&id).await {
+            match ytm.set_dislike_status(&id).await {
                 Ok(()) => {
                     let _ = int_tx.send(InternalEvent::StatusMessage(format!(
                         "Marked \"{title}\" as disliked"
@@ -951,10 +961,10 @@ impl BackendEngine {
         let target_save = !album.saved;
         album.saved = target_save;
         let title = album.title.clone();
-        let extra = ExtraYtmClient::new(self.http.clone(), self.cookies.clone());
+        let ytm = self.ytm.clone();
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
-            match extra.set_playlist_saved(&pl_id, target_save).await {
+            match ytm.set_playlist_saved(&pl_id, target_save).await {
                 Ok(()) => {
                     let msg = if target_save {
                         format!("Saved \"{title}\" to Library")
@@ -987,13 +997,6 @@ impl BackendEngine {
         tokio::spawn(async move {
             hyprland::set_window_opacity(&addr, opacity).await;
         });
-    }
-
-    pub(super) fn apply_config_volume(&self) {
-        let eff = if self.muted { 0 } else { self.config.volume };
-        if let Some(mpv) = &self.mpv {
-            mpv.set_volume(eff);
-        }
     }
 
     pub(super) fn toggle_like_track(&mut self, track: Track) {
@@ -1106,6 +1109,76 @@ impl BackendEngine {
                     )));
                 }
             }
+        });
+    }
+
+    pub(super) fn edit_playlist(
+        &mut self,
+        playlist_id: String,
+        title: Option<String>,
+        cover_path: Option<PathBuf>,
+    ) {
+        if !self.ytm.is_authenticated() {
+            self.status_line = "Sign in to YouTube Music first".to_string();
+            return;
+        }
+        let clean_title = title
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        if clean_title.is_none() && cover_path.is_none() {
+            return;
+        }
+        let ytm = self.ytm.clone();
+        let int_tx = self.int_tx.clone();
+        self.status_line = "Updating playlist on YouTube Music...".to_string();
+        tokio::spawn(async move {
+            if let Some(ref new_title) = clean_title {
+                if let Err(e) = ytm
+                    .edit_playlist_metadata(&playlist_id, Some(new_title), None, None)
+                    .await
+                {
+                    let _ = int_tx.send(InternalEvent::StatusMessage(format!(
+                        "Rename playlist failed: {e}"
+                    )));
+                    return;
+                }
+            }
+            let mut cover_updated = false;
+            if let Some(path) = cover_path {
+                let mime = match path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.to_ascii_lowercase())
+                    .as_deref()
+                {
+                    Some("png") => "image/png",
+                    Some("webp") => "image/webp",
+                    _ => "image/jpeg",
+                };
+                match tokio::fs::read(&path).await {
+                    Ok(bytes) => {
+                        if let Err(e) = ytm.upload_playlist_cover(&playlist_id, &bytes, mime).await
+                        {
+                            let _ = int_tx.send(InternalEvent::StatusMessage(format!(
+                                "Cover upload failed: {e}"
+                            )));
+                            return;
+                        }
+                        cover_updated = true;
+                    }
+                    Err(e) => {
+                        let _ = int_tx.send(InternalEvent::StatusMessage(format!(
+                            "Could not read cover image: {e}"
+                        )));
+                        return;
+                    }
+                }
+            }
+            let _ = int_tx.send(InternalEvent::PlaylistUpdated {
+                playlist_id,
+                title: clean_title,
+                cover_updated,
+            });
         });
     }
 

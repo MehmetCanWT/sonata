@@ -5,16 +5,18 @@
 //! 3. **Handle**: `BackendHandle` sends commands and shuts down synchronously via a bounded `sync_channel` timeout.
 //! 4. **Internal Events**: `InternalEvent` and `ExportFingerprint` carry async task completions and deduplicate now-playing exports.
 
-use super::ytm_extra::{AlbumDetail, MoodCategoryTile, MoodChip, RichSearchResult};
-use sonata_core::auth::{BrowserOption, ExtractedCookies};
-use sonata_core::config::AppConfig;
+use sonata_core::auth::ExtractedCookies;
 use sonata_core::lyrics::{active_line_index, LyricsState};
-use sonata_core::motion::MotionCover;
 use sonata_core::player::RepeatMode;
-use sonata_core::providers::hifi::ResolvedStream;
-use sonata_core::providers::ytmusic::{ArtistPage, HomeCard, HomeShelf, YtAccountProfile};
+use sonata_core::providers::ytmusic::{
+    AlbumDetail, ArtistPage, HomeCard, HomeShelf, MoodCategoryTile, MoodChip, RichSearchResult,
+    YtAccountProfile,
+};
 use sonata_core::providers::{Playlist, ProviderSource, Track};
 use sonata_core::updater::UpdateCheckResult;
+use sonata_runtime::auth::BrowserOption;
+use sonata_runtime::config::AppConfig;
+use sonata_runtime::motion::MotionCover;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -127,6 +129,11 @@ pub enum BackendCmd {
     DislikeTrack(Track),
     ToggleSaveAlbum,
     CreateYtmPlaylist(String),
+    EditPlaylist {
+        playlist_id: String,
+        title: Option<String>,
+        cover_path: Option<PathBuf>,
+    },
     AddTrackToPlaylist {
         track: Track,
         playlist_id: String,
@@ -137,6 +144,7 @@ pub enum BackendCmd {
     CheckForUpdates,
     SetWindowAddress(Option<String>),
     SetWindowVisible(bool),
+    SetUiCompact(bool),
     Shutdown(std::sync::mpsc::SyncSender<()>),
 }
 
@@ -227,9 +235,9 @@ impl DesktopSnapshot {
         self.signed_in_browser.is_some()
     }
 
-    pub fn active_lyric_index(&self) -> Option<usize> {
+    pub fn active_lyric_index_at(&self, position_secs: f64) -> Option<usize> {
         match &self.lyrics {
-            LyricsState::Synced(lines) => active_line_index(lines, self.position_secs),
+            LyricsState::Synced(lines) => active_line_index(lines, position_secs),
             _ => None,
         }
     }
@@ -247,6 +255,7 @@ impl DesktopSnapshot {
 pub struct BackendHandle {
     pub(super) cmd_tx: mpsc::UnboundedSender<BackendCmd>,
     pub(super) snap_rx: watch::Receiver<Arc<DesktopSnapshot>>,
+    pub(super) progress_rx: watch::Receiver<(f64, f64)>,
 }
 
 impl BackendHandle {
@@ -260,6 +269,10 @@ impl BackendHandle {
 
     pub fn subscribe(&self) -> watch::Receiver<Arc<DesktopSnapshot>> {
         self.snap_rx.clone()
+    }
+
+    pub fn subscribe_progress(&self) -> watch::Receiver<(f64, f64)> {
+        self.progress_rx.clone()
     }
 
     pub fn shutdown_sync(&self) {
@@ -350,30 +363,6 @@ pub(super) enum InternalEvent {
         banner_url: Option<String>,
         error: Option<String>,
     },
-    StreamReady {
-        play_seq: u64,
-        track_id: String,
-        stream: ResolvedStream,
-    },
-    StreamUpgrade {
-        play_seq: u64,
-        track_id: String,
-        stream: ResolvedStream,
-    },
-    UpgradeFinished {
-        play_seq: u64,
-    },
-    StreamError {
-        play_seq: u64,
-        track_id: String,
-        error: String,
-    },
-    NextTrackPrepared {
-        play_seq: u64,
-        index: usize,
-        track_id: String,
-        result: Result<ResolvedStream, String>,
-    },
     LyricsReady {
         play_seq: u64,
         track_id: String,
@@ -400,6 +389,11 @@ pub(super) enum InternalEvent {
     },
     ThumbnailsReady,
     PlaylistCreated(Playlist),
+    PlaylistUpdated {
+        playlist_id: String,
+        title: Option<String>,
+        cover_updated: bool,
+    },
     UpdateChecked(UpdateCheckResult),
     UpdateCheckFailed(String),
     StatusMessage(String),

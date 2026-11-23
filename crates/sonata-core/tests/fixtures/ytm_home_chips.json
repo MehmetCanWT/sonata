@@ -1,0 +1,43 @@
+{
+  "contents": {
+    "singleColumnBrowseResultsRenderer": {
+      "tabs": [
+        {
+          "tabRenderer": {
+            "content": {
+              "sectionListRenderer": {
+                "header": {
+                  "chipCloudRenderer": {
+                    "chips": [
+                      {
+                        "chipCloudChipRenderer": {
+                          "text": { "runs": [{ "text": "Relax" }] },
+                          "navigationEndpoint": {
+                            "browseEndpoint": { "browseId": "FEmusic_home", "params": "ggMPOg1uX1JOQWZFeDByc2Jm" }
+                          }
+                        }
+                      },
+                      {
+                        "chipCloudChipRenderer": {
+                          "text": { "runs": [{ "text": "Focus" }] },
+                          "navigationEndpoint": {
+                            "browseEndpoint": { "browseId": "FEmusic_home", "params": "ggMPOg1uX21tN2ZFeDByc2Jm" }
+                          }
+                        }
+                      },
+                      {
+                        "chipCloudChipRenderer": {
+                          "text": { "runs": [{ "text": "Broken Chip Without Params" }] }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

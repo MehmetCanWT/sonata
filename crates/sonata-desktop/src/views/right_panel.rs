@@ -8,26 +8,33 @@ use super::{ContextMenuKind, ContextMenuState, SonataDesktopView};
 use crate::backend::BackendCmd;
 use crate::settings::GUTTER;
 use crate::ui::components::{
-    artist_links_row, card_panel, cover_art_tile, glowing_lyric_row, is_parenthetical_bg,
-    resolve_active_lyric_pair, scroll_edge_fades, LyricRowStyle,
+    artist_links_row, card_panel, cover_art_tile, is_parenthetical_bg, lyric_line_end_secs,
+    resolve_active_lyrics, scroll_edge_fades,
+};
+use crate::ui::lyrics::{
+    anchored_lyrics_offset, is_counter_voice, render_fixed_rows, render_karaoke_rows,
+    KaraokeRenderStyle, SpringState, SPRING_LYRICS_SCROLL,
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
-    div, prelude::FluentBuilder as _, px, AnyElement, Context, FontWeight, InteractiveElement as _,
-    IntoElement, MouseButton, ParentElement as _, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window,
+    div, point, prelude::FluentBuilder as _, px, AnyElement, Context, FontWeight,
+    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window,
 };
 use sonata_core::lyrics::LyricsState;
 use sonata_core::providers::format_duration;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+const PANEL_LYRICS_PIN: f32 = 0.36;
+const PANEL_WHEEL_SETTLE_SECS: u64 = 3;
 
 impl SonataDesktopView {
     pub fn render_right_panel(
         &mut self,
         width_px: f32,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let show_q = self.settings.show_queue_panel;
@@ -44,7 +51,7 @@ impl SonataDesktopView {
             .flex_col()
             .gap(px(GUTTER))
             .when(show_q, |col| col.child(self.render_queue_card(show_l, cx)))
-            .when(show_l, |col| col.child(self.render_lyrics_card(cx)))
+            .when(show_l, |col| col.child(self.render_lyrics_card(window, cx)))
             .into_any_element()
     }
 
@@ -69,7 +76,33 @@ impl SonataDesktopView {
                     .child("Queue is empty"),
             );
         } else {
-            for (idx, track) in queue.iter().enumerate() {
+            // Window large queues around the active track so 200+ track queues stay 60fps.
+            const MAX_QUEUE_WINDOW: usize = 64;
+            let (win_start, win_end) = if queue.len() > MAX_QUEUE_WINDOW {
+                let cur = current_idx.unwrap_or(0);
+                let start = cur.saturating_sub(12);
+                let end = (start + MAX_QUEUE_WINDOW).min(queue.len());
+                let start = end.saturating_sub(MAX_QUEUE_WINDOW);
+                (start, end)
+            } else {
+                (0, queue.len())
+            };
+            if win_start > 0 {
+                list = list.child(
+                    div()
+                        .px(px(12.0))
+                        .py(px(6.0))
+                        .text_size(px(11.0))
+                        .text_color(self.palette.dim)
+                        .child(format!("{win_start} earlier tracks in queue")),
+                );
+            }
+            for (idx, track) in queue
+                .iter()
+                .enumerate()
+                .skip(win_start)
+                .take(win_end - win_start)
+            {
                 let is_cur = current_idx == Some(idx);
                 let cover = self.media_for_url(track.thumbnail_url.as_deref(), cx);
                 let track_menu = track.clone();
@@ -251,6 +284,16 @@ impl SonataDesktopView {
                         ),
                 );
             }
+            if win_end < queue.len() {
+                list = list.child(
+                    div()
+                        .px(px(12.0))
+                        .py(px(8.0))
+                        .text_size(px(11.0))
+                        .text_color(self.palette.dim)
+                        .child(format!("+{} more tracks in queue", queue.len() - win_end)),
+                );
+            }
         }
 
         let card = card_panel(&self.palette)
@@ -284,7 +327,10 @@ impl SonataDesktopView {
                                     .text_size(px(14.0))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(self.palette.text)
-                                    .child("Next up"),
+                                    .child(
+                                        sonata_runtime::i18n::strings(self.settings.language)
+                                            .next_up,
+                                    ),
                             ),
                     )
                     .child(
@@ -360,30 +406,53 @@ impl SonataDesktopView {
         card.into_any_element()
     }
 
-    fn render_lyrics_card(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_lyrics_card(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let lyrics = self.snapshot.lyrics.clone();
         let scroll_fades = self.settings.scroll_fades;
+        let scroll_bounds = self.lyrics_scroll.bounds();
+        let view_h: f32 = scroll_bounds.size.height.into();
+        let view_top: f32 = scroll_bounds.origin.y.into();
+        let effective_h = if view_h > 40.0 { view_h } else { 320.0 };
+        let user_scrolling = self
+            .last_wheel_lyrics
+            .is_some_and(|t| t.elapsed() < Duration::from_secs(PANEL_WHEEL_SETTLE_SECS));
 
-        let body: AnyElement = match lyrics {
+        let scroll_body: AnyElement = match lyrics {
             LyricsState::Idle => div()
+                .id("rp-lyrics-scroll")
+                .size_full()
+                .overflow_y_scroll()
+                .track_scroll(&self.lyrics_scroll)
                 .p(px(16.0))
                 .text_size(px(13.0))
                 .text_color(self.palette.dim)
                 .child("Play a track to display lyrics.")
                 .into_any_element(),
             LyricsState::Loading => div()
+                .id("rp-lyrics-scroll")
+                .size_full()
+                .overflow_y_scroll()
+                .track_scroll(&self.lyrics_scroll)
                 .p(px(16.0))
                 .text_size(px(13.0))
                 .text_color(self.palette.dim)
                 .child("Loading lyrics...")
                 .into_any_element(),
             LyricsState::NotFound => div()
+                .id("rp-lyrics-scroll")
+                .size_full()
+                .overflow_y_scroll()
+                .track_scroll(&self.lyrics_scroll)
                 .p(px(16.0))
                 .text_size(px(13.0))
                 .text_color(self.palette.dim)
                 .child("No lyrics available for this track.")
                 .into_any_element(),
             LyricsState::Plain(lines) => div()
+                .id("rp-lyrics-scroll")
+                .size_full()
+                .overflow_y_scroll()
+                .track_scroll(&self.lyrics_scroll)
                 .p(px(16.0))
                 .text_size(px(14.0))
                 .line_height(px(22.0))
@@ -391,46 +460,187 @@ impl SonataDesktopView {
                 .child(lines.join("\n"))
                 .into_any_element(),
             LyricsState::Synced(lines) => {
-                let pos = self.snapshot.position_secs;
-                let (active_idx, active_bg_idx) = resolve_active_lyric_pair(&lines, pos);
+                if !self.snapshot.paused && !self.snapshot.loading_track && !lines.is_empty() {
+                    self.ensure_karaoke_pace(cx);
+                }
+
+                let pos = self.live_position_now();
+                let (active_idx, active_bg_indices) = resolve_active_lyrics(&lines, pos);
+                let pad_top = (effective_h * PANEL_LYRICS_PIN).max(48.0);
+                let pad_bottom = (effective_h * (1.0 - PANEL_LYRICS_PIN)).max(96.0);
+                let view_w: f32 = scroll_bounds.size.width.into();
+                let base_size = 14.5_f32;
+                let active_size = 16.5_f32;
+                let line_h = 23.0_f32;
+                let pad_x = 8.0_f32;
+                let wrap_width = if view_w > 60.0 {
+                    (view_w - 28.0 - pad_x * 2.0).max(80.0)
+                } else {
+                    220.0
+                };
+                if self
+                    .panel_lyrics_wrap
+                    .sync_layout(&lines, wrap_width, active_size)
+                {
+                    window.request_animation_frame();
+                }
+
+                // Smooth physical spring scroll keeping the active lyric centered in the side panel.
+                let dt = self
+                    .lyrics_panel_last_step
+                    .elapsed()
+                    .as_secs_f32()
+                    .clamp(0.001, 0.05);
+                self.lyrics_panel_last_step = Instant::now();
+                let target_idx = active_idx.unwrap_or(0);
+                let cur_off: f32 = self.lyrics_scroll.offset().y.into();
+
+                if user_scrolling {
+                    self.panel_scroll_spring = SpringState::at(cur_off);
+                } else if view_h > 40.0 {
+                    let child_ix = target_idx + 1;
+                    if let Some(item_bounds) = self.lyrics_scroll.bounds_for_item(child_ix) {
+                        let item_top: f32 = item_bounds.origin.y.into();
+                        let item_h: f32 = item_bounds.size.height.into();
+                        let max_off: f32 = self.lyrics_scroll.max_offset().y.into();
+                        let goal = anchored_lyrics_offset(
+                            view_top,
+                            item_top,
+                            view_h,
+                            max_off,
+                            PANEL_LYRICS_PIN,
+                            item_h * 0.20,
+                        );
+                        if (self.panel_scroll_spring.position - cur_off).abs() > 4.0
+                            && self.panel_scroll_spring.velocity.abs() < 1.0
+                        {
+                            self.panel_scroll_spring = SpringState::at(cur_off);
+                        }
+                        let diff = goal - self.panel_scroll_spring.position;
+                        if diff.abs() > view_h * 1.6 || self.snapshot.config.reduce_motion {
+                            self.panel_scroll_spring = SpringState::at(goal);
+                        } else {
+                            let next_spring =
+                                SPRING_LYRICS_SCROLL.step(self.panel_scroll_spring, goal, dt);
+                            if SPRING_LYRICS_SCROLL.is_settled(next_spring, goal, 0.35) {
+                                self.panel_scroll_spring = SpringState::at(goal);
+                            } else {
+                                self.panel_scroll_spring = next_spring;
+                                window.request_animation_frame();
+                            }
+                        }
+                        let next_y = self
+                            .panel_scroll_spring
+                            .position
+                            .clamp(-max_off.max(0.0), 0.0);
+                        self.lyrics_scroll.set_offset(point(px(0.0), px(next_y)));
+                    } else {
+                        window.request_animation_frame();
+                    }
+                }
+
                 let mut col = div()
+                    .id("rp-lyrics-scroll")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.lyrics_scroll)
                     .flex()
                     .flex_col()
                     .gap(px(8.0))
                     .px(px(14.0))
-                    .py(px(14.0));
-                for (i, line) in lines.into_iter().enumerate() {
-                    let glow = self.lyric_glow_factor(i, active_idx, active_bg_idx);
-                    let is_past = active_idx.is_some_and(|a| i < a);
+                    .child(div().flex_shrink_0().h(px(pad_top)));
+
+                for (i, line) in lines.iter().enumerate() {
+                    let is_active_bg = active_bg_indices.contains(&i);
+                    let is_active = active_idx == Some(i) || is_active_bg;
+                    let glow = self.lyric_glow_factor(i, active_idx, &active_bg_indices);
+                    let is_past = !is_active_bg && active_idx.is_some_and(|a| i < a);
                     let is_bg = is_parenthetical_bg(&line.text);
+                    let is_counter = is_counter_voice(line.voice);
                     let seek_secs = line.time_secs;
+                    let next_time = Some(lyric_line_end_secs(&lines, i));
+
+                    let base_sz = if is_bg { base_size * 0.88 } else { base_size };
+                    let act_sz = if is_bg {
+                        active_size * 0.90
+                    } else {
+                        active_size
+                    };
+                    let sz = base_sz + (act_sz - base_sz) * glow;
+                    let wrapped = self.panel_lyrics_wrap.get_or_measure(
+                        i,
+                        line,
+                        next_time,
+                        active_size,
+                        wrap_width,
+                        window,
+                    );
+
+                    let content: AnyElement = if is_active {
+                        let base_color = self.palette.secondary.opacity(0.46);
+                        let lit_color = self.palette.text;
+                        if let Some(plan) = wrapped {
+                            render_karaoke_rows(
+                                plan,
+                                line,
+                                pos,
+                                KaraokeRenderStyle {
+                                    font_size: sz,
+                                    line_height: line_h,
+                                    base_color,
+                                    lit_color,
+                                    is_counter,
+                                    is_bg,
+                                },
+                            )
+                        } else {
+                            div()
+                                .w_full()
+                                .min_w_0()
+                                .text_size(px(sz))
+                                .line_height(px(line_h))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(lit_color)
+                                .child(line.text.clone())
+                                .into_any_element()
+                        }
+                    } else {
+                        let color = if is_past {
+                            self.palette.dim.opacity(0.70)
+                        } else {
+                            self.palette.secondary.opacity(0.76)
+                        };
+                        if let Some(plan) = wrapped {
+                            render_fixed_rows(&plan.text, sz, line_h, color, 0.0, is_counter, is_bg)
+                        } else {
+                            let fallback = [SharedString::from(line.text.clone())];
+                            render_fixed_rows(&fallback, sz, line_h, color, 0.0, is_counter, is_bg)
+                        }
+                    };
+
                     col = col.child(
-                        glowing_lyric_row(
-                            SharedString::from(format!("rp-lyr-{i}")),
-                            &line.text,
-                            line.voice,
-                            glow,
-                            is_past,
-                            is_bg,
-                            LyricRowStyle {
-                                base_font_size: 14.0,
-                                active_font_size: 16.0,
-                                base_line_height: 21.0,
-                                active_line_height: 23.0,
-                                pad_x: 8.0,
-                                pad_y: 4.0,
-                                radius: self.palette.radii.small,
-                                hover_bg: self.palette.surface_hover,
-                                pure_white_glow: false,
-                            },
-                            &self.palette,
-                        )
-                        .on_click(cx.listener(move |this, _, _, _| {
-                            this.backend.send(BackendCmd::SeekAbsolute(seek_secs));
-                        })),
+                        div()
+                            .id(SharedString::from(format!("rp-lyr-{i}")))
+                            .w_full()
+                            .min_w_0()
+                            .px(px(pad_x))
+                            .py(px(5.0))
+                            .rounded(px(self.palette.radii.small))
+                            .cursor_pointer()
+                            .hover(|st| st.bg(self.palette.surface_hover))
+                            .on_click(cx.listener(move |this, _, _, _| {
+                                this.last_wheel_lyrics = None;
+                                this.backend.send(BackendCmd::SeekAbsolute(seek_secs));
+                            }))
+                            .flex()
+                            .flex_row()
+                            .when(!is_counter, |d| d.justify_start())
+                            .when(is_counter, |d| d.justify_end())
+                            .child(content),
                     );
                 }
-                col.into_any_element()
+                col.child(div().flex_shrink_0().h(px(pad_bottom)))
+                    .into_any_element()
             }
         };
 
@@ -465,7 +675,10 @@ impl SonataDesktopView {
                                     .text_size(px(14.0))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(self.palette.text)
-                                    .child("Lyrics"),
+                                    .child(
+                                        sonata_runtime::i18n::strings(self.settings.language)
+                                            .lyrics,
+                                    ),
                             ),
                     )
                     .child(
@@ -488,14 +701,7 @@ impl SonataDesktopView {
                     .on_scroll(cx.listener(|this, _, _, _| {
                         this.last_wheel_lyrics = Some(Instant::now());
                     }))
-                    .child(
-                        div()
-                            .id("rp-lyrics-scroll")
-                            .size_full()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.lyrics_scroll)
-                            .child(body),
-                    )
+                    .child(scroll_body)
                     .child(scroll_edge_fades(
                         &self.lyrics_scroll,
                         &self.palette,

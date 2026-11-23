@@ -5,6 +5,7 @@
 
 pub mod hifi;
 pub mod jiosaavn;
+pub mod profile;
 pub mod spotify;
 pub mod ytmusic;
 

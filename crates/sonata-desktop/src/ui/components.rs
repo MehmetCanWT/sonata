@@ -9,14 +9,15 @@ use crate::theme::DesktopPalette;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::skeleton::Skeleton;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
-    div, hsla, img, linear_color_stop, linear_gradient, point, prelude::FluentBuilder as _, px,
-    Animation, AnimationExt as _, AnyElement, App, BoxShadow, Div, ElementId, FontWeight, Hsla,
-    InteractiveElement as _, IntoElement, ObjectFit, ParentElement as _, ScrollHandle,
-    SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window,
+    div, hsla, img, linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px, Animation,
+    AnimationExt as _, AnyElement, App, Div, ElementId, FontWeight, Hsla, InteractiveElement as _,
+    IntoElement, ObjectFit, ParentElement as _, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window,
 };
-use sonata_core::lyrics::{active_line_index, LyricLine, LyricVoice};
+use sonata_core::lyrics::{active_line_index, LyricLine};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -517,7 +518,7 @@ pub fn header_wash(
                 .child(
                     img(m.header_blurred.clone())
                         .size_full()
-                        .object_fit(ObjectFit::Cover),
+                        .object_fit(ObjectFit::Fill),
                 ),
         );
     }
@@ -734,11 +735,16 @@ pub fn artist_links_row(
 pub fn explicit_badge(palette: &DesktopPalette) -> AnyElement {
     div()
         .flex_shrink_0()
+        .h(px(16.0))
+        .min_w(px(16.0))
         .px(px(4.0))
-        .py(px(1.0))
         .rounded(px(palette.radii.small))
         .bg(palette.surface_active)
-        .text_size(px(10.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(px(9.5))
+        .line_height(px(10.0))
         .font_weight(FontWeight::BOLD)
         .text_color(palette.secondary)
         .child("E")
@@ -753,13 +759,17 @@ pub fn quality_badge(label: &str, upgrading: bool, palette: &DesktopPalette) -> 
     };
     div()
         .flex_shrink_0()
-        .px(px(8.0))
-        .py(px(3.0))
+        .h(px(24.0))
+        .px(px(9.0))
         .rounded(px(palette.radii.control))
         .bg(palette.surface)
         .border_1()
         .border_color(palette.outline)
+        .flex()
+        .items_center()
+        .justify_center()
         .text_size(px(11.0))
+        .line_height(px(12.0))
         .font_weight(FontWeight::MEDIUM)
         .text_color(if upgrading {
             palette.accent
@@ -824,26 +834,31 @@ pub fn icon_action_button(
     palette: &DesktopPalette,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    let mut btn = Button::new(id).ghost().small().icon(icon);
-    if let Some(tip) = tooltip {
-        btn = btn.tooltip(tip);
-    }
-    btn.when(active, |b| b.text_color(palette.accent))
-        .on_click(move |_, window, cx| on_click(window, cx))
-        .into_any_element()
-}
+    let fg = if active {
+        palette.accent
+    } else {
+        palette.secondary
+    };
+    let hover_bg = palette.surface_hover;
+    let hover_fg = if active { palette.accent } else { palette.text };
 
-/// Visual sizing parameters for [`glowing_lyric_row`].
-pub struct LyricRowStyle {
-    pub base_font_size: f32,
-    pub active_font_size: f32,
-    pub base_line_height: f32,
-    pub active_line_height: f32,
-    pub pad_x: f32,
-    pub pad_y: f32,
-    pub radius: f32,
-    pub hover_bg: Hsla,
-    pub pure_white_glow: bool,
+    div()
+        .id(id)
+        .flex_shrink_0()
+        .size(px(32.0))
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .text_color(fg)
+        .hover(move |s| s.bg(hover_bg).text_color(hover_fg))
+        .when_some(tooltip, |d, tip| {
+            d.tooltip(move |w, cx| Tooltip::new(tip).build(w, cx))
+        })
+        .on_click(move |_, window, cx| on_click(window, cx))
+        .child(Icon::new(icon).size(px(16.0)))
+        .into_any_element()
 }
 
 /// Returns true when a lyric line is a parenthetical background vocal / ad-lib like `(yeah)`.
@@ -852,173 +867,71 @@ pub fn is_parenthetical_bg(text: &str) -> bool {
     t.len() >= 3 && t.starts_with('(') && t.ends_with(')')
 }
 
-/// Resolves the active lead lyric index alongside any currently overlapping parenthetical `(...)` background vocal.
-pub fn resolve_active_lyric_pair(
+/// Estimates when `lines[idx]` finishes being sung without clipping parenthetical `(...)` vocals
+/// to an overlapping lead verse or clipping lead verses to a nested `(...)` ad-lib.
+pub fn lyric_line_end_secs(lines: &[LyricLine], idx: usize) -> f64 {
+    let line = &lines[idx];
+    let word_end = line
+        .words
+        .iter()
+        .map(|w| w.end_secs.unwrap_or(w.start_secs + 0.45))
+        .reduce(f64::max);
+
+    if is_parenthetical_bg(&line.text) {
+        let natural =
+            line.time_secs + (line.text.trim().chars().count() as f64 * 0.085).clamp(1.4, 3.6);
+        return word_end.map_or(natural, |w| w.max(line.time_secs + 1.1));
+    }
+
+    let next_lead_start = lines
+        .iter()
+        .skip(idx + 1)
+        .find(|n| !is_parenthetical_bg(&n.text))
+        .map(|n| n.time_secs);
+
+    match (word_end, next_lead_start) {
+        (Some(w), Some(next)) => w
+            .max(next.min(line.time_secs + 6.5))
+            .max(line.time_secs + 0.6),
+        (Some(w), None) => w.max(line.time_secs + 0.8),
+        (None, Some(next)) => next.max(line.time_secs + 0.6),
+        (None, None) => line.time_secs + 3.2,
+    }
+}
+
+/// Resolves the active lead lyric index alongside every overlapping parenthetical `(...)`
+/// background vocal (before or after the lead) that is still finishing its sung window.
+pub fn resolve_active_lyrics(
     lines: &[LyricLine],
     position_secs: f64,
-) -> (Option<usize>, Option<usize>) {
+) -> (Option<usize>, Vec<usize>) {
     let lead = active_line_index(lines, position_secs);
     let Some(lead_idx) = lead else {
-        return (None, None);
+        return (None, Vec::new());
     };
-    let lookahead = position_secs + 0.08;
-    // Check immediate following parenthetical background vocal(s) that started while lead is still sung.
-    let mut bg = None;
-    for cand in (lead_idx + 1)..lines.len().min(lead_idx + 3) {
-        let line = &lines[cand];
-        if !is_parenthetical_bg(&line.text) {
-            break;
+    let lookahead = position_secs + 0.06;
+    let start = lead_idx.saturating_sub(2);
+    let end = lines.len().min(lead_idx + 3);
+    let mut active_bg = Vec::new();
+    for cand in start..end {
+        if cand == lead_idx || !is_parenthetical_bg(&lines[cand].text) {
+            continue;
         }
+        let line = &lines[cand];
         if line.time_secs <= lookahead {
-            let end_est = lines
-                .get(cand + 1)
-                .map(|n| n.time_secs)
-                .unwrap_or(line.time_secs + 3.2)
-                .min(line.time_secs + 4.0);
-            if position_secs <= end_est + 0.15 {
-                bg = Some(cand);
+            let bg_end = lyric_line_end_secs(lines, cand);
+            if position_secs <= bg_end + 0.42 {
+                active_bg.push(cand);
             }
         }
     }
-    (Some(lead_idx), bg)
-}
-
-/// Derives an opaque deep album-art backdrop canvas, atmospheric top wash, and vibrant album accent from `rgb`.
-pub fn album_art_theme_colors(rgb: (u8, u8, u8)) -> (Hsla, Hsla, Hsla) {
-    let r = rgb.0 as f32 / 255.0;
-    let g = rgb.1 as f32 / 255.0;
-    let b = rgb.2 as f32 / 255.0;
-    let max_c = r.max(g).max(b);
-    let min_c = r.min(g).min(b);
-    let delta = max_c - min_c;
-    let h = if delta < 1e-4 {
-        0.65
-    } else if (max_c - r).abs() < 1e-4 {
-        (((g - b) / delta) % 6.0) / 6.0
-    } else if (max_c - g).abs() < 1e-4 {
-        ((b - r) / delta + 2.0) / 6.0
-    } else {
-        ((r - g) / delta + 4.0) / 6.0
-    };
-    let h = if h < 0.0 { h + 1.0 } else { h };
-    let l = (max_c + min_c) * 0.5;
-    let s = if delta < 1e-4 {
-        0.18
-    } else {
-        delta / (1.0 - (2.0 * l - 1.0).abs()).max(0.01)
-    };
-
-    let deep_canvas = hsla(h, (s * 0.58).clamp(0.16, 0.52), 0.09, 1.0);
-    let top_wash = hsla(h, (s * 0.72).clamp(0.22, 0.68), 0.24, 0.78);
-    let accent = hsla(h, s.clamp(0.42, 0.85), 0.64, 1.0);
-    (deep_canvas, top_wash, accent)
-}
-
-/// Renders one synced lyric sentence row with pure white soft glow, smooth `glow` (`0..=1`) transition,
-/// left/right duet alignment (`Lead` vs `Counter`), and subtle parenthetical `(...)` background vocal styling.
-#[allow(clippy::too_many_arguments)]
-pub fn glowing_lyric_row(
-    id: impl Into<ElementId>,
-    raw_text: &str,
-    voice: LyricVoice,
-    glow: f32,
-    is_past: bool,
-    is_background: bool,
-    style: LyricRowStyle,
-    palette: &DesktopPalette,
-) -> Stateful<Div> {
-    let g = glow.clamp(0.0, 1.0);
-    let text = if raw_text.trim().is_empty() {
-        "• • •".to_string()
-    } else {
-        raw_text.to_string()
-    };
-
-    let bg_scale = if is_background { 0.78 } else { 1.0 };
-    let font_size =
-        (style.base_font_size + (style.active_font_size - style.base_font_size) * g) * bg_scale;
-    let line_height = (style.base_line_height
-        + (style.active_line_height - style.base_line_height) * g)
-        * bg_scale;
-
-    let white_base = if style.pure_white_glow || palette.is_dark {
-        gpui_kit::white()
-    } else {
-        palette.text
-    };
-    let rest_alpha = if is_background {
-        if is_past {
-            0.30
-        } else {
-            0.42
-        }
-    } else if is_past {
-        0.34
-    } else {
-        0.54
-    };
-    let active_alpha = if is_background { 0.88 } else { 1.0 };
-    let text_alpha = rest_alpha + (active_alpha - rest_alpha) * g;
-    let is_counter = voice == LyricVoice::Counter;
-
-    let mut row = div()
-        .id(id)
-        .w_full()
-        .cursor_pointer()
-        .rounded(px(style.radius))
-        .px(px(style.pad_x))
-        .py(px(if is_background {
-            (style.pad_y * 0.55).max(2.0)
-        } else {
-            style.pad_y
-        }))
-        .flex()
-        .flex_row()
-        .when(!is_counter, |el| el.justify_start())
-        .when(is_counter, |el| el.justify_end())
-        .hover(move |s| s.bg(style.hover_bg));
-
-    let mut inner = div()
-        .max_w_full()
-        .px(px(if g > 0.02 { 8.0 } else { 0.0 }))
-        .py(px(if g > 0.02 { 3.0 } else { 0.0 }))
-        .rounded(px(style.radius))
-        .when(g > 0.02, |el| {
-            let aura = white_base.opacity((if is_background { 0.08 } else { 0.14 }) * g);
-            el.bg(white_base.opacity((if is_background { 0.03 } else { 0.06 }) * g))
-                .shadow(vec![BoxShadow {
-                    color: aura,
-                    offset: point(px(0.0), px(0.0)),
-                    blur_radius: px(20.0),
-                    spread_radius: px(0.5),
-                    inset: false,
-                }])
-        })
-        .text_size(px(font_size))
-        .line_height(px(line_height))
-        .font_weight(if g > 0.45 && !is_background {
-            FontWeight::BOLD
-        } else {
-            FontWeight::MEDIUM
-        })
-        .text_color(white_base.opacity(text_alpha));
-
-    if is_counter {
-        inner = inner.text_right();
-    } else {
-        inner = inner.text_left();
-    }
-    if is_background {
-        inner = inner.italic();
-    }
-
-    row = row.child(inner.child(text));
-    row
+    (Some(lead_idx), active_bg)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sonata_core::lyrics::{LyricVoice, LyricWord};
 
     #[test]
     fn split_artist_credits_handles_multiple_collaborators() {
@@ -1034,5 +947,45 @@ mod tests {
             fit_title_size("Short")
                 > fit_title_size("A Rather Much Longer Deluxe Album Edition Title")
         );
+    }
+
+    #[test]
+    fn background_vocal_stays_active_until_finished_even_after_next_verse_starts() {
+        let lines = vec![
+            LyricLine {
+                time_secs: 10.0,
+                text: "First lead verse".to_string(),
+                words: vec![LyricWord {
+                    start_secs: 10.0,
+                    end_secs: Some(12.2),
+                    text: "First lead verse".to_string(),
+                }],
+                voice: LyricVoice::Lead,
+            },
+            LyricLine {
+                time_secs: 11.8,
+                text: "(For real)".to_string(),
+                words: vec![LyricWord {
+                    start_secs: 11.8,
+                    end_secs: Some(13.6),
+                    text: "(For real)".to_string(),
+                }],
+                voice: LyricVoice::Lead,
+            },
+            LyricLine {
+                time_secs: 12.4,
+                text: "Second lead verse".to_string(),
+                words: vec![LyricWord {
+                    start_secs: 12.4,
+                    end_secs: Some(15.0),
+                    text: "Second lead verse".to_string(),
+                }],
+                voice: LyricVoice::Lead,
+            },
+        ];
+        // At 12.8s the second lead verse is active, AND "(For real)" (index 1) must still stay lit.
+        let (lead, bg) = resolve_active_lyrics(&lines, 12.8);
+        assert_eq!(lead, Some(2));
+        assert_eq!(bg, vec![1]);
     }
 }

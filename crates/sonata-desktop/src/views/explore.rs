@@ -136,7 +136,8 @@ impl SonataDesktopView {
                         cx,
                     ));
                 } else if !shelf.tracks.is_empty() {
-                    let tracks = shelf.tracks.clone();
+                    let tracks: std::sync::Arc<[sonata_core::providers::Track]> =
+                        std::sync::Arc::from(shelf.tracks.as_slice());
                     let mut rows = div().flex().flex_col().gap(px(2.0));
                     for t_i in 0..tracks.len().min(12) {
                         rows = rows.child(self.render_track_row(
@@ -284,7 +285,8 @@ impl SonataDesktopView {
             );
 
         if !shelf.tracks.is_empty() {
-            let tracks = shelf.tracks.clone();
+            let tracks: std::sync::Arc<[sonata_core::providers::Track]> =
+                std::sync::Arc::from(shelf.tracks.as_slice());
             let mut rows = div().flex().flex_col().gap(px(2.0));
             for i in 0..tracks.len() {
                 rows = rows.child(self.render_track_row(

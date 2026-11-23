@@ -3,4 +3,7 @@
     <cache-path
         name="share_cards"
         path="share_cards/" />
+    <cache-path
+        name="updates"
+        path="updates/" />
 </paths>

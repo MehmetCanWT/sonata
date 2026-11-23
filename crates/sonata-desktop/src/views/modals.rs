@@ -477,6 +477,140 @@ impl SonataDesktopView {
                     ))
                     .into_any_element()
             }
+            DesktopModal::EditPlaylist {
+                playlist_id,
+                cover_path,
+            } => {
+                let s = sonata_runtime::i18n::strings(self.settings.language);
+                let pid_save = playlist_id.clone();
+                let pid_pick = playlist_id.clone();
+                let cover_save = cover_path.clone();
+                let cover_label = cover_path
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .map(|n| format!("Cover: {n}"))
+                    .unwrap_or_else(|| match self.settings.language {
+                        sonata_runtime::i18n::AppLanguage::Tr => "Kapak görseli seç...".to_string(),
+                        sonata_runtime::i18n::AppLanguage::Ru => "Выбрать обложку...".to_string(),
+                        sonata_runtime::i18n::AppLanguage::En => {
+                            "Choose cover image...".to_string()
+                        }
+                    });
+                let heading = match self.settings.language {
+                    sonata_runtime::i18n::AppLanguage::Tr => "Çalma listesini düzenle",
+                    sonata_runtime::i18n::AppLanguage::Ru => "Редактировать плейлист",
+                    sonata_runtime::i18n::AppLanguage::En => "Edit playlist",
+                };
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(14.0))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(18.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(heading),
+                            )
+                            .child(
+                                Button::new("mdl-ep-close")
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::X)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.modal = DesktopModal::None;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .px(px(10.0))
+                            .py(px(6.0))
+                            .rounded(px(self.palette.radii.control))
+                            .bg(self.palette.surface)
+                            .border_1()
+                            .border_color(self.palette.outline)
+                            .child(Input::new(&self.playlist_name_input).appearance(false)),
+                    )
+                    .child(
+                        Button::new("mdl-ep-pick-cover")
+                            .secondary()
+                            .icon(IconName::Image)
+                            .label(cover_label)
+                            .on_click(cx.listener(move |_this, _, _window, cx| {
+                                let rx = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
+                                    files: true,
+                                    directories: false,
+                                    multiple: false,
+                                    prompt: Some("Select playlist cover image".into()),
+                                });
+                                let pid = pid_pick.clone();
+                                cx.spawn(async move |weak, cx| {
+                                    if let Ok(Ok(Some(paths))) = rx.await {
+                                        if let Some(path) = paths.into_iter().next() {
+                                            let _ = weak.update(cx, |this, cx| {
+                                                this.modal = DesktopModal::EditPlaylist {
+                                                    playlist_id: pid,
+                                                    cover_path: Some(path),
+                                                };
+                                                cx.notify();
+                                            });
+                                        }
+                                    }
+                                })
+                                .detach();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .justify_end()
+                            .gap(px(8.0))
+                            .child(
+                                Button::new("mdl-ep-cancel")
+                                    .secondary()
+                                    .label(s.cancel)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.modal = DesktopModal::None;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("mdl-ep-save")
+                                    .primary()
+                                    .label(match self.settings.language {
+                                        sonata_runtime::i18n::AppLanguage::Tr => "Kaydet",
+                                        sonata_runtime::i18n::AppLanguage::Ru => "Сохранить",
+                                        sonata_runtime::i18n::AppLanguage::En => "Save",
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        let name = this
+                                            .playlist_name_input
+                                            .read(cx)
+                                            .value()
+                                            .trim()
+                                            .to_string();
+                                        let title = if name.is_empty() { None } else { Some(name) };
+                                        this.backend.send(BackendCmd::EditPlaylist {
+                                            playlist_id: pid_save.clone(),
+                                            title,
+                                            cover_path: cover_save.clone(),
+                                        });
+                                        this.modal = DesktopModal::None;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .into_any_element()
+            }
             DesktopModal::CreatePlaylist => div()
                 .flex()
                 .flex_col()

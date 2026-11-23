@@ -186,7 +186,9 @@ impl SonataDesktopView {
                                 Button::new("alb-play-all")
                                     .primary()
                                     .icon(IconName::Play)
-                                    .label("Play")
+                                    .label(
+                                        sonata_runtime::i18n::strings(self.settings.language).play,
+                                    )
                                     .when(tracks_play.is_empty(), |b| b.opacity(0.45))
                                     .on_click(cx.listener(move |this, _, _, _| {
                                         if !tracks_play.is_empty() {
@@ -202,7 +204,10 @@ impl SonataDesktopView {
                                 Button::new("alb-shuf")
                                     .secondary()
                                     .icon(IconName::Shuffle)
-                                    .label("Shuffle")
+                                    .label(
+                                        sonata_runtime::i18n::strings(self.settings.language)
+                                            .shuffle,
+                                    )
                                     .when(tracks_shuf.is_empty(), |b| b.opacity(0.45))
                                     .on_click(cx.listener(move |this, _, _, _| {
                                         if !tracks_shuf.is_empty() {
@@ -215,6 +220,7 @@ impl SonataDesktopView {
                                     })),
                             )
                             .when(can_save, |r| {
+                                let s = sonata_runtime::i18n::strings(self.settings.language);
                                 r.child(
                                     Button::new("alb-save")
                                         .secondary()
@@ -223,7 +229,7 @@ impl SonataDesktopView {
                                         } else {
                                             IconName::Plus
                                         })
-                                        .label(if is_saved { "Saved" } else { "Save to library" })
+                                        .label(if is_saved { s.saved } else { s.save_to_library })
                                         .on_click(cx.listener(|this, _, _, _| {
                                             this.backend.send(BackendCmd::ToggleSaveAlbum);
                                         })),
@@ -232,12 +238,14 @@ impl SonataDesktopView {
                     ),
             );
 
+        let tracks_arc: std::sync::Arc<[sonata_core::providers::Track]> =
+            std::sync::Arc::from(tracks.as_slice());
         let mut track_list = div().flex().flex_col().gap(px(2.0));
-        for i in 0..tracks.len() {
+        for i in 0..tracks_arc.len() {
             track_list = track_list.child(self.render_track_row(
                 "alb-tr",
                 i,
-                &tracks,
+                &tracks_arc,
                 TrackRowOpts {
                     show_index: true,
                     ..Default::default()
@@ -250,8 +258,7 @@ impl SonataDesktopView {
             .relative()
             .flex()
             .flex_col()
-            .gap(px(24.0))
-            .child(header_wash(cover.as_ref(), &self.palette, adaptive, 320.0))
+            .child(header_wash(cover.as_ref(), &self.palette, adaptive, 260.0))
             .child(
                 div()
                     .relative()
@@ -260,9 +267,15 @@ impl SonataDesktopView {
                     .pb(px(18.0))
                     .flex()
                     .flex_col()
-                    .gap(px(28.0))
-                    .child(hero)
-                    .child(track_list)
+                    .gap(px(16.0))
+                    .child(div().pb(px(12.0)).child(hero))
+                    .child(
+                        div()
+                            .w_full()
+                            .h(px(1.0))
+                            .bg(self.palette.outline.opacity(0.65)),
+                    )
+                    .child(div().pt(px(6.0)).child(track_list))
                     .when(!alb.other_versions.is_empty(), |p| {
                         let gap = 14.0_f32;
                         let cols = ((content_w / 146.0).floor() as usize).clamp(2, 6);
@@ -399,10 +412,16 @@ impl SonataDesktopView {
                         div()
                             .text_size(px(13.0))
                             .text_color(self.palette.secondary)
-                            .child(if subtitle.is_empty() {
-                                format!("{} tracks", tracks.len())
-                            } else {
-                                format!("{subtitle} • {} tracks", tracks.len())
+                            .child({
+                                let sub_lower = subtitle.to_ascii_lowercase();
+                                if subtitle.is_empty() {
+                                    format!("{} tracks", tracks.len())
+                                } else if sub_lower.contains("track") || sub_lower.contains("song")
+                                {
+                                    subtitle
+                                } else {
+                                    format!("{subtitle} • {} tracks", tracks.len())
+                                }
                             }),
                     )
                     .child(
@@ -417,7 +436,9 @@ impl SonataDesktopView {
                                 Button::new("pl-play-all")
                                     .primary()
                                     .icon(IconName::Play)
-                                    .label("Play")
+                                    .label(
+                                        sonata_runtime::i18n::strings(self.settings.language).play,
+                                    )
                                     .when(tracks_play.is_empty(), |b| b.opacity(0.45))
                                     .on_click(cx.listener(move |this, _, _, _| {
                                         if !tracks_play.is_empty() {
@@ -433,7 +454,10 @@ impl SonataDesktopView {
                                 Button::new("pl-shuf")
                                     .secondary()
                                     .icon(IconName::Shuffle)
-                                    .label("Shuffle")
+                                    .label(
+                                        sonata_runtime::i18n::strings(self.settings.language)
+                                            .shuffle,
+                                    )
                                     .when(tracks_shuf.is_empty(), |b| b.opacity(0.45))
                                     .on_click(cx.listener(move |this, _, _, _| {
                                         if !tracks_shuf.is_empty() {
@@ -445,6 +469,30 @@ impl SonataDesktopView {
                                         }
                                     })),
                             )
+                            .when(editable && !is_liked, |row| {
+                                let pid_edit =
+                                    self.snapshot.playlist_id.clone().unwrap_or_default();
+                                let cur_title = self.snapshot.playlist_heading.clone();
+                                row.child(
+                                    Button::new("pl-edit")
+                                        .secondary()
+                                        .icon(IconName::Pencil)
+                                        .tooltip("Edit playlist title & cover")
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            if !pid_edit.is_empty() {
+                                                this.modal = DesktopModal::EditPlaylist {
+                                                    playlist_id: pid_edit.clone(),
+                                                    cover_path: None,
+                                                };
+                                                this.playlist_name_input.update(cx, |s, cx| {
+                                                    s.set_value(cur_title.clone(), window, cx);
+                                                    s.focus(window, cx);
+                                                });
+                                                cx.notify();
+                                            }
+                                        })),
+                                )
+                            })
                             .child(
                                 Button::new("pl-refresh")
                                     .secondary()
@@ -476,11 +524,36 @@ impl SonataDesktopView {
                     .child("This playlist has no tracks yet."),
             );
         } else {
-            for i in 0..tracks.len() {
+            // Virtualize large playlists so 200+ / 1000+ track playlists only build visible + overscan rows.
+            let tracks_arc: std::sync::Arc<[sonata_core::providers::Track]> =
+                std::sync::Arc::from(tracks.as_slice());
+            let total = tracks_arc.len();
+            const VIRT_THRESHOLD: usize = 64;
+            const ROW_STRIDE: f32 = 56.0; // ROW_HEIGHT (54) + gap (2)
+            const HERO_OFFSET: f32 = 286.0;
+            const OVERSCAN: usize = 16;
+
+            let (win_start, win_end) = if total > VIRT_THRESHOLD {
+                let scroll_y = (-f32::from(self.main_scroll.offset().y)).max(0.0);
+                let vp_h: f32 = f32::from(self.main_scroll.bounds().size.height).max(900.0);
+                let rel_top = (scroll_y - HERO_OFFSET).max(0.0);
+                let first_vis = (rel_top / ROW_STRIDE).floor() as usize;
+                let vis_count = (vp_h / ROW_STRIDE).ceil() as usize + 1;
+                let start = first_vis.saturating_sub(OVERSCAN).min(total);
+                let end = (first_vis + vis_count + OVERSCAN).min(total);
+                (start, end)
+            } else {
+                (0, total)
+            };
+
+            if win_start > 0 {
+                rows = rows.child(div().flex_shrink_0().h(px(win_start as f32 * ROW_STRIDE)));
+            }
+            for i in win_start..win_end {
                 rows = rows.child(self.render_track_row(
                     "pl-tr",
                     i,
-                    &tracks,
+                    &tracks_arc,
                     TrackRowOpts {
                         show_index: false,
                         show_album: true,
@@ -490,13 +563,20 @@ impl SonataDesktopView {
                     cx,
                 ));
             }
+            if win_end < total {
+                rows = rows.child(
+                    div()
+                        .flex_shrink_0()
+                        .h(px((total - win_end) as f32 * ROW_STRIDE)),
+                );
+            }
         }
 
         let content = div()
             .relative()
             .flex()
             .flex_col()
-            .child(header_wash(cover.as_ref(), &self.palette, adaptive, 320.0))
+            .child(header_wash(cover.as_ref(), &self.palette, adaptive, 260.0))
             .child(
                 div()
                     .relative()
@@ -505,9 +585,15 @@ impl SonataDesktopView {
                     .pb(px(18.0))
                     .flex()
                     .flex_col()
-                    .gap(px(28.0))
-                    .child(hero)
-                    .child(rows),
+                    .gap(px(16.0))
+                    .child(div().pb(px(12.0)).child(hero))
+                    .child(
+                        div()
+                            .w_full()
+                            .h(px(1.0))
+                            .bg(self.palette.outline.opacity(0.65)),
+                    )
+                    .child(div().pt(px(6.0)).child(rows)),
             );
 
         div()

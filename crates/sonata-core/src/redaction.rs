@@ -1,10 +1,15 @@
+//! Credential and signed-URL redaction helpers for Sonata logs and errors.
+//!
+//! 1. **URL Scrubbing**: `stream_url` strips query parameters, paths, and userinfo from HTTP(S) URLs.
+//! 2. **Text & JSON Scrubbing**: `sensitive_text` and `json_payload` redact cookies, auth tokens, and signed URLs.
+
 use reqwest::Url;
 use serde_json::{json, Value};
 
 const REDACTED_STREAM: &str = "[redacted-stream-url]";
 const REDACTED_SECRET: &str = "[redacted-sensitive-value]";
 
-pub(crate) fn stream_url(input: &str) -> String {
+pub fn stream_url(input: &str) -> String {
     let Ok(url) = Url::parse(input) else {
         return "[local-media]".to_string();
     };
@@ -20,7 +25,7 @@ pub(crate) fn stream_url(input: &str) -> String {
     format!("{}://{host}{port}/{REDACTED_STREAM}", url.scheme())
 }
 
-pub(crate) fn sensitive_text(text: &str) -> String {
+pub fn sensitive_text(text: &str) -> String {
     text.lines()
         .take(12)
         .map(redact_line)
@@ -38,6 +43,8 @@ fn redact_line(line: &str) -> String {
         "cookies=",
         "sapisid:",
         "sapisid=",
+        "sp_dc:",
+        "sp_dc=",
     ]
     .iter()
     .filter_map(|marker| lower.find(marker))
@@ -61,7 +68,7 @@ fn redact_line(line: &str) -> String {
     output
 }
 
-pub(crate) fn json_payload(value: &Value) -> Value {
+pub fn json_payload(value: &Value) -> Value {
     match value {
         Value::Object(map) => Value::Object(
             map.iter()

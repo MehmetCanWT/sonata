@@ -1,34 +1,30 @@
-//! Multi-provider animated album artwork downloader and in-memory RGBA8 decoder.
+//! Portable multi-provider animated album artwork discovery and HLS manifest parsing.
 //!
-//! 1. **Multi-Provider Discovery**: Resolves looping motion covers in priority order: Apple Music
-//!    AMP catalog `editorialVideo`, Apple Music album HTML fallback, Tidal `album.videoCover`
-//!    (`1280x1280.mp4`), and the Community Canvas JSON manifest.
-//! 2. **HLS & Direct MP4 Download**: Downloads Apple Music `768x768` `avc1` `#EXT-X-BYTERANGE` fMP4
-//!    segments directly, falls back to `ffmpeg` remuxing for segmented HLS, and caches direct `.mp4`
-//!    streams up to 16 MB in `art_cache_dir()/motion_<sha1>.mp4`.
-//! 3. **Zero-PNG RAM Decode**: Pipes the cached `.mp4` through `ffmpeg` (`-f rawvideo -pix_fmt rgba
-//!    pipe:1`) into `MotionCover { width, height, fps, frames_rgba }`.
+//! 1. **Multi-Provider Discovery**: Resolves looping motion cover media URLs in priority order:
+//!    Apple Music AMP catalog `editorialVideo`, Apple Music album HTML fallback, Tidal
+//!    `album.videoCover` (`1280x1280.mp4`), and the Community Canvas JSON manifest.
+//! 2. **HLS Manifest & Byte-Range Fetching**: Selects optimal `avc1` variants from master `.m3u8`
+//!    playlists, parses `#EXT-X-MAP` / `#EXT-X-BYTERANGE` fMP4 specs, and fetches byte ranges over
+//!    HTTP without external decoder dependencies.
 
-use crate::config::{resolve_distro_binary, AppConfig};
-use crate::media::{extract_apple_motion_video_url, fetch_apple_album_urls, motion_cache_key_hex};
+use crate::media::{extract_apple_motion_video_url, fetch_apple_album_urls};
 use crate::providers::Track;
 use base64::engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine as _;
 use regex::Regex;
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
-use std::path::Path;
-use std::process::Stdio;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
-const SAFARI_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15";
-const DESKTOP_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36";
+pub const SAFARI_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15";
+pub const DESKTOP_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36";
 
 const APPLE_BROWSE_URL: &str = "https://music.apple.com/us/browse";
-const APPLE_AMP_BASE: &str = "https://amp-api.music.apple.com/v1/catalog/us";
+const APPLE_AMP_BASE: &str = "https://amp-api.music.apple.com/v1/catalog";
 const APPLE_TOKEN_RETRY_BACKOFF: Duration = Duration::from_secs(30 * 60);
 
 const TIDAL_SEARCH_URL: &str = "https://api.tidal.com/v1/search";
@@ -37,8 +33,57 @@ const TIDAL_EMBED_TOKEN: &str = "vNVdglQOjFJJGG2U";
 const COMMUNITY_MANIFEST_URL: &str = "https://vivimusicanvas.mkmdevilmi.workers.dev/canvas.json";
 const COMMUNITY_TTL: Duration = Duration::from_secs(30 * 60);
 
-const MAX_DOWNLOAD_BYTES: u64 = 16_000_000;
-const MIN_VALID_MP4_BYTES: u64 = 16_384;
+pub const MAX_DOWNLOAD_BYTES: u64 = 16_000_000;
+pub const MIN_VALID_MP4_BYTES: u64 = 16_384;
+
+/// Media container kind for a discovered looping motion cover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MotionMediaKind {
+    Hls,
+    Mp4,
+}
+
+impl MotionMediaKind {
+    pub fn from_url(url: &str) -> Self {
+        if url.to_ascii_lowercase().contains(".m3u8") {
+            Self::Hls
+        } else {
+            Self::Mp4
+        }
+    }
+}
+
+/// Remote provider that supplied a discovered [`MotionMedia`] asset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MotionMediaSource {
+    AppleMusic,
+    AppleMusicHtml,
+    Tidal,
+    Community,
+}
+
+impl MotionMediaSource {
+    /// Returns the human-readable provider label used in diagnostics and client overlays.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::AppleMusic | Self::AppleMusicHtml => "Apple Music",
+            Self::Tidal => "Tidal",
+            Self::Community => "Community",
+        }
+    }
+}
+
+/// Platform-neutral looping motion cover discovery result shared by Linux and Android clients.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MotionMedia {
+    pub url: String,
+    pub fallback_url: Option<String>,
+    pub portrait_url: Option<String>,
+    pub kind: MotionMediaKind,
+    pub source: MotionMediaSource,
+}
 
 const COMPILATION_KEYWORDS: &[&str] = &[
     "playlist",
@@ -60,15 +105,6 @@ const EDITION_WORDS: &[&str] = &[
     "live",
     "acoustic",
 ];
-
-#[derive(Debug, Clone)]
-pub struct MotionCover {
-    pub width: u32,
-    pub height: u32,
-    pub fps: f32,
-    /// Tightly packed RGBA8 frames (`width * height * 4` bytes each).
-    pub frames_rgba: Vec<Vec<u8>>,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ByteRange {
@@ -116,39 +152,15 @@ fn community_mutex() -> &'static Mutex<CommunityManifestState> {
     COMMUNITY_STATE.get_or_init(|| Mutex::new(CommunityManifestState::default()))
 }
 
-/// Resolves, caches (`motion_<hex>.mp4`), and decodes an animated motion cover into RGBA8 frames.
-pub async fn resolve_motion_cover(
+/// Resolves the best looping motion cover [`MotionMedia`] record (primary URL, optional portrait
+/// and fallback URLs, media kind, and source) across Apple Music AMP, Apple Music album HTML,
+/// Tidal, and Community Canvas.
+pub async fn resolve_motion_media(
     http: &Client,
     track: &Track,
-    max_dim: u32,
-    target_fps: f32,
-    max_frames: usize,
-) -> Option<MotionCover> {
-    if !AppConfig::motion_covers_enabled()
-        || track.artist.trim().is_empty()
-        || track.title.trim().is_empty()
-        || max_frames == 0
-    {
-        return None;
-    }
-
-    let hex = motion_cache_key_hex(track);
-    let cache_dir = AppConfig::art_cache_dir();
-    let cache_path = cache_dir.join(format!("motion_{hex}.mp4"));
-
-    let has_valid_cache = tokio::fs::metadata(&cache_path)
-        .await
-        .map(|m| m.is_file() && m.len() >= MIN_VALID_MP4_BYTES)
-        .unwrap_or(false);
-
-    if !has_valid_cache {
-        download_and_cache_motion_mp4(http, track, &cache_path).await?;
-    }
-
-    decode_mp4_via_ffmpeg_pipe(&cache_path, max_dim, target_fps, max_frames).await
-}
-
-async fn resolve_motion_media_url(http: &Client, track: &Track) -> Option<String> {
+    storefront: Option<&str>,
+    country_code: Option<&str>,
+) -> Option<MotionMedia> {
     let clean_title = clean_title_packaging(&track.title);
     let clean_artist = clean_artist_packaging(&track.artist);
     let clean_album = (!track.album.trim().is_empty())
@@ -159,15 +171,31 @@ async fn resolve_motion_media_url(http: &Client, track: &Track) -> Option<String
         return None;
     }
 
-    if let Some(url) =
-        resolve_apple_amp_motion_url(http, &clean_title, &clean_artist, clean_album.as_deref())
-            .await
+    let apple_storefront = storefront
+        .map(str::trim)
+        .filter(|s| s.len() == 2 && s.chars().all(|c| c.is_ascii_alphabetic()))
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_else(|| "us".to_string());
+    let tidal_country = country_code
+        .map(str::trim)
+        .filter(|s| s.len() == 2 && s.chars().all(|c| c.is_ascii_alphabetic()))
+        .map(str::to_ascii_uppercase)
+        .unwrap_or_else(|| "US".to_string());
+
+    if let Some(media) = resolve_apple_amp_motion_media(
+        http,
+        &clean_title,
+        &clean_artist,
+        clean_album.as_deref(),
+        &apple_storefront,
+    )
+    .await
     {
         tracing::debug!(
             "[sonata:motion] hit provider=apple_amp track={:?}",
             track.title
         );
-        return Some(url);
+        return Some(media);
     }
 
     if let Some(url) = resolve_apple_html_motion_url(http, track).await {
@@ -175,12 +203,26 @@ async fn resolve_motion_media_url(http: &Client, track: &Track) -> Option<String
             "[sonata:motion] hit provider=apple_html track={:?}",
             track.title
         );
-        return Some(url);
+        return Some(MotionMedia {
+            kind: MotionMediaKind::from_url(&url),
+            url,
+            fallback_url: None,
+            portrait_url: None,
+            source: MotionMediaSource::AppleMusicHtml,
+        });
     }
 
-    if let Some(url) = resolve_tidal_motion_url(http, &clean_title, &clean_artist).await {
+    if let Some(url) =
+        resolve_tidal_motion_url(http, &clean_title, &clean_artist, &tidal_country).await
+    {
         tracing::debug!("[sonata:motion] hit provider=tidal track={:?}", track.title);
-        return Some(url);
+        return Some(MotionMedia {
+            kind: MotionMediaKind::Mp4,
+            url,
+            fallback_url: None,
+            portrait_url: None,
+            source: MotionMediaSource::Tidal,
+        });
     }
 
     if let Some(url) =
@@ -191,10 +233,24 @@ async fn resolve_motion_media_url(http: &Client, track: &Track) -> Option<String
             "[sonata:motion] hit provider=community track={:?}",
             track.title
         );
-        return Some(url);
+        return Some(MotionMedia {
+            kind: MotionMediaKind::from_url(&url),
+            url,
+            fallback_url: None,
+            portrait_url: None,
+            source: MotionMediaSource::Community,
+        });
     }
 
     None
+}
+
+/// Resolves the best looping motion cover media URL (`.m3u8` or `.mp4`) for a track across
+/// Apple Music AMP, Apple Music album HTML, Tidal, and Community Canvas.
+pub async fn resolve_motion_media_url(http: &Client, track: &Track) -> Option<String> {
+    resolve_motion_media(http, track, None, None)
+        .await
+        .map(|media| media.url)
 }
 
 async fn resolve_apple_html_motion_url(http: &Client, track: &Track) -> Option<String> {
@@ -372,7 +428,8 @@ async fn apple_amp_get(http: &Client, url: &str, jwt: &str) -> Option<Value> {
     resp.json::<Value>().await.ok()
 }
 
-pub(crate) fn extract_amp_editorial_video_url(video_obj: &Value) -> Option<String> {
+/// Extracts square, portrait, and fallback Apple Music `editorialVideo` URLs into [`MotionMedia`].
+pub fn extract_amp_editorial_video_media(video_obj: &Value) -> Option<MotionMedia> {
     let pick_key = |key: &str| -> Option<String> {
         let entry = video_obj.get(key)?;
         for field in ["video", "videoUrl", "hlsUrl", "url"] {
@@ -388,11 +445,29 @@ pub(crate) fn extract_amp_editorial_video_url(video_obj: &Value) -> Option<Strin
         None
     };
 
-    pick_key("motionDetailSquare")
-        .or_else(|| pick_key("motionSquareVideo1x1"))
-        .or_else(|| pick_key("motionDetailRaw"))
-        .or_else(|| pick_key("motionDetailTall"))
-        .or_else(|| pick_key("motionTallVideo3x4"))
+    let square = pick_key("motionDetailSquare").or_else(|| pick_key("motionSquareVideo1x1"));
+    let tall = pick_key("motionDetailTall").or_else(|| pick_key("motionTallVideo3x4"));
+    let raw = pick_key("motionDetailRaw");
+    let primary = square
+        .clone()
+        .or_else(|| raw.clone())
+        .or_else(|| tall.clone())?;
+    let fallback_url = [square, raw, tall.clone()]
+        .into_iter()
+        .flatten()
+        .find(|candidate| candidate != &primary);
+    Some(MotionMedia {
+        kind: MotionMediaKind::from_url(&primary),
+        url: primary,
+        fallback_url,
+        portrait_url: tall,
+        source: MotionMediaSource::AppleMusic,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn extract_amp_editorial_video_url(video_obj: &Value) -> Option<String> {
+    extract_amp_editorial_video_media(video_obj).map(|media| media.url)
 }
 
 fn score_apple_candidate(
@@ -482,12 +557,13 @@ fn extract_apple_album_id(song: &Value) -> Option<String> {
     }
 }
 
-async fn resolve_apple_amp_motion_url(
+async fn resolve_apple_amp_motion_media(
     http: &Client,
     title: &str,
     artist: &str,
     album: Option<&str>,
-) -> Option<String> {
+    storefront: &str,
+) -> Option<MotionMedia> {
     let jwt = obtain_apple_jwt(http).await?;
     let primary_artist = split_artists(artist).into_iter().next().unwrap_or_default();
     let mut term = String::new();
@@ -508,7 +584,7 @@ async fn resolve_apple_amp_motion_url(
 
     let encoded_term = urlencoding::encode(term.trim());
     let search_url = format!(
-        "{APPLE_AMP_BASE}/search?term={encoded_term}&types=songs&limit=10&extend=editorialVideo&include=albums"
+        "{APPLE_AMP_BASE}/{storefront}/search?term={encoded_term}&types=songs&limit=10&extend=editorialVideo&include=albums"
     );
     let root = apple_amp_get(http, &search_url, &jwt).await?;
 
@@ -527,17 +603,17 @@ async fn resolve_apple_amp_motion_url(
 
         let mut tried_album_ids = HashSet::new();
         for (_, song) in ranked {
-            if let Some(url) = song
+            if let Some(media) = song
                 .pointer("/attributes/editorialVideo")
-                .and_then(extract_amp_editorial_video_url)
+                .and_then(extract_amp_editorial_video_media)
             {
-                return Some(url);
+                return Some(media);
             }
-            if let Some(url) = song
+            if let Some(media) = song
                 .pointer("/relationships/albums/data/0/attributes/editorialVideo")
-                .and_then(extract_amp_editorial_video_url)
+                .and_then(extract_amp_editorial_video_media)
             {
-                return Some(url);
+                return Some(media);
             }
             let Some(album_id) = extract_apple_album_id(song) else {
                 continue;
@@ -545,16 +621,17 @@ async fn resolve_apple_amp_motion_url(
             if !tried_album_ids.insert(album_id.clone()) {
                 continue;
             }
-            let album_url = format!("{APPLE_AMP_BASE}/albums/{album_id}?extend=editorialVideo");
+            let album_url =
+                format!("{APPLE_AMP_BASE}/{storefront}/albums/{album_id}?extend=editorialVideo");
             if let Some(album_json) = apple_amp_get(http, &album_url, &jwt).await {
                 if let Some(attrs) = album_json.pointer("/data/0/attributes") {
                     let alb_name = attrs.get("name").and_then(Value::as_str).unwrap_or("");
                     if !is_compilation_label(alb_name) {
-                        if let Some(url) = attrs
+                        if let Some(media) = attrs
                             .get("editorialVideo")
-                            .and_then(extract_amp_editorial_video_url)
+                            .and_then(extract_amp_editorial_video_media)
                         {
-                            return Some(url);
+                            return Some(media);
                         }
                     }
                 }
@@ -563,7 +640,7 @@ async fn resolve_apple_amp_motion_url(
     }
 
     if let Some(alb) = album.filter(|a| !a.trim().is_empty()) {
-        return search_apple_amp_album(http, alb, artist, &jwt).await;
+        return search_apple_amp_album(http, alb, artist, storefront, &jwt).await;
     }
     None
 }
@@ -572,8 +649,9 @@ async fn search_apple_amp_album(
     http: &Client,
     album: &str,
     artist: &str,
+    storefront: &str,
     jwt: &str,
-) -> Option<String> {
+) -> Option<MotionMedia> {
     let term = if album
         .to_ascii_lowercase()
         .contains(&artist.to_ascii_lowercase())
@@ -584,7 +662,7 @@ async fn search_apple_amp_album(
     };
     let encoded_term = urlencoding::encode(term.trim());
     let url = format!(
-        "{APPLE_AMP_BASE}/search?term={encoded_term}&types=albums&limit=8&extend=editorialVideo"
+        "{APPLE_AMP_BASE}/{storefront}/search?term={encoded_term}&types=albums&limit=8&extend=editorialVideo"
     );
     let root = apple_amp_get(http, &url, jwt).await?;
     let albums = root.pointer("/results/albums/data")?.as_array()?;
@@ -605,11 +683,11 @@ async fn search_apple_amp_album(
         if normalize_text(&clean_title_packaging(hit_album)) != want_album {
             continue;
         }
-        if let Some(url) = attrs
+        if let Some(media) = attrs
             .get("editorialVideo")
-            .and_then(extract_amp_editorial_video_url)
+            .and_then(extract_amp_editorial_video_media)
         {
-            return Some(url);
+            return Some(media);
         }
     }
     None
@@ -626,7 +704,12 @@ pub(crate) fn tidal_video_url_from_uuid(uuid: &str) -> Option<String> {
     ))
 }
 
-async fn resolve_tidal_motion_url(http: &Client, title: &str, artist: &str) -> Option<String> {
+async fn resolve_tidal_motion_url(
+    http: &Client,
+    title: &str,
+    artist: &str,
+    country_code: &str,
+) -> Option<String> {
     let primary_artist = split_artists(artist).into_iter().next().unwrap_or_default();
     let query = if primary_artist.is_empty() {
         title.to_string()
@@ -634,7 +717,9 @@ async fn resolve_tidal_motion_url(http: &Client, title: &str, artist: &str) -> O
         format!("{primary_artist} {title}")
     };
     let encoded = urlencoding::encode(query.trim());
-    let url = format!("{TIDAL_SEARCH_URL}?query={encoded}&limit=10&types=TRACKS&countryCode=US");
+    let url = format!(
+        "{TIDAL_SEARCH_URL}?query={encoded}&limit=10&types=TRACKS&countryCode={country_code}"
+    );
     let resp = http
         .get(&url)
         .header("X-Tidal-Token", TIDAL_EMBED_TOKEN)
@@ -785,228 +870,6 @@ async fn resolve_community_motion_url(
     Some(hit.url.clone())
 }
 
-async fn download_and_cache_motion_mp4(
-    http: &Client,
-    track: &Track,
-    cache_path: &Path,
-) -> Option<()> {
-    let master_url = resolve_motion_media_url(http, track).await?;
-
-    if !master_url.to_ascii_lowercase().contains(".m3u8") {
-        let resp = http
-            .get(&master_url)
-            .header("User-Agent", DESKTOP_UA)
-            .timeout(Duration::from_secs(10))
-            .send()
-            .await
-            .ok()?;
-        if !resp.status().is_success() {
-            return None;
-        }
-        if resp
-            .content_length()
-            .is_some_and(|len| len > MAX_DOWNLOAD_BYTES)
-        {
-            return None;
-        }
-        let bytes = resp.bytes().await.ok()?.to_vec();
-        if (bytes.len() as u64) <= MAX_DOWNLOAD_BYTES && (bytes.len() as u64) >= MIN_VALID_MP4_BYTES
-        {
-            persist_motion_mp4(cache_path, &bytes).await;
-            return Some(());
-        }
-        return None;
-    }
-
-    let master_text = http
-        .get(&master_url)
-        .header("User-Agent", SAFARI_UA)
-        .timeout(Duration::from_secs(4))
-        .send()
-        .await
-        .ok()?
-        .text()
-        .await
-        .ok()?;
-    let variant_url = select_motion_hls_variant_url(&master_text)
-        .map(|rel| resolve_url_against(&master_url, &rel))
-        .unwrap_or_else(|| master_url.clone());
-
-    let variant_text = http
-        .get(&variant_url)
-        .header("User-Agent", SAFARI_UA)
-        .timeout(Duration::from_secs(4))
-        .send()
-        .await
-        .ok()?
-        .text()
-        .await
-        .ok()?;
-
-    if let Some(spec) = parse_variant_m3u8(&variant_text) {
-        let mut mp4_bytes = Vec::new();
-        let init_url = resolve_url_against(&variant_url, &spec.map_uri);
-        if let Some(init_bytes) = fetch_byte_range(http, &init_url, &spec.map_range).await {
-            mp4_bytes.extend_from_slice(&init_bytes);
-
-            let mut total_dur = 0.0f32;
-            let mut segments_downloaded = 0usize;
-            for (seg_uri, seg_range, dur) in &spec.segments {
-                if mp4_bytes.len() as u64 + seg_range.length > MAX_DOWNLOAD_BYTES {
-                    break;
-                }
-                let seg_url = resolve_url_against(&variant_url, seg_uri);
-                if let Some(seg_bytes) = fetch_byte_range(http, &seg_url, seg_range).await {
-                    if !seg_bytes.is_empty() {
-                        mp4_bytes.extend_from_slice(&seg_bytes);
-                        total_dur += *dur;
-                        segments_downloaded += 1;
-                    }
-                } else if segments_downloaded == 0 {
-                    break;
-                }
-                if total_dur >= 6.0 {
-                    break;
-                }
-            }
-
-            if segments_downloaded > 0 && (mp4_bytes.len() as u64) >= MIN_VALID_MP4_BYTES {
-                persist_motion_mp4(cache_path, &mp4_bytes).await;
-                return Some(());
-            }
-        }
-    }
-
-    // Fallback for segmented HLS playlists without `#EXT-X-BYTERANGE`: materialize a short loop via ffmpeg.
-    transcode_hls_via_ffmpeg(&variant_url, cache_path).await
-}
-
-async fn transcode_hls_via_ffmpeg(hls_url: &str, cache_path: &Path) -> Option<()> {
-    if let Some(parent) = cache_path.parent() {
-        let _ = tokio::fs::create_dir_all(parent).await;
-    }
-    let tmp = cache_path.with_extension("mp4.tmp");
-    let ffmpeg_bin = resolve_distro_binary("ffmpeg");
-    let mut cmd = tokio::process::Command::new(&ffmpeg_bin);
-    cmd.args([
-        "-y",
-        "-v",
-        "error",
-        "-i",
-        hls_url,
-        "-t",
-        "5.0",
-        "-an",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "ultrafast",
-        "-crf",
-        "23",
-        "-vf",
-        "scale=480:480:force_original_aspect_ratio=increase:flags=lanczos,crop=480:480",
-        &tmp.to_string_lossy(),
-    ])
-    .stdin(Stdio::null())
-    .stdout(Stdio::null())
-    .stderr(Stdio::null())
-    .kill_on_drop(true);
-
-    let ok = tokio::time::timeout(Duration::from_secs(12), cmd.status())
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .is_some_and(|s| s.success());
-    if !ok {
-        let _ = tokio::fs::remove_file(&tmp).await;
-        return None;
-    }
-    let valid = tokio::fs::metadata(&tmp)
-        .await
-        .map(|m| m.is_file() && m.len() >= MIN_VALID_MP4_BYTES)
-        .unwrap_or(false);
-    if !valid || tokio::fs::rename(&tmp, cache_path).await.is_err() {
-        let _ = tokio::fs::remove_file(&tmp).await;
-        return None;
-    }
-    Some(())
-}
-
-async fn persist_motion_mp4(cache_path: &Path, bytes: &[u8]) {
-    if let Some(parent) = cache_path.parent() {
-        let _ = tokio::fs::create_dir_all(parent).await;
-    }
-    let tmp = cache_path.with_extension("mp4.tmp");
-    if tokio::fs::write(&tmp, bytes).await.is_ok()
-        && tokio::fs::rename(&tmp, cache_path).await.is_err()
-    {
-        let _ = tokio::fs::remove_file(&tmp).await;
-    }
-}
-
-async fn decode_mp4_via_ffmpeg_pipe(
-    cache_path: &Path,
-    max_dim: u32,
-    target_fps: f32,
-    max_frames: usize,
-) -> Option<MotionCover> {
-    let dim = max_dim.clamp(256, 768);
-    let fps = target_fps.clamp(8.0, 24.0);
-    let dur_secs = (max_frames as f32 / fps).clamp(2.0, 6.0);
-    let vf = format!(
-        "fps={fps:.2},scale={dim}:{dim}:force_original_aspect_ratio=increase:flags=lanczos,crop={dim}:{dim}"
-    );
-
-    let ffmpeg_bin = resolve_distro_binary("ffmpeg");
-    let mut cmd = tokio::process::Command::new(&ffmpeg_bin);
-    cmd.args([
-        "-v",
-        "error",
-        "-i",
-        &cache_path.to_string_lossy(),
-        "-t",
-        &format!("{dur_secs:.2}"),
-        "-vf",
-        &vf,
-        "-f",
-        "rawvideo",
-        "-pix_fmt",
-        "rgba",
-        "pipe:1",
-    ])
-    .stdin(Stdio::null())
-    .stdout(Stdio::piped())
-    .stderr(Stdio::null())
-    .kill_on_drop(true);
-
-    let output = tokio::time::timeout(Duration::from_secs(8), cmd.output())
-        .await
-        .ok()?
-        .ok()?;
-    if !output.status.success() || output.stdout.is_empty() {
-        return None;
-    }
-
-    let frame_bytes = (dim as usize) * (dim as usize) * 4;
-    let frames_rgba: Vec<Vec<u8>> = output
-        .stdout
-        .chunks_exact(frame_bytes)
-        .take(max_frames)
-        .map(|chunk| chunk.to_vec())
-        .collect();
-
-    if frames_rgba.len() < 2 {
-        return None;
-    }
-
-    Some(MotionCover {
-        width: dim,
-        height: dim,
-        fps,
-        frames_rgba,
-    })
-}
-
 // --- Normalization Helpers ---
 
 pub(crate) fn clean_title_packaging(raw: &str) -> String {
@@ -1094,7 +957,7 @@ fn is_compilation_label(name: &str) -> bool {
 
 // --- HLS Parsing & Byte-Range Fetching ---
 
-async fn fetch_byte_range(http: &Client, url: &str, range: &ByteRange) -> Option<Vec<u8>> {
+pub async fn fetch_byte_range(http: &Client, url: &str, range: &ByteRange) -> Option<Vec<u8>> {
     if range.length == 0 {
         return None;
     }
@@ -1113,7 +976,7 @@ async fn fetch_byte_range(http: &Client, url: &str, range: &ByteRange) -> Option
     Some(resp.bytes().await.ok()?.to_vec())
 }
 
-fn resolve_url_against(base_url: &str, relative: &str) -> String {
+pub fn resolve_url_against(base_url: &str, relative: &str) -> String {
     if relative.starts_with("https://") || relative.starts_with("http://") {
         return relative.to_string();
     }
@@ -1315,11 +1178,83 @@ mod tests {
             extract_amp_editorial_video_url(&editorial).as_deref(),
             Some("https://mvod.itunes.apple.com/itunes-assets/square.m3u8")
         );
+        let media = extract_amp_editorial_video_media(&editorial).expect("motion media record");
+        assert_eq!(
+            media,
+            MotionMedia {
+                url: "https://mvod.itunes.apple.com/itunes-assets/square.m3u8".to_string(),
+                fallback_url: Some(
+                    "https://mvod.itunes.apple.com/itunes-assets/tall.m3u8".to_string()
+                ),
+                portrait_url: Some(
+                    "https://mvod.itunes.apple.com/itunes-assets/tall.m3u8".to_string()
+                ),
+                kind: MotionMediaKind::Hls,
+                source: MotionMediaSource::AppleMusic,
+            }
+        );
+        assert_eq!(media.source.label(), "Apple Music");
+
+        let tall_only = json!({
+            "motionTallVideo3x4": {
+                "hlsUrl": "https://mvod.itunes.apple.com/itunes-assets/only_tall.m3u8"
+            }
+        });
+        let tall_media = extract_amp_editorial_video_media(&tall_only).expect("tall-only media");
+        assert_eq!(
+            tall_media.url,
+            "https://mvod.itunes.apple.com/itunes-assets/only_tall.m3u8"
+        );
+        assert_eq!(tall_media.fallback_url, None);
+        assert_eq!(
+            tall_media.portrait_url.as_deref(),
+            Some("https://mvod.itunes.apple.com/itunes-assets/only_tall.m3u8")
+        );
 
         assert_eq!(
             tidal_video_url_from_uuid("12345678-90ab-cdef-1234-567890abcdef").as_deref(),
             Some("https://resources.tidal.com/videos/12345678/90ab/cdef/1234/567890abcdef/1280x1280.mp4")
         );
         assert_eq!(tidal_video_url_from_uuid("invalid-uuid"), None);
+    }
+
+    #[test]
+    fn scores_apple_candidates_strictly_and_rejects_compilations() {
+        let matching = json!({
+            "attributes": {
+                "name": "Blinding Lights",
+                "artistName": "The Weeknd",
+                "albumName": "After Hours"
+            }
+        });
+        let compilation = json!({
+            "attributes": {
+                "name": "Blinding Lights",
+                "artistName": "The Weeknd",
+                "albumName": "Today's Hits Playlist"
+            }
+        });
+        let wrong_artist = json!({
+            "attributes": {
+                "name": "Blinding Lights",
+                "artistName": "Cover Band",
+                "albumName": "After Hours"
+            }
+        });
+
+        let good_score = score_apple_candidate(
+            &matching,
+            "Blinding Lights",
+            "The Weeknd",
+            Some("After Hours"),
+        )
+        .expect("strict match");
+        assert!(good_score >= 45);
+        assert!(
+            score_apple_candidate(&compilation, "Blinding Lights", "The Weeknd", None).is_none()
+        );
+        assert!(
+            score_apple_candidate(&wrong_artist, "Blinding Lights", "The Weeknd", None).is_none()
+        );
     }
 }

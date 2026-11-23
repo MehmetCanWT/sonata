@@ -32,35 +32,36 @@ impl SonataDesktopView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let s = sonata_runtime::i18n::strings(self.settings.language);
         let nav_items = [
             NavEntry {
                 target: NavTarget::Home,
-                label: "Home",
+                label: s.home,
                 icon: IconName::House,
             },
             NavEntry {
                 target: NavTarget::Explore,
-                label: "Explore",
+                label: s.explore,
                 icon: IconName::Compass,
             },
             NavEntry {
                 target: NavTarget::Radio,
-                label: "Radio",
+                label: s.radio,
                 icon: IconName::Radio,
             },
             NavEntry {
                 target: NavTarget::Library,
-                label: "Library",
+                label: s.library,
                 icon: IconName::Library,
             },
             NavEntry {
                 target: NavTarget::History,
-                label: "History",
+                label: s.history,
                 icon: IconName::Clock,
             },
             NavEntry {
                 target: NavTarget::Settings,
-                label: "Settings",
+                label: s.settings,
                 icon: IconName::Settings,
             },
         ];

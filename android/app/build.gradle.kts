@@ -11,8 +11,8 @@ android {
     compileSdk = 35
     ndkVersion = "27.2.12479018"
 
-    val appVersionName = (project.findProperty("sonataVersion") as String?)?.trim().takeIf { !it.isNullOrEmpty() } ?: "1.0.5"
-    val appVersionCode = (project.findProperty("sonataVersionCode") as String?)?.toIntOrNull() ?: 10005
+    val appVersionName = (project.findProperty("sonataVersion") as String?)?.trim().takeIf { !it.isNullOrEmpty() } ?: "1.0.6"
+    val appVersionCode = (project.findProperty("sonataVersionCode") as String?)?.toIntOrNull() ?: 10006
 
     defaultConfig {
         applicationId = "dev.sonata.android"
@@ -20,6 +20,7 @@ android {
         targetSdk = 35
         versionCode = appVersionCode
         versionName = appVersionName
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -139,4 +140,8 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
 }

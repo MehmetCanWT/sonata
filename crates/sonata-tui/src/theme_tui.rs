@@ -1,10 +1,10 @@
-//! Ratatui color adapter translating `sonata_core::theme::Theme` palettes into TUI styles.
+//! Ratatui color adapter translating `crate::theme::Theme` palettes into TUI styles.
 //!
 //! 1. **Color Conversion**: Maps `RgbColor` variants (`Rgb`, `Reset`, `Ansi`) to `ratatui::style::Color`.
 //! 2. **Palette Fields**: Exposes background, foreground, accent, highlight, semantic, and lyrics colors.
 
+use crate::theme::{AnsiColor, RgbColor, Theme};
 use ratatui::style::Color;
-use sonata_core::theme::{AnsiColor, RgbColor, Theme};
 
 pub const fn to_ratatui_color(color: RgbColor) -> Color {
     match color {

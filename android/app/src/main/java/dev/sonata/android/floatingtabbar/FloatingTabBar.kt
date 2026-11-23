@@ -111,6 +111,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import dev.sonata.android.GlassSpring
 import dev.sonata.android.LocalGlassExport
+import dev.sonata.android.LocalLiquidGlassEnabled
 import dev.sonata.android.LocalReduceAnimation
 import dev.sonata.android.LocalReduceDynamicBlur
 import dev.sonata.android.backdrop.backdrops.layerBackdrop
@@ -785,7 +786,7 @@ private fun SharedTransitionScope.ExpandedTabs(
     pill.reduceMotion = reduceAnimation
     // The lens samples the recorded page, and "reduce dynamic blur" stops that
     // recording. There the flat pill carries the whole motion on its own.
-    val glassPill = isGlassSupported() && !reduceDynamicBlur
+    val glassPill = LocalLiquidGlassEnabled.current && isGlassSupported() && !reduceDynamicBlur
     val barGlass = rememberLayerBackdrop()
     val tabRow = rememberLayerBackdrop()
 

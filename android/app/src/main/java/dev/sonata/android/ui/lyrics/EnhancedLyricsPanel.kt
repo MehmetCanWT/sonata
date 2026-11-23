@@ -157,10 +157,29 @@ fun EnhancedLyricsPanel(
         derivedStateOf { (clockMs.value - offsetMs).coerceAtLeast(0L) }
     }
 
-    val activeIndex by remember(lyrics) {
+    val activeIndex by remember(lyrics, cleanedLines) {
         derivedStateOf {
             val pos = adjustedClockMs.value + LYRIC_SYNC_LEAD_MS
-            lyrics.indexOfLast { (it.timeSecs * 1000.0).toLong() <= pos }.coerceAtLeast(0)
+            var cand = lyrics.indexOfLast { (it.timeSecs * 1000.0).toLong() <= pos }.coerceAtLeast(0)
+            // Keep an overlapping lead verse anchored while a nested (...) ad-lib starts mid-verse.
+            while (cand > 0) {
+                val candClean = cleanedLines[cand]
+                val candIsBg = candClean.startsWith("(") && candClean.endsWith(")") && candClean.length > 2
+                if (!candIsBg) break
+                val prev = lyrics[cand - 1]
+                val prevClean = cleanedLines[cand - 1]
+                val prevIsBg = prevClean.startsWith("(") && prevClean.endsWith(")") && prevClean.length > 2
+                if (prevIsBg) break
+                val prevEndMs = prev.words
+                    .maxOfOrNull { ((it.endSecs ?: (it.startSecs + 0.45)) * 1000.0).toLong() }
+                    ?: ((prev.timeSecs * 1000.0).toLong() + 1_200L)
+                if (pos < prevEndMs) {
+                    cand -= 1
+                } else {
+                    break
+                }
+            }
+            cand
         }
     }
 
@@ -266,17 +285,29 @@ fun EnhancedLyricsPanel(
                         val isBackground = cleanText.startsWith("(") && cleanText.endsWith(")") && cleanText.length > 2
 
                         val lineStartMs = (line.timeSecs * 1000.0).toLong()
-                        val baseNextStartMs = lyrics.getOrNull(index + 1)?.let { (it.timeSecs * 1000.0).toLong() }
+                        val baseNextStartMs = ((index + 1) until lyrics.size)
+                            .firstOrNull { nextIdx ->
+                                if (isBackground) {
+                                    true
+                                } else {
+                                    val nc = cleanedLines[nextIdx]
+                                    !(nc.startsWith("(") && nc.endsWith(")") && nc.length > 2)
+                                }
+                            }
+                            ?.let { (lyrics[it].timeSecs * 1000.0).toLong() }
                             ?: durationMs.takeIf { it > lineStartMs + 600L }
                             ?: (lineStartMs + 4_000L)
                         val wordMaxEndMs = remember(line.words) {
-                            line.words.mapNotNull { it.endSecs }.maxOrNull()?.let { (it * 1000.0).toLong() }
+                            line.words
+                                .maxOfOrNull { ((it.endSecs ?: (it.startSecs + 0.45)) * 1000.0).toLong() }
                         }
                         val nextStartMs = when {
+                            isBackground -> {
+                                val naturalEnd = lineStartMs + (cleanText.length * 85L).coerceIn(1_400L, 3_600L)
+                                maxOf(wordMaxEndMs ?: 0L, naturalEnd)
+                            }
                             wordMaxEndMs != null && wordMaxEndMs > lineStartMs ->
-                                maxOf(wordMaxEndMs, if (isBackground) lineStartMs + 1_200L else lineStartMs + 400L)
-                            isBackground ->
-                                maxOf(baseNextStartMs, lineStartMs + 1_600L).coerceAtMost(lineStartMs + 3_200L)
+                                maxOf(wordMaxEndMs, lineStartMs + 500L)
                             else -> baseNextStartMs
                         }
 
@@ -286,7 +317,8 @@ fun EnhancedLyricsPanel(
                                     true
                                 } else {
                                     val pos = adjustedClockMs.value + LYRIC_SYNC_LEAD_MS
-                                    val withinWindow = pos in lineStartMs..(nextStartMs + 260L)
+                                    val tailPadMs = if (isBackground) 480L else 280L
+                                    val withinWindow = pos in lineStartMs..(nextStartMs + tailPadMs)
                                     if (!withinWindow) {
                                         false
                                     } else if (isBackground || isCounter || line.words.isNotEmpty()) {

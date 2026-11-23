@@ -1,0 +1,297 @@
+name: AI Issue Triage
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+  models: read
+
+jobs:
+  triage:
+    name: Triage & label new issue with GitHub Models
+    runs-on: ubuntu-latest
+    if: ${{ !endsWith(github.actor, '[bot]') && github.event.issue.user.type != 'Bot' }}
+    steps:
+      - name: Analyze issue, apply labels, and request missing diagnostics
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+          ISSUE_LABELS: ${{ join(github.event.issue.labels.*.name, ',') }}
+        run: |
+          node <<'EOF'
+          const token = process.env.GITHUB_TOKEN;
+          const repo = process.env.GITHUB_REPOSITORY;
+          const issueNumber = process.env.ISSUE_NUMBER;
+          const title = (process.env.ISSUE_TITLE || "").slice(0, 500);
+          const body = (process.env.ISSUE_BODY || "").slice(0, 8000);
+          const author = process.env.ISSUE_AUTHOR || "contributor";
+          const existingLabels = (process.env.ISSUE_LABELS || "")
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+
+          const LABEL_CATALOG = {
+            bug: { color: "d73a4a", description: "Something isn't working" },
+            "feature request": { color: "a2eeef", description: "New feature or improvement request" },
+            question: { color: "d876e3", description: "Question or usage help" },
+            android: { color: "3ddc84", description: "Android app" },
+            desktop: { color: "5865f2", description: "Linux GPUI desktop app" },
+            tui: { color: "f0ad4e", description: "Terminal TUI client" },
+            "needs-info": { color: "fbca04", description: "Waiting for logs, screenshots, or steps to reproduce" },
+          };
+          const ALLOWED_LABELS = new Set(Object.keys(LABEL_CATALOG));
+
+          const systemPrompt = [
+            "You are Sonata's automated GitHub issue triage assistant.",
+            "Sonata is a cross-platform music client with three platforms: Android (Jetpack Compose + Media3), Desktop (Linux GPUI), and TUI (Ratatui terminal).",
+            "Rules:",
+            "1. Detect the language of the issue and reply in that exact language (e.g., Turkish, Russian, or English).",
+            "2. Be concise, friendly, and directly helpful (under 220 words).",
+            "3. Inspect what the reporter ALREADY included (screenshots/images, logs, Sonata version, OS/device, reproduction steps). Do NOT ask again for details already provided.",
+            "4. For bug reports or unclear issues, explicitly ask for any missing diagnostic artifacts using a short checklist:",
+            "   - **Logs**: Desktop `~/.cache/sonata/sonata.log`, TUI `~/.cache/sonata/sonata-tui.log`, or Android `adb logcat` / crash output (remind them to redact cookies/tokens).",
+            "   - **Screenshots or screen recording** showing the error or visual glitch.",
+            "   - **Sonata version & environment** (e.g. app version, Android version/device model, or Linux distro/Wayland compositor/terminal).",
+            "   - **Steps to reproduce** the issue reliably.",
+            "5. For pure feature requests, acknowledge the idea, do not demand crash logs, and briefly ask only for any missing platform target or UX details.",
+            "6. Always classify labels accurately from the allowed list:",
+            "   - Pick one primary type label: `bug`, `feature request`, or `question`.",
+            "   - Add platform labels when mentioned: `android`, `desktop`, `tui`.",
+            "   - Add `needs-info` whenever a bug report is missing logs, screenshots, version, or reproduction steps.",
+            "7. Return ONLY valid JSON with this exact schema:",
+            '   {"comment": "markdown string", "labels": ["subset of: bug, feature request, question, android, desktop, tui, needs-info"]}',
+          ].join("\n");
+
+          const userPrompt = [
+            `Reporter: @${author}`,
+            `Existing labels: ${existingLabels.join(", ") || "none"}`,
+            `Title: ${title}`,
+            "Body:",
+            body || "(empty body)",
+          ].join("\n");
+
+          function inferHeuristicLabels(text) {
+            const labels = [];
+            const isFeature = /\b(feature|request|suggestion|proposal|add support|ekle|eklensin|özellik|istek|добавь|функц|предлож)\b/i.test(text);
+            const isQuestion = /\b(how to|how do i|question|nasıl|soru|как )\b/i.test(text) && !/\b(crash|error|bug|hata|çök|ошибк)\b/i.test(text);
+            if (isFeature) {
+              labels.push("feature request");
+            } else if (isQuestion) {
+              labels.push("question");
+            } else {
+              labels.push("bug");
+              labels.push("needs-info");
+            }
+            if (/\b(android|apk|tablet|phone|telefon|exoplayer|compose)\b/i.test(text)) labels.push("android");
+            if (/\b(desktop|gpui|wayland|hyprland|masaüstü|linux)\b/i.test(text)) labels.push("desktop");
+            if (/\b(tui|terminal|ratatui|kitty|sixel)\b/i.test(text)) labels.push("tui");
+            return [...new Set(labels)];
+          }
+
+          function buildFallback() {
+            const text = `${title}\n${body}`;
+            const labels = inferHeuristicLabels(text);
+            const isFeature = labels.includes("feature request");
+            const isTurkish = /[çğıöşüÇĞİÖŞÜ]|\b(hata|çalışmıyor|uygulama|ekran|güncelleme|sorun|açılmıyor|özellik|ekle)\b/i.test(text);
+            const isRussian = /[а-яА-ЯёЁ]/.test(text);
+
+            if (isTurkish) {
+              return {
+                comment: isFeature
+                  ? [
+                      `Merhaba @${author}, özellik önerin için teşekkürler!`,
+                      "",
+                      "Daha net planlayabilmemiz için eksikse şunları ekleyebilir misin?",
+                      "- **Hedef platform** (Android / Desktop / TUI / Tümü)",
+                      "- **Kullanım senaryosu** veya varsa ekran görüntüsü/örnek",
+                    ].join("\n")
+                  : [
+                      `Merhaba @${author}, bildirim için teşekkürler!`,
+                      "",
+                      "Sorunu hızlıca inceleyip çözebilmemiz için eksikse aşağıdaki bilgileri paylaşabilir misin?",
+                      "- **Log dosyası / çıktı**: Desktop için `~/.cache/sonata/sonata.log`, TUI için `~/.cache/sonata/sonata-tui.log`, Android için `adb logcat` veya hata çıktısı *(çerez/token gibi gizli bilgileri temizleyerek)*",
+                      "- **Hata ekran görüntüsü veya ekran kaydı**",
+                      "- **Sonata sürümü ve platform** (Android cihaz/sürüm, Linux dağıtımı veya terminal)",
+                      "- **Adım adım yeniden oluşturma yolu**",
+                    ].join("\n"),
+                labels,
+              };
+            }
+
+            if (isRussian) {
+              return {
+                comment: isFeature
+                  ? [
+                      `Привет, @${author}! Спасибо за предложение.`,
+                      "",
+                      "Если не указано, уточните, пожалуйста:",
+                      "- **Целевая платформа** (Android / Desktop / TUI / Все)",
+                      "- **Сценарий использования** или примеры/макеты",
+                    ].join("\n")
+                  : [
+                      `Привет, @${author}! Спасибо за обращение.`,
+                      "",
+                      "Чтобы мы быстрее разобрались с проблемой, приложите, пожалуйста, недостающую информацию:",
+                      "- **Логи**: `~/.cache/sonata/sonata.log` (Desktop), `~/.cache/sonata/sonata-tui.log` (TUI) или вывод `adb logcat` (Android) *(без cookies и токенов)*",
+                      "- **Скриншоты ошибки или запись экрана**",
+                      "- **Версия Sonata и устройство / ОС** (модель Android или дистрибутив Linux / терминал)",
+                      "- **Шаги для воспроизведения**",
+                    ].join("\n"),
+                labels,
+              };
+            }
+
+            return {
+              comment: isFeature
+                ? [
+                    `Hi @${author}, thanks for the feature suggestion!`,
+                    "",
+                    "If not already mentioned, feel free to share:",
+                    "- **Target platform(s)** (Android / Desktop / TUI / All)",
+                    "- **Use case or mockups** showing how you'd like it to behave",
+                  ].join("\n")
+                : [
+                    `Hi @${author}, thanks for opening this issue!`,
+                    "",
+                    "To help us diagnose and fix this quickly, could you share any missing details below?",
+                    "- **Logs**: `~/.cache/sonata/sonata.log` (Desktop), `~/.cache/sonata/sonata-tui.log` (TUI), or `adb logcat` / crash trace (Android) *(please redact any cookies or tokens)*",
+                    "- **Screenshots or screen recording** of the error/glitch",
+                    "- **Sonata version & platform** (Android device/OS, Linux distro/compositor, or terminal)",
+                    "- **Steps to reproduce**",
+                  ].join("\n"),
+              labels,
+            };
+          }
+
+          async function queryGitHubModels() {
+            const resp = await fetch("https://models.github.ai/inference/chat/completions", {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${token}`,
+                "Content-Type": "application/json",
+                Accept: "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+              },
+              body: JSON.stringify({
+                model: "openai/gpt-4o-mini",
+                temperature: 0.2,
+                max_tokens: 500,
+                response_format: { type: "json_object" },
+                messages: [
+                  { role: "system", content: systemPrompt },
+                  { role: "user", content: userPrompt },
+                ],
+              }),
+            });
+
+            if (!resp.ok) {
+              const errText = await resp.text().catch(() => "");
+              throw new Error(`GitHub Models HTTP ${resp.status}: ${errText.slice(0, 300)}`);
+            }
+
+            const data = await resp.json();
+            const raw = data?.choices?.[0]?.message?.content?.trim();
+            if (!raw) throw new Error("Empty model response");
+
+            const parsed = JSON.parse(raw);
+            if (!parsed || typeof parsed.comment !== "string" || !parsed.comment.trim()) {
+              throw new Error("Missing comment field in JSON response");
+            }
+
+            const normalizedLabels = Array.isArray(parsed.labels)
+              ? parsed.labels
+                  .filter((l) => typeof l === "string")
+                  .map((l) => {
+                    const low = l.trim().toLowerCase();
+                    if (low === "enhancement" || low === "feature" || low === "feature-request") {
+                      return "feature request";
+                    }
+                    return low;
+                  })
+                  .filter((l) => ALLOWED_LABELS.has(l))
+              : [];
+
+            return {
+              comment: parsed.comment.trim(),
+              labels: [...new Set(normalizedLabels)],
+            };
+          }
+
+          async function githubApi(path, method, payload, allowStatus = []) {
+            const resp = await fetch(`https://api.github.com${path}`, {
+              method,
+              headers: {
+                Authorization: `Bearer ${token}`,
+                Accept: "application/vnd.github+json",
+                "Content-Type": "application/json",
+                "X-GitHub-Api-Version": "2022-11-28",
+              },
+              body: payload ? JSON.stringify(payload) : undefined,
+            });
+            if (!resp.ok && !allowStatus.includes(resp.status)) {
+              const txt = await resp.text().catch(() => "");
+              throw new Error(`GitHub API ${method} ${path} failed (${resp.status}): ${txt.slice(0, 300)}`);
+            }
+            return resp.json().catch(() => ({}));
+          }
+
+          async function ensureLabelsExist(labels) {
+            for (const name of labels) {
+              const meta = LABEL_CATALOG[name];
+              if (!meta) continue;
+              try {
+                // 422 means the label already exists on the repository.
+                await githubApi(
+                  `/repos/${repo}/labels`,
+                  "POST",
+                  { name, color: meta.color, description: meta.description },
+                  [422],
+                );
+              } catch (err) {
+                console.warn(`Could not ensure label "${name}":`, err.message);
+              }
+            }
+          }
+
+          (async () => {
+            let result;
+            let modelTag = "GitHub Models (`openai/gpt-4o-mini`)";
+            try {
+              result = await queryGitHubModels();
+              if (result.labels.length === 0) {
+                result.labels = inferHeuristicLabels(`${title}\n${body}`);
+              }
+            } catch (err) {
+              console.warn("AI triage failed, using deterministic fallback:", err.message);
+              result = buildFallback();
+              modelTag = "Sonata Issue Triage Bot";
+            }
+
+            const existingLower = new Set(existingLabels.map((l) => l.toLowerCase()));
+            const newLabels = result.labels.filter((l) => !existingLower.has(l.toLowerCase()));
+            if (newLabels.length > 0) {
+              await ensureLabelsExist(newLabels);
+              try {
+                await githubApi(`/repos/${repo}/issues/${issueNumber}/labels`, "POST", {
+                  labels: newLabels,
+                });
+              } catch (labelErr) {
+                console.warn("Could not apply suggested labels:", labelErr.message);
+              }
+            }
+
+            const commentBody = `${result.comment}\n\n<sub>Automated triage via ${modelTag}</sub>`;
+            await githubApi(`/repos/${repo}/issues/${issueNumber}/comments`, "POST", {
+              body: commentBody,
+            });
+          })().catch((err) => {
+            console.error(err);
+            process.exit(1);
+          });
+          EOF

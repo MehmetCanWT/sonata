@@ -1,5 +1,13 @@
+//! On-disk audio stream caching, validation, and in-memory stream cache helpers.
+//!
+//! 1. **Instance-Scoped Paths**: Reads and writes versioned audio cache entries strictly under
+//!    the resolver's injected `CorePaths::audio_cache_dir()`.
+//! 2. **Non-Blocking Offload**: Offloads synchronous filesystem and SQLite cache operations via
+//!    `tokio::task::spawn_blocking` without holding locks across `.await` points.
+
 use super::*;
-use crate::cache::{is_stream_url_fresh, prune_media_cache};
+use crate::cache::{is_stream_url_fresh, prune_media_cache_in};
+use crate::paths::CorePaths;
 use std::io::Read;
 use tokio::io::AsyncWriteExt;
 
@@ -48,9 +56,12 @@ pub(super) fn sanitize_track_id(id: &str) -> String {
     }
 }
 
-pub(super) fn audio_file_paths(track_id: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+pub(super) fn audio_file_paths(
+    paths: &CorePaths,
+    track_id: &str,
+) -> (std::path::PathBuf, std::path::PathBuf) {
     let safe_id = sanitize_track_id(track_id);
-    let directory = AppConfig::audio_cache_dir();
+    let directory = paths.audio_cache_dir();
     // Versioned paths prevent previously sourced upgrades from being reused as YTM audio.
     (
         directory.join(format!("{safe_id}.v3.audio")),
@@ -68,8 +79,8 @@ fn looks_like_audio(bytes: &[u8]) -> bool {
         || (bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WAVE")
 }
 
-pub(super) fn cached_audio_stream(track_id: &str) -> Option<ResolvedStream> {
-    let (audio_path, badge_path) = audio_file_paths(track_id);
+pub(super) fn cached_audio_stream(paths: &CorePaths, track_id: &str) -> Option<ResolvedStream> {
+    let (audio_path, badge_path) = audio_file_paths(paths, track_id);
     let metadata = std::fs::metadata(&audio_path).ok()?;
     if metadata.len() < 8192 {
         return None;
@@ -100,6 +111,18 @@ pub(super) fn cached_audio_stream(track_id: &str) -> Option<ResolvedStream> {
     })
 }
 
+pub(super) async fn cached_audio_stream_async(
+    paths: &CorePaths,
+    track_id: &str,
+) -> Option<ResolvedStream> {
+    let paths = paths.clone();
+    let track_id = track_id.to_string();
+    tokio::task::spawn_blocking(move || cached_audio_stream(&paths, &track_id))
+        .await
+        .ok()
+        .flatten()
+}
+
 pub(super) fn insert_bounded_cache(
     cache: &mut HashMap<String, (Instant, ResolvedStream)>,
     key: String,
@@ -125,10 +148,12 @@ impl StreamResolver {
             cache.remove(&format!("yt:{track_id}"));
             cache.remove(&format!("hifi:{track_id}"));
         }
-        if let Some(database) = &self.cache_db {
-            database.invalidate_stream(track_id);
+        if let Some(database) = self.cache_db.clone() {
+            let track_id = track_id.to_string();
+            let _ =
+                tokio::task::spawn_blocking(move || database.invalidate_stream(&track_id)).await;
         }
-        let (audio_path, badge_path) = audio_file_paths(track_id);
+        let (audio_path, badge_path) = audio_file_paths(&self.paths, track_id);
         let _ = tokio::fs::remove_file(audio_path).await;
         let _ = tokio::fs::remove_file(badge_path).await;
     }
@@ -153,8 +178,13 @@ impl StreamResolver {
                 }
             }
         }
-        if let Some(database) = &self.cache_db {
-            if let Some((url, badge)) = database.get_stream(key) {
+        if let Some(database) = self.cache_db.clone() {
+            let key_owned = key.to_string();
+            let disk_entry = tokio::task::spawn_blocking(move || database.get_stream(&key_owned))
+                .await
+                .ok()
+                .flatten();
+            if let Some((url, badge)) = disk_entry {
                 if is_stream_url_fresh(&url)
                     && !url.to_ascii_lowercase().contains("googlevideo.com")
                 {
@@ -187,16 +217,26 @@ impl StreamResolver {
             );
             return;
         }
-        if let Some(database) = &self.cache_db {
-            database.put_stream(&key, &stream.url, &stream.badge);
+        if let Some(database) = self.cache_db.clone() {
+            let db_key = key.clone();
+            let db_url = stream.url.clone();
+            let db_badge = stream.badge.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                database.put_stream(&db_key, &db_url, &db_badge);
+            })
+            .await;
         }
         let mut cache = self.cache.lock().await;
         insert_bounded_cache(&mut cache, key, stream);
     }
 
-    pub(super) fn cache_average_bitrate(&self, track_id: &str, badge: &str) {
-        if let (Some(database), Some(kbps)) = (&self.cache_db, extract_badge_kbps(badge)) {
-            database.set_average_bitrate(track_id, kbps);
+    pub(super) async fn cache_average_bitrate(&self, track_id: &str, badge: &str) {
+        if let (Some(database), Some(kbps)) = (self.cache_db.clone(), extract_badge_kbps(badge)) {
+            let track_id = track_id.to_string();
+            let _ = tokio::task::spawn_blocking(move || {
+                database.set_average_bitrate(&track_id, kbps);
+            })
+            .await;
         }
     }
 
@@ -205,7 +245,8 @@ impl StreamResolver {
         track_id: &str,
         stream: &ResolvedStream,
     ) -> Option<ResolvedStream> {
-        if AppConfig::active_cache_limit_bytes() == 0 || is_bounded_fast_start_url(&stream.url) {
+        let limit = self.profile().cache_limit_bytes;
+        if limit == 0 || is_bounded_fast_start_url(&stream.url) {
             return None;
         }
         let mut request = self.http.get(&stream.url);
@@ -228,7 +269,7 @@ impl StreamResolver {
         {
             return None;
         }
-        let (audio_path, badge_path) = audio_file_paths(track_id);
+        let (audio_path, badge_path) = audio_file_paths(&self.paths, track_id);
         let clean_badge = stream
             .badge
             .strip_suffix(" · Cached")
@@ -242,7 +283,7 @@ impl StreamResolver {
         let process_id = std::process::id();
         let part_path = audio_path.with_extension(format!("{process_id}.{unique}.part"));
         let mut temporary = TempAudioPart::new(part_path.clone());
-        tokio::fs::create_dir_all(AppConfig::audio_cache_dir())
+        tokio::fs::create_dir_all(self.paths.audio_cache_dir())
             .await
             .ok()?;
         let mut file = tokio::fs::File::create(&part_path).await.ok()?;
@@ -322,8 +363,9 @@ impl StreamResolver {
             return None;
         }
         temporary.keep();
-        let limit = AppConfig::active_cache_limit_bytes();
-        let _ = tokio::task::spawn_blocking(move || prune_media_cache(limit)).await;
+        let paths_for_prune = self.paths.clone();
+        let _ = tokio::task::spawn_blocking(move || prune_media_cache_in(&paths_for_prune, limit))
+            .await;
         tracing::info!(
             event = "next_precache_ready",
             track_id,
@@ -331,6 +373,6 @@ impl StreamResolver {
             bytes = bytes_written,
             "audio cache entry ready"
         );
-        cached_audio_stream(track_id)
+        cached_audio_stream_async(&self.paths, track_id).await
     }
 }

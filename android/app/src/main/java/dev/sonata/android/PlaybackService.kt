@@ -11,6 +11,7 @@ import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
@@ -32,6 +33,7 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import dev.sonata.android.data.AudioPipelineBus
+import dev.sonata.android.playback.EndedStateTransitionGuard
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -44,20 +46,49 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.roundToInt
 
 internal object PlaybackQueueBridge {
-    @Volatile
-    var canSkipNext: () -> Boolean = { false }
+    private val defaultFalse: () -> Boolean = { false }
+    private val defaultUnit: () -> Unit = {}
 
     @Volatile
-    var canSkipPrevious: () -> Boolean = { false }
+    var canSkipNext: () -> Boolean = defaultFalse
 
     @Volatile
-    var onSkipNext: () -> Unit = {}
+    var canSkipPrevious: () -> Boolean = defaultFalse
 
     @Volatile
-    var onSkipPrevious: () -> Unit = {}
+    var shouldAutoAdvanceOnEnd: () -> Boolean = defaultFalse
 
     @Volatile
-    var onPlayFromEmpty: () -> Unit = {}
+    var onSkipNext: () -> Unit = defaultUnit
+
+    @Volatile
+    var onSkipPrevious: () -> Unit = defaultUnit
+
+    @Volatile
+    var onPlayFromEmpty: () -> Unit = defaultUnit
+
+    @Volatile
+    var onTrackEnded: () -> Unit = defaultUnit
+
+    fun reset() {
+        canSkipNext = defaultFalse
+        canSkipPrevious = defaultFalse
+        shouldAutoAdvanceOnEnd = defaultFalse
+        onSkipNext = defaultUnit
+        onSkipPrevious = defaultUnit
+        onPlayFromEmpty = defaultUnit
+        onTrackEnded = defaultUnit
+    }
+
+    fun hasActiveCallbacks(): Boolean {
+        return canSkipNext !== defaultFalse ||
+            canSkipPrevious !== defaultFalse ||
+            shouldAutoAdvanceOnEnd !== defaultFalse ||
+            onSkipNext !== defaultUnit ||
+            onSkipPrevious !== defaultUnit ||
+            onPlayFromEmpty !== defaultUnit ||
+            onTrackEnded !== defaultUnit
+    }
 }
 
 /**
@@ -74,6 +105,9 @@ object PlaybackAudioBridge {
     @Volatile
     private var skipSilenceEnabled: Boolean = false
 
+    @Volatile
+    var stopMusicOnClose: Boolean = false
+
     fun applyPlaybackSpeed(speed: Float) {
         val clamped = speed.coerceIn(0.5f, 2.0f)
         playbackSpeed = clamped
@@ -85,6 +119,10 @@ object PlaybackAudioBridge {
         skipSilenceEnabled = enabled
         AudioPipelineBus.update { it.copy(skipSilenceActive = enabled) }
         activeService?.applySkipSilenceInternal(enabled)
+    }
+
+    internal fun clearEndedTransitionSuppression() {
+        activeService?.clearEndedTransitionSuppressionInternal()
     }
 
     internal fun syncAllTo(service: PlaybackService) {
@@ -109,6 +147,7 @@ class PlaybackService : MediaSessionService() {
     private var exoPlayerInstance: ExoPlayer? = null
     private var playerHandler: Handler? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val endedTransitionGuard = EndedStateTransitionGuard()
     @Volatile
     private var lastCacheCheckKey: String? = null
     @Volatile
@@ -159,13 +198,36 @@ class PlaybackService : MediaSessionService() {
             .build()
         exoPlayer.repeatMode = Player.REPEAT_MODE_OFF
         exoPlayer.addAnalyticsListener(createPipelineAnalyticsListener(exoPlayer, simpleCache))
+        exoPlayer.addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                val pendingAutoAdvance = playbackState == Player.STATE_ENDED &&
+                    exoPlayer.repeatMode != Player.REPEAT_MODE_ONE &&
+                    PlaybackQueueBridge.shouldAutoAdvanceOnEnd()
+                val suppressed = endedTransitionGuard.onUnderlyingPlaybackStateChanged(
+                    rawState = playbackState,
+                    hasPendingNextTransition = pendingAutoAdvance,
+                )
+                if (suppressed) {
+                    Log.i(TAG, "STATE_ENDED with pending next track; keeping foreground service alive during transition")
+                    PlaybackQueueBridge.onTrackEnded()
+                }
+            }
+
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                endedTransitionGuard.onPlayWhenReadyChanged(playWhenReady)
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                endedTransitionGuard.clear()
+            }
+        })
 
         exoPlayerInstance = exoPlayer
         playerHandler = Handler(exoPlayer.applicationLooper)
         PlaybackAudioBridge.activeService = this
         PlaybackAudioBridge.syncAllTo(this)
 
-        val sessionPlayer = QueueAwarePlayer(exoPlayer)
+        val sessionPlayer = QueueAwarePlayer(exoPlayer, endedTransitionGuard)
         mediaSession = MediaSession.Builder(this, sessionPlayer).build()
     }
 
@@ -355,6 +417,10 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    internal fun clearEndedTransitionSuppressionInternal() {
+        endedTransitionGuard.clear()
+    }
+
     private fun postOnPlayer(block: () -> Unit) {
         if (isServiceDestroyed) return
         val handler = playerHandler ?: return
@@ -377,6 +443,14 @@ class PlaybackService : MediaSessionService() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         val player = mediaSession?.player
+        if (PlaybackAudioBridge.stopMusicOnClose) {
+            runCatching {
+                player?.pause()
+                player?.stop()
+            }
+            stopSelf()
+            return
+        }
         if (player == null || !player.playWhenReady || player.mediaItemCount == 0) {
             stopSelf()
         }
@@ -384,6 +458,7 @@ class PlaybackService : MediaSessionService() {
 
     override fun onDestroy() {
         isServiceDestroyed = true
+        endedTransitionGuard.clear()
         serviceScope.cancel()
         if (PlaybackAudioBridge.activeService === this) {
             PlaybackAudioBridge.activeService = null
@@ -400,7 +475,23 @@ class PlaybackService : MediaSessionService() {
     }
 
     @UnstableApi
-    private class QueueAwarePlayer(delegate: ExoPlayer) : ForwardingPlayer(delegate) {
+    private class QueueAwarePlayer(
+        delegate: ExoPlayer,
+        private val endedTransitionGuard: EndedStateTransitionGuard,
+    ) : ForwardingPlayer(delegate) {
+        override fun getPlaybackState(): Int =
+            endedTransitionGuard.effectivePlaybackState(super.getPlaybackState())
+
+        override fun pause() {
+            endedTransitionGuard.clear()
+            super.pause()
+        }
+
+        override fun stop() {
+            endedTransitionGuard.clear()
+            super.stop()
+        }
+
         override fun getAvailableCommands(): Player.Commands {
             val builder = super.getAvailableCommands().buildUpon()
             if (mediaItemCount > 0 || PlaybackQueueBridge.canSkipNext()) {

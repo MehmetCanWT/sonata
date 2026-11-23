@@ -6,6 +6,7 @@
 //! 4. **Persistence**: atomic read/write under `~/.config/sonata/desktop-ui.json`.
 
 use serde::{Deserialize, Serialize};
+use sonata_runtime::i18n::AppLanguage;
 use std::fs;
 use std::path::PathBuf;
 
@@ -26,10 +27,17 @@ pub const PANEL_MIN: f32 = 240.0;
 pub const PANEL_MAX: f32 = 480.0;
 
 pub const PAGE_MIN_W: f32 = 400.0;
-pub const WINDOW_MIN_W: f32 = 496.0;
-pub const WINDOW_MIN_H: f32 = 480.0;
+pub const WINDOW_MIN_W: f32 = 320.0;
+pub const WINDOW_MIN_H: f32 = 96.0;
+pub const MINI_MODE_W: f32 = 520.0;
+pub const MINI_MODE_H: f32 = 260.0;
 pub const WINDOW_DEFAULT_W: f32 = 1240.0;
 pub const WINDOW_DEFAULT_H: f32 = 800.0;
+
+/// Returns true when the window has been shrunk to mini-player dimensions where full UI & animations freeze.
+pub fn is_mini_viewport(width: f32, height: f32) -> bool {
+    width <= MINI_MODE_W || height <= MINI_MODE_H
+}
 
 pub const ROW_HEIGHT: f32 = 56.0;
 pub const ART_SIZE: f32 = 40.0;
@@ -194,6 +202,8 @@ fn piecewise_linear(knots: &[(f32, f32)], x: f32) -> f32 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DesktopSettings {
+    #[serde(default)]
+    pub language: AppLanguage,
     pub theme_mode: ThemeModePref,
     pub dark_theme: String,
     pub light_theme: String,
@@ -216,6 +226,7 @@ pub struct DesktopSettings {
 impl Default for DesktopSettings {
     fn default() -> Self {
         Self {
+            language: AppLanguage::En,
             theme_mode: ThemeModePref::System,
             dark_theme: default_dark_theme_name().to_string(),
             light_theme: default_light_theme_name().to_string(),

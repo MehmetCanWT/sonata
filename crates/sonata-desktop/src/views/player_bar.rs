@@ -12,9 +12,8 @@ use crate::ui::components::{
     loading_ring, quality_badge,
 };
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::slider::Slider;
-use gpui_kit::component::{Icon, Sizable as _};
+use gpui_kit::component::Icon;
 use gpui_kit::{
     div, prelude::FluentBuilder as _, px, AnyElement, Context, FontWeight, InteractiveElement as _,
     IntoElement, ParentElement as _, StatefulInteractiveElement as _, Styled as _, Window,
@@ -29,6 +28,7 @@ impl SonataDesktopView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let s = sonata_runtime::i18n::strings(self.settings.language);
         let compact = vp_w < 740.0;
         let current = self.snapshot.current_track().cloned();
         let paused = self.snapshot.paused;
@@ -63,7 +63,9 @@ impl SonataDesktopView {
                         .cursor_pointer()
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.fullscreen_open = !this.fullscreen_open;
-                            this.fullscreen_last_activity = std::time::Instant::now();
+                            if this.fullscreen_open {
+                                this.stir_fullscreen(cx);
+                            }
                             cx.notify();
                         }))
                         .child(cover_art_tile(
@@ -102,6 +104,7 @@ impl SonataDesktopView {
                         .gap(px(2.0))
                         .child(
                             div()
+                                .h(px(20.0))
                                 .flex()
                                 .flex_row()
                                 .items_center()
@@ -111,6 +114,9 @@ impl SonataDesktopView {
                                     div()
                                         .id("pb-title-click")
                                         .min_w_0()
+                                        .h_full()
+                                        .flex()
+                                        .items_center()
                                         .cursor_pointer()
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             if !track_album.album.is_empty()
@@ -129,26 +135,29 @@ impl SonataDesktopView {
                                             cx,
                                         )),
                                 )
-                                .when(explicit, |r| {
-                                    r.child(
-                                        div().flex_shrink_0().child(explicit_badge(&self.palette)),
-                                    )
-                                }),
+                                .when(explicit, |r| r.child(explicit_badge(&self.palette))),
                         )
-                        .child(div().h(px(18.0)).overflow_hidden().child(artist_links_row(
-                            "pb-artist",
-                            &track.artist,
-                            self.palette.secondary,
-                            12.0,
-                            {
-                                let view = cx.entity().downgrade();
-                                move |name, _, cx| {
-                                    let _ = view.update(cx, |this, cx| {
-                                        this.open_artist_by_name(&name, cx);
-                                    });
-                                }
-                            },
-                        ))),
+                        .child(
+                            div()
+                                .h(px(18.0))
+                                .flex()
+                                .items_center()
+                                .overflow_hidden()
+                                .child(artist_links_row(
+                                    "pb-artist",
+                                    &track.artist,
+                                    self.palette.secondary,
+                                    12.0,
+                                    {
+                                        let view = cx.entity().downgrade();
+                                        move |name, _, cx| {
+                                            let _ = view.update(cx, |this, cx| {
+                                                this.open_artist_by_name(&name, cx);
+                                            });
+                                        }
+                                    },
+                                )),
+                        ),
                 )
                 .when(!compact, |row| {
                     row.child(
@@ -162,7 +171,7 @@ impl SonataDesktopView {
                                 "pb-dislike",
                                 IconName::ThumbsDown,
                                 false,
-                                Some("Dislike"),
+                                Some(s.dislike),
                                 &self.palette,
                                 {
                                     let b = self.backend.clone();
@@ -179,7 +188,7 @@ impl SonataDesktopView {
                                     IconName::ThumbsUp
                                 },
                                 liked,
-                                Some(if liked { "Remove like" } else { "Like" }),
+                                Some(if liked { s.remove_like } else { s.like }),
                                 &self.palette,
                                 {
                                     let b = self.backend.clone();
@@ -214,13 +223,13 @@ impl SonataDesktopView {
                                 .text_size(px(13.0))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(self.palette.secondary)
-                                .child("Nothing playing"),
+                                .child(s.nothing_playing),
                         )
                         .child(
                             div()
                                 .text_size(px(11.0))
                                 .text_color(self.palette.dim)
-                                .child("Pick a track or mix to listen"),
+                                .child(s.pick_track_hint),
                         ),
                 )
                 .into_any_element()
@@ -261,26 +270,28 @@ impl SonataDesktopView {
             );
 
         let transport_buttons = div()
+            .h(px(38.0))
             .flex()
             .flex_row()
             .items_center()
             .justify_center()
-            .gap(px(10.0))
+            .gap(px(8.0))
             .when(!compact, |r| {
                 r.child(
                     div()
+                        .relative()
+                        .size(px(32.0))
                         .flex()
-                        .flex_col()
                         .items_center()
-                        .gap(px(2.0))
+                        .justify_center()
                         .child(icon_action_button(
                             "pb-shuffle",
                             IconName::Shuffle,
                             shuffle_active,
                             Some(if shuffle_active {
-                                "Shuffle: On (S)"
+                                s.shuffle_on
                             } else {
-                                "Shuffle: Off (S)"
+                                s.shuffle_off
                             }),
                             &self.palette,
                             {
@@ -288,18 +299,23 @@ impl SonataDesktopView {
                                 move |_, _| b.send(BackendCmd::ToggleShuffle)
                             },
                         ))
-                        .child(div().size(px(4.0)).rounded_full().bg(if shuffle_active {
-                            self.palette.accent
-                        } else {
-                            gpui_kit::transparent_black()
-                        })),
+                        .when(shuffle_active, |d| {
+                            d.child(
+                                div()
+                                    .absolute()
+                                    .bottom(px(0.0))
+                                    .size(px(4.0))
+                                    .rounded_full()
+                                    .bg(self.palette.accent),
+                            )
+                        }),
                 )
             })
             .child(icon_action_button(
                 "pb-prev",
                 IconName::SkipBack,
                 false,
-                Some("Previous track"),
+                Some(s.previous_track),
                 &self.palette,
                 {
                     let b = self.backend.clone();
@@ -311,7 +327,7 @@ impl SonataDesktopView {
                 "pb-next",
                 IconName::SkipForward,
                 false,
-                Some("Next track"),
+                Some(s.next_track),
                 &self.palette,
                 {
                     let b = self.backend.clone();
@@ -320,16 +336,17 @@ impl SonataDesktopView {
             ))
             .when(!compact, |r| {
                 let repeat_tip = match self.snapshot.repeat {
-                    RepeatMode::Off => "Repeat: Off (R)",
-                    RepeatMode::All => "Repeat: All (R)",
-                    RepeatMode::One => "Repeat: One (R)",
+                    RepeatMode::Off => s.repeat_off,
+                    RepeatMode::All => s.repeat_all,
+                    RepeatMode::One => s.repeat_one,
                 };
                 r.child(
                     div()
+                        .relative()
+                        .size(px(32.0))
                         .flex()
-                        .flex_col()
                         .items_center()
-                        .gap(px(2.0))
+                        .justify_center()
                         .child(icon_action_button(
                             "pb-repeat",
                             repeat_icon,
@@ -341,11 +358,16 @@ impl SonataDesktopView {
                                 move |_, _| b.send(BackendCmd::CycleRepeat)
                             },
                         ))
-                        .child(div().size(px(4.0)).rounded_full().bg(if repeat_active {
-                            self.palette.accent
-                        } else {
-                            gpui_kit::transparent_black()
-                        })),
+                        .when(repeat_active, |d| {
+                            d.child(
+                                div()
+                                    .absolute()
+                                    .bottom(px(0.0))
+                                    .size(px(4.0))
+                                    .rounded_full()
+                                    .bg(self.palette.accent),
+                            )
+                        }),
                 )
             });
 
@@ -356,7 +378,7 @@ impl SonataDesktopView {
             };
             v as f64
         } else {
-            self.snapshot.position_secs
+            self.live_position_secs
         };
 
         let center_controls = div()
@@ -364,11 +386,13 @@ impl SonataDesktopView {
             .flex()
             .flex_col()
             .items_center()
+            .justify_center()
             .gap(px(4.0))
             .child(transport_buttons)
             .child(
                 div()
                     .w_full()
+                    .h(px(20.0))
                     .flex()
                     .flex_row()
                     .items_center()
@@ -376,7 +400,12 @@ impl SonataDesktopView {
                     .child(
                         div()
                             .w(px(38.0))
+                            .h_full()
+                            .flex()
+                            .items_center()
+                            .justify_end()
                             .text_size(px(11.0))
+                            .line_height(px(12.0))
                             .text_color(self.palette.dim)
                             .child(format_mm_ss(pos_secs.max(0.0).round() as u64)),
                     )
@@ -384,16 +413,22 @@ impl SonataDesktopView {
                         div()
                             .flex_1()
                             .min_w_0()
+                            .h_full()
+                            .flex()
+                            .items_center()
                             .child(Slider::new(&self.progress_slider).horizontal()),
                     )
                     .child(
                         div()
                             .w(px(38.0))
+                            .h_full()
+                            .flex()
+                            .items_center()
+                            .justify_start()
                             .text_size(px(11.0))
+                            .line_height(px(12.0))
                             .text_color(self.palette.dim)
-                            .child(format_mm_ss(
-                                self.snapshot.duration_secs.max(0.0).round() as u64
-                            )),
+                            .child(format_mm_ss(self.live_duration_secs.max(0.0).round() as u64)),
                     ),
             );
 
@@ -407,56 +442,58 @@ impl SonataDesktopView {
 
         let badge_text = self.snapshot.stream_badge.trim();
         let show_badge = !badge_text.is_empty() && badge_text != "Idle";
+        let view_q = cx.entity().downgrade();
+        let view_l = cx.entity().downgrade();
+        let view_fs = cx.entity().downgrade();
 
         let right_controls = div()
+            .h(px(32.0))
             .flex()
             .flex_row()
             .items_center()
             .justify_end()
-            .gap(px(6.0))
+            .gap(px(4.0))
             .when(!compact && show_badge, |r| {
-                r.child(quality_badge(
+                r.child(div().mr(px(4.0)).child(quality_badge(
                     badge_text,
                     self.snapshot.upgrading_quality,
                     &self.palette,
-                ))
+                )))
             })
-            .child(
-                Button::new("pb-toggle-queue")
-                    .ghost()
-                    .small()
-                    .icon(IconName::ListMusic)
-                    .tooltip("Next up queue")
-                    .when(self.settings.show_queue_panel, |b| {
-                        b.text_color(self.palette.accent)
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
+            .child(icon_action_button(
+                "pb-toggle-queue",
+                IconName::ListMusic,
+                self.settings.show_queue_panel,
+                Some(s.next_up_queue),
+                &self.palette,
+                move |_, cx| {
+                    let _ = view_q.update(cx, |this, cx| {
                         this.settings.show_queue_panel = !this.settings.show_queue_panel;
                         this.settings.save();
                         cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("pb-toggle-lyrics")
-                    .ghost()
-                    .small()
-                    .icon(IconName::MicVocal)
-                    .tooltip("Lyrics panel")
-                    .when(self.settings.show_lyrics_panel, |b| {
-                        b.text_color(self.palette.accent)
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
+                    });
+                },
+            ))
+            .child(icon_action_button(
+                "pb-toggle-lyrics",
+                IconName::MicVocal,
+                self.settings.show_lyrics_panel,
+                Some(s.lyrics_panel),
+                &self.palette,
+                move |_, cx| {
+                    let _ = view_l.update(cx, |this, cx| {
                         this.settings.show_lyrics_panel = !this.settings.show_lyrics_panel;
                         this.settings.save();
                         cx.notify();
-                    })),
-            )
+                    });
+                },
+            ))
             .when(!compact, |r| {
                 r.child(icon_action_button(
                     "pb-mute",
                     vol_icon,
                     self.snapshot.muted,
-                    Some("Mute (M)"),
+                    Some(s.mute),
                     &self.palette,
                     {
                         let b = self.backend.clone();
@@ -466,21 +503,26 @@ impl SonataDesktopView {
                 .child(
                     div()
                         .w(px(90.0))
+                        .h(px(32.0))
+                        .flex()
+                        .items_center()
                         .child(Slider::new(&self.volume_slider).horizontal()),
                 )
             })
-            .child(
-                Button::new("pb-fullscreen")
-                    .ghost()
-                    .small()
-                    .icon(IconName::Maximize2)
-                    .tooltip("Now Playing (F)")
-                    .on_click(cx.listener(|this, _, _, cx| {
+            .child(icon_action_button(
+                "pb-fullscreen",
+                IconName::Maximize2,
+                false,
+                Some(s.now_playing_tip),
+                &self.palette,
+                move |_, cx| {
+                    let _ = view_fs.update(cx, |this, cx| {
                         this.fullscreen_open = true;
-                        this.fullscreen_last_activity = std::time::Instant::now();
+                        this.stir_fullscreen(cx);
                         cx.notify();
-                    })),
-            );
+                    });
+                },
+            ));
 
         div()
             .h(px(PLAYER_BAR_H))
@@ -492,9 +534,24 @@ impl SonataDesktopView {
             .items_center()
             .justify_between()
             .gap(px(12.0))
-            .child(div().flex_1().min_w_0().child(left_track))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .child(left_track),
+            )
             .child(center_controls)
-            .child(div().flex_1().min_w_0().child(right_controls))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .child(right_controls),
+            )
             .into_any_element()
     }
 }

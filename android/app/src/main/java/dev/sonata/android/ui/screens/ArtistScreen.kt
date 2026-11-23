@@ -231,12 +231,16 @@ fun ArtistScreen(
         }
     }
     val moodyWash = palette.wash
-    val artistBgBrush = remember(moodyWash, palette.background, themeTokens.eclipseBase) {
-        Brush.verticalGradient(
-            0f to moodyWash,
-            0.48f to palette.background,
-            1f to themeTokens.eclipseBase,
-        )
+    val artistBgBrush = remember(moodyWash, palette.background, themeTokens.eclipseBase, themeTokens.isBasic) {
+        if (themeTokens.isBasic) {
+            Brush.verticalGradient(listOf(themeTokens.eclipseBase, themeTokens.eclipseBase))
+        } else {
+            Brush.verticalGradient(
+                0f to moodyWash,
+                0.48f to palette.background,
+                1f to themeTokens.eclipseBase,
+            )
+        }
     }
     val paintArtistBackdrop: ContentDrawScope.() -> Unit = remember(artistBgBrush) {
         {
@@ -307,17 +311,28 @@ fun ArtistScreen(
                     bottom = contentBottomPadding.calculateBottomPadding() + 28.dp,
                 ),
             ) {
-                // Full-bleed artist hero fading smoothly into artwork-derived moody wash
+                // Full-bleed artist hero (monochrome editorial overhaul in Basic; atmospheric wash in Violet/Moonflower)
                 item(key = "hero_${artist.id}", contentType = "artist_hero") {
-                    ArtistHeroHeader(
-                        artist = artist,
-                        heroUrl = resolvedHeroUrl,
-                        moodyWash = moodyWash,
-                        statusTop = statusTop,
-                        onPlay = { onPlayTopSongs(artist) },
-                        onShuffle = { onShuffleTopSongs(artist) },
-                        onToggleSubscribe = { onToggleSubscribe(artist) },
-                    )
+                    if (themeTokens.isBasic) {
+                        BasicArtistHeroHeader(
+                            artist = artist,
+                            heroUrl = resolvedHeroUrl,
+                            statusTop = statusTop,
+                            onPlay = { onPlayTopSongs(artist) },
+                            onShuffle = { onShuffleTopSongs(artist) },
+                            onToggleSubscribe = { onToggleSubscribe(artist) },
+                        )
+                    } else {
+                        ArtistHeroHeader(
+                            artist = artist,
+                            heroUrl = resolvedHeroUrl,
+                            moodyWash = moodyWash,
+                            statusTop = statusTop,
+                            onPlay = { onPlayTopSongs(artist) },
+                            onShuffle = { onShuffleTopSongs(artist) },
+                            onToggleSubscribe = { onToggleSubscribe(artist) },
+                        )
+                    }
                 }
 
                 // Sculpted Tinted Latest Release spotlight card (centered & width-capped on tablets)

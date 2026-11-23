@@ -369,8 +369,27 @@ impl SonataDesktopView {
                     }),
             );
         } else {
-            let all = tracks.clone();
-            for i in 0..all.len() {
+            let all: std::sync::Arc<[sonata_core::providers::Track]> =
+                std::sync::Arc::from(tracks.as_slice());
+            let total = all.len();
+            const ROW_STRIDE: f32 = 56.0;
+            const OVERSCAN: usize = 16;
+            let (win_start, win_end) = if total > 64 {
+                let scroll_y = (-f32::from(self.main_scroll.offset().y)).max(0.0);
+                let vp_h: f32 = f32::from(self.main_scroll.bounds().size.height).max(900.0);
+                let first_vis = ((scroll_y - 80.0).max(0.0) / ROW_STRIDE).floor() as usize;
+                let vis_count = (vp_h / ROW_STRIDE).ceil() as usize + 1;
+                (
+                    first_vis.saturating_sub(OVERSCAN).min(total),
+                    (first_vis + vis_count + OVERSCAN).min(total),
+                )
+            } else {
+                (0, total)
+            };
+            if win_start > 0 {
+                list = list.child(div().flex_shrink_0().h(px(win_start as f32 * ROW_STRIDE)));
+            }
+            for i in win_start..win_end {
                 list = list.child(self.render_track_row(
                     "hist-tr",
                     i,
@@ -381,6 +400,13 @@ impl SonataDesktopView {
                     },
                     cx,
                 ));
+            }
+            if win_end < total {
+                list = list.child(
+                    div()
+                        .flex_shrink_0()
+                        .h(px((total - win_end) as f32 * ROW_STRIDE)),
+                );
             }
         }
 
@@ -458,8 +484,27 @@ impl SonataDesktopView {
                     .child("Queue is empty"),
             );
         } else {
-            let all = queue.clone();
-            for i in 0..all.len() {
+            let all: std::sync::Arc<[sonata_core::providers::Track]> =
+                std::sync::Arc::from(queue.as_slice());
+            let total = all.len();
+            const ROW_STRIDE: f32 = 56.0;
+            const OVERSCAN: usize = 16;
+            let (win_start, win_end) = if total > 64 {
+                let scroll_y = (-f32::from(self.main_scroll.offset().y)).max(0.0);
+                let vp_h: f32 = f32::from(self.main_scroll.bounds().size.height).max(900.0);
+                let first_vis = ((scroll_y - 80.0).max(0.0) / ROW_STRIDE).floor() as usize;
+                let vis_count = (vp_h / ROW_STRIDE).ceil() as usize + 1;
+                (
+                    first_vis.saturating_sub(OVERSCAN).min(total),
+                    (first_vis + vis_count + OVERSCAN).min(total),
+                )
+            } else {
+                (0, total)
+            };
+            if win_start > 0 {
+                rows = rows.child(div().flex_shrink_0().h(px(win_start as f32 * ROW_STRIDE)));
+            }
+            for i in win_start..win_end {
                 rows = rows.child(self.render_track_row(
                     "fullq-tr",
                     i,
@@ -471,6 +516,13 @@ impl SonataDesktopView {
                     },
                     cx,
                 ));
+            }
+            if win_end < total {
+                rows = rows.child(
+                    div()
+                        .flex_shrink_0()
+                        .h(px((total - win_end) as f32 * ROW_STRIDE)),
+                );
             }
         }
 

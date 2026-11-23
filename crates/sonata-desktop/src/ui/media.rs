@@ -1,25 +1,39 @@
 //! Asynchronous bounded image cache, dominant-color extractor, and blurred backdrop generator.
 //!
-//! 1. **LRU Storage**: bounds decoded crisp and blurred `RenderImage` textures to `96 MiB` total pixel bytes with hit-first lookup (zero `stat()` syscalls on cache hits).
-//! 2. **Async Decode & Coalesced Redraw**: decodes artwork files via `cx.background_executor()`, negative-caches broken/missing paths to prevent spin loops, and batches `cx.notify()` redraws.
-//! 3. **Backdrop Blur & Tint**: produces `48x48` 2-pass box-blurred textures for `header_wash` and fullscreen backdrops plus dominant RGB extraction.
+//! 1. **LRU Storage**: bounds decoded crisp and blurred `RenderImage` textures to `160 MiB` soft (`256 MiB` hard) with hit-first lookup and a 4-second anti-thrash eviction guard so large playlists never flicker.
+//! 2. **Async Decode & Coalesced Redraw**: decodes artwork files via `cx.background_executor()` with bounded concurrency (`8` in-flight), negative-caches broken/missing paths to prevent spin loops, and batches `cx.notify()` redraws.
+//! 3. **Backdrop Blur & Tint**: produces `64x64` 2-pass box-blurred textures for `header_wash` and fullscreen backdrops plus dominant RGB extraction.
 
 use gpui_kit::{App, RenderImage};
 use image::{imageops::FilterType, Frame, GenericImageView, RgbaImage};
-use sonata_core::media::art_cache_path;
+use sonata_runtime::media::art_cache_path;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const MAX_IMAGE_CACHE_BYTES: usize = 32 * 1024 * 1024;
-const MAX_SQUARE_ART_DIM: u32 = 256;
+const MAX_IMAGE_CACHE_BYTES: usize = 160 * 1024 * 1024;
+const HARD_IMAGE_CACHE_BYTES: usize = 256 * 1024 * 1024;
+const MAX_SQUARE_ART_DIM: u32 = 320;
 const MAX_WIDE_BANNER_W: u32 = 1600;
 const MAX_WIDE_BANNER_H: u32 = 720;
-const BLUR_TEX_SIZE: u32 = 48;
+const BLUR_TEX_SIZE: u32 = 64;
+const MAX_CONCURRENT_DECODES: usize = 8;
+const EVICT_PROTECT_WINDOW: Duration = Duration::from_secs(4);
 const FAILED_RETRY_COOLDOWN: Duration = Duration::from_secs(30);
 const MISSING_RETRY_COOLDOWN: Duration = Duration::from_secs(2);
 const NOTIFY_COALESCE_MS: u64 = 16;
+
+/// Dominant and runner-up artwork hues extracted via a 24-bin HSL histogram.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CoverPalette {
+    /// Leading vibrant hue `(h, s, l)` in `0.0..=1.0`, or `None` for greyscale artwork.
+    pub primary: Option<(f32, f32, f32)>,
+    /// Runner-up vibrant hue `(h, s, l)` separated from `primary`, when present.
+    pub secondary: Option<(f32, f32, f32)>,
+    /// Mean lightness across all opaque sampled pixels.
+    pub lightness: f32,
+}
 
 #[derive(Clone)]
 pub struct CachedMedia {
@@ -29,7 +43,9 @@ pub struct CachedMedia {
     /// Vertically faded blurred texture whose alpha reaches 0 at the bottom edge (seamless `header_wash`).
     pub header_blurred: Arc<RenderImage>,
     pub dominant_rgb: (u8, u8, u8),
+    pub cover_palette: CoverPalette,
     bytes: usize,
+    last_used: Instant,
 }
 
 #[derive(Default)]
@@ -44,7 +60,10 @@ struct ImageCacheInner {
 }
 
 impl ImageCacheInner {
-    fn touch(&mut self, path: &Path) {
+    fn touch(&mut self, path: &Path, now: Instant) {
+        if let Some(entry) = self.entries.get_mut(path) {
+            entry.last_used = now;
+        }
         if let Some(pos) = self.order.iter().position(|p| p == path) {
             if let Some(item) = self.order.remove(pos) {
                 self.order.push_back(item);
@@ -52,7 +71,7 @@ impl ImageCacheInner {
         }
     }
 
-    fn insert(&mut self, path: PathBuf, entry: CachedMedia) -> Vec<CachedMedia> {
+    fn insert(&mut self, path: PathBuf, entry: CachedMedia, now: Instant) -> Vec<CachedMedia> {
         let mut evicted = Vec::new();
         self.in_flight.remove(&path);
         self.failed.remove(&path);
@@ -64,7 +83,31 @@ impl ImageCacheInner {
             }
             evicted.push(old);
         }
-        while self.total_bytes + entry.bytes > MAX_IMAGE_CACHE_BYTES {
+
+        // First evict stale entries (untouched for EVICT_PROTECT_WINDOW) down to the soft cap.
+        // Never evict entries still actively rendered on-screen unless the hard cap is exceeded,
+        // which prevents infinite decode-evict-redraw thrashing on large playlists.
+        let mut scanned = 0usize;
+        let len = self.order.len();
+        while self.total_bytes + entry.bytes > MAX_IMAGE_CACHE_BYTES && scanned < len {
+            let Some(candidate) = self.order.pop_front() else {
+                break;
+            };
+            scanned += 1;
+            let is_recent = self
+                .entries
+                .get(&candidate)
+                .is_some_and(|e| now.saturating_duration_since(e.last_used) < EVICT_PROTECT_WINDOW);
+            if is_recent && self.total_bytes + entry.bytes <= HARD_IMAGE_CACHE_BYTES {
+                self.order.push_back(candidate);
+                continue;
+            }
+            if let Some(removed) = self.entries.remove(&candidate) {
+                self.total_bytes = self.total_bytes.saturating_sub(removed.bytes);
+                evicted.push(removed);
+            }
+        }
+        while self.total_bytes + entry.bytes > HARD_IMAGE_CACHE_BYTES {
             let Some(oldest) = self.order.pop_front() else {
                 break;
             };
@@ -73,6 +116,7 @@ impl ImageCacheInner {
                 evicted.push(removed);
             }
         }
+
         self.total_bytes += entry.bytes;
         self.order.push_back(path.clone());
         self.entries.insert(path, entry);
@@ -116,10 +160,10 @@ impl MediaCache {
                 return None;
             };
             if let Some(hit) = guard.entries.get(path).cloned() {
-                guard.touch(path);
+                guard.touch(path, now);
                 return Some(hit);
             }
-            if guard.in_flight.contains(path) {
+            if guard.in_flight.contains(path) || guard.in_flight.len() >= MAX_CONCURRENT_DECODES {
                 return None;
             }
             if guard
@@ -157,7 +201,7 @@ impl MediaCache {
                     return;
                 };
                 if let Some(entry) = decoded {
-                    let evicted = guard.insert(path_owned, entry);
+                    let evicted = guard.insert(path_owned, entry, Instant::now());
                     if !guard.notify_pending {
                         guard.notify_pending = true;
                         (true, evicted)
@@ -212,9 +256,10 @@ fn decode_and_build_media(path: &Path) -> Option<CachedMedia> {
     let mut rgba = img.to_rgba8();
     let (rw, rh) = rgba.dimensions();
 
-    // Compute dominant color from compact downsampled pixels before any bottom alpha fade.
+    // Compute dominant color and dual-hue palette from compact downsampled pixels before any bottom alpha fade.
     let small = image::imageops::resize(&rgba, BLUR_TEX_SIZE, BLUR_TEX_SIZE, FilterType::Triangle);
     let dominant_rgb = extract_dominant_rgb(small.as_raw());
+    let cover_palette = extract_cover_palette(small.as_raw());
 
     // For wide artist banners, bake the smooth bottom alpha fade directly into `image` (avoiding a 2nd full texture).
     if is_wide_banner {
@@ -249,7 +294,9 @@ fn decode_and_build_media(path: &Path) -> Option<CachedMedia> {
         blurred,
         header_blurred,
         dominant_rgb,
+        cover_palette,
         bytes: pixel_bytes,
+        last_used: Instant::now(),
     })
 }
 
@@ -311,6 +358,168 @@ fn extract_dominant_rgb(rgba: &[u8]) -> (u8, u8, u8) {
         (g_sum / weight_sum) as u8,
         (b_sum / weight_sum) as u8,
     )
+}
+
+fn rgba_pixel_to_hsl(r_u8: u8, g_u8: u8, b_u8: u8) -> (f32, f32, f32) {
+    let r = r_u8 as f32 / 255.0;
+    let g = g_u8 as f32 / 255.0;
+    let b = b_u8 as f32 / 255.0;
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) * 0.5;
+    let d = max - min;
+    if d <= 1e-5 {
+        return (0.0, 0.0, l);
+    }
+    let s = if l > 0.5 {
+        d / (2.0 - max - min)
+    } else {
+        d / (max + min)
+    };
+    let h = if (max - r).abs() <= 1e-5 {
+        ((g - b) / d + if g < b { 6.0 } else { 0.0 }) / 6.0
+    } else if (max - g).abs() <= 1e-5 {
+        ((b - r) / d + 2.0) / 6.0
+    } else {
+        ((r - g) / d + 4.0) / 6.0
+    };
+    (h.rem_euclid(1.0), s.clamp(0.0, 1.0), l.clamp(0.0, 1.0))
+}
+
+#[derive(Clone, Copy, Default)]
+struct HueBin {
+    weight: f32,
+    count: f32,
+    x: f32,
+    y: f32,
+    saturation: f32,
+    lightness: f32,
+}
+
+impl HueBin {
+    fn add(&mut self, h: f32, s: f32, l: f32, weight: f32) {
+        let angle = h * std::f32::consts::TAU;
+        self.weight += weight;
+        self.count += 1.0;
+        self.x += angle.cos() * weight;
+        self.y += angle.sin() * weight;
+        self.saturation += s * weight;
+        self.lightness += l * weight;
+    }
+
+    fn merge(&mut self, other: &Self) {
+        self.weight += other.weight;
+        self.count += other.count;
+        self.x += other.x;
+        self.y += other.y;
+        self.saturation += other.saturation;
+        self.lightness += other.lightness;
+    }
+
+    fn color(&self) -> Option<(f32, f32, f32)> {
+        (self.weight > 0.0).then(|| {
+            (
+                self.y.atan2(self.x).rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU,
+                (self.saturation / self.weight).clamp(0.0, 1.0),
+                (self.lightness / self.weight).clamp(0.0, 1.0),
+            )
+        })
+    }
+}
+
+/// Extracts dominant and runner-up hues from packed RGBA pixels via a 24-bin weighted hue histogram.
+pub fn extract_cover_palette(rgba: &[u8]) -> CoverPalette {
+    const BINS: usize = 24;
+    const MIN_ALPHA: u8 = 128;
+    const MIN_SATURATION: f32 = 0.14;
+    const MIN_LIGHTNESS: f32 = 0.10;
+    const MAX_LIGHTNESS: f32 = 0.94;
+    const MIN_SHARE: f32 = 0.01;
+    const MIN_WEIGHT: f32 = 18.0;
+    const SECONDARY_SHARE: f32 = 0.02;
+    const SECONDARY_WEIGHT: f32 = 8.0;
+    const SECONDARY_GAP: usize = 3;
+    const SECONDARY_HUE: f32 = 0.05;
+    const SECONDARY_SPREAD: f32 = 0.05;
+    const SECONDARY_VIVID: f32 = 0.35;
+
+    let mut bins = [HueBin::default(); BINS];
+    let mut sampled = 0.0_f32;
+    let mut lightness_sum = 0.0_f32;
+
+    for &[r, g, b, a] in rgba.as_chunks::<4>().0 {
+        if a < MIN_ALPHA {
+            continue;
+        }
+        sampled += 1.0;
+        let (h, s, l) = rgba_pixel_to_hsl(r, g, b);
+        lightness_sum += l;
+        if s < MIN_SATURATION || !(MIN_LIGHTNESS..=MAX_LIGHTNESS).contains(&l) {
+            continue;
+        }
+        let idx = ((h * BINS as f32) as usize).min(BINS - 1);
+        bins[idx].add(h, s, l, s * (0.3 + 0.7 * l));
+    }
+
+    let mean_lightness = if sampled > 0.0 {
+        lightness_sum / sampled
+    } else {
+        0.0
+    };
+    let bin_score = |bins: &[HueBin; BINS], i: usize| {
+        bins[i].weight + (bins[(i + BINS - 1) % BINS].weight + bins[(i + 1) % BINS].weight) * 0.5
+    };
+    let is_vivid_spread = |bins: &[HueBin; BINS], i: usize| {
+        let mut c = bins[i];
+        c.merge(&bins[(i + BINS - 1) % BINS]);
+        c.merge(&bins[(i + 1) % BINS]);
+        c.weight > 0.0
+            && c.count >= sampled * SECONDARY_SPREAD
+            && (c.saturation / c.weight) >= SECONDARY_VIVID
+    };
+
+    let peak = (0..BINS).max_by(|&a, &b| bin_score(&bins, a).total_cmp(&bin_score(&bins, b)));
+    let Some(peak) = peak.filter(|&p| bin_score(&bins, p) >= (sampled * MIN_SHARE).max(MIN_WEIGHT))
+    else {
+        return CoverPalette {
+            lightness: mean_lightness,
+            ..Default::default()
+        };
+    };
+
+    let mut lead_cluster = bins[peak];
+    lead_cluster.merge(&bins[(peak + BINS - 1) % BINS]);
+    lead_cluster.merge(&bins[(peak + 1) % BINS]);
+    let primary = lead_cluster.color();
+
+    let runner = (0..BINS)
+        .filter(|&i| {
+            let gap = i.abs_diff(peak).min(BINS - i.abs_diff(peak));
+            gap >= SECONDARY_GAP
+                && (bin_score(&bins, i) >= (sampled * SECONDARY_SHARE).max(SECONDARY_WEIGHT)
+                    || is_vivid_spread(&bins, i))
+        })
+        .max_by(|&a, &b| bin_score(&bins, a).total_cmp(&bin_score(&bins, b)));
+
+    let secondary = runner
+        .and_then(|i| {
+            let mut c = bins[i];
+            c.merge(&bins[(i + BINS - 1) % BINS]);
+            c.merge(&bins[(i + 1) % BINS]);
+            c.color()
+        })
+        .filter(|&(sh, _, _)| {
+            primary.is_some_and(|(ph, _, _)| {
+                let d = (sh - ph).abs();
+                d.min(1.0 - d) >= SECONDARY_HUE
+            })
+        });
+
+    CoverPalette {
+        primary,
+        secondary,
+        lightness: mean_lightness,
+    }
 }
 
 fn box_blur_rgba(src: &[u8], w: usize, h: usize, radius: usize) -> Vec<u8> {

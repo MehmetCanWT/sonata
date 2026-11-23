@@ -68,6 +68,7 @@ import dev.sonata.android.ui.CircleGlyph
 import dev.sonata.android.ui.SonataAccent
 import dev.sonata.android.ui.SonataIcons
 import dev.sonata.android.ui.rememberArtworkRequest
+import dev.sonata.android.ui.i18n.LocalSonataStrings
 import dev.sonata.android.ui.theme.LocalLunariaColors
 import dev.sonata.android.ui.theme.sonataSpecularRim
 import uniffi.sonata_android.AndroidAccountProfile
@@ -170,20 +171,21 @@ fun UserMenuSheet(
                         .padding(horizontal = 18.dp, vertical = 18.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
+                    val strings = LocalSonataStrings.current
                     // Header row
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
-                            text = "Account",
+                            text = strings.account,
                             style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
                             color = tokens.onSurfacePrimary,
                             modifier = Modifier.weight(1f),
                         )
                         CircleGlyph(
                             icon = SonataIcons.Close,
-                            contentDescription = "Close Menu",
+                            contentDescription = strings.close,
                             onClick = onDismiss,
                         )
                     }
@@ -268,7 +270,7 @@ fun UserMenuSheet(
                                 .padding(horizontal = 14.dp, vertical = 8.dp),
                         ) {
                             Text(
-                                text = if (signedIn) "Sign Out" else "Sign In",
+                                text = if (signedIn) strings.signOut else strings.signIn,
                                 style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
                                 color = if (signedIn) tokens.onSurfacePrimary else Color.White,
                             )
@@ -281,8 +283,8 @@ fun UserMenuSheet(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         UserMenuActionTile(
-                            title = "Downloads",
-                            subtitle = if (downloadedCount == 0) "Offline library" else "$downloadedCount saved",
+                            title = strings.downloads,
+                            subtitle = if (downloadedCount == 0) strings.downloads else strings.savedCount(downloadedCount),
                             icon = SonataIcons.Download,
                             shape = tileShape,
                             onClick = {
@@ -292,8 +294,8 @@ fun UserMenuSheet(
                             modifier = Modifier.weight(1f),
                         )
                         UserMenuActionTile(
-                            title = "History",
-                            subtitle = "Recent searches",
+                            title = strings.listeningHistory,
+                            subtitle = strings.recentSearchesSubtitle,
                             icon = SonataIcons.History,
                             shape = tileShape,
                             onClick = {
@@ -309,8 +311,8 @@ fun UserMenuSheet(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         UserMenuActionTile(
-                            title = "Audio Pipeline",
-                            subtitle = "Codec & bit depth",
+                            title = strings.audioPipeline,
+                            subtitle = strings.audioPipelineSubtitle,
                             icon = SonataIcons.GraphicEq,
                             shape = tileShape,
                             onClick = {
@@ -320,8 +322,8 @@ fun UserMenuSheet(
                             modifier = Modifier.weight(1f),
                         )
                         UserMenuActionTile(
-                            title = "Settings",
-                            subtitle = "Audio, theme, cache",
+                            title = strings.settingsTitle,
+                            subtitle = strings.settingsSubtitle,
                             icon = SonataIcons.Settings,
                             shape = tileShape,
                             onClick = {
@@ -343,7 +345,7 @@ fun UserMenuSheet(
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         Text(
-                            text = "Quick Controls",
+                            text = strings.quickControls,
                             style = MaterialTheme.typography.labelMedium.copy(
                                 fontWeight = FontWeight.SemiBold,
                                 letterSpacing = 0.4.sp,
@@ -372,6 +374,8 @@ fun UserMenuSheet(
                                 ThemeMode.VIOLET_DARK -> "Violet Dark"
                                 ThemeMode.MOONFLOWER_LIGHT -> "Moonflower Light"
                                 ThemeMode.MOONFLOWER_DARK -> "Moonflower Dark"
+                                ThemeMode.BASIC_LIGHT -> "Basic Light"
+                                ThemeMode.BASIC_DARK -> "Basic Dark"
                                 ThemeMode.SYSTEM -> "Auto"
                                 ThemeMode.AMOLED -> "AMOLED"
                             }

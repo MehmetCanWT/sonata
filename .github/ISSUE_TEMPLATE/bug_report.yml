@@ -1,0 +1,55 @@
+name: Bug Report
+description: Report a crash, playback issue, or visual bug in Sonata
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Android
+        - Desktop (Linux GPUI)
+        - TUI (Terminal)
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Sonata Version
+      placeholder: "e.g. v1.0.6"
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Device / OS / Compositor
+      placeholder: "e.g. Galaxy Tab S9 FE (Android 14) / Arch Linux + Hyprland"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      placeholder: |
+        1. Open ...
+        2. Tap / click ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs
+      description: Attach `~/.cache/sonata/sonata.log`, `~/.cache/sonata/sonata-tui.log`, or Android `adb logcat` output (redact cookies/tokens).
+      render: shell
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots / Screen Recording
+      description: Drag and drop screenshots or short recordings illustrating the problem.

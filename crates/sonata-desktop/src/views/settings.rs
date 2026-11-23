@@ -19,7 +19,8 @@ use gpui_kit::{
     div, px, AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement,
     ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
 };
-use sonata_core::config::AppConfig;
+use sonata_runtime::config::AppConfig;
+use sonata_runtime::i18n::{strings, AppLanguage};
 use std::process::Command;
 
 impl SonataDesktopView {
@@ -38,6 +39,7 @@ impl SonataDesktopView {
         };
         let scroll_fades = self.settings.scroll_fades;
 
+        let s = strings(self.settings.language);
         let tabs = TabBar::new("settings-tabs")
             .pill()
             .small()
@@ -53,12 +55,12 @@ impl SonataDesktopView {
                 };
                 cx.notify();
             }))
-            .child(Tab::new().label("Appearance"))
-            .child(Tab::new().label("Playback"))
-            .child(Tab::new().label("Library"))
-            .child(Tab::new().label("System"))
-            .child(Tab::new().label("Account"))
-            .child(Tab::new().label("About"));
+            .child(Tab::new().label(s.tab_appearance))
+            .child(Tab::new().label(s.tab_playback))
+            .child(Tab::new().label(s.tab_library))
+            .child(Tab::new().label(s.tab_system))
+            .child(Tab::new().label(s.tab_account))
+            .child(Tab::new().label(s.tab_about));
 
         let body = match self.settings_tab {
             SettingsTab::Appearance => self.render_settings_appearance(cx),
@@ -81,7 +83,7 @@ impl SonataDesktopView {
                     .text_size(px(26.0))
                     .font_weight(FontWeight::BOLD)
                     .text_color(self.palette.text)
-                    .child("Settings"),
+                    .child(s.settings),
             )
             .child(tabs)
             .child(body);
@@ -150,6 +152,12 @@ impl SonataDesktopView {
     }
 
     fn render_settings_appearance(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let s = strings(self.settings.language);
+        let lang_idx = match self.settings.language {
+            AppLanguage::En => 0,
+            AppLanguage::Tr => 1,
+            AppLanguage::Ru => 2,
+        };
         let mode_idx = match self.settings.theme_mode {
             ThemeModePref::System => 0,
             ThemeModePref::Dark => 1,
@@ -167,6 +175,27 @@ impl SonataDesktopView {
             .warnings_for_active(&self.palette.theme_name);
         let themes_dir = DesktopSettings::themes_dir();
 
+        let lang_control = TabBar::new("set-lang-tabs")
+            .pill()
+            .small()
+            .selected_index(lang_idx)
+            .on_click(cx.listener(|this, idx: &usize, _, cx| {
+                let lang = match *idx {
+                    1 => AppLanguage::Tr,
+                    2 => AppLanguage::Ru,
+                    _ => AppLanguage::En,
+                };
+                if this.settings.language != lang {
+                    this.settings.language = lang;
+                    this.settings.save();
+                    cx.notify();
+                }
+            }))
+            .child(Tab::new().label("English"))
+            .child(Tab::new().label("Türkçe"))
+            .child(Tab::new().label("Русский"))
+            .into_any_element();
+
         let mode_control = TabBar::new("set-mode-tabs")
             .pill()
             .small()
@@ -179,9 +208,9 @@ impl SonataDesktopView {
                 };
                 this.set_theme_mode(mode, window, cx);
             }))
-            .child(Tab::new().label("System"))
-            .child(Tab::new().label("Dark"))
-            .child(Tab::new().label("Light"))
+            .child(Tab::new().label(s.mode_system))
+            .child(Tab::new().label(s.mode_dark))
+            .child(Tab::new().label(s.mode_light))
             .into_any_element();
 
         let theme_controls = div()
@@ -199,7 +228,7 @@ impl SonataDesktopView {
                     .secondary()
                     .small()
                     .icon(IconName::RefreshCw)
-                    .tooltip("Reload CSS themes")
+                    .tooltip(s.reload_themes)
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.reload_themes_and_sync(window, cx);
                     })),
@@ -209,7 +238,7 @@ impl SonataDesktopView {
                     .secondary()
                     .small()
                     .icon(IconName::Folder)
-                    .label("Folder")
+                    .label(s.open_folder)
                     .on_click(move |_, _, _| {
                         let dir = themes_dir.clone();
                         std::thread::spawn(move || {
@@ -251,28 +280,18 @@ impl SonataDesktopView {
                 };
                 this.set_corners(c, window, cx);
             }))
-            .child(Tab::new().label("Round"))
-            .child(Tab::new().label("Soft"))
-            .child(Tab::new().label("Sharp"))
+            .child(Tab::new().label(s.corner_round))
+            .child(Tab::new().label(s.corner_soft))
+            .child(Tab::new().label(s.corner_sharp))
             .into_any_element();
 
         let mut col = div()
             .flex()
             .flex_col()
             .gap(px(10.0))
-            .child(self.settings_row(
-                "Mode",
-                "Choose dark, light, or follow desktop appearance",
-                mode_control,
-            ))
-            .child(self.settings_row(
-                "Theme",
-                format!(
-                    "CSS palettes from {} (includes GTK / Qt on Linux)",
-                    DesktopSettings::themes_dir().display()
-                ),
-                theme_controls,
-            ));
+            .child(self.settings_row(s.language, s.language_desc, lang_control))
+            .child(self.settings_row(s.theme_mode, s.theme_mode_desc, mode_control))
+            .child(self.settings_row(s.color_theme, s.color_theme_desc, theme_controls));
 
         if !errors.is_empty() || !warnings.is_empty() {
             col = col.child(
@@ -300,125 +319,138 @@ impl SonataDesktopView {
             );
         }
 
-        col.child(self.settings_row(
-            "Transparency",
-            "Layered glass opacity solving gutter and card alphas together",
-            opacity_control,
-        ))
-        .child(self.settings_row(
-            "Background Blur",
-            "Request native Wayland ext-background-effect / KWin / Acrylic blur behind translucent glass",
-            Switch::new("sw-blur")
-                .checked(self.settings.blur)
-                .on_change(cx.listener(|this, _, window, cx| {
-                    this.toggle_blur(window, cx);
-                }))
-                .into_any_element(),
-        ))
-        .child(self.settings_row(
-            "Card outline",
-            "Crisp 1px translucent hairline separating floating cards over blurred gutters",
-            Switch::new("sw-outline")
-                .checked(self.settings.card_outline)
-                .on_change(cx.listener(|this, _, window, cx| {
-                    this.toggle_card_outline(window, cx);
-                }))
-                .into_any_element(),
-        ))
-        .child(self.settings_row(
-            "Corners",
-            "Panel, control, and artwork corner curvature across desktop cards",
-            corner_control,
-        ))
-        .child(self.settings_row(
-            "Compositor corners",
-            "Match compositor Wayland blur mask radius to active corner curvature",
-            Switch::new("sw-comp-corners")
-                .checked(self.settings.compositor_corners)
-                .on_change(cx.listener(|this, _, window, cx| {
-                    this.toggle_compositor_corners(window, cx);
-                }))
-                .into_any_element(),
-        ))
-        .child(self.settings_row(
-            "Scroll edge fades",
-            "Smoothly fade scrolling lists, playlists, and lyrics toward panel edges",
-            Switch::new("sw-scroll-fades")
-                .checked(self.settings.scroll_fades)
-                .on_change(cx.listener(|this, _, _, cx| {
-                    this.toggle_scroll_fades(cx);
-                }))
-                .into_any_element(),
-        ))
-        .child(self.settings_row(
-            "Adaptive artwork color",
-            "Tint collection headers and Now Playing backgrounds using cover pigment",
-            Switch::new("sw-adaptive-art")
-                .checked(self.settings.adaptive_art_color)
-                .on_change(cx.listener(|this, _, _, cx| {
-                    this.toggle_adaptive_art_color(cx);
-                }))
-                .into_any_element(),
-        ))
-        .into_any_element()
+        col.child(self.settings_row(s.transparency, s.transparency_desc, opacity_control))
+            .child(
+                self.settings_row(
+                    s.blur,
+                    s.blur_desc,
+                    Switch::new("sw-blur")
+                        .checked(self.settings.blur)
+                        .on_change(cx.listener(|this, _, window, cx| {
+                            this.toggle_blur(window, cx);
+                        }))
+                        .into_any_element(),
+                ),
+            )
+            .child(
+                self.settings_row(
+                    s.card_outline,
+                    s.card_outline_desc,
+                    Switch::new("sw-outline")
+                        .checked(self.settings.card_outline)
+                        .on_change(cx.listener(|this, _, window, cx| {
+                            this.toggle_card_outline(window, cx);
+                        }))
+                        .into_any_element(),
+                ),
+            )
+            .child(self.settings_row(s.corners, s.corners_desc, corner_control))
+            .child(
+                self.settings_row(
+                    "Compositor corners",
+                    "Match compositor Wayland blur mask radius to active corner curvature",
+                    Switch::new("sw-comp-corners")
+                        .checked(self.settings.compositor_corners)
+                        .on_change(cx.listener(|this, _, window, cx| {
+                            this.toggle_compositor_corners(window, cx);
+                        }))
+                        .into_any_element(),
+                ),
+            )
+            .child(
+                self.settings_row(
+                    s.edge_fades,
+                    s.edge_fades_desc,
+                    Switch::new("sw-scroll-fades")
+                        .checked(self.settings.scroll_fades)
+                        .on_change(cx.listener(|this, _, _, cx| {
+                            this.toggle_scroll_fades(cx);
+                        }))
+                        .into_any_element(),
+                ),
+            )
+            .child(
+                self.settings_row(
+                    s.adaptive_art_color,
+                    s.adaptive_art_color_desc,
+                    Switch::new("sw-adaptive-art")
+                        .checked(self.settings.adaptive_art_color)
+                        .on_change(cx.listener(|this, _, _, cx| {
+                            this.toggle_adaptive_art_color(cx);
+                        }))
+                        .into_any_element(),
+                ),
+            )
+            .into_any_element()
     }
 
     fn render_settings_playback(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let s = strings(self.settings.language);
         let cfg = &self.snapshot.config;
         div()
             .flex()
             .flex_col()
             .gap(px(10.0))
-            .child(self.settings_row(
-                "Hi-Fi Lossless Upgrades",
-                "Automatically upgrade tracks to lossless FLAC / high-bitrate audio when available",
-                Switch::new("sw-hifi")
-                    .checked(cfg.hifi_substitution)
-                    .on_change(cx.listener(|this, _, _, _| {
-                        this.backend.send(BackendCmd::ToggleHiFi);
-                    }))
-                    .into_any_element(),
-            ))
-            .child(self.settings_row(
-                "JioSaavn 320kbps Fallback",
-                "Enable optional 320kbps AAC resolution and search source",
-                Switch::new("sw-jio")
-                    .checked(cfg.jiosaavn_enabled)
-                    .on_change(cx.listener(|this, _, _, _| {
-                        this.backend.send(BackendCmd::ToggleJioSaavn);
-                    }))
-                    .into_any_element(),
-            ))
-            .child(self.settings_row(
-                "Animated Motion Covers",
-                "Stream looping cover animations in Now Playing when available",
-                Switch::new("sw-motion")
-                    .checked(cfg.motion_covers)
-                    .on_change(cx.listener(|this, _, _, _| {
-                        this.backend.send(BackendCmd::ToggleMotionCovers);
-                    }))
-                    .into_any_element(),
-            ))
-            .child(self.settings_row(
-                "Reduce Motion",
-                "Prefer static artwork and minimize continuous animations",
-                Switch::new("sw-reduce")
-                    .checked(cfg.reduce_motion)
-                    .on_change(cx.listener(|this, _, _, _| {
-                        this.backend.send(BackendCmd::ToggleReduceMotion);
-                    }))
-                    .into_any_element(),
-            ))
-            .child(self.settings_row(
-                "Double-click to play rows",
-                "Require a double-click on track rows instead of single-click playback",
-                Switch::new("sw-dblclick")
-                    .checked(self.settings.double_click_to_play)
-                    .on_change(cx.listener(|this, _, _, cx| {
-                        this.toggle_double_click_to_play(cx);
-                    }))
-                    .into_any_element(),
-            ))
+            .child(
+                self.settings_row(
+                    s.hifi_upgrade,
+                    s.hifi_upgrade_desc,
+                    Switch::new("sw-hifi")
+                        .checked(cfg.hifi_substitution)
+                        .on_change(cx.listener(|this, _, _, _| {
+                            this.backend.send(BackendCmd::ToggleHiFi);
+                        }))
+                        .into_any_element(),
+                ),
+            )
+            .child(
+                self.settings_row(
+                    s.jiosaavn_module,
+                    s.jiosaavn_module_desc,
+                    Switch::new("sw-jio")
+                        .checked(cfg.jiosaavn_enabled)
+                        .on_change(cx.listener(|this, _, _, _| {
+                            this.backend.send(BackendCmd::ToggleJioSaavn);
+                        }))
+                        .into_any_element(),
+                ),
+            )
+            .child(
+                self.settings_row(
+                    s.motion_covers,
+                    s.motion_covers_desc,
+                    Switch::new("sw-motion")
+                        .checked(cfg.motion_covers)
+                        .on_change(cx.listener(|this, _, _, _| {
+                            this.backend.send(BackendCmd::ToggleMotionCovers);
+                        }))
+                        .into_any_element(),
+                ),
+            )
+            .child(
+                self.settings_row(
+                    s.reduce_motion,
+                    s.reduce_motion_desc,
+                    Switch::new("sw-reduce")
+                        .checked(cfg.reduce_motion)
+                        .on_change(cx.listener(|this, _, _, _| {
+                            this.backend.send(BackendCmd::ToggleReduceMotion);
+                        }))
+                        .into_any_element(),
+                ),
+            )
+            .child(
+                self.settings_row(
+                    "Double-click to play rows",
+                    "Require a double-click on track rows instead of single-click playback",
+                    Switch::new("sw-dblclick")
+                        .checked(self.settings.double_click_to_play)
+                        .on_change(cx.listener(|this, _, _, cx| {
+                            this.toggle_double_click_to_play(cx);
+                        }))
+                        .into_any_element(),
+                ),
+            )
             .into_any_element()
     }
 

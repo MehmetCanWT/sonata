@@ -473,6 +473,7 @@ fun SonataSplitHeroHeader(
     onDownloadAll: (() -> Unit)? = null,
     isDownloading: Boolean = false,
     allDownloaded: Boolean = false,
+    onEditPlaylist: (() -> Unit)? = null,
     onMoreOptions: (() -> Unit)? = null,
     onOpenArtist: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
@@ -751,6 +752,26 @@ fun SonataSplitHeroHeader(
                                     modifier = Modifier.size(20.dp),
                                 )
                             }
+                        }
+                    }
+
+                    if (onEditPlaylist != null) {
+                        Box(
+                            modifier = Modifier
+                                .size(48.dp)
+                                .sonataThemeGlassButton(
+                                    shape = CircleShape,
+                                    fallbackColor = themeTokens.eclipseSurface,
+                                )
+                                .clickable(onClick = onEditPlaylist),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                imageVector = SonataIcons.Edit,
+                                contentDescription = "Edit playlist",
+                                tint = buttonContentTint,
+                                modifier = Modifier.size(19.dp),
+                            )
                         }
                     }
 

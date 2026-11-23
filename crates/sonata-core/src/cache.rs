@@ -9,10 +9,10 @@
 //! 5. **Maintenance**: runtime enable/disable (clearing records when disabled) and re-exports of the
 //!    on-disk media cache pruning helpers from the `media` submodule.
 
-use crate::config::AppConfig;
+use crate::paths::CorePaths;
 use crate::providers::{Playlist, Track};
 use rusqlite::{params, Connection};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -20,9 +20,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 mod media;
 
 pub use media::{
-    enforce_active_media_cache_limit_async, enforce_media_cache_limit,
-    prune_active_media_cache_async, prune_media_cache, start_media_cache_maintenance,
+    enforce_media_cache_limit_async, enforce_media_cache_limit_in, prune_media_cache_async,
+    prune_media_cache_in, start_media_cache_maintenance,
 };
+
+pub const DEFAULT_CACHE_LIMIT_GB: u8 = 1;
+pub const MAX_CACHE_LIMIT_GB: u8 = 10;
+pub const GIGABYTE: u64 = 1024 * 1024 * 1024;
+pub const DEFAULT_CACHE_LIMIT_BYTES: u64 = (DEFAULT_CACHE_LIMIT_GB as u64) * GIGABYTE;
 
 const CACHE_SCHEMA_VERSION: i64 = 3;
 const MAX_CACHE_DB_PAGES: i64 = 32_768;
@@ -42,24 +47,28 @@ pub struct TrackEnrichment {
     pub updated_at: i64,
 }
 
-/// SQLite metadata cache shared by the TUI and desktop clients.
+/// SQLite metadata cache shared by the TUI, desktop, and Android clients.
 #[derive(Clone)]
 pub struct CacheDb {
     conn: Arc<Mutex<Connection>>,
     enabled: Arc<AtomicBool>,
     write_ops: Arc<AtomicUsize>,
+    lyrics_cache_dir: PathBuf,
 }
 
 impl CacheDb {
-    pub fn open_default() -> Option<Self> {
-        let path = AppConfig::cache_dir().join("sonata_cache.db");
-        let cache = Self::open_at(&path)?;
-        let enabled = AppConfig::active_cache_limit_bytes() > 0;
+    /// Opens the SQLite metadata cache under explicit `CorePaths`.
+    pub fn open_with_paths(paths: &CorePaths, enabled: bool) -> Option<Self> {
+        let cache = Self::open_at(&paths.cache_db_path())?;
         cache.set_enabled(enabled);
         Some(cache)
     }
 
-    pub fn open_at(path: &PathBuf) -> Option<Self> {
+    pub fn open_at(path: &Path) -> Option<Self> {
+        let lyrics_cache_dir = path
+            .parent()
+            .map(|parent| parent.join("lyrics"))
+            .unwrap_or_else(|| PathBuf::from("lyrics"));
         if let Some(parent) = path.parent() {
             if let Err(error) = std::fs::create_dir_all(parent) {
                 tracing::warn!(
@@ -155,7 +164,7 @@ impl CacheDb {
                 "UPDATE track_enrichment SET synced_lyrics = NULL, plain_lyrics = NULL, lyrics_status = 'NONE'",
                 [],
             );
-            let _ = std::fs::remove_dir_all(AppConfig::lyrics_cache_dir());
+            let _ = std::fs::remove_dir_all(&lyrics_cache_dir);
         }
         let now = now_secs() as i64;
         if let Err(error) = conn.execute(
@@ -184,6 +193,7 @@ impl CacheDb {
             conn: Arc::new(Mutex::new(conn)),
             enabled: Arc::new(AtomicBool::new(true)),
             write_ops: Arc::new(AtomicUsize::new(0)),
+            lyrics_cache_dir,
         })
     }
 
@@ -239,7 +249,7 @@ impl CacheDb {
         ) {
             tracing::warn!("[sonata:cache] lyrics-clear failed error={error}");
         }
-        let _ = std::fs::remove_dir_all(AppConfig::lyrics_cache_dir());
+        let _ = std::fs::remove_dir_all(&self.lyrics_cache_dir);
     }
 
     pub fn invalidate_stream(&self, track_id: &str) {

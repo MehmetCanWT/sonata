@@ -5,10 +5,12 @@
 //! 3. **Cache & Account**: adjusts active media cache limits and refreshes browser session cookies and playlists.
 
 use super::{ActiveModal, App, AppEvent, FocusPane, SidebarEntry};
-use sonata_core::cache::enforce_active_media_cache_limit_async;
-use sonata_core::config::{AppConfig, ProviderMode};
+use sonata_core::cache::enforce_media_cache_limit_async;
 use sonata_core::providers::spotify::extract_playlist_id;
 use sonata_core::providers::{Playlist, ProviderSource, Track};
+use sonata_runtime::config::{AppConfig, ProviderMode};
+use sonata_runtime::player::SessionCommand;
+use std::sync::atomic::Ordering;
 
 impl App {
     pub fn cycle_provider_mode(&mut self, forward: bool) {
@@ -27,11 +29,20 @@ impl App {
         self.config.cache_limit_gb =
             AppConfig::step_cache_limit_gb(self.config.cache_limit_gb, forward);
         let _ = self.config.save();
+        let limit_bytes = self.config.cache_limit_bytes();
+        self.cache_limit_bytes.store(limit_bytes, Ordering::Relaxed);
+        self.resolver
+            .update_profile(|profile| profile.cache_limit_bytes = limit_bytes);
         if let Some(cache) = &self.cache_db {
             cache.set_enabled(self.config.cache_limit_gb > 0);
         }
+        self.enqueue_session_cmd(SessionCommand::UpdatePolicy {
+            policy: self.session_policy(),
+            trigger_upgrade: false,
+        });
+        let paths = self.paths.clone();
         tokio::spawn(async move {
-            enforce_active_media_cache_limit_async().await;
+            enforce_media_cache_limit_async(paths, limit_bytes).await;
         });
         self.status_line = if self.config.cache_limit_gb == 0 {
             "Cache disabled; media cleanup started".to_string()

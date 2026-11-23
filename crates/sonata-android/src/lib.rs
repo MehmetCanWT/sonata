@@ -1,24 +1,30 @@
-//! UniFFI Android bridge exposing `sonata-core` to Kotlin and Jetpack Compose.
+//! Cancellable async UniFFI Android bridge exposing `sonata-core` to Kotlin and Jetpack Compose.
 //!
-//! 1. **Engine Lifecycle**: `SonataAndroidEngine` owns a multi-threaded Tokio runtime, HTTP client,
-//!    SQLite `CacheDb`, `YtMusicClient`, and `StreamResolver`, initialized with Android's private directories
-//!    and any persisted YouTube Music WebView session cookies.
-//! 2. **FFI Models**: `AndroidTrack`, `AndroidPlaylist`, `AndroidAccountProfile`, `AndroidHomeShelf`,
-//!    `AndroidHomeCard`, `AndroidLyricLine`, and `AndroidResolvedStream` mirror `sonata-core` types.
-//! 3. **Auth & Async Operations**: `set_ytm_cookie_header`, `sign_out`, `fetch_home_feed`, `fetch_library_playlists`,
-//!    `search_songs`, `resolve_stream`, `resolve_hifi_upgrade`, `fetch_lyrics`, and disk-persisted startup
-//!    cache readers (`get_cached_account_profile`, `get_cached_library_playlists`). Home shelves are always
-//!    fetched live and never persisted to disk.
+//! 1. **Engine Lifecycle**: `SonataAndroidEngine` owns the shared HTTP client, `CorePaths`,
+//!    SQLite `CacheDb`, `YtMusicClient`, and `StreamResolver`, initialized with Android's private
+//!    directories and any persisted YouTube Music WebView session cookies. Async methods execute on
+//!    UniFFI's Tokio runtime (`#[uniffi::export(async_runtime = "tokio")]`) with native Kotlin
+//!    coroutine cancellation and no private blocking executor.
+//! 2. **FFI Models & Errors**: `AndroidTrack`, `AndroidPlaylist`, `AndroidAccountProfile`,
+//!    `AndroidHomeShelf`, `AndroidHomeCard`, `AndroidLyricLine`, `AndroidResolvedStream`, and typed
+//!    redacted `SonataAndroidError` variants mirror `sonata-core` contracts.
+//! 3. **Async Operations & Blocking Hygiene**: Network, resolver, session, and disk/SQLite cache
+//!    operations are exposed as `async fn` (with blocking I/O offloaded to `tokio::task::spawn_blocking`),
+//!    while tiny memory-only state checks (`is_signed_in`, `set_js_cipher_solver`) remain synchronous.
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sonata_core::auth::ExtractedCookies;
-use sonata_core::cache::CacheDb;
-use sonata_core::config::AppConfig;
+use sonata_core::cache::{CacheDb, DEFAULT_CACHE_LIMIT_BYTES};
+use sonata_core::error::CoreError;
 use sonata_core::lyrics::{lrclib, LyricsState};
+use sonata_core::motion::{MotionMedia, MotionMediaKind};
+use sonata_core::paths::CorePaths;
 use sonata_core::providers::hifi::{
-    JsCipherBridge, ResolvedStream, SolvedCipherPair, StreamResolver,
+    FastStartMode, JsCipherBridge, ResolvedStream, ResolverProfile, SolvedCipherPair,
+    StreamFallbackMode, StreamResolver, UpgradeDelivery,
 };
+use sonata_core::providers::jiosaavn::{self, ResolvedJioSaavnStream};
 use sonata_core::providers::ytmusic::{
     ArtistPage, HomeCard, HomeCardKind, HomeShelf, YtAccountProfile, YtMusicClient,
 };
@@ -29,15 +35,10 @@ use std::io::Write as _;
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
-use tokio::runtime::{Builder, Runtime};
 
 const CACHE_PROFILE_FILE: &str = "android_profile.json";
 const CACHE_HOME_FILE: &str = "android_home.json";
 const CACHE_PLAYLISTS_FILE: &str = "android_playlists.json";
-
-fn save_cached_json<T: Serialize>(file_name: &str, value: &T) {
-    save_cached_json_in(&AppConfig::cache_dir(), file_name, value);
-}
 
 fn save_cached_json_in<T: Serialize>(dir: &Path, file_name: &str, value: &T) {
     if fs::create_dir_all(dir).is_err() {
@@ -68,18 +69,10 @@ fn save_cached_json_in<T: Serialize>(dir: &Path, file_name: &str, value: &T) {
     }
 }
 
-fn load_cached_json<T: DeserializeOwned>(file_name: &str) -> Option<T> {
-    load_cached_json_from(&AppConfig::cache_dir(), file_name)
-}
-
 fn load_cached_json_from<T: DeserializeOwned>(dir: &Path, file_name: &str) -> Option<T> {
     let path = dir.join(file_name);
     let data = fs::read(path).ok()?;
     serde_json::from_slice(&data).ok()
-}
-
-fn remove_cached_json(file_name: &str) {
-    remove_cached_json_from(&AppConfig::cache_dir(), file_name);
 }
 
 fn remove_cached_json_from(dir: &Path, file_name: &str) {
@@ -93,12 +86,130 @@ uniffi::setup_scaffolding!();
 pub enum SonataAndroidError {
     #[error("{reason}")]
     Engine { reason: String },
+
+    #[error("{reason}")]
+    AuthRequired { reason: String },
+
+    #[error("{reason}")]
+    RateLimited {
+        retry_after_secs: Option<u64>,
+        reason: String,
+    },
+
+    #[error("{reason}")]
+    Offline { reason: String },
+
+    #[error("{reason}")]
+    Timeout { reason: String },
+
+    #[error("{reason}")]
+    Cancelled { reason: String },
+
+    #[error("{reason}")]
+    NotFound { reason: String },
+
+    #[error("{reason}")]
+    InvalidResponse { provider: String, reason: String },
+
+    #[error("{reason}")]
+    Cache { reason: String },
+
+    #[error("{reason}")]
+    Io { reason: String },
+
+    #[error("{reason}")]
+    Internal { reason: String },
+}
+
+impl From<CoreError> for SonataAndroidError {
+    fn from(err: CoreError) -> Self {
+        match err {
+            CoreError::AuthRequired { detail } => Self::AuthRequired { reason: detail },
+            CoreError::RateLimited {
+                retry_after,
+                detail,
+            } => Self::RateLimited {
+                retry_after_secs: retry_after.map(|d| d.as_secs()),
+                reason: detail,
+            },
+            CoreError::Offline { detail } => Self::Offline { reason: detail },
+            CoreError::Timeout { detail } => Self::Timeout { reason: detail },
+            CoreError::Cancelled { detail } => Self::Cancelled { reason: detail },
+            CoreError::NotFound { detail } => Self::NotFound { reason: detail },
+            CoreError::InvalidResponse { provider, detail } => Self::InvalidResponse {
+                provider,
+                reason: detail,
+            },
+            CoreError::ExternalTool { detail, .. } | CoreError::Internal { detail } => {
+                Self::Internal { reason: detail }
+            }
+            CoreError::Cache { detail } => Self::Cache { reason: detail },
+            CoreError::Io { detail } => Self::Io { reason: detail },
+        }
+    }
 }
 
 impl From<anyhow::Error> for SonataAndroidError {
     fn from(err: anyhow::Error) -> Self {
-        Self::Engine {
-            reason: err.to_string(),
+        Self::from(CoreError::classify_anyhow(&err))
+    }
+}
+
+fn android_core_paths(config_dir: &str, cache_dir: &str) -> CorePaths {
+    CorePaths::for_app_roots(config_dir, cache_dir)
+}
+
+fn android_resolver_profile() -> ResolverProfile {
+    ResolverProfile {
+        fast_start: FastStartMode::DirectUrl,
+        upgrade_delivery: UpgradeDelivery::ReturnRemoteStream,
+        fallback: StreamFallbackMode::InnerTubeOnly,
+        bootstrap_timeout: std::time::Duration::from_millis(8500),
+        jiosaavn_enabled: false,
+        cache_limit_bytes: DEFAULT_CACHE_LIMIT_BYTES,
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct AndroidJioSaavnStream {
+    pub url: String,
+    pub bitrate_kbps: u32,
+    pub badge: String,
+    pub title: String,
+    pub artist: String,
+    pub duration_secs: u64,
+}
+
+impl From<ResolvedJioSaavnStream> for AndroidJioSaavnStream {
+    fn from(s: ResolvedJioSaavnStream) -> Self {
+        Self {
+            url: s.url,
+            bitrate_kbps: s.bitrate_kbps,
+            badge: s.badge,
+            title: s.title,
+            artist: s.artist,
+            duration_secs: s.duration_secs,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct AndroidMotionMedia {
+    pub url: String,
+    pub fallback_url: Option<String>,
+    pub portrait_url: Option<String>,
+    pub is_hls: bool,
+    pub source: String,
+}
+
+impl From<MotionMedia> for AndroidMotionMedia {
+    fn from(media: MotionMedia) -> Self {
+        Self {
+            url: media.url,
+            fallback_url: media.fallback_url,
+            portrait_url: media.portrait_url,
+            is_hls: media.kind == MotionMediaKind::Hls,
+            source: media.source.label().to_string(),
         }
     }
 }
@@ -501,8 +612,8 @@ struct AuthSession {
 
 #[derive(uniffi::Object)]
 pub struct SonataAndroidEngine {
-    rt: Arc<Runtime>,
     http: reqwest::Client,
+    paths: CorePaths,
     cache_db: Option<CacheDb>,
     cipher_bridge: RwLock<Option<Arc<dyn JsCipherBridge>>>,
     session: RwLock<AuthSession>,
@@ -510,21 +621,37 @@ pub struct SonataAndroidEngine {
 
 impl SonataAndroidEngine {
     fn current_ytm(&self) -> YtMusicClient {
-        self.session.read().expect("session lock").ytm.clone()
+        self.session
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .ytm
+            .clone()
     }
 
     fn current_resolver(&self) -> StreamResolver {
-        self.session.read().expect("session lock").resolver.clone()
+        self.session
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .resolver
+            .clone()
     }
 
     fn build_session(
         http: &reqwest::Client,
+        paths: &CorePaths,
         cache_db: Option<CacheDb>,
         cookies: ExtractedCookies,
         cipher_bridge: Option<Arc<dyn JsCipherBridge>>,
     ) -> AuthSession {
         let ytm = YtMusicClient::new(http.clone(), cookies.clone());
-        let resolver = StreamResolver::new(http.clone(), ytm.clone(), cookies.clone(), cache_db);
+        let resolver = StreamResolver::with_profile(
+            http.clone(),
+            ytm.clone(),
+            cookies.clone(),
+            cache_db,
+            paths.clone(),
+            android_resolver_profile(),
+        );
         if let Some(bridge) = cipher_bridge {
             resolver.set_js_cipher_bridge(bridge);
         }
@@ -536,20 +663,12 @@ impl SonataAndroidEngine {
     }
 }
 
-#[uniffi::export]
+#[uniffi::export(async_runtime = "tokio")]
 impl SonataAndroidEngine {
     /// Creates a new Sonata Android engine rooted at the app's private `filesDir` and `cacheDir`.
     #[uniffi::constructor]
     pub fn new(config_dir: String, cache_dir: String) -> Result<Self, SonataAndroidError> {
-        AppConfig::set_android_dirs(PathBuf::from(config_dir), PathBuf::from(cache_dir));
-        let rt = Builder::new_multi_thread()
-            .enable_all()
-            .worker_threads(4)
-            .build()
-            .map_err(|e| SonataAndroidError::Engine {
-                reason: format!("Failed to start Tokio runtime: {e}"),
-            })?;
-
+        let paths = android_core_paths(&config_dir, &cache_dir);
         let http = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(6))
             .timeout(std::time::Duration::from_secs(20))
@@ -557,20 +676,20 @@ impl SonataAndroidEngine {
             .pool_max_idle_per_host(8)
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36")
             .build()
-            .map_err(|e| SonataAndroidError::Engine {
+            .map_err(|e| SonataAndroidError::Internal {
                 reason: format!("Failed to initialize HTTP client: {e}"),
             })?;
 
         // Home shelves are always fetched live; purge any legacy home cache file from prior builds.
-        remove_cached_json(CACHE_HOME_FILE);
+        remove_cached_json_from(&paths.cache_dir, CACHE_HOME_FILE);
 
-        let cache_db = CacheDb::open_default();
-        let cookies = ExtractedCookies::load_saved_ytm_header().unwrap_or_default();
-        let session = Self::build_session(&http, cache_db.clone(), cookies, None);
+        let cache_db = CacheDb::open_with_paths(&paths, true);
+        let cookies = ExtractedCookies::load_saved_ytm_header(&paths).unwrap_or_default();
+        let session = Self::build_session(&http, &paths, cache_db.clone(), cookies, None);
 
         Ok(Self {
-            rt: Arc::new(rt),
             http,
+            paths,
             cache_db,
             cipher_bridge: RwLock::new(None),
             session: RwLock::new(session),
@@ -583,256 +702,310 @@ impl SonataAndroidEngine {
             solver,
             loaded_hash: std::sync::Mutex::new(None),
         });
-        if let Ok(mut guard) = self.cipher_bridge.write() {
+        {
+            let mut guard = self
+                .cipher_bridge
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             *guard = Some(Arc::clone(&bridge));
         }
         self.current_resolver().set_js_cipher_bridge(bridge);
     }
 
     /// Pre-fetches, hooks, caches, and loads YouTube's `base.js` into the registered Android cipher solver.
-    pub fn warm_cipher_solver(&self) -> bool {
+    pub async fn warm_cipher_solver(&self) -> bool {
         let resolver = self.current_resolver();
-        self.rt
-            .block_on(async move { resolver.ensure_prepared_player_js().await })
-            .is_some()
+        resolver.ensure_prepared_player_js().await.is_some()
     }
 
     /// Returns whether valid YouTube Music session cookies are loaded.
     pub fn is_signed_in(&self) -> bool {
         self.session
             .read()
-            .expect("session lock")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .cookies
             .has_ytm_auth()
     }
 
-    /// Reads the cached YouTube Music account profile from disk for instant startup display.
-    pub fn get_cached_account_profile(&self) -> Option<AndroidAccountProfile> {
+    /// Reads the cached YouTube Music account profile from disk off the calling thread.
+    pub async fn get_cached_account_profile(&self) -> Option<AndroidAccountProfile> {
         if !self.is_signed_in() {
             return None;
         }
-        load_cached_json(CACHE_PROFILE_FILE)
+        let cache_dir = self.paths.cache_dir.clone();
+        tokio::task::spawn_blocking(move || load_cached_json_from(&cache_dir, CACHE_PROFILE_FILE))
+            .await
+            .ok()
+            .flatten()
     }
 
-    /// Reads the cached library playlists from disk for instant startup display.
-    pub fn get_cached_library_playlists(&self) -> Vec<AndroidPlaylist> {
+    /// Reads the cached library playlists from disk off the calling thread.
+    pub async fn get_cached_library_playlists(&self) -> Vec<AndroidPlaylist> {
         if !self.is_signed_in() {
             return Vec::new();
         }
-        load_cached_json(CACHE_PLAYLISTS_FILE).unwrap_or_default()
+        let cache_dir = self.paths.cache_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            load_cached_json_from(&cache_dir, CACHE_PLAYLISTS_FILE).unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default()
     }
 
     /// Installs YouTube Music WebView cookies, persists them privately, and returns the account profile.
-    pub fn set_ytm_cookie_header(
+    pub async fn set_ytm_cookie_header(
         &self,
         cookie_header: String,
     ) -> Result<Option<AndroidAccountProfile>, SonataAndroidError> {
         let cookies = ExtractedCookies::from_ytm_cookie_header(&cookie_header);
         if !cookies.has_ytm_auth() {
-            return Err(SonataAndroidError::Engine {
+            return Err(SonataAndroidError::AuthRequired {
                 reason: "Signed-in YouTube Music cookies (SAPISID) were not found".to_string(),
             });
         }
-        let _ = cookies.save_ytm_header();
-        if let Some(ref db) = self.cache_db {
-            db.clear_stream_cache();
-        }
-        let bridge = self.cipher_bridge.read().ok().and_then(|g| g.clone());
-        let next_session = Self::build_session(&self.http, self.cache_db.clone(), cookies, bridge);
+        let paths_for_save = self.paths.clone();
+        let cookies_for_save = cookies.clone();
+        let cache_db_for_clear = self.cache_db.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            let _ = cookies_for_save.save_ytm_header(&paths_for_save);
+            if let Some(ref db) = cache_db_for_clear {
+                db.clear_stream_cache();
+            }
+        })
+        .await;
+
+        let bridge = self
+            .cipher_bridge
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let next_session = Self::build_session(
+            &self.http,
+            &self.paths,
+            self.cache_db.clone(),
+            cookies,
+            bridge,
+        );
         let ytm = next_session.ytm.clone();
-        *self.session.write().expect("session lock") = next_session;
-        let profile = self
-            .rt
-            .block_on(async move { ytm.fetch_account_profile().await })
+        {
+            let mut guard = self
+                .session
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *guard = next_session;
+        }
+
+        let profile = ytm
+            .fetch_account_profile()
+            .await
             .ok()
             .map(AndroidAccountProfile::from);
         if let Some(ref prof) = profile {
-            save_cached_json(CACHE_PROFILE_FILE, prof);
+            let cache_dir = self.paths.cache_dir.clone();
+            let prof_clone = prof.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                save_cached_json_in(&cache_dir, CACHE_PROFILE_FILE, &prof_clone);
+            })
+            .await;
         }
         Ok(profile)
     }
 
     /// Fetches the signed-in YouTube Music account profile, if authenticated.
-    pub fn get_account_profile(&self) -> Option<AndroidAccountProfile> {
+    pub async fn get_account_profile(&self) -> Option<AndroidAccountProfile> {
         if !self.is_signed_in() {
             return None;
         }
         let ytm = self.current_ytm();
-        let profile = self
-            .rt
-            .block_on(async move { ytm.fetch_account_profile().await })
+        let profile = ytm
+            .fetch_account_profile()
+            .await
             .ok()
             .map(AndroidAccountProfile::from);
         if let Some(ref prof) = profile {
-            save_cached_json(CACHE_PROFILE_FILE, prof);
+            let cache_dir = self.paths.cache_dir.clone();
+            let prof_clone = prof.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                save_cached_json_in(&cache_dir, CACHE_PROFILE_FILE, &prof_clone);
+            })
+            .await;
         }
         profile
     }
 
     /// Clears saved YouTube Music session cookies and resets to anonymous discovery.
-    pub fn sign_out(&self) {
-        ExtractedCookies::clear_saved_ytm_header();
-        remove_cached_json(CACHE_PROFILE_FILE);
-        remove_cached_json(CACHE_HOME_FILE);
-        remove_cached_json(CACHE_PLAYLISTS_FILE);
-        if let Some(ref db) = self.cache_db {
-            db.clear_stream_cache();
-        }
-        let bridge = self.cipher_bridge.read().ok().and_then(|g| g.clone());
+    pub async fn sign_out(&self) {
+        let paths = self.paths.clone();
+        let cache_db = self.cache_db.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            ExtractedCookies::clear_saved_ytm_header(&paths);
+            remove_cached_json_from(&paths.cache_dir, CACHE_PROFILE_FILE);
+            remove_cached_json_from(&paths.cache_dir, CACHE_HOME_FILE);
+            remove_cached_json_from(&paths.cache_dir, CACHE_PLAYLISTS_FILE);
+            if let Some(ref db) = cache_db {
+                db.clear_stream_cache();
+            }
+        })
+        .await;
+
+        let bridge = self
+            .cipher_bridge
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
         let next_session = Self::build_session(
             &self.http,
+            &self.paths,
             self.cache_db.clone(),
             ExtractedCookies::default(),
             bridge,
         );
-        *self.session.write().expect("session lock") = next_session;
+        {
+            let mut guard = self
+                .session
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *guard = next_session;
+        }
     }
 
     /// Fetches the signed-in user's YouTube Music library playlists.
-    pub fn fetch_library_playlists(&self) -> Result<Vec<AndroidPlaylist>, SonataAndroidError> {
+    pub async fn fetch_library_playlists(
+        &self,
+    ) -> Result<Vec<AndroidPlaylist>, SonataAndroidError> {
         let ytm = self.current_ytm();
-        let playlists = self
-            .rt
-            .block_on(async move { ytm.fetch_library_playlists().await })?;
+        let playlists = ytm.fetch_library_playlists().await?;
         let out: Vec<AndroidPlaylist> = playlists.into_iter().map(AndroidPlaylist::from).collect();
-        save_cached_json(CACHE_PLAYLISTS_FILE, &out);
+        let cache_dir = self.paths.cache_dir.clone();
+        let to_save = out.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            save_cached_json_in(&cache_dir, CACHE_PLAYLISTS_FILE, &to_save);
+        })
+        .await;
         Ok(out)
     }
 
     /// Fetches fresh YouTube Music home/discovery shelves live without persisting to disk.
-    pub fn fetch_home_feed(&self) -> Result<Vec<AndroidHomeShelf>, SonataAndroidError> {
+    pub async fn fetch_home_feed(&self) -> Result<Vec<AndroidHomeShelf>, SonataAndroidError> {
         let ytm = self.current_ytm();
-        let shelves = self
-            .rt
-            .block_on(async move { ytm.fetch_home_feed().await })?;
+        let shelves = ytm.fetch_home_feed().await?;
         Ok(shelves.into_iter().map(AndroidHomeShelf::from).collect())
     }
 
     /// Searches YouTube Music songs for the given query.
-    pub fn search_songs(&self, query: String) -> Result<Vec<AndroidTrack>, SonataAndroidError> {
+    pub async fn search_songs(
+        &self,
+        query: String,
+    ) -> Result<Vec<AndroidTrack>, SonataAndroidError> {
         let ytm = self.current_ytm();
-        let tracks = self
-            .rt
-            .block_on(async move { ytm.search_songs(&query).await })?;
+        let tracks = ytm.search_songs(&query).await?;
         Ok(tracks.into_iter().map(AndroidTrack::from).collect())
     }
 
     /// Fetches all tracks for a YouTube Music playlist, album, or mix browse ID.
-    pub fn fetch_collection_tracks(
+    pub async fn fetch_collection_tracks(
         &self,
         browse_id: String,
     ) -> Result<Vec<AndroidTrack>, SonataAndroidError> {
         let ytm = self.current_ytm();
-        let tracks = self.rt.block_on(async move {
-            let mut out = Vec::new();
-            ytm.fetch_playlist_tracks_progressive(&browse_id, |batch, _| {
-                out.extend(batch);
-            })
-            .await?;
-            Ok::<_, anyhow::Error>(out)
-        })?;
+        let mut tracks = Vec::new();
+        ytm.fetch_playlist_tracks_progressive(&browse_id, |batch, _| {
+            tracks.extend(batch);
+        })
+        .await?;
         Ok(tracks.into_iter().map(AndroidTrack::from).collect())
     }
 
     /// Fetches a full YouTube Music artist page (hero, subscribers, top tracks, releases, similar artists).
-    pub fn fetch_artist_page(
+    pub async fn fetch_artist_page(
         &self,
         browse_id: String,
     ) -> Result<AndroidArtistPage, SonataAndroidError> {
         let ytm = self.current_ytm();
-        let page = self
-            .rt
-            .block_on(async move { ytm.fetch_artist_page(&browse_id).await })?;
+        let page = ytm.fetch_artist_page(&browse_id).await?;
         Ok(AndroidArtistPage::from(page))
     }
 
     /// Resolves an artist name (e.g. `"The Weeknd"` or `"The Weeknd, Daft Punk"`) to its `UC...` browse ID.
-    pub fn resolve_artist_browse_id(
+    pub async fn resolve_artist_browse_id(
         &self,
         name: String,
     ) -> Result<Option<String>, SonataAndroidError> {
         let ytm = self.current_ytm();
-        let id = self
-            .rt
-            .block_on(async move { ytm.resolve_artist_browse_id(&name).await })?;
+        let id = ytm.resolve_artist_browse_id(&name).await?;
         Ok(id)
     }
 
     /// Resolves an artist name to its `UC...` browse ID and fetches its full `AndroidArtistPage`.
-    pub fn fetch_artist_by_name(
+    pub async fn fetch_artist_by_name(
         &self,
         name: String,
     ) -> Result<AndroidArtistPage, SonataAndroidError> {
         let ytm = self.current_ytm();
-        let page = self
-            .rt
-            .block_on(async move { ytm.fetch_artist_by_name(&name).await })?;
+        let page = ytm.fetch_artist_by_name(&name).await?;
         Ok(AndroidArtistPage::from(page))
     }
 
     /// Resolves an album title + artist name to its `MPRE...` / `OLAK...` browse ID.
-    pub fn resolve_album_browse_id(
+    pub async fn resolve_album_browse_id(
         &self,
         album_name: String,
         artist_name: String,
     ) -> Result<Option<String>, SonataAndroidError> {
         let ytm = self.current_ytm();
-        let id = self.rt.block_on(async move {
-            ytm.resolve_album_browse_id(&album_name, &artist_name).await
-        })?;
+        let id = ytm
+            .resolve_album_browse_id(&album_name, &artist_name)
+            .await?;
         Ok(id)
     }
 
     /// Fetches personalized YouTube Music radio & mix shelves (excluding manual user playlists).
-    pub fn fetch_radio_mixes(&self) -> Result<Vec<AndroidHomeShelf>, SonataAndroidError> {
+    pub async fn fetch_radio_mixes(&self) -> Result<Vec<AndroidHomeShelf>, SonataAndroidError> {
         let ytm = self.current_ytm();
-        let shelves = self
-            .rt
-            .block_on(async move { ytm.fetch_radio_mixes().await })?;
+        let shelves = ytm.fetch_radio_mixes().await?;
         Ok(shelves.into_iter().map(AndroidHomeShelf::from).collect())
     }
 
     /// Fetches the signed-in user's reverse-chronological YTM listening history (`FEmusic_history`).
-    pub fn fetch_listening_history(&self) -> Result<Vec<AndroidTrack>, SonataAndroidError> {
+    pub async fn fetch_listening_history(&self) -> Result<Vec<AndroidTrack>, SonataAndroidError> {
         let ytm = self.current_ytm();
-        let tracks = self
-            .rt
-            .block_on(async move { ytm.fetch_listening_history().await })?;
+        let tracks = ytm.fetch_listening_history().await?;
         Ok(tracks.into_iter().map(AndroidTrack::from).collect())
     }
 
     /// Finds an explicit counterpart track when `track` is unbadged or clean/edited.
-    pub fn resolve_explicit_counterpart(&self, track: AndroidTrack) -> Option<AndroidTrack> {
+    pub async fn resolve_explicit_counterpart(&self, track: AndroidTrack) -> Option<AndroidTrack> {
         let ytm = self.current_ytm();
         let core_track: Track = track.into();
-        self.rt
-            .block_on(async move { ytm.resolve_explicit_counterpart(&core_track).await })
+        ytm.resolve_explicit_counterpart(&core_track)
+            .await
             .map(AndroidTrack::from)
     }
 
     /// Fetches personalized radio / up-next tracks seeded by `video_id` (`RDAMVM<video_id>`).
-    pub fn fetch_radio_queue(
+    pub async fn fetch_radio_queue(
         &self,
         video_id: String,
     ) -> Result<Vec<AndroidTrack>, SonataAndroidError> {
         let ytm = self.current_ytm();
-        let tracks = self
-            .rt
-            .block_on(async move { ytm.fetch_radio_queue(&video_id).await })?;
+        let tracks = ytm.fetch_radio_queue(&video_id).await?;
         Ok(tracks.into_iter().map(AndroidTrack::from).collect())
     }
 
     /// Persists like/unlike status for a YouTube Music track.
-    pub fn set_like_status(&self, video_id: String, liked: bool) -> Result<(), SonataAndroidError> {
+    pub async fn set_like_status(
+        &self,
+        video_id: String,
+        liked: bool,
+    ) -> Result<(), SonataAndroidError> {
         let ytm = self.current_ytm();
-        self.rt
-            .block_on(async move { ytm.set_like_status(&video_id, liked).await })?;
+        ytm.set_like_status(&video_id, liked).await?;
         Ok(())
     }
 
     /// Reports single-track playback and watchtime telemetry for `video_id`
     /// so YouTube Music updates Listening History (`FEmusic_history`) without attaching playlist IDs.
-    pub fn report_playback(
+    pub async fn report_playback(
         &self,
         video_id: String,
         playlist_id: Option<String>,
@@ -840,66 +1013,91 @@ impl SonataAndroidEngine {
     ) -> Result<(), SonataAndroidError> {
         let _ = playlist_id;
         let ytm = self.current_ytm();
-        self.rt
-            .block_on(async move { ytm.report_playback(&video_id, None, duration_secs).await })?;
+        ytm.report_playback(&video_id, None, duration_secs).await?;
         Ok(())
     }
 
     /// Appends one or more tracks to a YouTube Music playlist (strips `VL` prefix when needed).
-    pub fn add_tracks_to_playlist(
+    pub async fn add_tracks_to_playlist(
         &self,
         playlist_id: String,
         video_ids: Vec<String>,
     ) -> Result<(), SonataAndroidError> {
         let ytm = self.current_ytm();
-        self.rt
-            .block_on(async move { ytm.add_tracks_to_playlist(&playlist_id, &video_ids).await })?;
+        ytm.add_tracks_to_playlist(&playlist_id, &video_ids).await?;
         Ok(())
     }
 
     /// Creates a new private YouTube Music playlist and optionally seeds it with `video_ids`.
-    pub fn create_playlist(
+    pub async fn create_playlist(
         &self,
         title: String,
         description: String,
         video_ids: Vec<String>,
     ) -> Result<String, SonataAndroidError> {
         let ytm = self.current_ytm();
-        let pid = self.rt.block_on(async move {
-            ytm.create_playlist_with_tracks(&title, &description, &video_ids)
-                .await
-        })?;
+        let pid = ytm
+            .create_playlist_with_tracks(&title, &description, &video_ids)
+            .await?;
         Ok(pid)
     }
 
+    /// Updates a user-owned YouTube Music playlist's title, description, and/or privacy status.
+    pub async fn edit_playlist_metadata(
+        &self,
+        playlist_id: String,
+        title: Option<String>,
+        description: Option<String>,
+        privacy: Option<String>,
+    ) -> Result<(), SonataAndroidError> {
+        let ytm = self.current_ytm();
+        ytm.edit_playlist_metadata(
+            &playlist_id,
+            title.as_deref(),
+            description.as_deref(),
+            privacy.as_deref(),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Uploads a custom cover image (`JPEG`/`PNG`/`WebP` bytes) to YouTube Music and binds it to the playlist.
+    pub async fn upload_playlist_cover(
+        &self,
+        playlist_id: String,
+        image_bytes: Vec<u8>,
+        mime_type: String,
+    ) -> Result<(), SonataAndroidError> {
+        let ytm = self.current_ytm();
+        ytm.upload_playlist_cover(&playlist_id, &image_bytes, &mime_type)
+            .await?;
+        Ok(())
+    }
+
     /// Resolves a fast-start audio stream URL and HTTP headers for Media3 `ExoPlayer`.
-    pub fn resolve_stream(
+    pub async fn resolve_stream(
         &self,
         track: AndroidTrack,
     ) -> Result<AndroidResolvedStream, SonataAndroidError> {
         let resolver = self.current_resolver();
         let core_track: Track = track.into();
-        let stream = self
-            .rt
-            .block_on(async move { resolver.resolve_fast(&core_track).await })?;
+        let stream = resolver.resolve_fast_typed(&core_track).await?;
         Ok(stream.into())
     }
 
     /// Invalidates stale cached streams and re-resolves a fresh recovery stream after mid-track error.
-    pub fn resolve_recovery(
+    pub async fn resolve_recovery(
         &self,
         track: AndroidTrack,
     ) -> Result<AndroidResolvedStream, SonataAndroidError> {
         let resolver = self.current_resolver();
         let core_track: Track = track.into();
-        let stream = self
-            .rt
-            .block_on(async move { resolver.resolve_recovery(&core_track).await })?;
+        let stream = resolver.resolve_recovery_typed(&core_track).await?;
         Ok(stream.into())
     }
 
     /// Attempts a background Hi-Fi stream upgrade and local cache download for an active track.
-    pub fn resolve_hifi_upgrade(
+    pub async fn resolve_hifi_upgrade(
         &self,
         track: AndroidTrack,
         current: AndroidResolvedStream,
@@ -915,24 +1113,28 @@ impl SonataAndroidEngine {
                 .map(|h| (h.name, h.value))
                 .collect(),
         };
-        self.rt
-            .block_on(async move {
-                resolver
-                    .resolve_hifi_upgrade(&core_track, &core_stream, true)
-                    .await
-            })
+        resolver
+            .resolve_hifi_upgrade(&core_track, &core_stream, true)
+            .await
             .map(AndroidResolvedStream::from)
     }
 
     /// Fetches synced or plain lyrics lines for the active track.
-    pub fn fetch_lyrics(&self, track: AndroidTrack) -> Vec<AndroidLyricLine> {
+    pub async fn fetch_lyrics(&self, track: AndroidTrack) -> Vec<AndroidLyricLine> {
         let http = self.http.clone();
         let ytm = self.current_ytm();
         let cache = self.cache_db.clone();
+        let paths = self.paths.clone();
         let core_track: Track = track.into();
-        let state = self.rt.block_on(async move {
-            lrclib::fetch_lyrics(&http, &ytm, &core_track, cache.as_ref()).await
-        });
+        let state = lrclib::fetch_lyrics(
+            &http,
+            &ytm,
+            &core_track,
+            cache.as_ref(),
+            &paths,
+            DEFAULT_CACHE_LIMIT_BYTES,
+        )
+        .await;
         match state {
             LyricsState::Synced(lines) => lines
                 .into_iter()
@@ -965,49 +1167,132 @@ impl SonataAndroidEngine {
     }
 
     /// Clears persisted lyrics from SQLite enrichment and on-disk `.lrc`/`.txt` cache files.
-    pub fn clear_lyrics_cache(&self) {
-        if let Some(ref db) = self.cache_db {
-            db.clear_lyrics_cache();
-        } else {
-            let _ = std::fs::remove_dir_all(AppConfig::lyrics_cache_dir());
-        }
+    pub async fn clear_lyrics_cache(&self) {
+        let cache_db = self.cache_db.clone();
+        let lyrics_dir = self.paths.lyrics_cache_dir();
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Some(ref db) = cache_db {
+                db.clear_lyrics_cache();
+            } else {
+                let _ = std::fs::remove_dir_all(lyrics_dir);
+            }
+        })
+        .await;
     }
 
     /// Checks GitHub Releases for a newer Sonata Android APK release.
-    pub fn check_for_updates(&self) -> Result<AndroidUpdateInfo, SonataAndroidError> {
+    pub async fn check_for_updates(&self) -> Result<AndroidUpdateInfo, SonataAndroidError> {
         let http = self.http.clone();
-        let res = self.rt.block_on(async move {
-            sonata_core::updater::check_for_updates_for(
-                &http,
-                sonata_core::updater::UpdateTarget::Android,
-                sonata_core::updater::CURRENT_VERSION,
-            )
-            .await
-        })?;
+        let res = sonata_core::updater::check_for_updates_for(
+            &http,
+            sonata_core::updater::UpdateTarget::Android,
+            sonata_core::updater::CURRENT_VERSION,
+        )
+        .await?;
         Ok(res.into())
     }
 
     /// Checks GitHub Releases for a newer Sonata Android APK release against an explicit installed versionName.
-    pub fn check_for_updates_for_version(
+    pub async fn check_for_updates_for_version(
         &self,
         current_version: String,
     ) -> Result<AndroidUpdateInfo, SonataAndroidError> {
         let http = self.http.clone();
-        let res = self.rt.block_on(async move {
-            sonata_core::updater::check_for_updates_for(
-                &http,
-                sonata_core::updater::UpdateTarget::Android,
-                &current_version,
-            )
-            .await
-        })?;
+        let res = sonata_core::updater::check_for_updates_for(
+            &http,
+            sonata_core::updater::UpdateTarget::Android,
+            &current_version,
+        )
+        .await?;
         Ok(res.into())
+    }
+
+    /// Searches JioSaavn catalog using the shared Rust provider parser and YTM attribution.
+    pub async fn search_jiosaavn(
+        &self,
+        query: String,
+        limit: u32,
+    ) -> Result<Vec<AndroidTrack>, SonataAndroidError> {
+        let http = self.http.clone();
+        let tracks = jiosaavn::search_tracks_typed(&http, &query, limit as usize).await?;
+        Ok(tracks.into_iter().map(AndroidTrack::from).collect())
+    }
+
+    /// Resolves a direct `jiosaavn:<id>` track stream via shared Rust DES-ECB decryption.
+    pub async fn resolve_jiosaavn_by_id(
+        &self,
+        raw_id: String,
+    ) -> Result<Option<AndroidJioSaavnStream>, SonataAndroidError> {
+        let http = self.http.clone();
+        let resolved = jiosaavn::resolve_by_id_typed(&http, &raw_id).await?;
+        Ok(resolved.map(AndroidJioSaavnStream::from))
+    }
+
+    /// Searches JioSaavn for a strict metadata match whose verified bitrate beats `current_bitrate_kbps`.
+    pub async fn find_jiosaavn_upgrade(
+        &self,
+        track: AndroidTrack,
+        current_bitrate_kbps: u32,
+    ) -> Result<Option<AndroidJioSaavnStream>, SonataAndroidError> {
+        let http = self.http.clone();
+        let core_track = Track::from(track);
+        let resolved =
+            jiosaavn::find_higher_quality_stream_typed(&http, &core_track, current_bitrate_kbps)
+                .await?;
+        Ok(resolved.map(AndroidJioSaavnStream::from))
+    }
+
+    /// Discovers platform-neutral animated album artwork across Apple Music, Tidal, and Community Canvas.
+    pub async fn resolve_motion_media(
+        &self,
+        track: AndroidTrack,
+        storefront: Option<String>,
+        country_code: Option<String>,
+    ) -> Result<Option<AndroidMotionMedia>, SonataAndroidError> {
+        let http = self.http.clone();
+        let core_track = Track::from(track);
+        let found = sonata_core::motion::resolve_motion_media(
+            &http,
+            &core_track,
+            storefront.as_deref(),
+            country_code.as_deref(),
+        )
+        .await;
+        Ok(found.map(AndroidMotionMedia::from))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn converts_jiosaavn_stream_and_motion_media_records() {
+        let js = AndroidJioSaavnStream::from(ResolvedJioSaavnStream {
+            url: "https://aac.saavncdn.com/123/song_320.mp4".to_string(),
+            bitrate_kbps: 320,
+            badge: "AAC 320kbps · JioSaavn".to_string(),
+            title: "Starboy".to_string(),
+            artist: "The Weeknd".to_string(),
+            duration_secs: 230,
+        });
+        assert_eq!(js.bitrate_kbps, 320);
+        assert_eq!(js.badge, "AAC 320kbps · JioSaavn");
+
+        let motion = AndroidMotionMedia::from(MotionMedia {
+            url: "https://mvod.itunes.apple.com/square.m3u8".to_string(),
+            fallback_url: Some("https://mvod.itunes.apple.com/tall.m3u8".to_string()),
+            portrait_url: Some("https://mvod.itunes.apple.com/tall.m3u8".to_string()),
+            kind: MotionMediaKind::Hls,
+            source: sonata_core::motion::MotionMediaSource::AppleMusic,
+        });
+        assert!(motion.is_hls);
+        assert_eq!(motion.source, "Apple Music");
+        assert_eq!(
+            motion.portrait_url.as_deref(),
+            Some("https://mvod.itunes.apple.com/tall.m3u8")
+        );
+    }
 
     #[test]
     fn disk_cache_roundtrip_permissions_and_removal() {
@@ -1349,8 +1634,8 @@ mod tests {
         assert!(adapter.solve("hash_b", "s1", "n1").is_none());
     }
 
-    #[test]
-    fn engine_lifecycle_auth_validation_and_sign_out() {
+    #[tokio::test]
+    async fn engine_lifecycle_auth_validation_and_sign_out() {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
@@ -1372,14 +1657,15 @@ mod tests {
         )
         .expect("engine should initialize cleanly");
 
-        // Verify legacy home cache removal on init (respecting resolved AppConfig cache dir).
-        assert!(!AppConfig::cache_dir().join(CACHE_HOME_FILE).exists());
+        // Verify legacy home cache removal on init using the engine's isolated cache dir.
+        assert!(!engine.paths.cache_dir.join(CACHE_HOME_FILE).exists());
         assert!(!engine.is_signed_in());
-        assert!(engine.get_cached_account_profile().is_none());
-        assert!(engine.get_cached_library_playlists().is_empty());
+        assert!(engine.get_cached_account_profile().await.is_none());
+        assert!(engine.get_cached_library_playlists().await.is_empty());
 
-        // Seed profile and playlists cache files directly into AppConfig::cache_dir() and confirm sign_out purges them.
-        save_cached_json(
+        // Seed profile and playlists cache files directly into engine.paths.cache_dir and confirm sign_out purges them.
+        save_cached_json_in(
+            &engine.paths.cache_dir,
             CACHE_PROFILE_FILE,
             &AndroidAccountProfile {
                 name: "Cached".to_string(),
@@ -1388,7 +1674,8 @@ mod tests {
                 avatar_url: None,
             },
         );
-        save_cached_json(
+        save_cached_json_in(
+            &engine.paths.cache_dir,
             CACHE_PLAYLISTS_FILE,
             &vec![AndroidPlaylist {
                 id: "PL1".to_string(),
@@ -1396,17 +1683,70 @@ mod tests {
                 thumbnail_url: None,
             }],
         );
-        assert!(AppConfig::cache_dir().join(CACHE_PROFILE_FILE).exists());
-        assert!(AppConfig::cache_dir().join(CACHE_PLAYLISTS_FILE).exists());
+        assert!(engine.paths.cache_dir.join(CACHE_PROFILE_FILE).exists());
+        assert!(engine.paths.cache_dir.join(CACHE_PLAYLISTS_FILE).exists());
 
-        let missing_auth = engine.set_ytm_cookie_header("VISITOR_INFO1_LIVE=abc".to_string());
-        assert!(missing_auth.is_err());
+        let missing_auth = engine
+            .set_ytm_cookie_header("VISITOR_INFO1_LIVE=abc".to_string())
+            .await;
+        assert!(matches!(
+            missing_auth,
+            Err(SonataAndroidError::AuthRequired { .. })
+        ));
 
-        engine.sign_out();
+        engine.sign_out().await;
         assert!(!engine.is_signed_in());
-        assert!(!AppConfig::cache_dir().join(CACHE_PROFILE_FILE).exists());
-        assert!(!AppConfig::cache_dir().join(CACHE_PLAYLISTS_FILE).exists());
+        assert!(!engine.paths.cache_dir.join(CACHE_PROFILE_FILE).exists());
+        assert!(!engine.paths.cache_dir.join(CACHE_PLAYLISTS_FILE).exists());
 
         let _ = fs::remove_dir_all(&base_dir);
+    }
+
+    #[test]
+    fn maps_core_errors_into_typed_redacted_android_errors_and_builds_android_profile() {
+        let dirty =
+            "Cookie: SAPISID=secret-sapi; https://rr1.googlevideo.com/videoplayback?sig=secret-sig";
+        let rate_err = SonataAndroidError::from(CoreError::rate_limited(
+            Some(std::time::Duration::from_secs(45)),
+            dirty,
+        ));
+        assert!(matches!(
+            rate_err,
+            SonataAndroidError::RateLimited {
+                retry_after_secs: Some(45),
+                ..
+            }
+        ));
+        let rate_msg = rate_err.to_string();
+        assert!(!rate_msg.contains("secret-sapi"));
+        assert!(!rate_msg.contains("secret-sig"));
+
+        let auth_err = SonataAndroidError::from(CoreError::auth_required("HTTP 401"));
+        assert!(matches!(auth_err, SonataAndroidError::AuthRequired { .. }));
+        assert_eq!(auth_err.to_string(), "HTTP 401");
+
+        let offline_err = SonataAndroidError::from(CoreError::offline("dns failure"));
+        assert!(matches!(offline_err, SonataAndroidError::Offline { .. }));
+
+        let timeout_err = SonataAndroidError::from(CoreError::timeout("request timeout"));
+        assert!(matches!(timeout_err, SonataAndroidError::Timeout { .. }));
+
+        let cancel_err = SonataAndroidError::from(CoreError::cancelled("aborted"));
+        assert!(matches!(cancel_err, SonataAndroidError::Cancelled { .. }));
+
+        let not_found_err = SonataAndroidError::from(CoreError::not_found("missing track"));
+        assert!(matches!(not_found_err, SonataAndroidError::NotFound { .. }));
+
+        let profile = android_resolver_profile();
+        assert_eq!(profile.fast_start, FastStartMode::DirectUrl);
+        assert_eq!(
+            profile.upgrade_delivery,
+            UpgradeDelivery::ReturnRemoteStream
+        );
+        assert_eq!(
+            profile.bootstrap_timeout,
+            std::time::Duration::from_millis(8500)
+        );
+        assert!(!profile.jiosaavn_enabled);
     }
 }

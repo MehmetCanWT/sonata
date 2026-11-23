@@ -19,6 +19,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 }
 
 fn render_search_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let s = sonata_runtime::i18n::strings(app.config.language);
     let is_search = app.focus == FocusPane::SearchInput;
     let border_color = if is_search {
         app.theme.accent
@@ -26,9 +27,38 @@ fn render_search_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
         app.theme.border
     };
 
+    let inner_width = area.width.saturating_sub(4);
     let text = if app.search_query.is_empty() && !is_search {
-        "Press / to search YouTube Music & Spotify, or i to import Spotify playlist URL..."
-            .to_string()
+        match app.config.language {
+            sonata_runtime::i18n::AppLanguage::Tr => {
+                if inner_width >= 78 {
+                    "YouTube Music & Spotify'da aramak için / veya Spotify listesi için i bas..."
+                } else if inner_width >= 42 {
+                    "Aramak için / · liste aktarmak için i"
+                } else {
+                    "Aramak için / bas..."
+                }
+            }
+            sonata_runtime::i18n::AppLanguage::Ru => {
+                if inner_width >= 78 {
+                    "Нажмите / для поиска в YouTube Music & Spotify или i для импорта Spotify..."
+                } else if inner_width >= 42 {
+                    "Нажмите / для поиска · i для импорта"
+                } else {
+                    "Нажмите / для поиска..."
+                }
+            }
+            sonata_runtime::i18n::AppLanguage::En => {
+                if inner_width >= 78 {
+                    "Press / to search YouTube Music & Spotify, or i to import Spotify playlist URL..."
+                } else if inner_width >= 42 {
+                    "Press / to search · i to import playlist"
+                } else {
+                    "Press / to search..."
+                }
+            }
+        }
+        .to_string()
     } else if is_search {
         format!("{}▏", app.search_query)
     } else {
@@ -54,7 +84,7 @@ fn render_search_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .style(style)
         .block(
             Block::default()
-                .title(" Search ")
+                .title(format!(" {} ", s.search))
                 .title_style(title_style)
                 .title_alignment(Alignment::Center)
                 .borders(Borders::ALL)
@@ -67,6 +97,11 @@ fn render_search_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn render_tracks_table(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
+    let (h_title, h_artist, h_time) = match app.config.language {
+        sonata_runtime::i18n::AppLanguage::Tr => ("Başlık", "Sanatçı", "Süre"),
+        sonata_runtime::i18n::AppLanguage::Ru => ("Название", "Исполнитель", "Время"),
+        sonata_runtime::i18n::AppLanguage::En => ("Title", "Artist", "Time"),
+    };
     let is_focused = app.focus == FocusPane::Tracks;
     let border_color = if is_focused {
         app.theme.accent
@@ -78,9 +113,9 @@ fn render_tracks_table(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 
     let header = Row::new([
         Cell::from(Line::from("#").centered()),
-        Cell::from("Title"),
-        Cell::from("Artist"),
-        Cell::from(Line::from("Time").centered()),
+        Cell::from(h_title),
+        Cell::from(h_artist),
+        Cell::from(Line::from(h_time).centered()),
         Cell::from(Line::from("Src").centered()),
     ])
     .style(

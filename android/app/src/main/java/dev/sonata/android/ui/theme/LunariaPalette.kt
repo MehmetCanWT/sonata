@@ -62,7 +62,7 @@ object LunariaColors {
  */
 @Immutable
 data class LunariaThemeTokens(
-    val designTheme: DesignTheme = DesignTheme.VIOLET,
+    val designTheme: DesignTheme = DesignTheme.BASIC,
     val isDark: Boolean,
     val isAmoled: Boolean,
     val moonGlow: Color,
@@ -86,27 +86,15 @@ data class LunariaThemeTokens(
         colors = listOf(eclipseSurface, eclipseBase),
     ),
     val glassTint: Color = if (isDark) {
-        Color(0xFF1A152B).copy(alpha = 0.46f)
+        Color(0xFF121212).copy(alpha = 0.40f)
     } else {
-        Color(0xFFFBF8FF).copy(alpha = 0.66f)
+        Color(0xFFFAFAFA).copy(alpha = 0.40f)
     },
-    val glassRimTopLeft: Color = Color.White.copy(alpha = if (isDark) 0.40f else 0.92f),
-    val glassRimBottomRight: Color = if (isDark) {
-        Color.White.copy(alpha = 0.14f)
-    } else {
-        petalLavender.copy(alpha = 0.34f)
-    },
-    val glassShadowColor: Color = if (isDark) {
-        Color.Black.copy(alpha = 0.45f)
-    } else {
-        petalLavender.copy(alpha = 0.24f)
-    },
-    val pillIndicatorColor: Color = if (isDark) {
-        Color.White.copy(alpha = 0.16f)
-    } else {
-        petalLavender.copy(alpha = 0.18f)
-    },
-    val pillIndicatorRimColor: Color = Color.White.copy(alpha = if (isDark) 0.28f else 0.85f),
+    val glassRimTopLeft: Color = Color.White.copy(alpha = if (isDark) 0.22f else 0.72f),
+    val glassRimBottomRight: Color = Color.White.copy(alpha = if (isDark) 0.08f else 0.24f),
+    val glassShadowColor: Color = Color.Black.copy(alpha = if (isDark) 0.40f else 0.14f),
+    val pillIndicatorColor: Color = Color.White.copy(alpha = if (isDark) 0.14f else 0.50f),
+    val pillIndicatorRimColor: Color = Color.White.copy(alpha = if (isDark) 0.20f else 0.65f),
     val heroCardScrimColor: Color = Color(0xFF4B356B),
     val cardCornerRadius: Dp = 20.dp,
     val miniPlayerHeight: Dp = 54.dp,
@@ -119,13 +107,14 @@ data class LunariaThemeTokens(
 ) {
     val isViolet: Boolean get() = designTheme == DesignTheme.VIOLET
     val isMoonflower: Boolean get() = designTheme == DesignTheme.MOONFLOWER
+    val isBasic: Boolean get() = designTheme == DesignTheme.BASIC
     val cardShape: Shape get() = RoundedCornerShape(cardCornerRadius)
 }
 
 /** CompositionLocal supplying the active [LunariaThemeTokens]. */
-val LocalLunariaColors = staticCompositionLocalOf { VioletDarkTokens }
+val LocalLunariaColors = staticCompositionLocalOf { BasicDarkTokens }
 
-/** Draws the active theme's atmospheric canvas backdrop (Violet Layer-Blur orbs vs Moonflower silk petals). */
+/** Draws the active theme's atmospheric canvas backdrop (Violet orbs, Moonflower silk petals, or clean solid Basic). */
 fun DrawScope.drawThemeAtmosphericBackdrop(
     designTheme: DesignTheme,
     isDark: Boolean,
@@ -135,6 +124,7 @@ fun DrawScope.drawThemeAtmosphericBackdrop(
     when (designTheme) {
         DesignTheme.VIOLET -> drawVioletAtmosphericBackdrop(isDark = isDark, accent = accent, mist = mist)
         DesignTheme.MOONFLOWER -> drawMoonflowerAtmosphericBackdrop(isDark = isDark, accent = accent, mist = mist)
+        DesignTheme.BASIC -> Unit
     }
 }
 
@@ -142,7 +132,7 @@ fun DrawScope.drawThemeAtmosphericBackdrop(
 fun lunariaColorScheme(
     darkTheme: Boolean,
     amoled: Boolean = false,
-    designTheme: DesignTheme = DesignTheme.MOONFLOWER,
+    designTheme: DesignTheme = DesignTheme.BASIC,
 ): ColorScheme = when (designTheme) {
     DesignTheme.VIOLET -> when {
         amoled -> VioletAmoledColorScheme
@@ -154,13 +144,14 @@ fun lunariaColorScheme(
         darkTheme -> MoonflowerDarkColorScheme
         else -> MoonflowerLightColorScheme
     }
+    DesignTheme.BASIC -> if (darkTheme || amoled) BasicDarkColorScheme else BasicLightColorScheme
 }
 
 /** Returns the [LunariaThemeTokens] for the requested theme mode. */
 fun lunariaTokens(
     darkTheme: Boolean,
     amoled: Boolean = false,
-    designTheme: DesignTheme = DesignTheme.MOONFLOWER,
+    designTheme: DesignTheme = DesignTheme.BASIC,
 ): LunariaThemeTokens = when (designTheme) {
     DesignTheme.VIOLET -> when {
         amoled -> VioletAmoledTokens
@@ -172,6 +163,7 @@ fun lunariaTokens(
         darkTheme -> MoonflowerDarkTokens
         else -> MoonflowerLightTokens
     }
+    DesignTheme.BASIC -> if (darkTheme || amoled) BasicDarkTokens else BasicLightTokens
 }
 
 // =============================================================================

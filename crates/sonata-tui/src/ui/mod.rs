@@ -81,7 +81,9 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
 
     let active_lyric_idx = match &app.lyrics {
         LyricsState::Synced(lines) if !lines.is_empty() => {
-            sonata_core::lyrics::active_line_index(lines, app.interpolated_position())
+            let pos = app.interpolated_position();
+            sonata_core::lyrics::active_line_index(lines, pos + 0.15)
+                .or_else(|| sonata_core::lyrics::active_line_index(lines, pos))
         }
         _ => None,
     };
@@ -548,8 +550,10 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         .as_ref()
         .is_some_and(|info| info.update_available);
     let right_footer = if !app.status_line.trim().is_empty() {
+        let max_chars = bot_cols[2].width.saturating_sub(1) as usize;
+        let status = truncate_footer_text(app.status_line.trim(), max_chars);
         Line::from(Span::styled(
-            format!("{} ", app.status_line),
+            format!("{status} "),
             Style::default().fg(app.theme.fg),
         ))
     } else if bot_cols[2].width >= 36 {
@@ -594,6 +598,22 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         Paragraph::new(right_footer).alignment(Alignment::Right),
         bot_cols[2],
     );
+}
+
+fn truncate_footer_text(text: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let count = text.chars().count();
+    if count <= max_chars {
+        return text.to_string();
+    }
+    if max_chars == 1 {
+        return "…".to_string();
+    }
+    let mut out: String = text.chars().take(max_chars - 1).collect();
+    out.push('…');
+    out
 }
 
 fn slider_line(

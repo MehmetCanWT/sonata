@@ -15,6 +15,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         app.theme.border
     };
 
+    let s = sonata_runtime::i18n::strings(app.config.language);
     let items: Vec<ListItem> = app
         .sidebar_items
         .iter()
@@ -28,8 +29,10 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                 },
             };
             let label: Cow<'_, str> = match entry {
-                SidebarEntry::Search => Cow::Borrowed("Search"),
-                SidebarEntry::Queue => Cow::Owned(format!("Queue ({})", app.playback.queue.len())),
+                SidebarEntry::Search => Cow::Borrowed(s.search),
+                SidebarEntry::Queue => {
+                    Cow::Owned(format!("{} ({})", s.queue, app.playback.queue.len()))
+                }
                 SidebarEntry::Playlist(p) => Cow::Borrowed(p.name.as_str()),
             };
             ListItem::new(Line::from(vec![
@@ -47,7 +50,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         })
         .add_modifier(Modifier::BOLD);
     let block = Block::default()
-        .title(" Library ")
+        .title(format!(" {} ", s.library))
         .title_style(title_style)
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)

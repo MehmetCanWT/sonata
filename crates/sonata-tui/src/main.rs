@@ -10,6 +10,7 @@
 
 mod app;
 mod input;
+mod theme;
 mod theme_tui;
 mod ui;
 
@@ -23,8 +24,8 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use ratatui_image::picker::{Picker, ProtocolType};
-use sonata_core::config::AppConfig;
-use sonata_core::player::MpvController;
+use sonata_runtime::config::AppConfig;
+use sonata_runtime::player::{MpvController, NoopAudioDriver, PlaybackAudioDriver};
 use std::io;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -112,7 +113,7 @@ async fn main() -> Result<()> {
     }
 
     let redirect_error = redirect_tui_diagnostics().err();
-    let _telemetry_guard = sonata_core::telemetry::init("tui");
+    let _telemetry_guard = sonata_runtime::telemetry::init("tui");
     if let Some(error) = redirect_error {
         tracing::warn!(%error, "TUI diagnostic redirection failed");
     }
@@ -141,21 +142,19 @@ async fn main() -> Result<()> {
     terminal.clear()?;
 
     let (app_tx, mut app_rx) = mpsc::unbounded_channel::<AppEvent>();
-    let (mpv_tx, mut mpv_rx) = mpsc::channel(64);
+    let (mpv_tx, mpv_rx) = mpsc::channel(64);
 
-    let mut app = App::new(config.clone(), picker, app_tx.clone());
+    let (driver, mpv_warning): (Arc<dyn PlaybackAudioDriver>, Option<String>) =
+        match MpvController::spawn(config.volume, mpv_tx).await {
+            Ok(ctrl) => (Arc::new(ctrl), None),
+            Err(e) => (Arc::new(NoopAudioDriver), Some(format!("Warning: {e}"))),
+        };
 
-    match MpvController::spawn(config.volume, mpv_tx).await {
-        Ok(ctrl) => app.mpv = Some(Arc::new(ctrl)),
-        Err(e) => app.status_line = format!("Warning: {e}"),
+    let (mut app, mut session_rx) =
+        App::new(config.clone(), picker, app_tx.clone(), driver, mpv_rx);
+    if let Some(warning) = mpv_warning {
+        app.status_line = warning;
     }
-
-    let fwd_tx = app_tx.clone();
-    tokio::spawn(async move {
-        while let Some(ev) = mpv_rx.recv().await {
-            let _ = fwd_tx.send(AppEvent::Mpv(ev));
-        }
-    });
 
     app.start_background_init();
 
@@ -168,7 +167,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    let mut fast_tick = tokio::time::interval(std::time::Duration::from_millis(33));
+    let mut fast_tick = tokio::time::interval(std::time::Duration::from_millis(16));
     fast_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut calm_tick = tokio::time::interval(std::time::Duration::from_millis(250));
     calm_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -195,18 +194,28 @@ async fn main() -> Result<()> {
         let playing = !app.playback.paused
             && !app.playback.loading_track
             && app.playback.current_track().is_some();
-        let needs_fast_tick = app.fx.is_running() || (playing && !app.anim_art_frames.is_empty());
+        let has_synced_lyrics = matches!(
+            app.lyrics,
+            sonata_core::lyrics::LyricsState::Synced(ref lines) if !lines.is_empty()
+        );
+        let needs_fast_tick = app.fx.is_running()
+            || app.is_lyrics_scrolling()
+            || (playing && !app.anim_art_frames.is_empty())
+            || (playing && has_synced_lyrics);
 
         tokio::select! {
             _ = term_sig => {
                 app.should_quit = true;
             }
             _ = fast_tick.tick(), if needs_fast_tick => {
+                let prev_sec = app.playback.position_secs.floor() as i64;
                 let playback_dirty = if playing { app.tick_playback() } else { false };
-                if playback_dirty || app.fx.is_running() {
+                if playback_dirty || app.fx.is_running() || app.is_lyrics_scrolling() {
                     terminal.draw(|f| ui::render(f, &mut app))?;
                     app.sync_kitty_artwork();
-                    app.export_now_playing();
+                    if (app.playback.position_secs.floor() as i64) != prev_sec {
+                        app.export_now_playing();
+                    }
                 }
             }
             _ = calm_tick.tick(), if playing && !needs_fast_tick => {
@@ -231,6 +240,17 @@ async fn main() -> Result<()> {
                     }
                     _ => continue,
                 }
+                app.flush_session_commands().await;
+                terminal.draw(|f| ui::render(f, &mut app))?;
+                app.sync_kitty_artwork();
+                app.export_now_playing();
+            }
+            Some(sev) = session_rx.recv() => {
+                app.handle_session_event(sev);
+                while let Ok(more) = session_rx.try_recv() {
+                    app.handle_session_event(more);
+                }
+                app.flush_session_commands().await;
                 terminal.draw(|f| ui::render(f, &mut app))?;
                 app.sync_kitty_artwork();
                 app.export_now_playing();
@@ -241,6 +261,7 @@ async fn main() -> Result<()> {
                 while let Ok(more) = app_rx.try_recv() {
                     app.handle_app_event(more);
                 }
+                app.flush_session_commands().await;
                 terminal.draw(|f| ui::render(f, &mut app))?;
                 app.sync_kitty_artwork();
                 app.export_now_playing();
@@ -254,9 +275,6 @@ async fn main() -> Result<()> {
     app.restore_hyprland_opacity();
     let _ = app.config.save();
     app.shutdown_playback_tasks().await;
-    if let Some(mpv) = app.mpv.take() {
-        mpv.shutdown().await;
-    }
 
     disable_raw_mode()?;
     execute!(

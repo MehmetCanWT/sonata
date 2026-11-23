@@ -1,26 +1,26 @@
-//! Shared core engine for Sonata, consumed by the TUI and desktop front-ends. It owns everything that
-//! is not presentation: provider clients, stream resolution, playback state, caching, lyrics, and diagnostics.
+//! Portable shared core engine for Sonata, consumed by Linux desktop/TUI clients and Android.
+//! It owns protocol and domain logic without OS-specific subprocesses, XDG directory probing,
+//! image decoding, or UI dependencies.
 //!
-//! 1. **Auth & Providers** (`auth`, `providers`): browser cookie extraction plus the YouTube Music, Spotify,
-//!    and Hi-Fi stream-resolution clients behind shared `Track`/`Playlist` models.
-//! 2. **Playback** (`player`): queue/shuffle/repeat state, a command coordinator, and the mpv IPC controller.
-//! 3. **Persistence** (`cache`, `config`): SQLite metadata cache, on-disk media cache, and TOML configuration.
-//! 4. **Content & Appearance** (`lyrics`, `media`, `theme`): synced lyrics, artwork handling, and theme loading.
-//! 5. **Platform & Diagnostics** (`hyprland`, `telemetry`, `updater`, internal `redaction`):
-//!    compositor integration, persistent logging, release update checks, and scrubbing of credentials
-//!    from log output.
+//! 1. **Auth & Providers** (`auth`, `providers`): portable cookie/SAPISIDHASH handling plus
+//!    YouTube Music, Spotify, JioSaavn, and InnerTube stream resolution behind shared models.
+//! 2. **Playback State** (`player`): queue/shuffle/repeat state, command coordinator, and
+//!    monotonically increasing playback generation tokens.
+//! 3. **Persistence & Paths** (`cache`, `paths`): SQLite metadata cache, bounded LRU media cache,
+//!    and explicit caller-injected directory roots.
+//! 4. **Content & Media Discovery** (`lyrics`, `media`, `motion`): multi-source synced lyrics,
+//!    artwork URL resolution/upscaling, and animated cover manifest discovery.
+//! 5. **Errors, Updates & Redaction** (`error`, `updater`, `redaction`): typed core error model,
+//!    release update checks, and scrubbing of secrets from logs and diagnostics.
 
 pub mod auth;
 pub mod cache;
-pub mod config;
-pub mod hyprland;
+pub mod error;
 pub mod lyrics;
 pub mod media;
 pub mod motion;
+pub mod paths;
 pub mod player;
 pub mod providers;
-pub mod telemetry;
-pub mod theme;
+pub mod redaction;
 pub mod updater;
-
-pub(crate) mod redaction;

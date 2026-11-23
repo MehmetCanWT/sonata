@@ -24,8 +24,8 @@ use gpui_kit::{
     point, px, size, AnyWindowHandle, App, AppContext, AssetSource, Bounds, QuitMode, SharedString,
     TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowDecorations, WindowOptions,
 };
-use sonata_core::config::AppConfig;
-use sonata_core::hyprland;
+use sonata_runtime::config::AppConfig;
+use sonata_runtime::hyprland;
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -320,7 +320,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let launch = parse_launch_opts(&args);
-    let _telemetry_guard = sonata_core::telemetry::init("desktop");
+    let _telemetry_guard = sonata_runtime::telemetry::init("desktop");
 
     let (win_tx, mut win_rx) = mpsc::unbounded_channel::<UiWindowCmd>();
     let backend = spawn_backend(win_tx.clone())?;

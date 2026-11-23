@@ -19,10 +19,13 @@ libc.workspace = true
 ratatui.workspace = true
 ratatui-image.workspace = true
 reqwest.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 sonata-core = { path = "../sonata-core" }
+sonata-runtime = { path = "../sonata-runtime" }
 tachyonfx.workspace = true
 tokio.workspace = true
+toml.workspace = true
 tracing.workspace = true
 
 [lints]

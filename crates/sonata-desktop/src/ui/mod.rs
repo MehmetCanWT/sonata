@@ -4,4 +4,5 @@
 //! 2. **Components (`components`)**: Floating cards, glass buttons, delayed (`150 ms`) `Skeleton` shimmers, hover `play_overlay`, `LoadingRing`, clickable multi-artist credits, `header_wash`, and true-alpha scroll edge fades.
 
 pub mod components;
+pub mod lyrics;
 pub mod media;

@@ -1,11 +1,19 @@
-use crate::config::AppConfig;
+//! Bounded LRU on-disk media cache pruning for audio, artwork, and lyrics files.
+//!
+//! 1. **Instance-Scoped Pruning**: `prune_media_cache_in` and `enforce_media_cache_limit_in`
+//!    operate exclusively on an injected `CorePaths` root with per-root sweep throttling.
+//! 2. **Async & Maintenance Helpers**: Offload blocking filesystem pruning via `spawn_blocking`
+//!    and drive periodic maintenance from an instance-owned atomic quota handle.
+
+use crate::paths::CorePaths;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 static PRUNE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-static LAST_SWEEP: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+static LAST_SWEEP: OnceLock<Mutex<HashMap<PathBuf, Instant>>> = OnceLock::new();
 const SWEEP_INTERVAL: Duration = Duration::from_secs(15);
 
 struct MediaCacheEntry {
@@ -14,37 +22,42 @@ struct MediaCacheEntry {
     last_used: SystemTime,
 }
 
-/// Keep shared artwork, audio, and lyric files under the configured byte budget.
-pub fn prune_media_cache(limit_bytes: u64) -> u64 {
-    prune_media_cache_inner(limit_bytes, false)
+/// Keep shared artwork, audio, and lyric files under the configured byte budget for `paths`.
+pub fn prune_media_cache_in(paths: &CorePaths, limit_bytes: u64) -> u64 {
+    prune_media_cache_inner(paths, limit_bytes, false)
 }
 
-/// Enforce a newly selected limit immediately, bypassing the normal sweep interval.
-pub fn enforce_media_cache_limit(limit_bytes: u64) -> u64 {
-    prune_media_cache_inner(limit_bytes, true)
+/// Enforce a newly selected limit immediately for `paths`, bypassing the normal sweep interval.
+pub fn enforce_media_cache_limit_in(paths: &CorePaths, limit_bytes: u64) -> u64 {
+    prune_media_cache_inner(paths, limit_bytes, true)
 }
 
-fn prune_media_cache_inner(limit_bytes: u64, force: bool) -> u64 {
+fn prune_media_cache_inner(paths: &CorePaths, limit_bytes: u64, force: bool) -> u64 {
     let lock = PRUNE_LOCK.get_or_init(|| Mutex::new(()));
     let Ok(_guard) = lock.lock() else {
         tracing::warn!("[sonata:cache] prune skipped reason=cache-lock-poisoned");
         return 0;
     };
-    let last_sweep = LAST_SWEEP.get_or_init(|| Mutex::new(None));
+    let last_sweep = LAST_SWEEP.get_or_init(|| Mutex::new(HashMap::new()));
     let Ok(mut last_sweep) = last_sweep.lock() else {
         tracing::warn!("[sonata:cache] prune skipped reason=sweep-clock-poisoned");
         return 0;
     };
-    if !force && limit_bytes > 0 && last_sweep.is_some_and(|last| last.elapsed() < SWEEP_INTERVAL) {
+    if !force
+        && limit_bytes > 0
+        && last_sweep
+            .get(&paths.cache_dir)
+            .is_some_and(|last| last.elapsed() < SWEEP_INTERVAL)
+    {
         return 0;
     }
-    *last_sweep = Some(Instant::now());
+    last_sweep.insert(paths.cache_dir.clone(), Instant::now());
 
     let mut grouped = HashMap::new();
     for (kind, directory) in [
-        ("audio", AppConfig::audio_cache_dir()),
-        ("art", AppConfig::art_cache_dir()),
-        ("lyrics", AppConfig::lyrics_cache_dir()),
+        ("audio", paths.audio_cache_dir()),
+        ("art", paths.art_cache_dir()),
+        ("lyrics", paths.lyrics_cache_dir()),
     ] {
         let Ok(entries) = std::fs::read_dir(&directory) else {
             continue;
@@ -145,27 +158,28 @@ fn prune_media_cache_inner(limit_bytes: u64, force: bool) -> u64 {
 }
 
 /// Run filesystem pruning away from UI and async executor threads.
-pub async fn prune_active_media_cache_async() -> u64 {
-    tokio::task::spawn_blocking(|| prune_media_cache(AppConfig::active_cache_limit_bytes()))
+pub async fn prune_media_cache_async(paths: CorePaths, limit_bytes: u64) -> u64 {
+    tokio::task::spawn_blocking(move || prune_media_cache_in(&paths, limit_bytes))
         .await
         .unwrap_or_default()
 }
 
 /// Apply the latest saved limit away from the async executor.
-pub async fn enforce_active_media_cache_limit_async() -> u64 {
-    tokio::task::spawn_blocking(|| enforce_media_cache_limit(AppConfig::active_cache_limit_bytes()))
+pub async fn enforce_media_cache_limit_async(paths: CorePaths, limit_bytes: u64) -> u64 {
+    tokio::task::spawn_blocking(move || enforce_media_cache_limit_in(&paths, limit_bytes))
         .await
         .unwrap_or_default()
 }
 
-/// Periodically reconcile shared media files with the active quota.
-pub fn start_media_cache_maintenance() {
-    tokio::spawn(async {
+/// Periodically reconcile shared media files with an instance-owned quota handle.
+pub fn start_media_cache_maintenance(paths: CorePaths, limit_bytes: Arc<AtomicU64>) {
+    tokio::spawn(async move {
         let mut sweep = tokio::time::interval(Duration::from_secs(60));
         sweep.tick().await;
         loop {
             sweep.tick().await;
-            enforce_active_media_cache_limit_async().await;
+            let limit = limit_bytes.load(Ordering::Relaxed);
+            enforce_media_cache_limit_async(paths.clone(), limit).await;
         }
     });
 }

@@ -5,6 +5,7 @@
 //! 3. **Strict Upgrade Matching**: Matches track title, artist overlap, and duration before upgrading non-lossless playback streams.
 
 use super::{ProviderSource, Track};
+use crate::error::CoreError;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
 use regex::Regex;
@@ -18,6 +19,7 @@ const API_BASE: &str = "https://www.jiosaavn.com/api.php";
 const DES_KEY: &[u8; 8] = b"38346591";
 const MIN_USABLE_KBPS: u32 = 160;
 const MAX_DURATION_DIFF_SECS: u64 = 6;
+const DEFAULT_HTTP_TIMEOUT: Duration = Duration::from_secs(6);
 
 pub const ID_PREFIX: &str = "jiosaavn:";
 
@@ -33,23 +35,40 @@ pub struct ResolvedJioSaavnStream {
 
 /// Searches JioSaavn for tracks matching `query` and returns `Track` models tagged with `jiosaavn:<id>`.
 pub async fn search_tracks(client: &Client, query: &str, limit: usize) -> Vec<Track> {
+    search_tracks_typed(client, query, limit)
+        .await
+        .unwrap_or_default()
+}
+
+/// Typed JioSaavn catalog search returning `CoreError` on timeout, network, or schema failures.
+pub async fn search_tracks_typed(
+    client: &Client,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<Track>, CoreError> {
     let trimmed = query.trim();
     if trimmed.is_empty() || limit == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let encoded = urlencoding::encode(trimmed);
     let url = format!(
         "{API_BASE}?__call=search.getResults&_format=json&_marker=0&api_version=4&ctx=android&q={encoded}&p=1&n={limit}"
     );
-    let Some(body) = http_get(client, &url).await else {
-        return Vec::new();
-    };
-    let Ok(root) = serde_json::from_str::<Value>(&body) else {
-        return Vec::new();
-    };
-    let Some(results) = root.get("results").and_then(Value::as_array) else {
-        return Vec::new();
-    };
+    let body = http_get_with_timeout(client, &url, DEFAULT_HTTP_TIMEOUT).await?;
+    parse_search_results_json(&body)
+}
+
+/// Pure JSON parser for JioSaavn `search.getResults` responses.
+pub fn parse_search_results_json(body: &str) -> Result<Vec<Track>, CoreError> {
+    let root: Value = serde_json::from_str(body).map_err(|err| {
+        CoreError::invalid_response("jiosaavn", format!("malformed search JSON: {err}"))
+    })?;
+    let results = root
+        .get("results")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            CoreError::invalid_response("jiosaavn", "search payload missing `results` array")
+        })?;
 
     let mut tracks = Vec::with_capacity(results.len());
     for item in results {
@@ -105,16 +124,24 @@ pub async fn search_tracks(client: &Client, query: &str, limit: usize) -> Vec<Tr
             is_explicit,
         });
     }
-    tracks
+    Ok(tracks)
 }
 
 /// Resolves a direct JioSaavn stream by track ID (with or without the `jiosaavn:` prefix).
 pub async fn resolve_by_id(client: &Client, raw_id: &str) -> Option<ResolvedJioSaavnStream> {
+    resolve_by_id_typed(client, raw_id).await.ok().flatten()
+}
+
+/// Typed direct JioSaavn stream resolution by track ID.
+pub async fn resolve_by_id_typed(
+    client: &Client,
+    raw_id: &str,
+) -> Result<Option<ResolvedJioSaavnStream>, CoreError> {
     let song_id = raw_id.strip_prefix(ID_PREFIX).unwrap_or(raw_id).trim();
     if song_id.is_empty() {
-        return None;
+        return Ok(None);
     }
-    fetch_song_details_stream(client, song_id).await
+    fetch_song_details_stream_typed(client, song_id).await
 }
 
 /// Searches JioSaavn for a matching recording and returns a stream ONLY when its verified
@@ -124,17 +151,29 @@ pub async fn find_higher_quality_stream(
     track: &Track,
     current_bitrate_kbps: u32,
 ) -> Option<ResolvedJioSaavnStream> {
+    find_higher_quality_stream_typed(client, track, current_bitrate_kbps)
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Typed counterpart to [`find_higher_quality_stream`].
+pub async fn find_higher_quality_stream_typed(
+    client: &Client,
+    track: &Track,
+    current_bitrate_kbps: u32,
+) -> Result<Option<ResolvedJioSaavnStream>, CoreError> {
     if current_bitrate_kbps >= 320 {
-        return None;
+        return Ok(None);
     }
     if track.id.starts_with(ID_PREFIX) {
-        return resolve_by_id(client, &track.id).await;
+        return resolve_by_id_typed(client, &track.id).await;
     }
 
     let clean_title = clean_title_for_match(&track.title);
     let primary_artist = primary_artist_of(&track.artist);
     if clean_title.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     let query = if primary_artist.is_empty() {
@@ -146,13 +185,47 @@ pub async fn find_higher_quality_stream(
     let url = format!(
         "{API_BASE}?__call=search.getResults&_format=json&_marker=0&api_version=4&ctx=android&q={encoded}&p=1&n=10"
     );
-    let body = http_get(client, &url).await?;
-    let root = serde_json::from_str::<Value>(&body).ok()?;
-    let results = root.get("results")?.as_array()?;
+    let body = http_get_with_timeout(client, &url, DEFAULT_HTTP_TIMEOUT).await?;
+    let Some(best_id) = select_best_upgrade_candidate_id(&body, track)? else {
+        return Ok(None);
+    };
+
+    let Some(stream) = fetch_song_details_stream_typed(client, &best_id).await? else {
+        return Ok(None);
+    };
+    if stream.bitrate_kbps <= current_bitrate_kbps || stream.bitrate_kbps < MIN_USABLE_KBPS {
+        return Ok(None);
+    }
+
+    tracing::info!(
+        "[sonata:jiosaavn] higher quality match track={:?} ({}kbps -> {}kbps)",
+        track.title,
+        current_bitrate_kbps,
+        stream.bitrate_kbps
+    );
+    Ok(Some(stream))
+}
+
+/// Pure candidate matcher selecting the highest-scoring JioSaavn song ID that strictly matches `track`.
+pub fn select_best_upgrade_candidate_id(
+    search_json_body: &str,
+    track: &Track,
+) -> Result<Option<String>, CoreError> {
+    let root: Value = serde_json::from_str(search_json_body).map_err(|err| {
+        CoreError::invalid_response("jiosaavn", format!("malformed search JSON: {err}"))
+    })?;
+    let results = root
+        .get("results")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            CoreError::invalid_response("jiosaavn", "search payload missing `results` array")
+        })?;
+    let clean_title = clean_title_for_match(&track.title);
+    let primary_artist = primary_artist_of(&track.artist);
     let expected_secs = track.duration_secs.unwrap_or(0);
     let norm_want = normalize_core(&clean_title);
     if norm_want.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     let mut candidates: Vec<(String, i32, bool)> = Vec::new();
@@ -208,49 +281,62 @@ pub async fn find_higher_quality_stream(
     }
 
     candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.2.cmp(&a.2)));
-    let best_id = &candidates.first()?.0;
-
-    let stream = fetch_song_details_stream(client, best_id).await?;
-    if stream.bitrate_kbps <= current_bitrate_kbps || stream.bitrate_kbps < MIN_USABLE_KBPS {
-        return None;
-    }
-
-    tracing::info!(
-        "[sonata:jiosaavn] higher quality match track={:?} ({}kbps -> {}kbps)",
-        track.title,
-        current_bitrate_kbps,
-        stream.bitrate_kbps
-    );
-    Some(stream)
+    Ok(candidates.into_iter().next().map(|(id, _, _)| id))
 }
 
-async fn fetch_song_details_stream(
+async fn fetch_song_details_stream_typed(
     client: &Client,
     song_id: &str,
-) -> Option<ResolvedJioSaavnStream> {
+) -> Result<Option<ResolvedJioSaavnStream>, CoreError> {
     let encoded = urlencoding::encode(song_id);
     let url = format!(
         "{API_BASE}?__call=song.getDetails&_format=json&_marker=0&api_version=4&ctx=android&pids={encoded}"
     );
-    let body = http_get(client, &url).await?;
-    let root = serde_json::from_str::<Value>(&body).ok()?;
-    let song_obj = root
+    let body = http_get_with_timeout(client, &url, DEFAULT_HTTP_TIMEOUT).await?;
+    parse_song_details_json(song_id, &body)
+}
+
+/// Pure JSON parser and DES-ECB decryptor for JioSaavn `song.getDetails` responses.
+pub fn parse_song_details_json(
+    song_id: &str,
+    body: &str,
+) -> Result<Option<ResolvedJioSaavnStream>, CoreError> {
+    let root: Value = serde_json::from_str(body).map_err(|err| {
+        CoreError::invalid_response("jiosaavn", format!("malformed song details JSON: {err}"))
+    })?;
+    let Some(song_obj) = root
         .get("songs")
         .and_then(Value::as_array)
         .and_then(|arr| arr.first())
-        .or_else(|| root.get(song_id))?;
-    let more = song_obj.get("more_info")?;
-    let encrypted = more
+        .or_else(|| root.get(song_id))
+    else {
+        return Err(CoreError::invalid_response(
+            "jiosaavn",
+            format!("song details payload missing entry for `{song_id}`"),
+        ));
+    };
+    let Some(more) = song_obj.get("more_info") else {
+        return Err(CoreError::invalid_response(
+            "jiosaavn",
+            "song details entry missing `more_info`",
+        ));
+    };
+    let Some(encrypted) = more
         .get("encrypted_media_url")
         .and_then(Value::as_str)
         .map(str::trim)
-        .filter(|s| !s.is_empty())?;
+        .filter(|s| !s.is_empty())
+    else {
+        return Ok(None);
+    };
 
-    let raw_url = decrypt_url(encrypted)?;
+    let raw_url = decrypt_url(encrypted).ok_or_else(|| {
+        CoreError::invalid_response("jiosaavn", "failed to decrypt `encrypted_media_url`")
+    })?;
     let supports_320 = json_bool_str(more.get("320kbps"));
     let (final_url, bitrate_kbps) = select_best_stream_url(&raw_url, supports_320);
     if bitrate_kbps < MIN_USABLE_KBPS {
-        return None;
+        return Ok(None);
     }
 
     let raw_title = song_obj
@@ -263,17 +349,21 @@ async fn fetch_song_details_stream(
     let artist = extract_artists(song_obj, Some(more));
     let duration_secs = json_u64(more.get("duration")).unwrap_or(0);
 
-    Some(ResolvedJioSaavnStream {
+    Ok(Some(ResolvedJioSaavnStream {
         url: final_url,
         bitrate_kbps,
         badge: format!("AAC {bitrate_kbps}kbps · JioSaavn"),
         title,
         artist,
         duration_secs,
-    })
+    }))
 }
 
-async fn http_get(client: &Client, url: &str) -> Option<String> {
+async fn http_get_with_timeout(
+    client: &Client,
+    url: &str,
+    timeout: Duration,
+) -> Result<String, CoreError> {
     let resp = client
         .get(url)
         .header(
@@ -285,14 +375,33 @@ async fn http_get(client: &Client, url: &str) -> Option<String> {
         .header("Cookie", "explicit_content=1")
         .header("X-Forwarded-For", "49.36.0.1")
         .header("X-Real-IP", "49.36.0.1")
-        .timeout(Duration::from_secs(6))
+        .timeout(timeout)
         .send()
         .await
-        .ok()?;
-    if !resp.status().is_success() {
-        return None;
+        .map_err(|err| {
+            if err.is_timeout() {
+                CoreError::timeout(format!("JioSaavn request timed out: {err}"))
+            } else {
+                CoreError::offline(format!("JioSaavn network error: {err}"))
+            }
+        })?;
+    let status = resp.status();
+    if status.as_u16() == 429 {
+        return Err(CoreError::rate_limited(None, "JioSaavn rate limited (429)"));
     }
-    resp.text().await.ok()
+    if !status.is_success() {
+        return Err(CoreError::invalid_response(
+            "jiosaavn",
+            format!("HTTP status {status}"),
+        ));
+    }
+    resp.text().await.map_err(|err| {
+        if err.is_timeout() {
+            CoreError::timeout(format!("JioSaavn body read timed out: {err}"))
+        } else {
+            CoreError::invalid_response("jiosaavn", format!("failed to read response body: {err}"))
+        }
+    })
 }
 
 fn json_u64(val: Option<&Value>) -> Option<u64> {
@@ -390,12 +499,15 @@ pub fn normalize_core(text: &str) -> String {
     let mapped: String = text
         .chars()
         .flat_map(|ch| match ch {
-            'İ' | 'ı' => vec!['i'],
+            'İ' | 'ı' | 'Í' | 'í' | 'Ì' | 'ì' | 'Î' | 'î' | 'Ï' | 'ï' => vec!['i'],
             'Ş' | 'ş' => vec!['s'],
             'Ğ' | 'ğ' => vec!['g'],
-            'Ü' | 'ü' => vec!['u'],
-            'Ö' | 'ö' => vec!['o'],
+            'Ü' | 'ü' | 'Ú' | 'ú' | 'Ù' | 'ù' | 'Û' | 'û' => vec!['u'],
+            'Ö' | 'ö' | 'Ó' | 'ó' | 'Ò' | 'ò' | 'Ô' | 'ô' | 'Õ' | 'õ' => vec!['o'],
             'Ç' | 'ç' => vec!['c'],
+            'Á' | 'á' | 'À' | 'à' | 'Â' | 'â' | 'Ä' | 'ä' | 'Ã' | 'ã' => vec!['a'],
+            'É' | 'é' | 'È' | 'è' | 'Ê' | 'ê' | 'Ë' | 'ë' => vec!['e'],
+            'Ñ' | 'ñ' => vec!['n'],
             other => other.to_lowercase().collect(),
         })
         .collect();
@@ -449,7 +561,7 @@ pub fn artists_overlap(a: &str, b: &str) -> bool {
 pub fn select_best_stream_url(url: &str, supports_320: bool) -> (String, u32) {
     static BITRATE_RE: OnceLock<Regex> = OnceLock::new();
     let re = BITRATE_RE.get_or_init(|| {
-        Regex::new(r"(?i)_(48|96|160|320)\.(mp4|aac|mp3)").expect("valid bitrate regex")
+        Regex::new(r"(?i)_(48|96|160|320)\.(mp4|aac|mp3)([?#]|$)").expect("valid bitrate regex")
     });
     if let Some(caps) = re.captures(url) {
         let offered = caps
@@ -457,8 +569,11 @@ pub fn select_best_stream_url(url: &str, supports_320: bool) -> (String, u32) {
             .and_then(|m| m.as_str().parse::<u32>().ok())
             .unwrap_or(160);
         let ext = caps.get(2).map(|m| m.as_str()).unwrap_or("mp4");
+        let tail = caps.get(3).map(|m| m.as_str()).unwrap_or("");
         if supports_320 {
-            let upgraded = re.replace(url, format!("_320.{ext}").as_str()).into_owned();
+            let upgraded = re
+                .replace(url, format!("_320.{ext}{tail}").as_str())
+                .into_owned();
             return (upgraded, 320);
         }
         return (url.to_string(), offered);
@@ -711,5 +826,129 @@ mod tests {
             Some("https://c.saavncdn.com/000/cover_500x500.jpg")
         );
         assert_eq!(upgrade_artwork("   "), None);
+    }
+
+    #[test]
+    fn handles_malformed_json_html_decryption_failure_and_metadata_mismatch() {
+        // Malformed HTML/JSON returns InvalidResponse (never silent empty success).
+        assert!(matches!(
+            parse_search_results_json("<html><body>502 Bad Gateway</body></html>"),
+            Err(CoreError::InvalidResponse { ref provider, .. }) if provider == "jiosaavn"
+        ));
+        assert!(matches!(
+            parse_search_results_json(r#"{"status":"ok"}"#),
+            Err(CoreError::InvalidResponse { .. })
+        ));
+
+        // Encryption decode failures: invalid base64, invalid block size, invalid PKCS#5 padding.
+        assert!(decrypt_url("!!!not-base64!!!").is_none());
+        assert!(decrypt_url(&BASE64_STANDARD.encode(b"short")).is_none());
+        let bad_pad_ct = des_block(
+            [0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x04],
+            &generate_subkeys(DES_KEY),
+        );
+        assert!(decrypt_url(&BASE64_STANDARD.encode(bad_pad_ct)).is_none());
+
+        // Song details with corrupted encrypted_media_url returns InvalidResponse.
+        let bad_details = r#"{"songs":[{"title":"Test","more_info":{"encrypted_media_url":"not-valid","320kbps":"true","duration":"180"}}]}"#;
+        assert!(matches!(
+            parse_song_details_json("song1", bad_details),
+            Err(CoreError::InvalidResponse { ref provider, .. }) if provider == "jiosaavn"
+        ));
+
+        // Bitrate selection below 160kbps returns Ok(None).
+        let enc_96 = BASE64_STANDARD.encode(des_ecb_encrypt_for_test(
+            DES_KEY,
+            b"http://aac.saavncdn.com/123/abc_96.mp4?token=1",
+        ));
+        let low_details = format!(
+            r#"{{"songs":[{{"title":"Low &amp; Slow","more_info":{{"encrypted_media_url":"{enc_96}","320kbps":"false","duration":"200","singers":"Artist"}}}}]}}"#
+        );
+        assert_eq!(
+            parse_song_details_json("song2", &low_details).expect("valid parse"),
+            None
+        );
+
+        // Same payload with 320kbps=true upgrades cleanly while preserving query parameters.
+        let hi_details = format!(
+            r#"{{"songs":[{{"title":"High &amp; Clear","more_info":{{"encrypted_media_url":"{enc_96}","320kbps":"true","duration":"200","singers":"Artist"}}}}]}}"#
+        );
+        let resolved = parse_song_details_json("song2", &hi_details)
+            .expect("valid parse")
+            .expect("320kbps stream");
+        assert_eq!(
+            resolved.url,
+            "https://aac.saavncdn.com/123/abc_320.mp4?token=1"
+        );
+        assert_eq!(resolved.bitrate_kbps, 320);
+        assert_eq!(resolved.title, "High & Clear");
+
+        // Strict metadata mismatch rejects wrong artist, wrong title, or duration diff > 6s.
+        let search_payload = r#"{
+            "results": [
+                {"id":"wrong_artist","title":"Starboy","more_info":{"duration":"230","singers":"Other Guy","320kbps":"true"}},
+                {"id":"wrong_dur","title":"Starboy","more_info":{"duration":"260","singers":"The Weeknd","320kbps":"true"}},
+                {"id":"exact_hit","title":"Starboy (feat. Daft Punk)","explicit_content":"1","more_info":{"duration":"231","singers":"The Weeknd, Daft Punk","320kbps":"true"}}
+            ]
+        }"#;
+        let wanted = Track {
+            id: "yt_starboy".into(),
+            title: "Starboy [Official Audio]".into(),
+            artist: "The Weeknd".into(),
+            album: "Starboy".into(),
+            duration_secs: Some(230),
+            thumbnail_url: None,
+            source: ProviderSource::YouTubeMusic,
+            audio_badge: None,
+            set_video_id: None,
+            liked: false,
+            album_id: None,
+            is_explicit: true,
+        };
+        assert_eq!(
+            select_best_upgrade_candidate_id(search_payload, &wanted)
+                .expect("valid search")
+                .as_deref(),
+            Some("exact_hit")
+        );
+
+        let mismatched = Track {
+            artist: "Completely Unrelated".into(),
+            ..wanted
+        };
+        assert_eq!(
+            select_best_upgrade_candidate_id(search_payload, &mismatched).expect("valid search"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn reports_timeout_and_supports_cancellation_on_stalled_http() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local listener");
+        let addr = listener.local_addr().expect("local addr");
+        let accept_task = tokio::spawn(async move {
+            let mut sockets = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                sockets.push(socket);
+            }
+        });
+
+        let client = Client::new();
+        let url = format!("http://{addr}/stalled");
+
+        // Timeout test: stalled server returns CoreError::Timeout.
+        let err = http_get_with_timeout(&client, &url, Duration::from_millis(80))
+            .await
+            .expect_err("stalled endpoint must time out");
+        assert!(matches!(err, CoreError::Timeout { .. }));
+
+        // Cancellation test: dropping an in-flight request completes promptly without hanging.
+        let fut = http_get_with_timeout(&client, &url, Duration::from_secs(10));
+        let cancelled = tokio::time::timeout(Duration::from_millis(40), fut).await;
+        assert!(cancelled.is_err(), "outer timeout cancels in-flight future");
+
+        accept_task.abort();
     }
 }

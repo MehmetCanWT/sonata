@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Multilingual Localization (`en`, `tr`, `ru`) Across All Clients**: Added English, Turkish, and Russian UI translations across Android (`AppLanguage.SYSTEM` default following device locale), Desktop, and TUI (`AppLanguage::En` default) with live language switching in Settings.
+- **YouTube Music Playlist Editing & Custom Cover Sync (`sonata-core`, `sonata-desktop`, `sonata-android`, `android`)**: Added playlist rename, description/privacy updates (`browse/edit_playlist`), and custom cover image upload (3-step resumable upload + `ACTION_SET_CUSTOM_THUMBNAIL`) synced directly to the signed-in YouTube Music account on both Desktop and Android.
+- **Android In-App APK Auto-Download & Installer (`android`)**: Added automatic arm64 APK download into `cacheDir/updates/` with immediate Android PackageInstaller launch (`FileProvider` + `REQUEST_INSTALL_PACKAGES` permission prompt fallback) from the Update Available dialog.
+- **Automated GitHub AI Issue Triage & Templates (`.github`)**: Added `.github/workflows/issue-triage.yml` backed by GitHub Models (`openai/gpt-4o-mini` with multilingual fallback) to classify and label new issues (`bug`, `feature request`, `question`, `android`, `desktop`, `tui`, `needs-info`) and request missing logs, screenshots, version/environment, and reproduction steps, plus structured bug/feature issue forms.
+
+### Fixed
+
+- **Desktop Player Bar Alignment & Collection Header Spacing (`sonata-desktop`)**: Aligned bottom player bar action icons, explicit badge, and volume controls onto a consistent centerline; fixed playlist/album header artwork wash fill and top tracklist spacing so tracks never overlap the cover header.
+- **TUI 60 FPS Spring Lyrics Scroll & Luminous Wave (`sonata-tui`)**: Added critically damped spring scroll and upward luminous `tachyonfx` sweep transitions for synced lyrics.
+
+## [1.0.6] - 2026-11-23
+
+### Added
+
+- **Monochrome Basic Theme, Neutral Crystal-Clear Liquid Glass & Expanded Settings (`android`)**: Added the `Basic` monochrome editorial design theme overhaul (Home, Explore duotone mood sleeves, Album/Playlist detail, and Artist hero) while preserving Violet and Moonflower layouts; unified Liquid Glass across all themes to crystal-clear neutral refraction (removing colored theme glass tints) with working live toggle; rebuilt Settings into a pure monochrome 9-category inset-grouped menu with live search, download quality tiers (`Highest` to `Data Saver` with per-song MB estimates), `Include JioSaavn` offline source toggle, Internal/External download storage selector + live usage meter, Home content visibility controls, full-screen cover/detail toggles, total duration toggle, sleep timer fade-out, status bar/badge toggles, live Nerd Stats telemetry pill, and image cache clearing.
+- **Desktop Image Cache Stabilization & Fullscreen Lyrics Overhaul (`sonata-desktop`)**: Fixed image flickering and heavy CPU spikes on large playlists by raising the image cache budget (`160 MiB` soft / `256 MiB` hard cap), adding a 4-second anti-thrash eviction guard, capping concurrent decodes, and windowing the `Next up` queue; redesigned Fullscreen Now Playing lyrics with centered cover/metadata, word-synced highlight sweep, interlude markers, right-aligned counter-vocals, and distance-based fade.
+- **Desktop Audio-Only Background Freeze & Low-Power Mini Mode (`sonata-desktop`)**: Observed native GPUI window visibility (`observe_window_visibility`) and window bounds (`observe_window_bounds`) so minimizing to the taskbar, switching workspaces, closing to the system tray, or shrinking into mini-player dimensions (`<= 520x260`) completely freezes all UI timers, karaoke ticks, ambient wave drift, progress-slider redraws, and `ffmpeg` motion-cover decoding while keeping full-quality audio playback, Hi-Fi upgrades, MPRIS2, and tray controls running cleanly.
+- **Shared Linux Runtime Crate & `PlaybackSession` (`sonata-runtime`)**: Extracted Linux-only adapters (`mpv`, `yt-dlp`, `ffmpeg`, CLI JS cipher bridge, browser cookie extraction, XDG TOML config, Hyprland IPC, image decoding, and tracing) into a dedicated `sonata-runtime` crate and unified TUI and Desktop playback orchestration under a single `PlaybackSession` state machine with bounded non-dropping command/event channels and coalesced progress updates.
+- **Automated Architecture, Security & Android CI Verification**: Added `scripts/check_boundaries.sh` (verifying Cargo dependency direction and forbidden crate/process boundaries), parser fuzz-corpus and adversarial redaction tests in `sonata-core`, Android JVM unit tests (`testDebugUnitTest`) and `arm64-v8a` `cargo ndk` builds in PR CI, and an Android instrumented suite (`NativeEngineInstrumentedTest`) verifying real native library loading, `0700`/`0600` permissions, and async cancellation.
+
+### Changed
+
+- **Cancellable Async Android UniFFI Bridge (`sonata-android`, `android`)**: Converted long-running Android FFI operations to native UniFFI Tokio `async fn` (`#[uniffi::export(async_runtime = "tokio")]`), removing the private Tokio `Runtime` and all `Runtime::block_on` calls so cancelled Kotlin coroutines immediately cancel and drop in-flight Rust futures.
+- **Consolidated Provider & Motion Media Parsers (`sonata-core`, `sonata-desktop`, `sonata-android`, `android`)**: Consolidated Desktop `ytm_extra.rs` into pure `sonata-core::providers::ytmusic` parsers (`browse`, `album`, `search`) with shelf-order preservation and dropped-row reporting; consolidated Android JioSaavn search/decryption/upgrade matching and remote Canvas/motion discovery (`MotionMedia`) into `sonata-core` + UniFFI while retaining Android Media3, downloads, and LRU caching in Kotlin.
+- **Explicit Core Paths, Profiles & Typed Errors (`sonata-core`)**: Replaced process-wide path/policy statics and provider `cfg!(target_os = "android")` branches with instance-scoped `CorePaths`, explicit `ResolverProfile`, and redacted `CoreError` / `SonataAndroidError` variants, reducing Android transitive dependencies and stripped `arm64-v8a/libsonata_android.so` size below the `1.0.5` baseline.
+
+### Fixed
+
+- **Android Playback Lifecycle & Foreground Service Transitions (`android`)**: Introduced `PlaybackOrchestrator` with monotonic playback generations, generation-keyed recovery budgets, typed `RateLimited` handling, atomic stream swaps preserving play/pause state and position, narrow `STATE_ENDED -> STATE_BUFFERING` suppression across pending queue transitions, and full job/bridge teardown in `onCleared()`.
+- **Idle Play/Pause State in Shared Linux Session (`sonata-runtime`, `sonata-desktop`, `sonata-tui`)**: Ignored initial `mpv --idle=yes` `pause=false` property notifications when no track is loaded so Desktop and TUI accurately display the Play icon instead of Pause while idle.
+- **Android Cold-Start StrictMode & UI Contrast (`android`)**: Moved `SonataPreferences` and `SonataDownloadManager` `SharedPreferences` reads off the main thread to eliminate startup `DiskReadViolation` stalls; added top clearance for the Home sign-in banner under the floating action pill, lifted `ArtistCollageArt` thumbnails with a bottom readability scrim, and added a top status-bar protection scrim over bright Now Playing covers.
+- **Narrow-Window TUI Text Clipping (`sonata-tui`)**: Wrapped centered lyrics placeholders, adapted the Search placeholder to available bar width, and truncated narrow footer status strings with an ellipsis.
+- **Desktop Fullscreen Ambient Waves, Subpixel Karaoke, Spring Scroll & TUI Character Sweep (`sonata-desktop`, `sonata-tui`)**: Replaced coarse byte-boundary highlights with a 45–60 FPS subpixel feathered letter-by-letter karaoke sweep (`ui/lyrics.rs`) backed by `shape_line`-measured wrapping (eliminating right-edge text overflow) and critically damped spring scroll + staggered per-row wave transitions across both Fullscreen and the Right Panel; upgraded TUI synced lyrics to 30 FPS character-by-character luminous sweep with parallel `tachyonfx` line transitions; anchored the search suggestions popover to live measured search-pill bounds; upgraded cover color extraction to a 24-bin dual-hue palette with centered `[-1, 1]` Perlin gradient noise, layered runner-up pools, smooth cover-change color washes, and background-rendered animated wave drift.
+
 ## [1.0.5] - 2026-11-23
 
 ### Added

@@ -8,41 +8,63 @@
 mod library;
 mod playback;
 mod types;
-pub mod ytm_extra;
 
+pub use sonata_core::providers::ytmusic::{
+    AlbumDetail, MoodCategoryTile, MoodChip, RichSearchResult,
+};
 pub use types::{BackendCmd, BackendHandle, DesktopSnapshot, NavTarget, UiWindowCmd};
-pub use ytm_extra::{AlbumDetail, MoodCategoryTile, MoodChip, RichSearchResult};
 
 use crate::integrations::mpris::{spawn_mpris, MprisUpdate};
 use crate::integrations::tray::{spawn_tray, TrayHandle, TrayState};
 use reqwest::Client;
-use sonata_core::auth::{list_supported_browsers, BrowserOption, ExtractedCookies};
-use sonata_core::cache::{
-    enforce_active_media_cache_limit_async, start_media_cache_maintenance, CacheDb,
-};
-use sonata_core::config::AppConfig;
-use sonata_core::hyprland;
+use sonata_core::auth::ExtractedCookies;
+use sonata_core::cache::{enforce_media_cache_limit_async, start_media_cache_maintenance, CacheDb};
 use sonata_core::lyrics::LyricsState;
-use sonata_core::media;
-use sonata_core::player::coordinator::{PlaybackCommand, PlaybackCoordinator};
-use sonata_core::player::{
-    MpvController, NextTrackPrecache, PlaybackState, PlaybackTask, PlaybackTaskSet, PrecacheKey,
+use sonata_core::paths::CorePaths;
+use sonata_core::player::{PlaybackState, PlaybackTaskSet};
+use sonata_core::providers::hifi::{
+    FastStartMode, ResolverProfile, StreamFallbackMode, UpgradeDelivery,
 };
-use sonata_core::providers::hifi::{ResolvedStream, StreamResolver};
 use sonata_core::providers::ytmusic::{ArtistPage, HomeShelf, YtAccountProfile, YtMusicClient};
 use sonata_core::providers::{build_http_client, Playlist, Track};
+use sonata_runtime::auth::{list_supported_browsers, BrowserOption};
+use sonata_runtime::config::AppConfig;
+use sonata_runtime::hyprland;
+use sonata_runtime::media;
+use sonata_runtime::player::{
+    MpvController, NoopAudioDriver, PlaybackAudioDriver, PlaybackSession, PlaybackSessionConfig,
+    PlaybackSessionHandle, PlaybackStreamSource, SessionCommand, SessionPolicy,
+};
+use sonata_runtime::process::LinuxStreamResolver;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::{mpsc, watch, Semaphore};
 use types::{ExportFingerprint, InternalEvent};
 
+pub(super) fn linux_core_paths() -> CorePaths {
+    AppConfig::default_core_paths()
+}
+
+pub(super) fn linux_resolver_profile(config: &AppConfig) -> ResolverProfile {
+    ResolverProfile {
+        fast_start: FastStartMode::BoundedRange,
+        upgrade_delivery: UpgradeDelivery::CacheBeforeReturn,
+        fallback: StreamFallbackMode::ExternalTool,
+        bootstrap_timeout: Duration::from_millis(2400),
+        jiosaavn_enabled: config.jiosaavn_enabled,
+        cache_limit_bytes: config.cache_limit_bytes(),
+    }
+}
+
 pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Result<BackendHandle> {
     let config = AppConfig::load();
+    let paths = linux_core_paths();
     let available_browsers = list_supported_browsers();
 
-    let cache_db = CacheDb::open_default();
+    let cache_db = CacheDb::open_with_paths(&paths, config.cache_limit_gb > 0);
     let initial_browser = config.desktop_ytm_browser.clone();
     let ytm_playlists = if initial_browser.is_some() {
         cache_db
@@ -132,6 +154,7 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
 
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let (snap_tx, snap_rx) = watch::channel(initial_snapshot.clone());
+    let (progress_tx, progress_rx) = watch::channel((0.0_f64, 0.0_f64));
     let mpris_tx = spawn_mpris(cmd_tx.clone(), win_tx.clone());
     let _ = mpris_tx.send(MprisUpdate::Sync(initial_snapshot));
 
@@ -157,28 +180,38 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
                 cmd_tx_thread,
                 cmd_rx,
                 snap_tx,
+                progress_tx,
                 mpris_tx,
                 win_tx_thread,
             ));
         })?;
 
-    Ok(BackendHandle { cmd_tx, snap_rx })
+    Ok(BackendHandle {
+        cmd_tx,
+        snap_rx,
+        progress_rx,
+    })
 }
 
 struct BackendEngine {
     pub(super) config: AppConfig,
+    pub(super) paths: CorePaths,
+    pub(super) cache_limit_bytes: Arc<AtomicU64>,
     pub(super) http: Client,
     pub(super) cookies: ExtractedCookies,
     pub(super) ytm: YtMusicClient,
-    pub(super) resolver: StreamResolver,
+    pub(super) resolver: LinuxStreamResolver,
     pub(super) cache_db: Option<CacheDb>,
-    pub(super) mpv: Option<Arc<MpvController>>,
+    pub(super) session: PlaybackSessionHandle,
     pub(super) int_tx: mpsc::UnboundedSender<InternalEvent>,
     pub(super) snap_tx: watch::Sender<Arc<DesktopSnapshot>>,
+    pub(super) progress_tx: watch::Sender<(f64, f64)>,
     pub(super) mpris_tx: mpsc::UnboundedSender<MprisUpdate>,
     pub(super) tray_handle: Option<TrayHandle>,
     pub(super) last_tray_state: TrayState,
     pub(super) window_visible: bool,
+    pub(super) ui_compact: bool,
+    pub(super) deferred_media_play_seq: Option<u64>,
     pub(super) hyprland_window: Option<String>,
     pub(super) active_nav: NavTarget,
     pub(super) status_line: String,
@@ -234,13 +267,11 @@ struct BackendEngine {
     pub(super) muted: bool,
     pub(super) lyrics: LyricsState,
     pub(super) art_path: Option<PathBuf>,
-    pub(super) motion_cover: Option<Arc<sonata_core::motion::MotionCover>>,
+    pub(super) motion_cover: Option<Arc<sonata_runtime::motion::MotionCover>>,
     pub(super) ambient_rgb: (u8, u8, u8),
     pub(super) spotify_notice: Option<String>,
     pub(super) update_info: Option<sonata_core::updater::UpdateCheckResult>,
     pub(super) checking_updates: bool,
-    pub(super) pos_anchor: Option<(f64, Instant)>,
-    pub(super) stream_loaded_at: Option<Instant>,
     pub(super) home_req_id: u64,
     pub(super) explore_req_id: u64,
     pub(super) mood_req_id: u64,
@@ -251,19 +282,11 @@ struct BackendEngine {
     pub(super) album_req_id: u64,
     pub(super) artist_req_id: u64,
     pub(super) play_seq: u64,
-    pub(super) retried_play_seq: u64,
-    pub(super) playback_tasks: PlaybackTaskSet,
-    pub(super) next_precache: NextTrackPrecache,
-    pub(super) next_prefetch_task: Option<(PrecacheKey, PlaybackTask<Option<ResolvedStream>>)>,
-    pub(super) adopted_prefetch_task: Option<(String, PlaybackTask<Option<ResolvedStream>>)>,
-    pub(super) pending_auto_advance: Option<(u64, String)>,
-    pub(super) awaiting_playback_start: bool,
-    pub(super) upgrade_started_play_seq: Option<u64>,
+    pub(super) media_tasks: PlaybackTaskSet,
     pub(super) upgrading_quality: bool,
     pub(super) cover_started_play_seq: Option<u64>,
     pub(super) config_dirty: bool,
     pub(super) last_exported_state: Option<ExportFingerprint>,
-    pub(super) play_requested_at: Option<Instant>,
     pub(super) in_flight_thumbs: Arc<Mutex<HashSet<String>>>,
     pub(super) thumbnail_slots: Arc<Semaphore>,
 }
@@ -279,30 +302,61 @@ async fn run_backend_loop(
     cmd_tx: mpsc::UnboundedSender<BackendCmd>,
     mut cmd_rx: mpsc::UnboundedReceiver<BackendCmd>,
     snap_tx: watch::Sender<Arc<DesktopSnapshot>>,
+    progress_tx: watch::Sender<(f64, f64)>,
     mpris_tx: mpsc::UnboundedSender<MprisUpdate>,
     win_tx: mpsc::UnboundedSender<UiWindowCmd>,
 ) {
     // Cache maintenance uses Tokio tasks, so start it inside the backend runtime.
-    start_media_cache_maintenance();
-    tokio::spawn(async {
-        enforce_active_media_cache_limit_async().await;
+    let paths = linux_core_paths();
+    let cache_limit_bytes = Arc::new(AtomicU64::new(config.cache_limit_bytes()));
+    start_media_cache_maintenance(paths.clone(), Arc::clone(&cache_limit_bytes));
+    let init_paths = paths.clone();
+    let init_limit = config.cache_limit_bytes();
+    tokio::spawn(async move {
+        enforce_media_cache_limit_async(init_paths, init_limit).await;
     });
 
     let http = build_http_client();
     let cookies = ExtractedCookies::default();
     let ytm = YtMusicClient::new(http.clone(), cookies.clone());
-    let resolver =
-        StreamResolver::new(http.clone(), ytm.clone(), cookies.clone(), cache_db.clone());
+    let resolver = LinuxStreamResolver::with_profile(
+        http.clone(),
+        ytm.clone(),
+        cookies.clone(),
+        cache_db.clone(),
+        paths.clone(),
+        linux_resolver_profile(&config),
+    );
     let warm_resolver = resolver.clone();
     tokio::spawn(async move {
         warm_resolver.warm().await;
     });
 
-    let (mpv_tx, mut mpv_rx) = mpsc::channel(64);
-    let (mpv, initial_status) = match MpvController::spawn_desktop(config.volume, mpv_tx).await {
-        Ok(ctrl) => (Some(Arc::new(ctrl)), "Loading YouTube Music...".to_string()),
-        Err(e) => (None, format!("Audio warning: {e}")),
+    let (mpv_tx, mpv_rx) = mpsc::channel(64);
+    let (driver, initial_status): (Arc<dyn PlaybackAudioDriver>, String) =
+        match MpvController::spawn_desktop(config.volume, mpv_tx).await {
+            Ok(ctrl) => (Arc::new(ctrl), "Loading YouTube Music...".to_string()),
+            Err(e) => (Arc::new(NoopAudioDriver), format!("Audio warning: {e}")),
+        };
+
+    let mut session_cfg = PlaybackSessionConfig::for_client("desktop");
+    session_cfg.initial_volume = config.volume;
+    session_cfg.initial_shuffle = config.shuffle;
+    session_cfg.initial_repeat = config.repeat_mode;
+    session_cfg.policy = SessionPolicy {
+        hifi_substitution: config.hifi_substitution,
+        jiosaavn_enabled: config.jiosaavn_enabled,
+        cache_enabled: config.cache_limit_gb > 0,
     };
+    let PlaybackSession {
+        handle: session,
+        events: mut session_rx,
+    } = PlaybackSession::spawn(
+        session_cfg,
+        driver,
+        Arc::new(resolver.clone()) as Arc<dyn PlaybackStreamSource>,
+        mpv_rx,
+    );
 
     let (int_tx, mut int_rx) = mpsc::unbounded_channel();
     let tray_handle = spawn_tray(cmd_tx, win_tx).await;
@@ -314,18 +368,23 @@ async fn run_backend_loop(
 
     let mut engine = BackendEngine {
         config,
+        paths,
+        cache_limit_bytes,
         http,
         cookies,
         ytm,
         resolver,
         cache_db,
-        mpv,
+        session,
         int_tx,
         snap_tx,
+        progress_tx,
         mpris_tx,
         tray_handle,
         last_tray_state: TrayState::default(),
         window_visible: true,
+        ui_compact: false,
+        deferred_media_play_seq: None,
         hyprland_window: None,
         active_nav: NavTarget::Home,
         status_line: initial_status,
@@ -386,8 +445,6 @@ async fn run_backend_loop(
         spotify_notice: None,
         update_info: None,
         checking_updates: false,
-        pos_anchor: None,
-        stream_loaded_at: None,
         home_req_id: 0,
         explore_req_id: 0,
         mood_req_id: 0,
@@ -398,19 +455,11 @@ async fn run_backend_loop(
         album_req_id: 0,
         artist_req_id: 0,
         play_seq: 0,
-        retried_play_seq: 0,
-        playback_tasks: PlaybackTaskSet::default(),
-        next_precache: NextTrackPrecache::default(),
-        next_prefetch_task: None,
-        adopted_prefetch_task: None,
-        pending_auto_advance: None,
-        awaiting_playback_start: false,
-        upgrade_started_play_seq: None,
+        media_tasks: PlaybackTaskSet::default(),
         upgrading_quality: false,
         cover_started_play_seq: None,
         config_dirty: false,
         last_exported_state: None,
-        play_requested_at: None,
         in_flight_thumbs: Arc::new(Mutex::new(HashSet::new())),
         thumbnail_slots: Arc::new(Semaphore::new(6)),
     };
@@ -444,9 +493,11 @@ async fn run_backend_loop(
             && engine.playback.current_track().is_some();
 
         tokio::select! {
-            _ = smooth_tick.tick(), if active_play => {
+            _ = smooth_tick.tick(), if active_play && engine.window_visible && !engine.ui_compact => {
                 if engine.tick_playback() {
-                    engine.publish(false).await;
+                    let _ = engine
+                        .progress_tx
+                        .send((engine.playback.position_secs, engine.playback.duration_secs));
                 }
             }
             Some(cmd) = cmd_rx.recv() => {
@@ -466,17 +517,17 @@ async fn run_backend_loop(
                 }
                 engine.publish(true).await;
             }
-            Some(mpv_ev) = mpv_rx.recv() => {
-                engine.handle_mpv_event(mpv_ev);
-                while let Ok(more) = mpv_rx.try_recv() {
-                    engine.handle_mpv_event(more);
+            Some(sev) = session_rx.recv() => {
+                engine.handle_session_event(sev);
+                while let Ok(more) = session_rx.try_recv() {
+                    engine.handle_session_event(more);
                 }
                 engine.publish(true).await;
             }
             Some(ev) = int_rx.recv() => {
-                engine.handle_internal_event(ev);
+                engine.handle_internal_event(ev).await;
                 while let Ok(more) = int_rx.try_recv() {
-                    engine.handle_internal_event(more);
+                    engine.handle_internal_event(more).await;
                 }
                 engine.publish(true).await;
             }
@@ -486,6 +537,14 @@ async fn run_backend_loop(
 }
 
 impl BackendEngine {
+    fn session_policy(&self) -> SessionPolicy {
+        SessionPolicy {
+            hifi_substitution: self.config.hifi_substitution,
+            jiosaavn_enabled: self.config.jiosaavn_enabled,
+            cache_enabled: self.config.cache_limit_gb > 0,
+        }
+    }
+
     async fn handle_command(&mut self, cmd: BackendCmd) {
         match cmd {
             BackendCmd::Navigate(target) => {
@@ -621,7 +680,7 @@ impl BackendEngine {
                 self.sign_in_error = None;
             }
             BackendCmd::SignOut => {
-                self.sign_out();
+                self.sign_out().await;
             }
             BackendCmd::FetchSearchSuggestions(q) => {
                 self.fetch_search_suggestions(&q);
@@ -637,157 +696,92 @@ impl BackendEngine {
                 if tracks.is_empty() {
                     return;
                 }
-                PlaybackCoordinator::apply(
-                    &mut self.playback,
-                    PlaybackCommand::QueueChanged(tracks),
-                );
                 let idx = if shuffle {
                     self.playback.shuffle = true;
                     self.config.shuffle = true;
                     let _ = self.config.save();
+                    let _ = self.session.send(SessionCommand::SetShuffle(true)).await;
                     let nanos = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.subsec_nanos() as usize)
                         .unwrap_or(0);
-                    nanos % self.playback.queue.len()
+                    nanos % tracks.len()
                 } else {
-                    start_index.min(self.playback.queue.len() - 1)
+                    start_index.min(tracks.len() - 1)
                 };
-                self.play_track_at(idx, false);
+                let _ = self
+                    .session
+                    .send(SessionCommand::PlayQueue {
+                        tracks,
+                        start_index: idx,
+                        push_history: false,
+                    })
+                    .await;
             }
             BackendCmd::PlayQueueIndex(idx) => {
-                if idx < self.playback.queue.len() {
-                    self.play_track_at(idx, true);
-                }
+                let _ = self
+                    .session
+                    .send(SessionCommand::PlayIndex {
+                        index: idx,
+                        push_history: true,
+                    })
+                    .await;
             }
             BackendCmd::PlayTrackNext(track) => {
-                let title = track.title.clone();
-                if self.playback.queue.is_empty() {
-                    self.playback.queue.push(track);
-                    self.play_track_at(0, false);
-                } else {
-                    let insert_at = self
-                        .playback
-                        .current_index
-                        .map(|i| (i + 1).min(self.playback.queue.len()))
-                        .unwrap_or(0);
-                    self.playback.queue.insert(insert_at, track);
-                }
-                self.status_line = format!("Playing next: {title}");
+                let _ = self
+                    .session
+                    .send(SessionCommand::PlayTrackNext(track))
+                    .await;
             }
             BackendCmd::AddTrackToQueue(track) => {
-                let title = track.title.clone();
-                self.playback.queue.push(track);
-                self.status_line = format!("Added to queue: {title}");
+                let _ = self
+                    .session
+                    .send(SessionCommand::AddTrackToQueue(track))
+                    .await;
             }
             BackendCmd::RemoveFromQueue(idx) => {
-                if idx < self.playback.queue.len() && Some(idx) != self.playback.current_index {
-                    self.playback.queue.remove(idx);
-                    if let Some(cur) = self.playback.current_index {
-                        if idx < cur {
-                            self.playback.current_index = Some(cur - 1);
-                        }
-                    }
-                    self.playback.clear_upcoming();
-                }
+                let _ = self
+                    .session
+                    .send(SessionCommand::RemoveFromQueue(idx))
+                    .await;
             }
             BackendCmd::MoveQueueItem { from, to } => {
-                let len = self.playback.queue.len();
-                if from < len && to < len && from != to {
-                    let cur_id = self.playback.current_track().map(|t| t.id.clone());
-                    let item = self.playback.queue.remove(from);
-                    self.playback.queue.insert(to, item);
-                    if let Some(cid) = cur_id {
-                        self.playback.current_index =
-                            self.playback.queue.iter().position(|t| t.id == cid);
-                    }
-                    self.playback.clear_upcoming();
-                }
+                let _ = self
+                    .session
+                    .send(SessionCommand::MoveQueueItem { from, to })
+                    .await;
             }
             BackendCmd::ClearQueue => {
-                if let Some(cur_idx) = self.playback.current_index {
-                    if let Some(cur) = self.playback.queue.get(cur_idx).cloned() {
-                        self.playback.queue = vec![cur];
-                        self.playback.current_index = Some(0);
-                    } else {
-                        self.playback.queue.clear();
-                        self.playback.current_index = None;
-                    }
-                } else {
-                    self.playback.queue.clear();
-                }
-                self.playback.clear_upcoming();
-                self.status_line = "Cleared upcoming queue".to_string();
+                let _ = self.session.send(SessionCommand::ClearQueue).await;
             }
             BackendCmd::ShuffleQueue => {
-                let len = self.playback.queue.len();
-                if len > 2 {
-                    let cur = self.playback.current_index;
-                    let cur_track = cur.map(|i| self.playback.queue.remove(i));
-                    let mut seed = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.subsec_nanos() as usize)
-                        .unwrap_or(17);
-                    for i in (1..self.playback.queue.len()).rev() {
-                        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
-                        let j = seed % (i + 1);
-                        self.playback.queue.swap(i, j);
-                    }
-                    if let Some(t) = cur_track {
-                        self.playback.queue.insert(0, t);
-                        self.playback.current_index = Some(0);
-                    }
-                    self.playback.clear_upcoming();
-                    self.status_line = "Shuffled queue".to_string();
-                }
+                let _ = self.session.send(SessionCommand::ShuffleQueue).await;
             }
             BackendCmd::TogglePause => {
-                self.set_paused(!self.playback.paused);
+                let _ = self.session.send(SessionCommand::TogglePause).await;
             }
             BackendCmd::SetPaused(paused) => {
-                self.set_paused(paused);
+                let _ = self.session.send(SessionCommand::SetPaused(paused)).await;
             }
             BackendCmd::Stop => {
-                self.playback_tasks.restart();
-                if let Some((_, task)) = self.next_prefetch_task.take() {
-                    task.abort();
-                }
-                if let Some((_, task)) = self.adopted_prefetch_task.take() {
-                    task.abort();
-                }
-                self.next_precache.take();
-                self.playback.paused = true;
-                self.playback.loading_track = false;
-                self.upgrading_quality = false;
-                self.playback.position_secs = 0.0;
-                self.pos_anchor = None;
-                self.playback.stream_badge = "Stopped".to_string();
-                if let Some(mpv) = &self.mpv {
-                    mpv.stop();
-                }
+                let _ = self.session.send(SessionCommand::Stop).await;
             }
             BackendCmd::NextTrack => {
-                if let Some(transition) =
-                    PlaybackCoordinator::apply(&mut self.playback, PlaybackCommand::Next)
-                {
-                    self.start_play_transition(transition, None);
-                }
+                let _ = self.session.send(SessionCommand::Next).await;
             }
             BackendCmd::PrevTrack => {
-                if self.interpolated_position() > 4.0 {
-                    self.seek_absolute(0.0);
-                } else if let Some(transition) =
-                    PlaybackCoordinator::apply(&mut self.playback, PlaybackCommand::Previous)
-                {
-                    self.start_play_transition(transition, None);
-                }
+                let _ = self
+                    .session
+                    .send(SessionCommand::Previous {
+                        restart_if_after_secs: Some(4.0),
+                    })
+                    .await;
             }
             BackendCmd::SeekAbsolute(secs) => {
-                self.seek_absolute(secs);
+                let _ = self.session.send(SessionCommand::SeekAbsolute(secs)).await;
             }
             BackendCmd::SeekRelative(delta) => {
-                let target = self.interpolated_position() + delta;
-                self.seek_absolute(target);
+                let _ = self.session.send(SessionCommand::SeekRelative(delta)).await;
             }
             BackendCmd::SetVolume(vol) => {
                 let clamped = vol.min(100);
@@ -795,11 +789,14 @@ impl BackendEngine {
                 self.playback.volume = clamped;
                 self.config.volume = clamped;
                 self.config_dirty = true;
-                self.apply_config_volume();
+                let _ = self.session.send(SessionCommand::SetVolume(clamped)).await;
             }
             BackendCmd::ToggleMute => {
                 self.muted = !self.muted;
-                self.apply_config_volume();
+                let _ = self
+                    .session
+                    .send(SessionCommand::SetMuted(self.muted))
+                    .await;
                 self.status_line = if self.muted {
                     "Audio muted".to_string()
                 } else {
@@ -808,9 +805,12 @@ impl BackendEngine {
             }
             BackendCmd::ToggleShuffle => {
                 self.playback.shuffle = !self.playback.shuffle;
-                self.playback.clear_upcoming();
                 self.config.shuffle = self.playback.shuffle;
                 let _ = self.config.save();
+                let _ = self
+                    .session
+                    .send(SessionCommand::SetShuffle(self.playback.shuffle))
+                    .await;
                 self.status_line = format!(
                     "Shuffle: {}",
                     if self.playback.shuffle { "On" } else { "Off" }
@@ -818,30 +818,34 @@ impl BackendEngine {
             }
             BackendCmd::SetShuffle(on) => {
                 self.playback.shuffle = on;
-                self.playback.clear_upcoming();
                 self.config.shuffle = on;
                 let _ = self.config.save();
+                let _ = self.session.send(SessionCommand::SetShuffle(on)).await;
             }
             BackendCmd::CycleRepeat => {
                 let next = self.playback.repeat.next();
                 self.playback.repeat = next;
-                self.playback.clear_upcoming();
                 self.config.repeat_mode = next;
                 let _ = self.config.save();
+                let _ = self.session.send(SessionCommand::SetRepeat(next)).await;
                 self.status_line = format!("Repeat: {}", next.label());
             }
             BackendCmd::SetRepeat(mode) => {
                 self.playback.repeat = mode;
-                self.playback.clear_upcoming();
                 self.config.repeat_mode = mode;
                 let _ = self.config.save();
+                let _ = self.session.send(SessionCommand::SetRepeat(mode)).await;
             }
             BackendCmd::ToggleHiFi => {
                 self.config.hifi_substitution = !self.config.hifi_substitution;
                 let _ = self.config.save();
-                if self.config.hifi_substitution {
-                    self.start_hifi_upgrade();
-                }
+                let _ = self
+                    .session
+                    .send(SessionCommand::UpdatePolicy {
+                        policy: self.session_policy(),
+                        trigger_upgrade: self.config.hifi_substitution,
+                    })
+                    .await;
                 self.status_line = format!(
                     "YouTube Music Quality Upgrade: {}",
                     if self.config.hifi_substitution {
@@ -853,11 +857,17 @@ impl BackendEngine {
             }
             BackendCmd::ToggleJioSaavn => {
                 self.config.jiosaavn_enabled = !self.config.jiosaavn_enabled;
-                AppConfig::set_jiosaavn_enabled(self.config.jiosaavn_enabled);
+                let enabled = self.config.jiosaavn_enabled;
+                self.resolver
+                    .update_profile(|profile| profile.jiosaavn_enabled = enabled);
                 let _ = self.config.save();
-                if self.config.jiosaavn_enabled {
-                    self.start_hifi_upgrade();
-                }
+                let _ = self
+                    .session
+                    .send(SessionCommand::UpdatePolicy {
+                        policy: self.session_policy(),
+                        trigger_upgrade: enabled,
+                    })
+                    .await;
                 self.status_line = format!(
                     "JioSaavn 320kbps module: {}",
                     if self.config.jiosaavn_enabled {
@@ -871,11 +881,23 @@ impl BackendEngine {
                 self.config.cache_limit_gb =
                     AppConfig::step_cache_limit_gb(self.config.cache_limit_gb, forward);
                 let _ = self.config.save();
+                let limit_bytes = self.config.cache_limit_bytes();
+                self.cache_limit_bytes.store(limit_bytes, Ordering::Relaxed);
+                self.resolver
+                    .update_profile(|profile| profile.cache_limit_bytes = limit_bytes);
                 if let Some(cache) = &self.cache_db {
                     cache.set_enabled(self.config.cache_limit_gb > 0);
                 }
+                let _ = self
+                    .session
+                    .send(SessionCommand::UpdatePolicy {
+                        policy: self.session_policy(),
+                        trigger_upgrade: false,
+                    })
+                    .await;
+                let paths = self.paths.clone();
                 tokio::spawn(async move {
-                    enforce_active_media_cache_limit_async().await;
+                    enforce_media_cache_limit_async(paths, limit_bytes).await;
                 });
                 self.status_line = if self.config.cache_limit_gb == 0 {
                     "Cache disabled; media cleanup started".to_string()
@@ -888,7 +910,6 @@ impl BackendEngine {
             }
             BackendCmd::ToggleMotionCovers => {
                 self.config.motion_covers = !self.config.motion_covers;
-                AppConfig::set_motion_covers_enabled(self.config.motion_covers);
                 let _ = self.config.save();
                 if !self.config.motion_covers {
                     self.motion_cover = None;
@@ -929,6 +950,13 @@ impl BackendEngine {
             BackendCmd::CreateYtmPlaylist(title) => {
                 self.create_ytm_playlist(&title);
             }
+            BackendCmd::EditPlaylist {
+                playlist_id,
+                title,
+                cover_path,
+            } => {
+                self.edit_playlist(playlist_id, title, cover_path);
+            }
             BackendCmd::AddTrackToPlaylist {
                 track,
                 playlist_id,
@@ -953,13 +981,30 @@ impl BackendEngine {
                 self.sync_hyprland_opacity(None);
             }
             BackendCmd::SetWindowVisible(vis) => {
+                let became_visible = vis && !self.window_visible;
                 self.window_visible = vis;
+                if !vis {
+                    // Abort non-audio visual media tasks while hidden/minimized to taskbar or tray.
+                    self.media_tasks.restart();
+                    self.motion_cover = None;
+                } else if became_visible {
+                    self.resume_deferred_media();
+                }
+            }
+            BackendCmd::SetUiCompact(compact) => {
+                let expanded = !compact && self.ui_compact;
+                self.ui_compact = compact;
+                if compact {
+                    self.motion_cover = None;
+                } else if expanded && self.window_visible {
+                    self.resume_deferred_media();
+                }
             }
             BackendCmd::Shutdown(_) => {}
         }
     }
 
-    fn handle_internal_event(&mut self, ev: InternalEvent) {
+    async fn handle_internal_event(&mut self, ev: InternalEvent) {
         match ev {
             InternalEvent::SignInFinished {
                 browser_id,
@@ -985,12 +1030,20 @@ impl BackendEngine {
                 self.sign_in_error = None;
                 self.cookies = cookies;
                 self.ytm = YtMusicClient::new(self.http.clone(), self.cookies.clone());
-                self.resolver = StreamResolver::new(
+                self.resolver = LinuxStreamResolver::with_profile(
                     self.http.clone(),
                     self.ytm.clone(),
                     self.cookies.clone(),
                     self.cache_db.clone(),
+                    linux_core_paths(),
+                    linux_resolver_profile(&self.config),
                 );
+                let _ = self
+                    .session
+                    .send(SessionCommand::UpdateStreamSource(
+                        Arc::new(self.resolver.clone()) as Arc<dyn PlaybackStreamSource>,
+                    ))
+                    .await;
 
                 self.config.desktop_ytm_browser = Some(browser_id.clone());
                 let _ = self.config.save();
@@ -1180,11 +1233,14 @@ impl BackendEngine {
                     .filter_map(|t| t.thumbnail_url.clone())
                     .collect();
                 self.prefetch_thumbnails(urls);
-                PlaybackCoordinator::apply(
-                    &mut self.playback,
-                    PlaybackCommand::QueueChanged(tracks),
-                );
-                self.play_track_at(0, false);
+                let _ = self
+                    .session
+                    .send(SessionCommand::PlayQueue {
+                        tracks,
+                        start_index: 0,
+                        push_history: false,
+                    })
+                    .await;
                 self.status_line = format!("Playing {label}");
             }
             InternalEvent::ArtistResolveFallback(query) => {
@@ -1363,176 +1419,6 @@ impl BackendEngine {
                 self.prefetch_thumbnails(urls);
                 self.playlist_tracks.extend(tracks);
             }
-            InternalEvent::StreamReady {
-                play_seq,
-                track_id,
-                stream,
-            } => {
-                if play_seq != self.play_seq {
-                    return;
-                }
-                let Some(track) = self
-                    .playback
-                    .current_track()
-                    .filter(|t| t.id == track_id)
-                    .cloned()
-                else {
-                    return;
-                };
-                tracing::info!(
-                    event = "stream_ready",
-                    client = "desktop",
-                    track_id = %track.id,
-                    title = %track.title,
-                    artist = %track.artist,
-                    provider = ?track.source,
-                    play_seq,
-                    attempt = if self.retried_play_seq == play_seq { "retry" } else { "initial" },
-                    transport = if stream.url.starts_with("http") { "remote" } else { "local" },
-                    quality = %stream.badge,
-                    resolve_ms = self.play_requested_at.map_or(0, |at| at.elapsed().as_millis()),
-                    "stream resolved"
-                );
-                self.playback.set_active_stream(stream.clone());
-                self.playback.loading_track = false;
-                self.upgrading_quality = false;
-                self.playback.paused = true;
-                self.awaiting_playback_start = true;
-                let resume_at = if self.retried_play_seq == play_seq {
-                    self.playback.position_secs
-                } else {
-                    0.0
-                };
-                self.playback.position_secs = resume_at;
-                self.playback.stream_badge = stream.badge.clone();
-                self.pos_anchor = None;
-                self.stream_loaded_at = Some(Instant::now());
-                self.status_line = format!("Starting: {} — {}", track.title, track.artist);
-                if let Some(mpv) = &self.mpv {
-                    if resume_at >= 0.05 {
-                        mpv.load_stream_at(&stream, resume_at);
-                    } else {
-                        mpv.load_stream(&stream);
-                    }
-                    mpv.set_paused(false);
-                }
-            }
-            InternalEvent::NextTrackPrepared {
-                play_seq,
-                index,
-                track_id,
-                result,
-            } => {
-                if play_seq != self.play_seq
-                    || self
-                        .pending_auto_advance
-                        .as_ref()
-                        .is_none_or(|(seq, id)| *seq != play_seq || id != &track_id)
-                {
-                    return;
-                }
-                self.pending_auto_advance = None;
-                if !self
-                    .playback
-                    .queue
-                    .get(index)
-                    .is_some_and(|track| track.id == track_id)
-                {
-                    self.playback.loading_track = false;
-                    return;
-                }
-                match result {
-                    Ok(stream) => self.play_track_with_stream(index, true, Some(stream)),
-                    Err(error) => {
-                        self.playback.loading_track = false;
-                        self.playback.paused = true;
-                        self.status_line = format!("Could not prepare next track: {error}");
-                    }
-                }
-            }
-            InternalEvent::StreamUpgrade {
-                play_seq,
-                track_id,
-                stream,
-            } => {
-                if play_seq != self.play_seq {
-                    return;
-                }
-                self.upgrading_quality = false;
-                if !self
-                    .playback
-                    .current_track()
-                    .is_some_and(|t| t.id == track_id)
-                {
-                    return;
-                }
-                if !self.playback.set_upgraded_stream(stream.clone()) {
-                    return;
-                }
-                let resume_at = self.interpolated_position();
-                let was_paused = self.playback.paused;
-                self.playback.position_secs = resume_at;
-                self.stream_loaded_at = Some(Instant::now());
-                if !was_paused {
-                    self.pos_anchor = Some((resume_at, Instant::now()));
-                }
-                self.playback.stream_badge = stream.badge.clone();
-                tracing::info!(
-                    event = "quality_upgraded",
-                    client = "desktop",
-                    track_id = %track_id,
-                    play_seq,
-                    quality = %stream.badge,
-                    resume_secs = resume_at,
-                    "audio quality upgraded"
-                );
-                if let Some(mpv) = &self.mpv {
-                    mpv.load_stream_at(&stream, resume_at);
-                    mpv.set_paused(was_paused);
-                }
-                self.status_line = format!("Upgraded audio quality: {}", stream.badge);
-            }
-            InternalEvent::UpgradeFinished { play_seq } => {
-                if play_seq == self.play_seq {
-                    self.upgrading_quality = false;
-                }
-            }
-            InternalEvent::StreamError {
-                play_seq,
-                track_id,
-                error,
-            } => {
-                if play_seq != self.play_seq {
-                    return;
-                }
-                let Some(track) = self
-                    .playback
-                    .current_track()
-                    .filter(|track| track.id == track_id)
-                else {
-                    return;
-                };
-                tracing::error!(
-                    event = "resolve_failed",
-                    client = "desktop",
-                    track_id = %track.id,
-                    title = %track.title,
-                    artist = %track.artist,
-                    provider = ?track.source,
-                    play_seq,
-                    error = %error,
-                    "stream resolution failed"
-                );
-                self.playback.loading_track = false;
-                self.upgrading_quality = false;
-                self.playback.paused = true;
-                self.pos_anchor = None;
-                self.playback.stream_badge = "Error".to_string();
-                self.status_line = format!("Stream error: {error}");
-                if let Some(mpv) = &self.mpv {
-                    mpv.set_paused(true);
-                }
-            }
             InternalEvent::LyricsReady {
                 play_seq,
                 track_id,
@@ -1592,8 +1478,15 @@ impl BackendEngine {
                     .iter_mut()
                     .find(|track| track.id == track_id)
                 {
-                    track.thumbnail_url = Some(url);
+                    track.thumbnail_url = Some(url.clone());
                 }
+                let _ = self
+                    .session
+                    .send(SessionCommand::UpdateTrackThumbnail {
+                        track_id: track_id.clone(),
+                        url,
+                    })
+                    .await;
                 if self
                     .playback
                     .current_track()
@@ -1625,6 +1518,40 @@ impl BackendEngine {
                     db.put_library("ytm", &self.ytm_playlists);
                 }
                 self.status_line = format!("Created playlist \"{}\"", pl.name);
+            }
+            InternalEvent::PlaylistUpdated {
+                playlist_id,
+                title,
+                cover_updated,
+            } => {
+                if let Some(ref new_title) = title {
+                    for pl in &mut self.ytm_playlists {
+                        if pl.id == playlist_id
+                            || pl.id.strip_prefix("VL") == playlist_id.strip_prefix("VL")
+                        {
+                            pl.name = new_title.clone();
+                        }
+                    }
+                    if self.playlist_id.as_deref() == Some(playlist_id.as_str()) {
+                        self.playlist_heading = new_title.clone();
+                    }
+                    if let Some(db) = &self.cache_db {
+                        db.put_library("ytm", &self.ytm_playlists);
+                    }
+                }
+                self.status_line = if cover_updated {
+                    "Playlist & cover updated on YouTube Music".to_string()
+                } else {
+                    "Playlist updated on YouTube Music".to_string()
+                };
+                if let Some(id) = self.playlist_id.clone() {
+                    let heading = self.playlist_heading.clone();
+                    let subtitle = self.playlist_subtitle.clone();
+                    let cover = self.playlist_cover_url.clone();
+                    let editable = self.playlist_editable;
+                    self.open_collection(id, heading, subtitle, cover, editable, true);
+                }
+                self.load_library_extras();
             }
             InternalEvent::UpdateChecked(info) => {
                 self.checking_updates = false;
@@ -1750,7 +1677,12 @@ impl BackendEngine {
             checking_updates: self.checking_updates,
         });
 
-        let _ = self.snap_tx.send(snap.clone());
+        if self.window_visible {
+            let _ = self
+                .progress_tx
+                .send((self.playback.position_secs, self.playback.duration_secs));
+            let _ = self.snap_tx.send(snap.clone());
+        }
         let _ = self.mpris_tx.send(MprisUpdate::Sync(snap));
 
         if notify_integrations {
@@ -1779,18 +1711,12 @@ impl BackendEngine {
         if let Err(err) = self.config.save() {
             tracing::warn!(?err, "failed to save desktop config on shutdown");
         }
-        if let Some((_, task)) = self.next_prefetch_task.take() {
-            task.abort();
+        if !self.media_tasks.shutdown(Duration::from_secs(2)).await {
+            tracing::warn!("desktop media tasks exceeded shutdown timeout and were aborted");
         }
-        if let Some((_, task)) = self.adopted_prefetch_task.take() {
-            task.abort();
-        }
-        self.next_precache.take();
-        if !self.playback_tasks.shutdown(Duration::from_secs(2)).await {
-            tracing::warn!("playback tasks exceeded shutdown timeout and were aborted");
-        }
-        if let Some(mpv) = self.mpv.take() {
-            mpv.shutdown().await;
+        let report = self.session.shutdown().await;
+        if !report.tasks_joined_cleanly {
+            tracing::warn!("playback session tasks exceeded shutdown timeout and were aborted");
         }
         if let Some(tray) = self.tray_handle.take() {
             tray.shutdown().await;
@@ -1801,27 +1727,29 @@ impl BackendEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sonata_core::player::PlaybackGeneration;
+    use std::time::Instant;
 
     #[test]
     fn natural_track_end_requires_near_duration() {
-        assert!(BackendEngine::is_natural_track_end(178.0, 180.0));
-        assert!(!BackendEngine::is_natural_track_end(12.0, 180.0));
-        assert!(!BackendEngine::is_natural_track_end(0.0, 0.0));
+        assert!(PlaybackSession::is_natural_track_end(178.0, 180.0));
+        assert!(!PlaybackSession::is_natural_track_end(12.0, 180.0));
+        assert!(!PlaybackSession::is_natural_track_end(0.0, 0.0));
     }
 
     #[test]
     fn loading_or_recent_streams_ignore_stale_errors() {
-        assert!(BackendEngine::should_ignore_stale_playback_error(
+        assert!(PlaybackSession::should_ignore_stale_track_end(
             true,
             None,
             Duration::from_millis(750),
         ));
-        assert!(BackendEngine::should_ignore_stale_playback_error(
+        assert!(PlaybackSession::should_ignore_stale_track_end(
             false,
             None,
             Duration::from_millis(750),
         ));
-        assert!(BackendEngine::should_ignore_stale_playback_error(
+        assert!(PlaybackSession::should_ignore_stale_track_end(
             false,
             Some(Instant::now()),
             Duration::from_millis(750),
@@ -1830,8 +1758,14 @@ mod tests {
 
     #[test]
     fn one_recovery_attempt_per_play_sequence() {
-        assert!(BackendEngine::should_attempt_recovery(0, 7));
-        assert!(!BackendEngine::should_attempt_recovery(7, 7));
+        assert!(PlaybackSession::should_attempt_recovery(
+            None,
+            PlaybackGeneration::new(7)
+        ));
+        assert!(!PlaybackSession::should_attempt_recovery(
+            Some(PlaybackGeneration::new(7)),
+            PlaybackGeneration::new(7)
+        ));
     }
 
     #[test]
@@ -1910,7 +1844,12 @@ mod tests {
             update_info: None,
             checking_updates: false,
         }));
-        let handle = BackendHandle { cmd_tx, snap_rx };
+        let (_progress_tx, progress_rx) = watch::channel((0.0_f64, 0.0_f64));
+        let handle = BackendHandle {
+            cmd_tx,
+            snap_rx,
+            progress_rx,
+        };
         let responder = std::thread::spawn(move || {
             if let Some(BackendCmd::Shutdown(done)) = cmd_rx.blocking_recv() {
                 let _ = done.try_send(());

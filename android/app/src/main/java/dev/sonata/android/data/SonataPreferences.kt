@@ -3,11 +3,26 @@ package dev.sonata.android.data
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.compose.runtime.Immutable
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
+
+/**
+ * Application UI language preference for Sonata Android.
+ * Defaults to [SYSTEM], automatically following the Android device locale.
+ */
+enum class AppLanguage {
+    SYSTEM,
+    ENGLISH,
+    TURKISH,
+    RUSSIAN,
+}
 
 /**
  * Structural & aesthetic design theme family for Sonata Android.
@@ -15,6 +30,7 @@ import org.json.JSONObject
 enum class DesignTheme {
     VIOLET,
     MOONFLOWER,
+    BASIC,
 }
 
 /**
@@ -25,6 +41,8 @@ enum class ThemeMode {
     VIOLET_DARK,
     MOONFLOWER_LIGHT,
     MOONFLOWER_DARK,
+    BASIC_LIGHT,
+    BASIC_DARK,
     SYSTEM,
     AMOLED,
 }
@@ -49,11 +67,56 @@ enum class AudioQualityTier {
 }
 
 /**
- * Preferred offline download quality tier.
+ * Preferred offline download quality tier, ordered from highest to lowest quality
+ * with average per-song storage estimates (for a typical ~3.5-minute track).
  */
-enum class DownloadQualityTier {
-    HIGH,
-    STANDARD,
+enum class DownloadQualityTier(
+    val title: String,
+    val detail: String,
+    val approxMbPerSong: String,
+    val maxBitrateKbps: Int,
+) {
+    HIGHEST(
+        title = "Highest (320 kbps / Extreme)",
+        detail = "Best available AAC 320 kbps or Extreme Opus",
+        approxMbPerSong = "~8.5 MB / song",
+        maxBitrateKbps = 320,
+    ),
+    HIGH(
+        title = "High (160–256 kbps)",
+        detail = "High-bitrate Opus / AAC",
+        approxMbPerSong = "~5.5 MB / song",
+        maxBitrateKbps = 256,
+    ),
+    STANDARD(
+        title = "Standard (128 kbps)",
+        detail = "Balanced audio quality and storage use",
+        approxMbPerSong = "~3.6 MB / song",
+        maxBitrateKbps = 128,
+    ),
+    LOW(
+        title = "Data Saver (64 kbps)",
+        detail = "Smallest file size for large offline libraries",
+        approxMbPerSong = "~1.8 MB / song",
+        maxBitrateKbps = 64,
+    ),
+}
+
+/**
+ * Target storage location for offline downloaded tracks.
+ */
+enum class DownloadStorageLocation(
+    val title: String,
+    val detail: String,
+) {
+    INTERNAL(
+        title = "Internal Storage",
+        detail = "App-private storage (hidden from other apps)",
+    ),
+    EXTERNAL(
+        title = "External Storage",
+        detail = "Shared Music/Sonata folder visible to file managers",
+    ),
 }
 
 /**
@@ -64,17 +127,30 @@ enum class DownloadQualityTier {
  */
 @Immutable
 data class SonataSettingsState(
-    // Appearance & Glass
-    val designTheme: DesignTheme = DesignTheme.VIOLET,
+    // Language & Appearance
+    val appLanguage: AppLanguage = AppLanguage.SYSTEM,
+    val designTheme: DesignTheme = DesignTheme.BASIC,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val liquidGlassEnabled: Boolean = true,
     val glassPerformance: Boolean = false,
     val reduceDynamicBlur: Boolean = false,
     val reduceAnimation: Boolean = false,
     val animatedArtwork: Boolean = true,
+    val animatedArtworkCellular: Boolean = true,
     val artworkTintedPages: Boolean = true,
+    val fullScreenCoverArt: Boolean = true,
+    val fullScreenDetailCover: Boolean = false,
+    val showTotalDuration: Boolean = false,
+    val hideLyricsPreview: Boolean = false,
     val playerBackdropMode: PlayerBackdropMode = PlayerBackdropMode.ARTWORK_MESH,
     val fpsLimit: Int = 120,
+
+    // Content Preferences
+    val hideRecents: Boolean = false,
+    val hideTopPicks: Boolean = false,
+    val hideHomeMoods: Boolean = false,
+    val hideHomeVideos: Boolean = false,
+    val squareVideoThumbnails: Boolean = false,
 
     // Playback & Audio
     val audioQuality: AudioQualityTier = AudioQualityTier.HIGH,
@@ -83,6 +159,7 @@ data class SonataSettingsState(
     val crossfadeSeconds: Int = 4,
     val loudnessNormEnabled: Boolean = false,
     val skipSilenceEnabled: Boolean = false,
+    val sleepTimerFadeOut: Boolean = true,
     val playbackSpeed: Float = 1.0f,
     val eqEnabled: Boolean = false,
     val eqPreset: String = "Flat",
@@ -99,9 +176,17 @@ data class SonataSettingsState(
 
     // Downloads
     val downloadQuality: DownloadQualityTier = DownloadQualityTier.HIGH,
+    val downloadIncludeJioSaavn: Boolean = true,
+    val downloadStorageLocation: DownloadStorageLocation = DownloadStorageLocation.INTERNAL,
     val wifiOnlyDownloads: Boolean = true,
     val exportDownloads: Boolean = false,
     val autoDownloadLiked: Boolean = false,
+
+    // Miscellaneous
+    val hideStatusBarInPlayer: Boolean = false,
+    val hideSongStatus: Boolean = false,
+    val stopMusicOnClose: Boolean = false,
+    val showNerdStats: Boolean = false,
 
     // Modules
     val jioSaavnEnabled: Boolean = false,
@@ -109,14 +194,18 @@ data class SonataSettingsState(
     fun resolvedDesignTheme(): DesignTheme = when (themeMode) {
         ThemeMode.VIOLET_LIGHT, ThemeMode.VIOLET_DARK -> DesignTheme.VIOLET
         ThemeMode.MOONFLOWER_LIGHT, ThemeMode.MOONFLOWER_DARK -> DesignTheme.MOONFLOWER
+        ThemeMode.BASIC_LIGHT, ThemeMode.BASIC_DARK -> DesignTheme.BASIC
         ThemeMode.SYSTEM, ThemeMode.AMOLED -> designTheme
     }
 
     fun isDarkActive(systemDark: Boolean): Boolean = when (themeMode) {
-        ThemeMode.VIOLET_LIGHT, ThemeMode.MOONFLOWER_LIGHT -> false
-        ThemeMode.VIOLET_DARK, ThemeMode.MOONFLOWER_DARK, ThemeMode.AMOLED -> true
+        ThemeMode.VIOLET_LIGHT, ThemeMode.MOONFLOWER_LIGHT, ThemeMode.BASIC_LIGHT -> false
+        ThemeMode.VIOLET_DARK, ThemeMode.MOONFLOWER_DARK, ThemeMode.BASIC_DARK, ThemeMode.AMOLED -> true
         ThemeMode.SYSTEM -> systemDark
     }
+
+    fun usesExternalDownloadStorage(): Boolean =
+        downloadStorageLocation == DownloadStorageLocation.EXTERNAL || exportDownloads
 }
 
 /**
@@ -127,14 +216,38 @@ data class SonataSettingsState(
  */
 class SonataPreferences(context: Context) {
 
-    private val prefs: SharedPreferences =
-        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val appContext = context.applicationContext
+    private val prefs: SharedPreferences by lazy {
+        appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    }
 
     private val lock = Any()
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Volatile
+    private var stateLoaded = false
     private var trackOffsetsCache: MutableMap<String, Long>? = null
 
-    private val _state = MutableStateFlow(readState())
+    private val _state = MutableStateFlow(SonataSettingsState())
     val state: StateFlow<SonataSettingsState> = _state.asStateFlow()
+
+    init {
+        ioScope.launch {
+            ensureStateLoaded()
+        }
+    }
+
+    private fun ensureStateLoaded() {
+        if (stateLoaded) return
+        synchronized(lock) {
+            ensureStateLoadedLocked()
+        }
+    }
+
+    private fun ensureStateLoadedLocked() {
+        if (stateLoaded) return
+        _state.value = readState()
+        stateLoaded = true
+    }
 
     /**
      * Applies [transform] to the current [SonataSettingsState], normalizes bounded values,
@@ -142,6 +255,7 @@ class SonataPreferences(context: Context) {
      */
     fun update(transform: (SonataSettingsState) -> SonataSettingsState) {
         synchronized(lock) {
+            ensureStateLoadedLocked()
             val next = sanitize(transform(_state.value))
             if (next == _state.value) return
             writeState(next)
@@ -187,60 +301,11 @@ class SonataPreferences(context: Context) {
         val current: SonataSettingsState
         val offsets: Map<String, Long>
         synchronized(lock) {
+            ensureStateLoadedLocked()
             current = _state.value
             offsets = HashMap(getOrLoadTrackOffsetsLocked())
         }
-
-        val settingsObj = JSONObject().apply {
-            put(KEY_DESIGN_THEME, current.designTheme.name)
-            put(KEY_THEME_MODE, current.themeMode.name)
-            put(KEY_LIQUID_GLASS_ENABLED, current.liquidGlassEnabled)
-            put(KEY_GLASS_PERFORMANCE, current.glassPerformance)
-            put(KEY_REDUCE_DYNAMIC_BLUR, current.reduceDynamicBlur)
-            put(KEY_REDUCE_ANIMATION, current.reduceAnimation)
-            put(KEY_ANIMATED_ARTWORK, current.animatedArtwork)
-            put(KEY_ARTWORK_TINTED_PAGES, current.artworkTintedPages)
-            put(KEY_PLAYER_BACKDROP_MODE, current.playerBackdropMode.name)
-            put(KEY_FPS_LIMIT, current.fpsLimit)
-
-            put(KEY_AUDIO_QUALITY, current.audioQuality.name)
-            put(KEY_PREFER_HIGH_QUALITY, current.preferHighQuality)
-            put(KEY_CROSSFADE_ENABLED, current.crossfadeEnabled)
-            put(KEY_CROSSFADE_SECONDS, current.crossfadeSeconds)
-            put(KEY_LOUDNESS_NORM_ENABLED, current.loudnessNormEnabled)
-            put(KEY_SKIP_SILENCE_ENABLED, current.skipSilenceEnabled)
-            put(KEY_PLAYBACK_SPEED, current.playbackSpeed.toDouble())
-            put(KEY_EQ_ENABLED, current.eqEnabled)
-            put(KEY_EQ_PRESET, current.eqPreset)
-            put(KEY_EQ_BANDS_DB, JSONArray().apply { current.eqBandsDb.forEach { put(it.toDouble()) } })
-            put(KEY_AUTOPLAY_ENABLED, current.autoplayEnabled)
-
-            put(KEY_LYRICS_BLUR_ENABLED, current.lyricsBlurEnabled)
-            put(KEY_LYRICS_TRANSLATION_ENABLED, current.lyricsTranslationEnabled)
-            put(KEY_LYRICS_TRANSLATION_LANG, current.lyricsTranslationLang)
-            put(KEY_LYRICS_ROMANIZATION_ENABLED, current.lyricsRomanizationEnabled)
-            put(KEY_LYRICS_OFFSET_MS, current.lyricsOffsetMs)
-            put(KEY_PRIORITIZE_WORD_SYNC, current.prioritizeWordSync)
-
-            put(KEY_DOWNLOAD_QUALITY, current.downloadQuality.name)
-            put(KEY_WIFI_ONLY_DOWNLOADS, current.wifiOnlyDownloads)
-            put(KEY_EXPORT_DOWNLOADS, current.exportDownloads)
-            put(KEY_AUTO_DOWNLOAD_LIKED, current.autoDownloadLiked)
-            put(KEY_JIOSAAVN_ENABLED, current.jioSaavnEnabled)
-        }
-
-        val offsetsObj = JSONObject().apply {
-            offsets.forEach { (id, offset) -> put(id, offset) }
-        }
-
-        val root = JSONObject().apply {
-            put(BACKUP_KEY_APP, BACKUP_APP_ID)
-            put(BACKUP_KEY_SCHEMA, BACKUP_SCHEMA_VERSION)
-            put(BACKUP_KEY_EXPORTED_AT_MS, System.currentTimeMillis())
-            put(BACKUP_KEY_SETTINGS, settingsObj)
-            put(BACKUP_KEY_TRACK_OFFSETS, offsetsObj)
-        }
-        return root.toString(2)
+        return formatBackupJson(current, offsets)
     }
 
     /**
@@ -263,6 +328,7 @@ class SonataPreferences(context: Context) {
 
             val restored = sanitize(
                 SonataSettingsState(
+                    appLanguage = parseEnum(settingsObj.optString(KEY_APP_LANGUAGE), defaults.appLanguage),
                     designTheme = parseEnum(settingsObj.optString(KEY_DESIGN_THEME), defaults.designTheme),
                     themeMode = parseThemeMode(settingsObj.optString(KEY_THEME_MODE), defaults.themeMode),
                     liquidGlassEnabled = settingsObj.optBoolean(KEY_LIQUID_GLASS_ENABLED, defaults.liquidGlassEnabled),
@@ -270,12 +336,32 @@ class SonataPreferences(context: Context) {
                     reduceDynamicBlur = settingsObj.optBoolean(KEY_REDUCE_DYNAMIC_BLUR, defaults.reduceDynamicBlur),
                     reduceAnimation = settingsObj.optBoolean(KEY_REDUCE_ANIMATION, defaults.reduceAnimation),
                     animatedArtwork = settingsObj.optBoolean(KEY_ANIMATED_ARTWORK, defaults.animatedArtwork),
+                    animatedArtworkCellular = settingsObj.optBoolean(
+                        KEY_ANIMATED_ARTWORK_CELLULAR,
+                        defaults.animatedArtworkCellular,
+                    ),
                     artworkTintedPages = settingsObj.optBoolean(KEY_ARTWORK_TINTED_PAGES, defaults.artworkTintedPages),
+                    fullScreenCoverArt = settingsObj.optBoolean(KEY_FULL_SCREEN_COVER_ART, defaults.fullScreenCoverArt),
+                    fullScreenDetailCover = settingsObj.optBoolean(
+                        KEY_FULL_SCREEN_DETAIL_COVER,
+                        defaults.fullScreenDetailCover,
+                    ),
+                    showTotalDuration = settingsObj.optBoolean(KEY_SHOW_TOTAL_DURATION, defaults.showTotalDuration),
+                    hideLyricsPreview = settingsObj.optBoolean(KEY_HIDE_LYRICS_PREVIEW, defaults.hideLyricsPreview),
                     playerBackdropMode = parseEnum(
                         settingsObj.optString(KEY_PLAYER_BACKDROP_MODE),
                         defaults.playerBackdropMode,
                     ),
                     fpsLimit = settingsObj.optInt(KEY_FPS_LIMIT, defaults.fpsLimit),
+
+                    hideRecents = settingsObj.optBoolean(KEY_HIDE_RECENTS, defaults.hideRecents),
+                    hideTopPicks = settingsObj.optBoolean(KEY_HIDE_TOP_PICKS, defaults.hideTopPicks),
+                    hideHomeMoods = settingsObj.optBoolean(KEY_HIDE_HOME_MOODS, defaults.hideHomeMoods),
+                    hideHomeVideos = settingsObj.optBoolean(KEY_HIDE_HOME_VIDEOS, defaults.hideHomeVideos),
+                    squareVideoThumbnails = settingsObj.optBoolean(
+                        KEY_SQUARE_VIDEO_THUMBNAILS,
+                        defaults.squareVideoThumbnails,
+                    ),
 
                     audioQuality = parseEnum(settingsObj.optString(KEY_AUDIO_QUALITY), defaults.audioQuality),
                     preferHighQuality = settingsObj.optBoolean(KEY_PREFER_HIGH_QUALITY, defaults.preferHighQuality),
@@ -283,6 +369,7 @@ class SonataPreferences(context: Context) {
                     crossfadeSeconds = settingsObj.optInt(KEY_CROSSFADE_SECONDS, defaults.crossfadeSeconds),
                     loudnessNormEnabled = settingsObj.optBoolean(KEY_LOUDNESS_NORM_ENABLED, defaults.loudnessNormEnabled),
                     skipSilenceEnabled = settingsObj.optBoolean(KEY_SKIP_SILENCE_ENABLED, defaults.skipSilenceEnabled),
+                    sleepTimerFadeOut = settingsObj.optBoolean(KEY_SLEEP_TIMER_FADE_OUT, defaults.sleepTimerFadeOut),
                     playbackSpeed = settingsObj.optDouble(KEY_PLAYBACK_SPEED, defaults.playbackSpeed.toDouble()).toFloat(),
                     eqEnabled = settingsObj.optBoolean(KEY_EQ_ENABLED, defaults.eqEnabled),
                     eqPreset = settingsObj.optString(KEY_EQ_PRESET, defaults.eqPreset).ifBlank { defaults.eqPreset },
@@ -306,9 +393,29 @@ class SonataPreferences(context: Context) {
                     prioritizeWordSync = settingsObj.optBoolean(KEY_PRIORITIZE_WORD_SYNC, defaults.prioritizeWordSync),
 
                     downloadQuality = parseEnum(settingsObj.optString(KEY_DOWNLOAD_QUALITY), defaults.downloadQuality),
+                    downloadIncludeJioSaavn = settingsObj.optBoolean(
+                        KEY_DOWNLOAD_INCLUDE_JIOSAAVN,
+                        defaults.downloadIncludeJioSaavn,
+                    ),
+                    downloadStorageLocation = parseEnum(
+                        settingsObj.optString(KEY_DOWNLOAD_STORAGE_LOCATION),
+                        if (settingsObj.optBoolean(KEY_EXPORT_DOWNLOADS, defaults.exportDownloads)) {
+                            DownloadStorageLocation.EXTERNAL
+                        } else {
+                            defaults.downloadStorageLocation
+                        },
+                    ),
                     wifiOnlyDownloads = settingsObj.optBoolean(KEY_WIFI_ONLY_DOWNLOADS, defaults.wifiOnlyDownloads),
                     exportDownloads = settingsObj.optBoolean(KEY_EXPORT_DOWNLOADS, defaults.exportDownloads),
                     autoDownloadLiked = settingsObj.optBoolean(KEY_AUTO_DOWNLOAD_LIKED, defaults.autoDownloadLiked),
+
+                    hideStatusBarInPlayer = settingsObj.optBoolean(
+                        KEY_HIDE_STATUS_BAR_IN_PLAYER,
+                        defaults.hideStatusBarInPlayer,
+                    ),
+                    hideSongStatus = settingsObj.optBoolean(KEY_HIDE_SONG_STATUS, defaults.hideSongStatus),
+                    stopMusicOnClose = settingsObj.optBoolean(KEY_STOP_MUSIC_ON_CLOSE, defaults.stopMusicOnClose),
+                    showNerdStats = settingsObj.optBoolean(KEY_SHOW_NERD_STATS, defaults.showNerdStats),
                     jioSaavnEnabled = settingsObj.optBoolean(KEY_JIOSAAVN_ENABLED, defaults.jioSaavnEnabled),
                 ),
             )
@@ -332,6 +439,7 @@ class SonataPreferences(context: Context) {
                 trackOffsetsCache = LinkedHashMap(restoredOffsets)
                 writeState(restored, restoredOffsets)
                 _state.value = restored
+                stateLoaded = true
             }
             true
         }.getOrDefault(false)
@@ -344,6 +452,7 @@ class SonataPreferences(context: Context) {
 
         return sanitize(
             SonataSettingsState(
+                appLanguage = parseEnum(prefs.getString(KEY_APP_LANGUAGE, null), defaults.appLanguage),
                 designTheme = parseEnum(prefs.getString(KEY_DESIGN_THEME, null), defaults.designTheme),
                 themeMode = parseThemeMode(prefs.getString(KEY_THEME_MODE, null), defaults.themeMode),
                 liquidGlassEnabled = prefs.getBoolean(KEY_LIQUID_GLASS_ENABLED, defaults.liquidGlassEnabled),
@@ -351,12 +460,32 @@ class SonataPreferences(context: Context) {
                 reduceDynamicBlur = prefs.getBoolean(KEY_REDUCE_DYNAMIC_BLUR, defaults.reduceDynamicBlur),
                 reduceAnimation = prefs.getBoolean(KEY_REDUCE_ANIMATION, defaults.reduceAnimation),
                 animatedArtwork = prefs.getBoolean(KEY_ANIMATED_ARTWORK, defaults.animatedArtwork),
+                animatedArtworkCellular = prefs.getBoolean(
+                    KEY_ANIMATED_ARTWORK_CELLULAR,
+                    defaults.animatedArtworkCellular,
+                ),
                 artworkTintedPages = prefs.getBoolean(KEY_ARTWORK_TINTED_PAGES, defaults.artworkTintedPages),
+                fullScreenCoverArt = prefs.getBoolean(KEY_FULL_SCREEN_COVER_ART, defaults.fullScreenCoverArt),
+                fullScreenDetailCover = prefs.getBoolean(
+                    KEY_FULL_SCREEN_DETAIL_COVER,
+                    defaults.fullScreenDetailCover,
+                ),
+                showTotalDuration = prefs.getBoolean(KEY_SHOW_TOTAL_DURATION, defaults.showTotalDuration),
+                hideLyricsPreview = prefs.getBoolean(KEY_HIDE_LYRICS_PREVIEW, defaults.hideLyricsPreview),
                 playerBackdropMode = parseEnum(
                     prefs.getString(KEY_PLAYER_BACKDROP_MODE, null),
                     defaults.playerBackdropMode,
                 ),
                 fpsLimit = prefs.getInt(KEY_FPS_LIMIT, defaults.fpsLimit),
+
+                hideRecents = prefs.getBoolean(KEY_HIDE_RECENTS, defaults.hideRecents),
+                hideTopPicks = prefs.getBoolean(KEY_HIDE_TOP_PICKS, defaults.hideTopPicks),
+                hideHomeMoods = prefs.getBoolean(KEY_HIDE_HOME_MOODS, defaults.hideHomeMoods),
+                hideHomeVideos = prefs.getBoolean(KEY_HIDE_HOME_VIDEOS, defaults.hideHomeVideos),
+                squareVideoThumbnails = prefs.getBoolean(
+                    KEY_SQUARE_VIDEO_THUMBNAILS,
+                    defaults.squareVideoThumbnails,
+                ),
 
                 audioQuality = parseEnum(prefs.getString(KEY_AUDIO_QUALITY, null), defaults.audioQuality),
                 preferHighQuality = prefs.getBoolean(KEY_PREFER_HIGH_QUALITY, defaults.preferHighQuality),
@@ -364,6 +493,7 @@ class SonataPreferences(context: Context) {
                 crossfadeSeconds = prefs.getInt(KEY_CROSSFADE_SECONDS, defaults.crossfadeSeconds),
                 loudnessNormEnabled = prefs.getBoolean(KEY_LOUDNESS_NORM_ENABLED, defaults.loudnessNormEnabled),
                 skipSilenceEnabled = prefs.getBoolean(KEY_SKIP_SILENCE_ENABLED, defaults.skipSilenceEnabled),
+                sleepTimerFadeOut = prefs.getBoolean(KEY_SLEEP_TIMER_FADE_OUT, defaults.sleepTimerFadeOut),
                 playbackSpeed = prefs.getFloat(KEY_PLAYBACK_SPEED, defaults.playbackSpeed),
                 eqEnabled = prefs.getBoolean(KEY_EQ_ENABLED, defaults.eqEnabled),
                 eqPreset = prefs.getString(KEY_EQ_PRESET, defaults.eqPreset)
@@ -388,9 +518,29 @@ class SonataPreferences(context: Context) {
                 prioritizeWordSync = prefs.getBoolean(KEY_PRIORITIZE_WORD_SYNC, defaults.prioritizeWordSync),
 
                 downloadQuality = parseEnum(prefs.getString(KEY_DOWNLOAD_QUALITY, null), defaults.downloadQuality),
+                downloadIncludeJioSaavn = prefs.getBoolean(
+                    KEY_DOWNLOAD_INCLUDE_JIOSAAVN,
+                    defaults.downloadIncludeJioSaavn,
+                ),
+                downloadStorageLocation = parseEnum(
+                    prefs.getString(KEY_DOWNLOAD_STORAGE_LOCATION, null),
+                    if (prefs.getBoolean(KEY_EXPORT_DOWNLOADS, defaults.exportDownloads)) {
+                        DownloadStorageLocation.EXTERNAL
+                    } else {
+                        defaults.downloadStorageLocation
+                    },
+                ),
                 wifiOnlyDownloads = prefs.getBoolean(KEY_WIFI_ONLY_DOWNLOADS, defaults.wifiOnlyDownloads),
                 exportDownloads = prefs.getBoolean(KEY_EXPORT_DOWNLOADS, defaults.exportDownloads),
                 autoDownloadLiked = prefs.getBoolean(KEY_AUTO_DOWNLOAD_LIKED, defaults.autoDownloadLiked),
+
+                hideStatusBarInPlayer = prefs.getBoolean(
+                    KEY_HIDE_STATUS_BAR_IN_PLAYER,
+                    defaults.hideStatusBarInPlayer,
+                ),
+                hideSongStatus = prefs.getBoolean(KEY_HIDE_SONG_STATUS, defaults.hideSongStatus),
+                stopMusicOnClose = prefs.getBoolean(KEY_STOP_MUSIC_ON_CLOSE, defaults.stopMusicOnClose),
+                showNerdStats = prefs.getBoolean(KEY_SHOW_NERD_STATS, defaults.showNerdStats),
                 jioSaavnEnabled = prefs.getBoolean(KEY_JIOSAAVN_ENABLED, defaults.jioSaavnEnabled),
             ),
         )
@@ -401,6 +551,7 @@ class SonataPreferences(context: Context) {
         trackOffsetsOverride: Map<String, Long>? = null,
     ) {
         val editor = prefs.edit()
+            .putString(KEY_APP_LANGUAGE, state.appLanguage.name)
             .putString(KEY_DESIGN_THEME, state.designTheme.name)
             .putString(KEY_THEME_MODE, state.themeMode.name)
             .putBoolean(KEY_LIQUID_GLASS_ENABLED, state.liquidGlassEnabled)
@@ -408,15 +559,26 @@ class SonataPreferences(context: Context) {
             .putBoolean(KEY_REDUCE_DYNAMIC_BLUR, state.reduceDynamicBlur)
             .putBoolean(KEY_REDUCE_ANIMATION, state.reduceAnimation)
             .putBoolean(KEY_ANIMATED_ARTWORK, state.animatedArtwork)
+            .putBoolean(KEY_ANIMATED_ARTWORK_CELLULAR, state.animatedArtworkCellular)
             .putBoolean(KEY_ARTWORK_TINTED_PAGES, state.artworkTintedPages)
+            .putBoolean(KEY_FULL_SCREEN_COVER_ART, state.fullScreenCoverArt)
+            .putBoolean(KEY_FULL_SCREEN_DETAIL_COVER, state.fullScreenDetailCover)
+            .putBoolean(KEY_SHOW_TOTAL_DURATION, state.showTotalDuration)
+            .putBoolean(KEY_HIDE_LYRICS_PREVIEW, state.hideLyricsPreview)
             .putString(KEY_PLAYER_BACKDROP_MODE, state.playerBackdropMode.name)
             .putInt(KEY_FPS_LIMIT, state.fpsLimit)
+            .putBoolean(KEY_HIDE_RECENTS, state.hideRecents)
+            .putBoolean(KEY_HIDE_TOP_PICKS, state.hideTopPicks)
+            .putBoolean(KEY_HIDE_HOME_MOODS, state.hideHomeMoods)
+            .putBoolean(KEY_HIDE_HOME_VIDEOS, state.hideHomeVideos)
+            .putBoolean(KEY_SQUARE_VIDEO_THUMBNAILS, state.squareVideoThumbnails)
             .putString(KEY_AUDIO_QUALITY, state.audioQuality.name)
             .putBoolean(KEY_PREFER_HIGH_QUALITY, state.preferHighQuality)
             .putBoolean(KEY_CROSSFADE_ENABLED, state.crossfadeEnabled)
             .putInt(KEY_CROSSFADE_SECONDS, state.crossfadeSeconds)
             .putBoolean(KEY_LOUDNESS_NORM_ENABLED, state.loudnessNormEnabled)
             .putBoolean(KEY_SKIP_SILENCE_ENABLED, state.skipSilenceEnabled)
+            .putBoolean(KEY_SLEEP_TIMER_FADE_OUT, state.sleepTimerFadeOut)
             .putFloat(KEY_PLAYBACK_SPEED, state.playbackSpeed)
             .putBoolean(KEY_EQ_ENABLED, state.eqEnabled)
             .putString(KEY_EQ_PRESET, state.eqPreset)
@@ -429,9 +591,15 @@ class SonataPreferences(context: Context) {
             .putLong(KEY_LYRICS_OFFSET_MS, state.lyricsOffsetMs)
             .putBoolean(KEY_PRIORITIZE_WORD_SYNC, state.prioritizeWordSync)
             .putString(KEY_DOWNLOAD_QUALITY, state.downloadQuality.name)
+            .putBoolean(KEY_DOWNLOAD_INCLUDE_JIOSAAVN, state.downloadIncludeJioSaavn)
+            .putString(KEY_DOWNLOAD_STORAGE_LOCATION, state.downloadStorageLocation.name)
             .putBoolean(KEY_WIFI_ONLY_DOWNLOADS, state.wifiOnlyDownloads)
             .putBoolean(KEY_EXPORT_DOWNLOADS, state.exportDownloads)
             .putBoolean(KEY_AUTO_DOWNLOAD_LIKED, state.autoDownloadLiked)
+            .putBoolean(KEY_HIDE_STATUS_BAR_IN_PLAYER, state.hideStatusBarInPlayer)
+            .putBoolean(KEY_HIDE_SONG_STATUS, state.hideSongStatus)
+            .putBoolean(KEY_STOP_MUSIC_ON_CLOSE, state.stopMusicOnClose)
+            .putBoolean(KEY_SHOW_NERD_STATS, state.showNerdStats)
             .putBoolean(KEY_JIOSAAVN_ENABLED, state.jioSaavnEnabled)
 
         if (trackOffsetsOverride != null) {
@@ -555,6 +723,7 @@ class SonataPreferences(context: Context) {
         private const val BACKUP_KEY_SETTINGS = "settings"
         private const val BACKUP_KEY_TRACK_OFFSETS = "trackLyricOffsets"
 
+        private const val KEY_APP_LANGUAGE = "app_language"
         private const val KEY_DESIGN_THEME = "design_theme"
         private const val KEY_THEME_MODE = "theme_mode"
         private const val KEY_LIQUID_GLASS_ENABLED = "liquid_glass_enabled"
@@ -562,9 +731,20 @@ class SonataPreferences(context: Context) {
         private const val KEY_REDUCE_DYNAMIC_BLUR = "reduce_dynamic_blur"
         private const val KEY_REDUCE_ANIMATION = "reduce_animation"
         private const val KEY_ANIMATED_ARTWORK = "animated_artwork"
+        private const val KEY_ANIMATED_ARTWORK_CELLULAR = "animated_artwork_cellular"
         private const val KEY_ARTWORK_TINTED_PAGES = "artwork_tinted_pages"
+        private const val KEY_FULL_SCREEN_COVER_ART = "full_screen_cover_art"
+        private const val KEY_FULL_SCREEN_DETAIL_COVER = "full_screen_detail_cover"
+        private const val KEY_SHOW_TOTAL_DURATION = "show_total_duration"
+        private const val KEY_HIDE_LYRICS_PREVIEW = "hide_lyrics_preview"
         private const val KEY_PLAYER_BACKDROP_MODE = "player_backdrop_mode"
         private const val KEY_FPS_LIMIT = "fps_limit"
+
+        private const val KEY_HIDE_RECENTS = "hide_recents"
+        private const val KEY_HIDE_TOP_PICKS = "hide_top_picks"
+        private const val KEY_HIDE_HOME_MOODS = "hide_home_moods"
+        private const val KEY_HIDE_HOME_VIDEOS = "hide_home_videos"
+        private const val KEY_SQUARE_VIDEO_THUMBNAILS = "square_video_thumbnails"
 
         private const val KEY_AUDIO_QUALITY = "audio_quality"
         private const val KEY_PREFER_HIGH_QUALITY = "prefer_high_quality"
@@ -572,6 +752,7 @@ class SonataPreferences(context: Context) {
         private const val KEY_CROSSFADE_SECONDS = "crossfade_seconds"
         private const val KEY_LOUDNESS_NORM_ENABLED = "loudness_norm_enabled"
         private const val KEY_SKIP_SILENCE_ENABLED = "skip_silence_enabled"
+        private const val KEY_SLEEP_TIMER_FADE_OUT = "sleep_timer_fade_out"
         private const val KEY_PLAYBACK_SPEED = "playback_speed"
         private const val KEY_EQ_ENABLED = "eq_enabled"
         private const val KEY_EQ_PRESET = "eq_preset"
@@ -586,11 +767,95 @@ class SonataPreferences(context: Context) {
         private const val KEY_PRIORITIZE_WORD_SYNC = "prioritize_word_sync"
 
         private const val KEY_DOWNLOAD_QUALITY = "download_quality"
+        private const val KEY_DOWNLOAD_INCLUDE_JIOSAAVN = "download_include_jiosaavn"
+        private const val KEY_DOWNLOAD_STORAGE_LOCATION = "download_storage_location"
         private const val KEY_WIFI_ONLY_DOWNLOADS = "wifi_only_downloads"
         private const val KEY_EXPORT_DOWNLOADS = "export_downloads"
         private const val KEY_AUTO_DOWNLOAD_LIKED = "auto_download_liked"
+
+        private const val KEY_HIDE_STATUS_BAR_IN_PLAYER = "hide_status_bar_in_player"
+        private const val KEY_HIDE_SONG_STATUS = "hide_song_status"
+        private const val KEY_STOP_MUSIC_ON_CLOSE = "stop_music_on_close"
+        private const val KEY_SHOW_NERD_STATS = "show_nerd_stats"
         private const val KEY_JIOSAAVN_ENABLED = "jiosaavn_enabled"
 
         private const val KEY_TRACK_LYRIC_OFFSETS = "track_lyric_offsets"
+
+        internal fun formatBackupJson(
+            current: SonataSettingsState,
+            offsets: Map<String, Long>,
+            exportedAtMs: Long = System.currentTimeMillis(),
+        ): String {
+            val settingsObj = JSONObject().apply {
+                put(KEY_APP_LANGUAGE, current.appLanguage.name)
+                put(KEY_DESIGN_THEME, current.designTheme.name)
+                put(KEY_THEME_MODE, current.themeMode.name)
+                put(KEY_LIQUID_GLASS_ENABLED, current.liquidGlassEnabled)
+                put(KEY_GLASS_PERFORMANCE, current.glassPerformance)
+                put(KEY_REDUCE_DYNAMIC_BLUR, current.reduceDynamicBlur)
+                put(KEY_REDUCE_ANIMATION, current.reduceAnimation)
+                put(KEY_ANIMATED_ARTWORK, current.animatedArtwork)
+                put(KEY_ANIMATED_ARTWORK_CELLULAR, current.animatedArtworkCellular)
+                put(KEY_ARTWORK_TINTED_PAGES, current.artworkTintedPages)
+                put(KEY_FULL_SCREEN_COVER_ART, current.fullScreenCoverArt)
+                put(KEY_FULL_SCREEN_DETAIL_COVER, current.fullScreenDetailCover)
+                put(KEY_SHOW_TOTAL_DURATION, current.showTotalDuration)
+                put(KEY_HIDE_LYRICS_PREVIEW, current.hideLyricsPreview)
+                put(KEY_PLAYER_BACKDROP_MODE, current.playerBackdropMode.name)
+                put(KEY_FPS_LIMIT, current.fpsLimit)
+
+                put(KEY_HIDE_RECENTS, current.hideRecents)
+                put(KEY_HIDE_TOP_PICKS, current.hideTopPicks)
+                put(KEY_HIDE_HOME_MOODS, current.hideHomeMoods)
+                put(KEY_HIDE_HOME_VIDEOS, current.hideHomeVideos)
+                put(KEY_SQUARE_VIDEO_THUMBNAILS, current.squareVideoThumbnails)
+
+                put(KEY_AUDIO_QUALITY, current.audioQuality.name)
+                put(KEY_PREFER_HIGH_QUALITY, current.preferHighQuality)
+                put(KEY_CROSSFADE_ENABLED, current.crossfadeEnabled)
+                put(KEY_CROSSFADE_SECONDS, current.crossfadeSeconds)
+                put(KEY_LOUDNESS_NORM_ENABLED, current.loudnessNormEnabled)
+                put(KEY_SKIP_SILENCE_ENABLED, current.skipSilenceEnabled)
+                put(KEY_SLEEP_TIMER_FADE_OUT, current.sleepTimerFadeOut)
+                put(KEY_PLAYBACK_SPEED, current.playbackSpeed.toDouble())
+                put(KEY_EQ_ENABLED, current.eqEnabled)
+                put(KEY_EQ_PRESET, current.eqPreset)
+                put(KEY_EQ_BANDS_DB, JSONArray().apply { current.eqBandsDb.forEach { put(it.toDouble()) } })
+                put(KEY_AUTOPLAY_ENABLED, current.autoplayEnabled)
+
+                put(KEY_LYRICS_BLUR_ENABLED, current.lyricsBlurEnabled)
+                put(KEY_LYRICS_TRANSLATION_ENABLED, current.lyricsTranslationEnabled)
+                put(KEY_LYRICS_TRANSLATION_LANG, current.lyricsTranslationLang)
+                put(KEY_LYRICS_ROMANIZATION_ENABLED, current.lyricsRomanizationEnabled)
+                put(KEY_LYRICS_OFFSET_MS, current.lyricsOffsetMs)
+                put(KEY_PRIORITIZE_WORD_SYNC, current.prioritizeWordSync)
+
+                put(KEY_DOWNLOAD_QUALITY, current.downloadQuality.name)
+                put(KEY_DOWNLOAD_INCLUDE_JIOSAAVN, current.downloadIncludeJioSaavn)
+                put(KEY_DOWNLOAD_STORAGE_LOCATION, current.downloadStorageLocation.name)
+                put(KEY_WIFI_ONLY_DOWNLOADS, current.wifiOnlyDownloads)
+                put(KEY_EXPORT_DOWNLOADS, current.exportDownloads)
+                put(KEY_AUTO_DOWNLOAD_LIKED, current.autoDownloadLiked)
+
+                put(KEY_HIDE_STATUS_BAR_IN_PLAYER, current.hideStatusBarInPlayer)
+                put(KEY_HIDE_SONG_STATUS, current.hideSongStatus)
+                put(KEY_STOP_MUSIC_ON_CLOSE, current.stopMusicOnClose)
+                put(KEY_SHOW_NERD_STATS, current.showNerdStats)
+                put(KEY_JIOSAAVN_ENABLED, current.jioSaavnEnabled)
+            }
+
+            val offsetsObj = JSONObject().apply {
+                offsets.forEach { (id, offset) -> put(id, offset) }
+            }
+
+            val root = JSONObject().apply {
+                put(BACKUP_KEY_APP, BACKUP_APP_ID)
+                put(BACKUP_KEY_SCHEMA, BACKUP_SCHEMA_VERSION)
+                put(BACKUP_KEY_EXPORTED_AT_MS, exportedAtMs)
+                put(BACKUP_KEY_SETTINGS, settingsObj)
+                put(BACKUP_KEY_TRACK_OFFSETS, offsetsObj)
+            }
+            return root.toString(2)
+        }
     }
 }

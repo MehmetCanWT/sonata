@@ -1,0 +1,41 @@
+{
+  "playabilityStatus": {
+    "status": "OK"
+  },
+  "videoDetails": {
+    "videoId": "authTrack01",
+    "lengthSeconds": "240"
+  },
+  "streamingData": {
+    "adaptiveFormats": [
+      {
+        "itag": 140,
+        "mimeType": "audio/mp4; codecs=\"mp4a.40.2\"",
+        "averageBitrate": 129400,
+        "contentLength": "3882000",
+        "signatureCipher": "s=rawsig140&sp=sig&url=https%3A%2F%2Frr2.googlevideo.com%2Fvideoplayback%3Fitag%3D140%26n%3DrawN140"
+      },
+      {
+        "itag": 251,
+        "mimeType": "audio/webm; codecs=\"opus\"",
+        "averageBitrate": 159800,
+        "contentLength": "4794000",
+        "signatureCipher": "s=rawsig251&sp=sig&url=https%3A%2F%2Frr2.googlevideo.com%2Fvideoplayback%3Fitag%3D251%26n%3DrawN251"
+      },
+      {
+        "itag": 141,
+        "mimeType": "audio/mp4; codecs=\"mp4a.40.2\"",
+        "averageBitrate": 256000,
+        "contentLength": "7680000",
+        "signatureCipher": "s=rawsig141&sp=sig&url=https%3A%2F%2Frr2.googlevideo.com%2Fvideoplayback%3Fitag%3D141%26n%3DrawN141"
+      },
+      {
+        "itag": 774,
+        "mimeType": "audio/webm; codecs=\"opus\"",
+        "averageBitrate": 256400,
+        "contentLength": "7692000",
+        "signatureCipher": "s=rawsig774&sp=sig&url=https%3A%2F%2Frr2.googlevideo.com%2Fvideoplayback%3Fitag%3D774%26n%3DrawN774"
+      }
+    ]
+  }
+}

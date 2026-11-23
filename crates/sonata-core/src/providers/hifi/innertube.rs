@@ -19,12 +19,11 @@ const VISIONOS_USER_AGENT: &str =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
 const TVHTML5_USER_AGENT: &str =
     "Mozilla/5.0 (SMART-TV; Linux; Tizen 2.4.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/2.4.0 TV Safari/538.1";
-const FAST_START_TIMEOUT: Duration = Duration::from_millis(2400);
 const FAST_START_RANGE_END: u64 = 1024 * 1024 - 1;
 
 impl StreamResolver {
-    pub(super) async fn resolve_youtube_fast(&self, track: &Track) -> Result<ResolvedStream> {
-        let video_id = match track.source {
+    pub async fn resolve_youtube_video_id(&self, track: &Track) -> Option<String> {
+        match track.source {
             ProviderSource::YouTubeMusic if !track.id.is_empty() && !track.id.contains(' ') => {
                 Some(track.id.clone())
             }
@@ -38,7 +37,11 @@ impl StreamResolver {
                         pick_best_ytm_match(track, &results).map(|best| best.id.clone())
                     })
             }
-        };
+        }
+    }
+
+    pub(super) async fn resolve_youtube_fast(&self, track: &Track) -> Result<ResolvedStream> {
+        let video_id = self.resolve_youtube_video_id(track).await;
 
         tracing::debug!(
             "[sonata:resolver] track={:?} source={:?} video_id={} cookies={}",
@@ -52,98 +55,41 @@ impl StreamResolver {
             }
         );
 
-        if let Some(video_id) = &video_id {
-            if cfg!(target_os = "android") {
-                if let Some(stream) = tokio::time::timeout(
-                    Duration::from_millis(8500),
-                    self.resolve_youtube_bootstrap(video_id, track.source),
-                )
-                .await
-                .ok()
-                .flatten()
-                {
-                    tracing::info!(
-                        "[sonata:resolver] result=ok method=android-innertube url={} badge={}",
-                        redact_stream_url(&stream.url),
-                        stream.badge
-                    );
-                    return Ok(stream);
-                }
-                if let Some(stream) = self
-                    .resolve_youtube_alternate_candidates(track, video_id)
-                    .await
-                {
-                    tracing::info!(
-                        "[sonata:resolver] result=ok method=android-alternate-fallback url={} badge={}",
-                        redact_stream_url(&stream.url),
-                        stream.badge
-                    );
-                    return Ok(stream);
-                }
-                tracing::warn!(
-                    "[sonata:resolver] result=err method=android-innertube track={:?} video_id={}",
-                    track.title,
-                    video_id
-                );
-                return Err(anyhow!("Failed to resolve stream for \"{}\"", track.title));
-            }
-
-            let bootstrap = self.resolve_youtube_bootstrap(video_id, track.source);
-            let ytdlp = self.resolve_youtube_ytdlp(track, false, true);
-            tokio::pin!(bootstrap);
-            tokio::pin!(ytdlp);
-            let mut bootstrap_done = false;
-            let mut ytdlp_done = false;
-            let raced = tokio::time::timeout(FAST_START_TIMEOUT, async {
-                while !bootstrap_done || !ytdlp_done {
-                    tokio::select! {
-                        result = &mut bootstrap, if !bootstrap_done => {
-                            bootstrap_done = true;
-                            if let Some(stream) = result {
-                                return Some(stream);
-                            }
-                        }
-                        result = &mut ytdlp, if !ytdlp_done => {
-                            ytdlp_done = true;
-                            if let Ok(stream) = result {
-                                return Some(stream);
-                            }
-                        }
-                    }
-                }
-                None
-            })
-            .await
-            .ok()
-            .flatten();
-            if let Some(stream) = raced {
-                tracing::info!(
-                    "[sonata:resolver] result=ok method=fast-race url={} badge={}",
-                    redact_stream_url(&stream.url),
-                    stream.badge
-                );
-                return Ok(stream);
-            }
-        }
-
-        if self.cookies.has_ytm_auth() {
-            if let Ok(stream) = self.resolve_youtube_ytdlp(track, true, false).await {
-                tracing::info!(
-                    "[sonata:resolver] result=ok method=yt-dlp cookies-present url={} badge={}",
-                    redact_stream_url(&stream.url),
-                    stream.badge
-                );
-                return Ok(stream);
-            }
-        }
-        if let Ok(stream) = self.resolve_youtube_ytdlp(track, false, false).await {
+        let Some(video_id) = video_id else {
+            return Err(anyhow!("Failed to resolve stream for \"{}\"", track.title));
+        };
+        let profile = self.profile();
+        if let Some(stream) = tokio::time::timeout(
+            profile.bootstrap_timeout,
+            self.resolve_youtube_bootstrap(&video_id, track.source),
+        )
+        .await
+        .ok()
+        .flatten()
+        {
             tracing::info!(
-                "[sonata:resolver] result=ok method=yt-dlp no-cookies url={} badge={}",
+                "[sonata:resolver] result=ok method=innertube-only url={} badge={}",
                 redact_stream_url(&stream.url),
                 stream.badge
             );
             return Ok(stream);
         }
+        if let Some(stream) = self
+            .resolve_youtube_alternate_candidates(track, &video_id)
+            .await
+        {
+            tracing::info!(
+                "[sonata:resolver] result=ok method=innertube-alternate-fallback url={} badge={}",
+                redact_stream_url(&stream.url),
+                stream.badge
+            );
+            return Ok(stream);
+        }
+        tracing::warn!(
+            "[sonata:resolver] result=err method=innertube-only track={:?} video_id={}",
+            track.title,
+            video_id
+        );
         Err(anyhow!("Failed to resolve stream for \"{}\"", track.title))
     }
 
@@ -229,7 +175,7 @@ impl StreamResolver {
             return None;
         }
         let payload: Value = response.json().await.ok()?;
-        let effective_fast_start = prefer_fast_start && !cfg!(target_os = "android");
+        let effective_fast_start = prefer_fast_start && self.profile().uses_bounded_fast_start();
         let (priority, average_bps, mut stream) =
             parse_innertube_audio_candidate(&payload, effective_fast_start)?;
         if source == ProviderSource::YouTubeMusic {
@@ -262,7 +208,7 @@ impl StreamResolver {
         None
     }
 
-    async fn resolve_youtube_bootstrap(
+    pub async fn resolve_youtube_bootstrap(
         &self,
         video_id: &str,
         source: ProviderSource,
@@ -311,7 +257,7 @@ impl StreamResolver {
         .await
     }
 
-    pub(super) async fn resolve_youtube_best_innertube(
+    pub async fn resolve_youtube_best_innertube(
         &self,
         track: &Track,
         use_cookies: bool,
@@ -450,7 +396,7 @@ impl StreamResolver {
             return None;
         }
         let payload: Value = response.json().await.ok()?;
-        let effective_fast_start = prefer_fast_start && !cfg!(target_os = "android");
+        let effective_fast_start = prefer_fast_start && self.profile().uses_bounded_fast_start();
         let (_, _, mut stream) = self
             .parse_innertube_ciphered_audio_candidate(&payload, &prepared, effective_fast_start)
             .await?;
@@ -468,7 +414,7 @@ impl StreamResolver {
         Some(stream)
     }
 
-    async fn parse_innertube_ciphered_audio_candidate(
+    pub(super) async fn parse_innertube_ciphered_audio_candidate(
         &self,
         payload: &Value,
         prepared: &PreparedPlayerJs,
@@ -596,7 +542,7 @@ impl StreamResolver {
                 client = "TVHTML5",
                 "selected InnerTube authenticated audio format"
             );
-            let url = if prefer_fast_start && !cfg!(target_os = "android") {
+            let url = if prefer_fast_start && self.profile().uses_bounded_fast_start() {
                 bounded_fast_start_url(deciphered_url, candidate.content_length)
             } else {
                 deciphered_url
@@ -781,10 +727,10 @@ impl StreamResolver {
             return None;
         }
         let payload: Value = response.json().await.ok()?;
-        let mut stream = if cfg!(target_os = "android") {
-            parse_innertube_best_audio(&payload)?
-        } else {
+        let mut stream = if self.profile().uses_bounded_fast_start() {
             parse_innertube_fast_audio(&payload)?
+        } else {
+            parse_innertube_best_audio(&payload)?
         };
         if source == ProviderSource::YouTubeMusic {
             stream.headers = vec![("User-Agent".to_string(), user_agent.to_string())];
@@ -918,7 +864,7 @@ fn parse_innertube_audio_candidate(
         available_itags = ?available_itags,
         "selected InnerTube audio format"
     );
-    let url = if prefer_fast_start && !cfg!(target_os = "android") {
+    let url = if prefer_fast_start {
         bounded_fast_start_url(url, content_length)
     } else {
         url
@@ -950,7 +896,7 @@ fn bounded_fast_start_url(url: String, content_length: Option<u64>) -> String {
     format!("{url}{separator}range=0-{end}")
 }
 
-pub(super) fn is_bounded_fast_start_url(url: &str) -> bool {
+pub fn is_bounded_fast_start_url(url: &str) -> bool {
     url.split_once('?').is_some_and(|(_, query)| {
         query
             .split('&')

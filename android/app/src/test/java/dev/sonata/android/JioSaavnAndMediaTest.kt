@@ -1,70 +1,154 @@
 package dev.sonata.android
 
-import dev.sonata.android.data.JioSaavnSource
+import dev.sonata.android.data.CanvasResolver
 import dev.sonata.android.ui.artworkAt
 import dev.sonata.android.ui.artworkMemoryCacheKey
 import dev.sonata.android.ui.components.MoodTheme
 import dev.sonata.android.ui.components.resolveMoodTheme
 import dev.sonata.android.ui.croppedAt
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runTest
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.util.Base64
-import javax.crypto.Cipher
-import javax.crypto.spec.SecretKeySpec
+import uniffi.sonata_android.AndroidJioSaavnStream
+import uniffi.sonata_android.AndroidMotionMedia
+import uniffi.sonata_android.AndroidTrack
+import java.util.concurrent.atomic.AtomicInteger
 
 class JioSaavnAndMediaTest {
 
-    private fun encryptJioSaavnUrlForTest(plainUrl: String): String {
-        val keySpec = SecretKeySpec("38346591".toByteArray(Charsets.UTF_8), "DES")
-        val cipher = Cipher.getInstance("DES/ECB/PKCS5Padding")
-        cipher.init(Cipher.ENCRYPT_MODE, keySpec)
-        return Base64.getEncoder().encodeToString(cipher.doFinal(plainUrl.toByteArray(Charsets.UTF_8)))
+    @After
+    fun tearDown() {
+        CanvasResolver.detachGateway()
+        CanvasResolver.clearCacheForTest()
     }
 
     @Test
-    fun decryptsJioSaavnUrlToHttpsAndUpgradesBitrateTo320() {
-        val sampleHttp = "http://aac.saavncdn.com/123/abc_96.mp4"
-        val encrypted = encryptJioSaavnUrlForTest(sampleHttp)
-        val decrypted = JioSaavnSource.decryptUrl(encrypted)
-        assertEquals("https://aac.saavncdn.com/123/abc_96.mp4", decrypted)
+    fun canvasResolverDelegatesDiscoveryToRustGatewayWithNegativeCacheUpgradeSemantics() = runTest {
+        val gateway = FakeSonataEngineGateway()
+        val calls = AtomicInteger(0)
+        gateway.motionMediaHandler = { track, storefront, country ->
+            val attempt = calls.incrementAndGet()
+            assertEquals(2, storefront?.length)
+            assertEquals(2, country?.length)
+            if (track.album.isBlank()) {
+                null
+            } else {
+                AndroidMotionMedia(
+                    url = "https://mvod.itunes.apple.com/square_$attempt.m3u8",
+                    fallbackUrl = "https://mvod.itunes.apple.com/tall_$attempt.m3u8",
+                    portraitUrl = "https://mvod.itunes.apple.com/tall_$attempt.m3u8",
+                    isHls = true,
+                    source = "Apple Music",
+                )
+            }
+        }
 
-        val (upgradedUrl, upgradedKbps) = JioSaavnSource.selectBestStreamUrl(decrypted!!, supports320 = true)
-        assertEquals("https://aac.saavncdn.com/123/abc_320.mp4", upgradedUrl)
-        assertEquals(320, upgradedKbps)
+        // 1. Lookup without album misses and negative-caches with resolvedWithAlbum = false.
+        assertNull(
+            CanvasResolver.resolve(
+                videoId = "vid_1",
+                title = "Blinding Lights",
+                artist = "The Weeknd",
+                album = null,
+                gateway = gateway,
+            )
+        )
+        assertEquals(1, calls.get())
 
-        val (keptUrl, keptKbps) = JioSaavnSource.selectBestStreamUrl(decrypted, supports320 = false)
-        assertEquals(decrypted, keptUrl)
-        assertEquals(96, keptKbps)
+        // 2. Repeated lookup without album hits negative cache (no duplicate network call).
+        assertNull(
+            CanvasResolver.resolve(
+                videoId = "vid_1",
+                title = "Blinding Lights",
+                artist = "The Weeknd",
+                album = null,
+                gateway = gateway,
+            )
+        )
+        assertEquals(1, calls.get())
+
+        // 3. Providing album metadata retries once and caches the discovered MotionMedia.
+        val resolved = CanvasResolver.resolve(
+            videoId = "vid_1",
+            title = "Blinding Lights",
+            artist = "The Weeknd",
+            album = "After Hours",
+            gateway = gateway,
+        )
+        assertEquals(2, calls.get())
+        assertEquals("Apple Music", resolved?.source)
+        assertTrue(resolved?.isHls == true)
+        assertEquals("https://mvod.itunes.apple.com/tall_2.m3u8", resolved?.portraitUrl)
+        assertEquals(resolved, CanvasResolver.cached("vid_1"))
+
+        // 4. Subsequent lookup hits positive cache without calling gateway again.
+        val cachedHit = CanvasResolver.resolve(
+            videoId = "vid_1",
+            title = "Blinding Lights",
+            artist = "The Weeknd",
+            album = "After Hours",
+            gateway = gateway,
+        )
+        assertEquals(2, calls.get())
+        assertEquals(resolved, cachedHit)
     }
 
     @Test
-    fun normalizesTitlesHtmlAndArtistMatchesAccurately() {
-        assertEquals(
-            "Daft Punk & The Weeknd's \"Starboy\"",
-            JioSaavnSource.decodeHtml("Daft Punk &amp; The Weeknd&#039;s &quot;Starboy&quot;"),
+    fun canvasResolverPropagatesCancellationAndGatewayExposesJioSaavnOperations() = runTest {
+        val gateway = FakeSonataEngineGateway()
+        val gate = CompletableDeferred<AndroidMotionMedia?>()
+        gateway.motionMediaHandler = { _, _, _ -> gate.await() }
+
+        val job = launch {
+            CanvasResolver.resolve(
+                videoId = "vid_cancel",
+                title = "Starboy",
+                artist = "The Weeknd",
+                album = "Starboy",
+                gateway = gateway,
+            )
+        }
+        testScheduler.runCurrent()
+        job.cancel()
+        testScheduler.advanceUntilIdle()
+        assertEquals(1, gateway.cancelledMotionCount.get())
+        assertNull(CanvasResolver.cached("vid_cancel"))
+
+        val sampleTrack = AndroidTrack(
+            id = "jiosaavn:abc123",
+            title = "Starboy",
+            artist = "The Weeknd",
+            album = "Starboy",
+            durationSecs = 230uL,
+            thumbnailUrl = "https://c.saavncdn.com/000/cover_500x500.jpg",
+            liked = false,
+            albumId = null,
+            isExplicit = true,
         )
-        assertEquals(
-            "Midnight Dreams",
-            JioSaavnSource.cleanTitleForMatch("Midnight Dreams (feat. Guest) [Official Video]"),
-        )
-        assertEquals("istanbul night", JioSaavnSource.normalizeCore("İstanbul Night!"))
-        assertEquals("The Weeknd", JioSaavnSource.primaryArtistOf("The Weeknd, Daft Punk"))
-        assertTrue(JioSaavnSource.artistsOverlap("The Weeknd, Daft Punk", "The Weeknd"))
-        assertFalse(JioSaavnSource.artistsOverlap("Daft Punk", "Drake"))
+        gateway.jioSaavnSearchHandler = { _, _ -> listOf(sampleTrack) }
+        gateway.jioSaavnByIdHandler = {
+            AndroidJioSaavnStream(
+                url = "https://aac.saavncdn.com/123/abc_320.mp4",
+                bitrateKbps = 320u,
+                badge = "AAC 320kbps · JioSaavn",
+                title = "Starboy",
+                artist = "The Weeknd",
+                durationSecs = 230uL,
+            )
+        }
+        assertEquals(listOf(sampleTrack), gateway.searchJiosaavn("starboy", 6u))
+        assertEquals(320u, gateway.resolveJiosaavnById("jiosaavn:abc123")?.bitrateKbps)
     }
 
     @Test
     fun artworkUrlsScaleDeterministicallyAcrossHosts() {
-        assertEquals(
-            "https://c.saavncdn.com/000/cover_500x500.jpg",
-            JioSaavnSource.upgradeArtwork("http://c.saavncdn.com/000/cover_150x150.jpg"),
-        )
-        assertNull(JioSaavnSource.upgradeArtwork("   "))
-
         assertEquals(
             "https://is1-ssl.mzstatic.com/image/thumb/Music/v4/1200x1200bb.jpg",
             "https://is1-ssl.mzstatic.com/image/thumb/Music/v4/100x100bb.jpg".artworkAt(1200),

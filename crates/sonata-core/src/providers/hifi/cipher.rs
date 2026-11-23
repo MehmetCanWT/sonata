@@ -4,11 +4,11 @@
 //!    its `player_hash` and `signatureTimestamp` (`sts`).
 //! 2. **Zero-AST Hook Injection**: Locate the internal URL-signing builder via a compact regex and expose
 //!    `globalThis._yt_solve(sig, n)` without fragile AST parsing.
-//! 3. **Cross-Platform Cipher Evaluation**: Evaluates `_yt_solve(sig, n)` through an injected Android
-//!    WebView callback bridge (`JsCipherBridge`) or a local Desktop/TUI JS runtime (`node`, `bun`, `deno`).
+//! 3. **Cross-Platform Cipher Evaluation**: Evaluates `_yt_solve(sig, n)` through an injected
+//!    platform [`JsCipherBridge`] (Android WebView bridge or desktop CLI JS runtime).
 
 use super::StreamResolver;
-use crate::config::AppConfig;
+use crate::paths::CorePaths;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
@@ -95,20 +95,20 @@ fn write_private_cache_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     write_res
 }
 
-fn player_cache_json_path() -> PathBuf {
-    AppConfig::cache_dir().join("yt_cipher_player.json")
+fn player_cache_json_path(paths: &CorePaths) -> PathBuf {
+    paths.cipher_player_cache_path()
 }
 
-fn player_cache_js_path(player_hash: &str) -> PathBuf {
+fn player_cache_js_path(paths: &CorePaths, player_hash: &str) -> PathBuf {
     let safe_hash: String = player_hash
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
         .collect();
-    AppConfig::cache_dir().join(format!("yt_cipher_{safe_hash}.js"))
+    paths.cipher_script_cache_path(&safe_hash)
 }
 
-fn load_disk_cached_player_js() -> Option<PreparedPlayerJs> {
-    let raw = fs::read_to_string(player_cache_json_path()).ok()?;
+fn load_disk_cached_player_js(paths: &CorePaths) -> Option<PreparedPlayerJs> {
+    let raw = fs::read_to_string(player_cache_json_path(paths)).ok()?;
     let parsed: PreparedPlayerJs = serde_json::from_str(&raw).ok()?;
     let age = now_epoch_secs().saturating_sub(parsed.cached_at_epoch_secs);
     (age < PLAYER_CACHE_TTL_SECS
@@ -117,11 +117,11 @@ fn load_disk_cached_player_js() -> Option<PreparedPlayerJs> {
     .then_some(parsed)
 }
 
-fn save_disk_cached_player_js(prepared: &PreparedPlayerJs) {
+fn save_disk_cached_player_js(paths: &CorePaths, prepared: &PreparedPlayerJs) {
     if let Ok(json) = serde_json::to_vec(prepared) {
-        let _ = write_private_cache_file(&player_cache_json_path(), &json);
+        let _ = write_private_cache_file(&player_cache_json_path(paths), &json);
     }
-    let js_path = player_cache_js_path(&prepared.player_hash);
+    let js_path = player_cache_js_path(paths, &prepared.player_hash);
     if !js_path.exists() {
         let _ = write_private_cache_file(&js_path, prepared.hooked_script.as_bytes());
     }
@@ -191,7 +191,7 @@ pub(super) fn inject_zero_ast_cipher_hook(
     })
 }
 
-pub(super) fn apply_cipher_solution_to_url(
+pub fn apply_cipher_solution_to_url(
     raw_url: Option<&str>,
     signature_cipher: Option<&str>,
     mut solve_fn: impl FnMut(Option<&str>, Option<&str>) -> Option<SolvedCipherPair>,
@@ -280,79 +280,6 @@ pub(super) fn apply_cipher_solution_to_url(
     Some(format!("{base_path}?{rebuilt_query}"))
 }
 
-fn detect_cli_cipher_runtime() -> Option<&'static str> {
-    static CLI_RUNTIME: OnceLock<Option<&'static str>> = OnceLock::new();
-    *CLI_RUNTIME.get_or_init(|| {
-        ["node", "bun", "deno"].into_iter().find(|&candidate| {
-            let bin = crate::config::resolve_distro_binary(candidate);
-            std::process::Command::new(&bin)
-                .arg("--version")
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .is_ok_and(|s| s.success())
-        })
-    })
-}
-
-async fn solve_via_cli_runtime(
-    prepared: &PreparedPlayerJs,
-    sig: Option<&str>,
-    n: Option<&str>,
-) -> Option<SolvedCipherPair> {
-    let runtime = detect_cli_cipher_runtime()?;
-    let js_path = player_cache_js_path(&prepared.player_hash);
-    if !js_path.exists() {
-        let script_bytes = prepared.hooked_script.clone().into_bytes();
-        let path_clone = js_path.clone();
-        tokio::task::spawn_blocking(move || write_private_cache_file(&path_clone, &script_bytes))
-            .await
-            .ok()?
-            .ok()?;
-    }
-
-    let js_path_str = js_path.to_string_lossy().to_string();
-    let sig_arg = sig.unwrap_or("").to_string();
-    let n_arg = n.unwrap_or("").to_string();
-
-    let runtime_bin = crate::config::resolve_distro_binary(runtime);
-    let mut cmd = tokio::process::Command::new(&runtime_bin);
-    cmd.kill_on_drop(true);
-    if runtime == "deno" {
-        cmd.args([
-            "eval",
-            "(0,eval)(Deno.readTextFileSync(Deno.args[0]));console.log(globalThis._yt_solve(Deno.args[1]||'',Deno.args[2]||''));",
-            "--",
-            &js_path_str,
-            &sig_arg,
-            &n_arg,
-        ]);
-    } else {
-        cmd.args([
-            "-e",
-            "const fs=require('fs');(0,eval)(fs.readFileSync(process.argv[1],'utf8'));console.log(globalThis._yt_solve(process.argv[2]||'',process.argv[3]||''));",
-            "--",
-            &js_path_str,
-            &sig_arg,
-            &n_arg,
-        ]);
-    }
-
-    let output = tokio::time::timeout(Duration::from_millis(3500), cmd.output())
-        .await
-        .ok()?
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let line = stdout
-        .lines()
-        .rev()
-        .find(|l| l.trim_start().starts_with('{'))?;
-    serde_json::from_str::<SolvedCipherPair>(line.trim()).ok()
-}
-
 impl StreamResolver {
     pub fn set_js_cipher_bridge(&self, bridge: Arc<dyn JsCipherBridge>) {
         if let Ok(mut guard) = self.js_cipher_bridge.write() {
@@ -378,10 +305,12 @@ impl StreamResolver {
             }
         }
 
-        if let Some(disk) = tokio::task::spawn_blocking(load_disk_cached_player_js)
-            .await
-            .ok()
-            .flatten()
+        let paths_for_load = self.paths.clone();
+        if let Some(disk) =
+            tokio::task::spawn_blocking(move || load_disk_cached_player_js(&paths_for_load))
+                .await
+                .ok()
+                .flatten()
         {
             *self.player_cipher.write().await = Some(disk.clone());
             self.warm_bridge_with_player(&disk).await;
@@ -390,7 +319,11 @@ impl StreamResolver {
 
         let fetched = self.fetch_and_hook_player_js().await?;
         let to_save = fetched.clone();
-        let _ = tokio::task::spawn_blocking(move || save_disk_cached_player_js(&to_save)).await;
+        let paths_for_save = self.paths.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            save_disk_cached_player_js(&paths_for_save, &to_save)
+        })
+        .await;
         *self.player_cipher.write().await = Some(fetched.clone());
         self.warm_bridge_with_player(&fetched).await;
         Some(fetched)
@@ -452,26 +385,20 @@ impl StreamResolver {
         sig: Option<&str>,
         n: Option<&str>,
     ) -> Option<SolvedCipherPair> {
-        let bridge = self.js_cipher_bridge.read().ok().and_then(|g| g.clone());
-        if let Some(bridge) = bridge {
-            let hash = prepared.player_hash.clone();
-            let script = prepared.hooked_script.clone();
-            let sig_owned = sig.unwrap_or("").to_string();
-            let n_owned = n.unwrap_or("").to_string();
-            let solved = tokio::task::spawn_blocking(move || {
-                if !bridge.ensure_loaded(&hash, &script) {
-                    return None;
-                }
-                bridge.solve(&hash, &sig_owned, &n_owned)
-            })
-            .await
-            .ok()
-            .flatten();
-            if solved.is_some() {
-                return solved;
+        let bridge = self.js_cipher_bridge.read().ok().and_then(|g| g.clone())?;
+        let hash = prepared.player_hash.clone();
+        let script = prepared.hooked_script.clone();
+        let sig_owned = sig.unwrap_or("").to_string();
+        let n_owned = n.unwrap_or("").to_string();
+        tokio::task::spawn_blocking(move || {
+            if !bridge.ensure_loaded(&hash, &script) {
+                return None;
             }
-        }
-        solve_via_cli_runtime(prepared, sig, n).await
+            bridge.solve(&hash, &sig_owned, &n_owned)
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     pub(super) async fn decipher_format_url(

@@ -21,25 +21,29 @@ pub mod sidebar;
 use crate::backend::{BackendCmd, BackendHandle, DesktopSnapshot, NavTarget};
 use crate::background_appearance_for;
 use crate::settings::{
-    CornerStyle, DesktopSettings, ThemeModePref, GUTTER, PANEL_MAX, PANEL_MIN, SIDEBAR_MAX,
-    SIDEBAR_MIN, SIDEBAR_RAIL, SIDEBAR_SNAP_AT,
+    is_mini_viewport, CornerStyle, DesktopSettings, ThemeModePref, GUTTER, PANEL_MAX, PANEL_MIN,
+    SIDEBAR_MAX, SIDEBAR_MIN, SIDEBAR_RAIL, SIDEBAR_SNAP_AT,
 };
 use crate::theme::{sync_gpui_theme, DesktopPalette, ThemeCatalog};
-use crate::ui::components::card_panel;
+use crate::ui::components::{card_panel, cover_art_tile};
+use crate::ui::lyrics::{LyricsWrapCache, SpringState};
 use crate::ui::media::{rgba_to_render_image, MediaCache};
+use gpui_kit::assets::IconName;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::select::{SearchableVec, SelectEvent, SelectState};
 use gpui_kit::component::slider::{SliderEvent, SliderState, SliderValue};
-use gpui_kit::component::WindowBorder;
+use gpui_kit::component::{Icon, Sizable as _, TitleBar, WindowBorder};
 use gpui_kit::{
-    div, prelude::FluentBuilder as _, px, AnyElement, App, AppContext, Context, Entity,
-    FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
-    MouseMoveEvent, ParentElement as _, Point, Render, RenderImage, ScrollHandle, SharedString,
-    Styled as _, Subscription, Window,
+    div, prelude::FluentBuilder as _, px, AnyElement, App, AppContext, Bounds, Context, Entity,
+    FocusHandle, Focusable, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
+    MouseButton, MouseMoveEvent, ParentElement as _, Pixels, Point, Render, RenderImage,
+    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
 };
-use sonata_core::lyrics::LyricsState;
 use sonata_core::providers::Track;
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -78,6 +82,7 @@ pub enum SettingsTab {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FullscreenDrawerTab {
+    Cover,
     Lyrics,
     Queue,
 }
@@ -88,6 +93,10 @@ pub enum DesktopModal {
     None,
     SignInBrowser,
     CreatePlaylist,
+    EditPlaylist {
+        playlist_id: String,
+        cover_path: Option<std::path::PathBuf>,
+    },
     AddToPlaylist(Track),
 }
 
@@ -123,7 +132,12 @@ pub struct ContextMenuState {
 pub struct SonataDesktopView {
     pub backend: BackendHandle,
     pub snapshot: Arc<DesktopSnapshot>,
+    pub live_position_secs: f64,
+    pub live_position_at: Instant,
+    pub live_duration_secs: f64,
     pub decorated: bool,
+    pub window_visible: bool,
+    pub mini_mode: bool,
     pub settings: DesktopSettings,
     pub theme_catalog: ThemeCatalog,
     pub palette: DesktopPalette,
@@ -140,7 +154,32 @@ pub struct SonataDesktopView {
     pub fullscreen_open: bool,
     pub fullscreen_tab: FullscreenDrawerTab,
     pub fullscreen_last_activity: Instant,
+    pub fullscreen_awake: bool,
+    pub fullscreen_idle_task: Option<gpui_kit::Task<()>>,
     pub fullscreen_art_fade: f32,
+    pub fullscreen_ambient_tex: Option<Arc<gpui_kit::RenderImage>>,
+    pub fullscreen_ambient_started: Instant,
+    pub fullscreen_ambient_stepped: Instant,
+    pub fullscreen_ambient_painted: Option<([[f32; 3]; 5], [f32; 3])>,
+    pub fullscreen_ambient_target: Option<([[f32; 3]; 5], [f32; 3])>,
+    pub fullscreen_ambient_washing: bool,
+    pub fullscreen_ambient_timer_active: bool,
+    pub fullscreen_lyrics_scroll_y: f32,
+    pub fullscreen_lyrics_hovered_row: Option<usize>,
+    pub fullscreen_lyrics_last_step: Instant,
+    pub fullscreen_lyrics_wrap: LyricsWrapCache,
+    pub fullscreen_scroll_spring: SpringState,
+    pub fullscreen_row_drifts: HashMap<usize, SpringState>,
+    pub fullscreen_last_seen_scroll: f32,
+    pub fullscreen_active_row_prev: Option<usize>,
+    pub fullscreen_departing_row: Option<usize>,
+    pub fullscreen_row_arrived: Instant,
+    pub fullscreen_row_departed: Instant,
+    pub panel_lyrics_wrap: LyricsWrapCache,
+    pub panel_scroll_spring: SpringState,
+    pub lyrics_panel_last_step: Instant,
+    pub karaoke_timer_active: bool,
+    pub search_bar_bounds: Rc<Cell<Bounds<Pixels>>>,
 
     pub search_input: Entity<InputState>,
     pub library_filter_input: Entity<InputState>,
@@ -255,9 +294,23 @@ impl SonataDesktopView {
 
         // Reload CSS themes & OS palettes automatically when the window regains focus.
         subscriptions.push(cx.observe_window_activation(window, |this, window, cx| {
-            if window.is_window_active() {
+            if window.is_window_active() && this.window_visible {
                 this.reload_themes_and_sync(window, cx);
             }
+        }));
+
+        // Freeze all UI work & animations when minimized to taskbar/tray or hidden on another workspace.
+        subscriptions.push(
+            cx.observe_window_visibility(window, |this, vis, window, cx| {
+                this.set_window_visible(vis.is_visible(), window, cx);
+            }),
+        );
+
+        // Switch into ultra-low-power static mini-player mode when shrunk to mini window dimensions.
+        subscriptions.push(cx.observe_window_bounds(window, |this, window, cx| {
+            let vp = window.viewport_size();
+            let mini = is_mini_viewport(vp.width.into(), vp.height.into());
+            this.set_mini_mode(mini, window, cx);
         }));
 
         subscriptions.push(cx.subscribe_in(
@@ -398,6 +451,21 @@ impl SonataDesktopView {
         })
         .detach();
 
+        let mut progress_rx = backend.subscribe_progress();
+        let view_prog = cx.entity().downgrade();
+        cx.spawn_in(window, async move |_, cx| {
+            while progress_rx.changed().await.is_ok() {
+                let (pos, dur) = *progress_rx.borrow_and_update();
+                let res = view_prog.update_in(cx, |this, window, cx| {
+                    this.on_progress(pos, dur, window, cx);
+                });
+                if res.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+
         // Trigger delayed skeleton wakeup once at startup if Home is still loading past 150ms.
         let view_skel = cx.entity().downgrade();
         cx.spawn_in(window, async move |_, cx| {
@@ -413,10 +481,19 @@ impl SonataDesktopView {
             loading_started.insert("home", Instant::now());
         }
 
+        let init_pos = snapshot.position_secs;
+        let init_dur = snapshot.duration_secs;
+        let init_vp = window.viewport_size();
+        let init_mini = is_mini_viewport(init_vp.width.into(), init_vp.height.into());
         Self {
             backend,
             snapshot,
+            live_position_secs: init_pos,
+            live_position_at: Instant::now(),
+            live_duration_secs: init_dur,
             decorated,
+            window_visible: true,
+            mini_mode: init_mini,
             settings,
             theme_catalog,
             palette,
@@ -431,7 +508,32 @@ impl SonataDesktopView {
             fullscreen_open: false,
             fullscreen_tab: FullscreenDrawerTab::Lyrics,
             fullscreen_last_activity: Instant::now(),
+            fullscreen_awake: false,
+            fullscreen_idle_task: None,
             fullscreen_art_fade: 1.0,
+            fullscreen_ambient_tex: None,
+            fullscreen_ambient_started: Instant::now(),
+            fullscreen_ambient_stepped: Instant::now(),
+            fullscreen_ambient_painted: None,
+            fullscreen_ambient_target: None,
+            fullscreen_ambient_washing: false,
+            fullscreen_ambient_timer_active: false,
+            fullscreen_lyrics_scroll_y: 0.0,
+            fullscreen_lyrics_hovered_row: None,
+            fullscreen_lyrics_last_step: Instant::now(),
+            fullscreen_lyrics_wrap: LyricsWrapCache::default(),
+            fullscreen_scroll_spring: SpringState::default(),
+            fullscreen_row_drifts: HashMap::new(),
+            fullscreen_last_seen_scroll: 0.0,
+            fullscreen_active_row_prev: None,
+            fullscreen_departing_row: None,
+            fullscreen_row_arrived: Instant::now(),
+            fullscreen_row_departed: Instant::now(),
+            panel_lyrics_wrap: LyricsWrapCache::default(),
+            panel_scroll_spring: SpringState::default(),
+            lyrics_panel_last_step: Instant::now(),
+            karaoke_timer_active: false,
+            search_bar_bounds: Rc::new(Cell::new(Bounds::default())),
             search_input,
             library_filter_input,
             playlist_name_input,
@@ -472,6 +574,85 @@ impl SonataDesktopView {
         }
     }
 
+    /// Returns true whenever animations, periodic ticks, and heavy UI rendering should stay frozen.
+    pub fn ui_suspended(&self) -> bool {
+        !self.window_visible || self.mini_mode
+    }
+
+    fn suspend_ui_work(&mut self, cx: &mut Context<Self>) {
+        self.drop_motion_textures(cx);
+        self.fullscreen_idle_task = None;
+        self.fullscreen_ambient_timer_active = false;
+        self.karaoke_timer_active = false;
+        self.lyric_anim_active = false;
+        self.motion_timer_active = false;
+    }
+
+    fn sync_sliders_from_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.progress_dragging {
+            let max_dur = self.live_duration_secs.max(1.0) as f32;
+            let cur_pos = (self.live_position_secs as f32).clamp(0.0, max_dur);
+            self.progress_slider.update(cx, |s, cx| {
+                let min_v = s.min_value();
+                if (s.max_value() - max_dur).abs() > 0.5 || min_v != 0.0 {
+                    *s = SliderState::new()
+                        .min(0.0)
+                        .max(max_dur)
+                        .step(0.5)
+                        .default_value(cur_pos);
+                } else {
+                    s.set_value(cur_pos, window, cx);
+                }
+            });
+        }
+        if !self.volume_dragging {
+            let target_vol = if self.snapshot.muted {
+                0.0
+            } else {
+                self.snapshot.volume as f32
+            };
+            self.volume_slider.update(cx, |s, cx| {
+                s.set_value(target_vol, window, cx);
+            });
+        }
+    }
+
+    fn set_window_visible(&mut self, visible: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.window_visible == visible {
+            return;
+        }
+        self.window_visible = visible;
+        self.backend.send(BackendCmd::SetWindowVisible(visible));
+        if !visible {
+            self.suspend_ui_work(cx);
+        } else {
+            self.sync_sliders_from_state(window, cx);
+            if window.is_window_active() {
+                self.reload_themes_and_sync(window, cx);
+            }
+            cx.notify();
+        }
+    }
+
+    fn set_mini_mode(&mut self, mini: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mini_mode == mini {
+            return;
+        }
+        self.mini_mode = mini;
+        self.backend.send(BackendCmd::SetUiCompact(mini));
+        if mini {
+            self.suspend_ui_work(cx);
+            self.search_dropdown_open = false;
+            self.account_menu_open = false;
+            self.context_menu = None;
+        } else if self.window_visible {
+            self.sync_sliders_from_state(window, cx);
+        }
+        if self.window_visible {
+            cx.notify();
+        }
+    }
+
     fn on_snapshot(
         &mut self,
         next: Arc<DesktopSnapshot>,
@@ -481,18 +662,42 @@ impl SonataDesktopView {
         let nav_changed = self.snapshot.active_nav != next.active_nav;
         let track_changed = self.snapshot.current_track().map(|t| t.id.as_str())
             != next.current_track().map(|t| t.id.as_str());
+        let mini_visual_changed = track_changed
+            || self.snapshot.paused != next.paused
+            || self.snapshot.loading_track != next.loading_track
+            || self.snapshot.art_path != next.art_path;
 
-        self.track_loading_flag("home", next.home_loading);
-        self.track_loading_flag("explore", next.explore_loading);
-        self.track_loading_flag("artist", next.artist_loading);
-        self.track_loading_flag("album", next.album_loading);
-        self.track_loading_flag("playlist", next.playlist_loading);
-        self.track_loading_flag("search", next.search_loading);
-        self.track_loading_flag("radio", next.radio_loading);
-        self.track_loading_flag("history", next.history_loading);
-
+        self.live_position_secs = next.position_secs;
+        self.live_position_at = Instant::now();
+        self.live_duration_secs = next.duration_secs;
         self.snapshot = next;
-        self.media.clear_missing();
+
+        // While hidden/minimized to taskbar/tray, freeze all UI updates and skip redrawing completely.
+        if !self.window_visible {
+            return;
+        }
+
+        if self.mini_mode {
+            if track_changed {
+                self.media.clear_missing();
+            }
+            if mini_visual_changed {
+                cx.notify();
+            }
+            return;
+        }
+
+        self.track_loading_flag("home", self.snapshot.home_loading);
+        self.track_loading_flag("explore", self.snapshot.explore_loading);
+        self.track_loading_flag("artist", self.snapshot.artist_loading);
+        self.track_loading_flag("album", self.snapshot.album_loading);
+        self.track_loading_flag("playlist", self.snapshot.playlist_loading);
+        self.track_loading_flag("search", self.snapshot.search_loading);
+        self.track_loading_flag("radio", self.snapshot.radio_loading);
+        self.track_loading_flag("history", self.snapshot.history_loading);
+        if nav_changed || track_changed {
+            self.media.clear_missing();
+        }
 
         if nav_changed {
             self.push_history_if_needed(self.snapshot.active_nav.clone());
@@ -504,11 +709,25 @@ impl SonataDesktopView {
             self.last_active_lyric = None;
             self.lyric_prev_idx = None;
             self.fullscreen_art_fade = 1.0;
+            self.fullscreen_lyrics_scroll_y = 0.0;
+            self.fullscreen_lyrics_hovered_row = None;
+            self.fullscreen_lyrics_wrap.clear();
+            self.panel_lyrics_wrap.clear();
+            self.fullscreen_scroll_spring = SpringState::default();
+            self.panel_scroll_spring = SpringState::default();
+            self.fullscreen_row_drifts.clear();
+            self.fullscreen_last_seen_scroll = 0.0;
+            self.fullscreen_active_row_prev = None;
+            self.fullscreen_departing_row = None;
+            self.lyrics_scroll
+                .set_offset(gpui_kit::point(px(0.0), px(0.0)));
+            self.fullscreen_lyrics_scroll
+                .set_offset(gpui_kit::point(px(0.0), px(0.0)));
         }
 
         if !self.progress_dragging {
-            let max_dur = self.snapshot.duration_secs.max(1.0) as f32;
-            let cur_pos = (self.snapshot.position_secs as f32).clamp(0.0, max_dur);
+            let max_dur = self.live_duration_secs.max(1.0) as f32;
+            let cur_pos = (self.live_position_secs as f32).clamp(0.0, max_dur);
             self.progress_slider.update(cx, |s, cx| {
                 // Reconfigure bounds without resetting interaction state.
                 let min_v = s.min_value();
@@ -744,7 +963,8 @@ impl SonataDesktopView {
     }
 
     fn has_animated_cover(&self) -> bool {
-        self.fullscreen_open
+        !self.ui_suspended()
+            && self.fullscreen_open
             && !self.snapshot.config.reduce_motion
             && !self.motion_textures.is_empty()
     }
@@ -758,7 +978,7 @@ impl SonataDesktopView {
     }
 
     fn sync_motion_cover_textures(&mut self, cx: &mut Context<Self>) {
-        if !self.fullscreen_open || self.snapshot.config.reduce_motion {
+        if self.ui_suspended() || !self.fullscreen_open || self.snapshot.config.reduce_motion {
             if !self.motion_textures.is_empty() {
                 self.drop_motion_textures(cx);
             }
@@ -816,8 +1036,97 @@ impl SonataDesktopView {
         }
     }
 
+    /// Interpolates the live playhead between backend progress ticks for smooth 45–60 FPS karaoke sweeps.
+    pub fn live_position_now(&self) -> f64 {
+        if self.snapshot.paused
+            || self.snapshot.loading_track
+            || self.snapshot.current_track().is_none()
+        {
+            return self.live_position_secs;
+        }
+        let elapsed = self
+            .live_position_at
+            .elapsed()
+            .as_secs_f64()
+            .clamp(0.0, 1.5);
+        let max_pos = self.live_duration_secs.max(self.live_position_secs);
+        (self.live_position_secs + elapsed).min(max_pos)
+    }
+
+    /// Paces smooth 45 Hz karaoke frames only while synced lyrics are actively visible and playing.
+    pub fn ensure_karaoke_pace(&mut self, cx: &mut Context<Self>) {
+        if self.karaoke_timer_active || self.ui_suspended() {
+            return;
+        }
+        self.karaoke_timer_active = true;
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(22))
+                .await;
+            let keep = this.update(cx, |view, cx| {
+                if view.ui_suspended() {
+                    view.karaoke_timer_active = false;
+                    return false;
+                }
+                let lyrics_visible = (view.fullscreen_open
+                    && view.fullscreen_tab == FullscreenDrawerTab::Lyrics)
+                    || (!view.fullscreen_open && view.settings.show_lyrics_panel);
+                let synced = matches!(
+                    view.snapshot.lyrics,
+                    sonata_core::lyrics::LyricsState::Synced(ref lines) if !lines.is_empty()
+                );
+                let playing = !view.snapshot.paused
+                    && !view.snapshot.loading_track
+                    && view.snapshot.current_track().is_some();
+                if !lyrics_visible || !synced || !playing {
+                    view.karaoke_timer_active = false;
+                    return false;
+                }
+                cx.notify();
+                true
+            });
+            if !matches!(keep, Ok(true)) {
+                break;
+            }
+        })
+        .detach();
+    }
+
+    fn on_progress(&mut self, pos: f64, dur: f64, window: &mut Window, cx: &mut Context<Self>) {
+        self.live_position_secs = pos;
+        self.live_position_at = Instant::now();
+        if dur > 0.0 {
+            self.live_duration_secs = dur;
+        }
+        if self.ui_suspended() {
+            return;
+        }
+        if !self.progress_dragging {
+            let max_dur = self.live_duration_secs.max(1.0) as f32;
+            let cur_pos = (self.live_position_secs as f32).clamp(0.0, max_dur);
+            self.progress_slider.update(cx, |s, cx| {
+                let min_v = s.min_value();
+                if (s.max_value() - max_dur).abs() > 0.5 || min_v != 0.0 {
+                    *s = SliderState::new()
+                        .min(0.0)
+                        .max(max_dur)
+                        .step(0.5)
+                        .default_value(cur_pos);
+                } else {
+                    s.set_value(cur_pos, window, cx);
+                }
+            });
+        }
+        self.sync_lyric_transition(cx);
+        self.maybe_auto_scroll_lyrics();
+        cx.notify();
+    }
+
     fn sync_lyric_transition(&mut self, cx: &mut Context<Self>) {
-        let next_idx = self.snapshot.active_lyric_index();
+        if self.ui_suspended() {
+            return;
+        }
+        let next_idx = self.snapshot.active_lyric_index_at(self.live_position_secs);
         if next_idx != self.last_active_lyric {
             self.lyric_prev_idx = self.last_active_lyric;
             self.lyric_changed_at = Instant::now();
@@ -828,6 +1137,10 @@ impl SonataDesktopView {
                         .timer(Duration::from_millis(16))
                         .await;
                     let keep = this.update(cx, |view, cx| {
+                        if view.ui_suspended() {
+                            view.lyric_anim_active = false;
+                            return false;
+                        }
                         let done = view.lyric_changed_at.elapsed() >= Duration::from_millis(340);
                         cx.notify();
                         if done {
@@ -851,14 +1164,14 @@ impl SonataDesktopView {
         &self,
         idx: usize,
         active_lead: Option<usize>,
-        active_bg: Option<usize>,
+        active_bg: &[usize],
     ) -> f32 {
         let raw = (self.lyric_changed_at.elapsed().as_secs_f32() / 0.32).clamp(0.0, 1.0);
         let eased = 1.0 - (1.0 - raw).powi(3);
         if active_lead == Some(idx) {
             eased
-        } else if active_bg == Some(idx) {
-            0.85
+        } else if active_bg.contains(&idx) {
+            1.0
         } else if self.lyric_prev_idx == Some(idx) && raw < 1.0 {
             1.0 - eased
         } else {
@@ -867,29 +1180,37 @@ impl SonataDesktopView {
     }
 
     fn maybe_auto_scroll_lyrics(&mut self) {
-        let paused_by_wheel = self
-            .last_wheel_lyrics
-            .is_some_and(|t| t.elapsed() < Duration::from_secs(3));
-        if paused_by_wheel {
-            return;
+        if let Some(active_idx) = self.snapshot.active_lyric_index_at(self.live_position_secs) {
+            self.last_active_lyric = Some(active_idx);
         }
-        let Some(active_idx) = self.snapshot.active_lyric_index() else {
-            return;
-        };
-        if self.last_active_lyric == Some(active_idx) {
-            return;
+    }
+
+    pub fn stir_fullscreen(&mut self, cx: &mut Context<Self>) {
+        self.fullscreen_last_activity = Instant::now();
+        if !self.fullscreen_awake {
+            self.fullscreen_awake = true;
+            cx.notify();
         }
-        self.last_active_lyric = Some(active_idx);
-        let len = match &self.snapshot.lyrics {
-            LyricsState::Synced(lines) => lines.len(),
-            _ => 0,
-        };
-        if len > 0 {
-            self.lyrics_scroll
-                .scroll_to_item(active_idx.saturating_sub(2));
-            self.fullscreen_lyrics_scroll
-                .scroll_to_item(active_idx.saturating_sub(2));
-        }
+        self.fullscreen_idle_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(1400))
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                if !view.fullscreen_open {
+                    view.fullscreen_awake = false;
+                    return;
+                }
+                if view.fullscreen_last_activity.elapsed() < Duration::from_millis(1350)
+                    || view.progress_dragging
+                {
+                    return;
+                }
+                if view.fullscreen_awake {
+                    view.fullscreen_awake = false;
+                    cx.notify();
+                }
+            });
+        }));
     }
 
     pub fn media_for_url(
@@ -979,7 +1300,9 @@ impl SonataDesktopView {
         if key == "f11" {
             window.toggle_fullscreen();
             self.fullscreen_open = window.is_fullscreen() || !self.fullscreen_open;
-            self.fullscreen_last_activity = Instant::now();
+            if self.fullscreen_open {
+                self.stir_fullscreen(cx);
+            }
             cx.notify();
             return;
         }
@@ -996,7 +1319,9 @@ impl SonataDesktopView {
             " " => self.backend.send(BackendCmd::TogglePause),
             "f" => {
                 self.fullscreen_open = !self.fullscreen_open;
-                self.fullscreen_last_activity = Instant::now();
+                if self.fullscreen_open {
+                    self.stir_fullscreen(cx);
+                }
             }
             "m" => self.backend.send(BackendCmd::ToggleMute),
             "s" => self.backend.send(BackendCmd::ToggleShuffle),
@@ -1031,6 +1356,148 @@ impl SonataDesktopView {
             NavTarget::Settings => self.render_settings_page(window, cx),
         }
     }
+    fn render_mini_player(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let current = self.snapshot.current_track().cloned();
+        let art = self
+            .media_for_path(self.snapshot.art_path.as_deref(), cx)
+            .or_else(|| {
+                current
+                    .as_ref()
+                    .and_then(|t| self.media_for_url(t.thumbnail_url.as_deref(), cx))
+            });
+        let title = current
+            .as_ref()
+            .map(|t| t.title.clone())
+            .unwrap_or_else(|| "Nothing playing".to_string());
+        let artist = current
+            .as_ref()
+            .map(|t| t.artist.clone())
+            .unwrap_or_default();
+
+        // Ultra-lightweight static mini-player: zero timers, zero animations, audio-first idle power.
+        div()
+            .id("sonata-mini-root")
+            .track_focus(&self.focus_handle)
+            .size_full()
+            .bg(self.palette.card_bg)
+            .text_color(self.palette.text)
+            .font_family("Inter")
+            .flex()
+            .flex_col()
+            .on_key_down(cx.listener(Self::handle_key_down))
+            .child(
+                TitleBar::new()
+                    .h(px(28.0))
+                    .px(px(10.0))
+                    .border_b_0()
+                    .bg(gpui_kit::transparent_black())
+                    .on_close_window(|_, window, _| {
+                        window.remove_window();
+                    })
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(self.palette.dim)
+                            .child("Sonata · Low-Power Mini"),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .px(px(12.0))
+                    .pb(px(10.0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(10.0))
+                    .child(cover_art_tile(
+                        "mini-art",
+                        art.as_ref(),
+                        44.0,
+                        false,
+                        &self.palette,
+                        false,
+                        None,
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_size(px(13.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(self.palette.text)
+                                    .truncate()
+                                    .child(title),
+                            )
+                            .when(!artist.is_empty(), |col| {
+                                col.child(
+                                    div()
+                                        .text_size(px(11.5))
+                                        .text_color(self.palette.secondary)
+                                        .truncate()
+                                        .child(artist),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(4.0))
+                            .child(
+                                Button::new("mini-prev")
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::SkipBack)
+                                    .on_click(cx.listener(|this, _, _, _| {
+                                        this.backend.send(BackendCmd::PrevTrack);
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("mini-play")
+                                    .size(px(34.0))
+                                    .rounded_full()
+                                    .bg(self.palette.accent)
+                                    .text_color(self.palette.on_accent)
+                                    .cursor_pointer()
+                                    .hover(|s| s.opacity(0.88))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .on_click(cx.listener(|this, _, _, _| {
+                                        this.backend.send(BackendCmd::TogglePause);
+                                    }))
+                                    .child(
+                                        Icon::new(if self.snapshot.paused {
+                                            IconName::Play
+                                        } else {
+                                            IconName::Pause
+                                        })
+                                        .size(px(15.0)),
+                                    ),
+                            )
+                            .child(
+                                Button::new("mini-next")
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::SkipForward)
+                                    .on_click(cx.listener(|this, _, _, _| {
+                                        this.backend.send(BackendCmd::NextTrack);
+                                    })),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
 }
 
 impl Focusable for SonataDesktopView {
@@ -1041,9 +1508,25 @@ impl Focusable for SonataDesktopView {
 
 impl Render for SonataDesktopView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.sync_motion_cover_textures(cx);
+        if !self.window_visible {
+            return WindowBorder::new().child(div().size_full());
+        }
         let vp = window.viewport_size();
         let vp_w: f32 = vp.width.into();
+        let vp_h: f32 = vp.height.into();
+        let mini = is_mini_viewport(vp_w, vp_h);
+        if mini != self.mini_mode {
+            self.mini_mode = mini;
+            self.backend.send(BackendCmd::SetUiCompact(mini));
+            if mini {
+                self.suspend_ui_work(cx);
+            }
+        }
+        if self.mini_mode {
+            return WindowBorder::new().child(self.render_mini_player(cx));
+        }
+
+        self.sync_motion_cover_textures(cx);
         let (sidebar_w, right_w) = self.settings.resolve_shell_widths(vp_w);
         let is_rail = sidebar_w <= SIDEBAR_RAIL + 1.0;
 
@@ -1061,7 +1544,7 @@ impl Render for SonataDesktopView {
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
                 let mouse_x: f32 = ev.position.x.into();
                 if this.fullscreen_open {
-                    this.fullscreen_last_activity = Instant::now();
+                    this.stir_fullscreen(cx);
                 }
                 if this.dragging_sidebar {
                     let delta = mouse_x - this.drag_origin_x;

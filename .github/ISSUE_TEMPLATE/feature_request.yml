@@ -1,0 +1,30 @@
+name: Feature Request
+description: Propose a new feature or UX improvement for Sonata
+title: "[Feature]: "
+labels: ["feature request"]
+body:
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Target Platform
+      options:
+        - All Platforms
+        - Android
+        - Desktop (Linux GPUI)
+        - TUI (Terminal)
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Feature Description
+      description: Clearly describe what you want to happen and why it helps.
+    validations:
+      required: true
+
+  - type: textarea
+    id: mockups
+    attributes:
+      label: References / Mockups (Optional)
+      description: Optional screenshots, sketches, or examples.

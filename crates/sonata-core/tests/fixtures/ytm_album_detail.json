@@ -1,0 +1,95 @@
+{
+  "header": {
+    "musicResponsiveHeaderRenderer": {
+      "title": { "runs": [{ "text": "After Hours" }] },
+      "subtitle": { "runs": [{ "text": "Album • 2020" }] },
+      "secondSubtitle": { "runs": [{ "text": "14 songs • 56 minutes" }] },
+      "straplineTextOne": {
+        "runs": [
+          {
+            "text": "The Weeknd",
+            "navigationEndpoint": {
+              "browseEndpoint": { "browseId": "UC0WP5P-ufpRfjbNrmOWwLBQ" }
+            }
+          }
+        ]
+      },
+      "thumbnail": {
+        "musicThumbnailRenderer": {
+          "thumbnail": {
+            "thumbnails": [
+              { "url": "https://lh3.googleusercontent.com/album-cover=w226-h226-l90-rj", "width": 226, "height": 226 }
+            ]
+          }
+        }
+      }
+    }
+  },
+  "contents": {
+    "twoColumnBrowseResultsRenderer": {
+      "secondaryContents": {
+        "sectionListRenderer": {
+          "contents": [
+            {
+              "musicShelfRenderer": {
+                "contents": [
+                  {
+                    "musicResponsiveListItemRenderer": {
+                      "playlistItemData": { "videoId": "fHI8X4OXluQ", "playlistId": "OLAK5uy_example123" },
+                      "flexColumns": [
+                        {
+                          "musicResponsiveListItemFlexColumnRenderer": {
+                            "text": { "runs": [{ "text": "Blinding Lights" }] }
+                          }
+                        },
+                        {
+                          "musicResponsiveListItemFlexColumnRenderer": {
+                            "text": {
+                              "runs": [
+                                {
+                                  "text": "The Weeknd",
+                                  "navigationEndpoint": {
+                                    "browseEndpoint": { "browseId": "UC0WP5P-ufpRfjbNrmOWwLBQ" }
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      ],
+                      "fixedColumns": [
+                        {
+                          "musicResponsiveListItemFixedColumnRenderer": {
+                            "text": { "runs": [{ "text": "3:20" }] }
+                          }
+                        }
+                      ],
+                      "badges": [
+                        {
+                          "musicInlineBadgeRenderer": {
+                            "icon": { "iconType": "MUSIC_EXPLICIT_BADGE" }
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "musicResponsiveListItemRenderer": {
+                      "flexColumns": [
+                        {
+                          "musicResponsiveListItemFlexColumnRenderer": {
+                            "text": { "runs": [{ "text": "Broken Track Missing VideoId" }] }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

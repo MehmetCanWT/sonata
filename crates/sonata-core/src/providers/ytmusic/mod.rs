@@ -21,8 +21,16 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, RwLock};
 
+pub mod album;
+pub mod browse;
 mod parsers;
+pub mod search;
 
+pub use album::{parse_album_detail_json, AlbumDetail, ParsedAlbumDetail};
+pub use browse::{
+    parse_artist_banner_url_json, parse_cards_tree_json, parse_mood_chips_json,
+    parse_mood_tiles_json, MoodCategoryTile, MoodChip, ParsedCollection,
+};
 use parsers::{
     apply_collection_backfill, collect_playlists, collect_tracks, extract_search_album_browse_id,
     extract_search_artist_browse_id, find_artist_songs_endpoint, find_collection_header,
@@ -30,6 +38,7 @@ use parsers::{
     is_excluded_shelf_title, merge_home_shelves, CollectionHeader,
 };
 pub use parsers::{parse_account_profile_json, parse_artist_page_json, parse_home_shelves_json};
+pub use search::{parse_rich_search_json, parse_search_suggestions_json, RichSearchResult};
 const INNERTUBE_BASE: &str = "https://music.youtube.com/youtubei/v1";
 const WEB_REMIX_VERSION: &str = "1.20260707.12.00";
 const WEB_USER_AGENT: &str =
@@ -864,6 +873,236 @@ impl YtMusicClient {
         })
     }
 
+    /// Updates a user-owned YouTube Music playlist's title, description, and/or privacy status
+    /// via `browse/edit_playlist` and invalidates local caches.
+    pub async fn edit_playlist_metadata(
+        &self,
+        playlist_browse_id: &str,
+        title: Option<&str>,
+        description: Option<&str>,
+        privacy: Option<&str>,
+    ) -> Result<()> {
+        if !self.is_authenticated() {
+            return Err(anyhow!("Sign in to YouTube Music first"));
+        }
+        let raw_id = playlist_browse_id
+            .trim()
+            .strip_prefix("VL")
+            .unwrap_or(playlist_browse_id.trim());
+        if raw_id.is_empty() || raw_id == "LM" {
+            return Err(anyhow!("This playlist cannot be edited"));
+        }
+
+        let mut actions: Vec<Value> = Vec::new();
+        if let Some(name) = title.map(str::trim).filter(|s| !s.is_empty()) {
+            actions.push(json!({
+                "action": "ACTION_SET_PLAYLIST_NAME",
+                "playlistName": name
+            }));
+        }
+        if let Some(desc) = description {
+            actions.push(json!({
+                "action": "ACTION_SET_PLAYLIST_DESCRIPTION",
+                "playlistDescription": desc.trim()
+            }));
+        }
+        if let Some(priv_raw) = privacy.map(str::trim).filter(|s| !s.is_empty()) {
+            let normalized = match priv_raw.to_ascii_uppercase().as_str() {
+                "PUBLIC" => "PUBLIC",
+                "UNLISTED" => "UNLISTED",
+                _ => "PRIVATE",
+            };
+            actions.push(json!({
+                "action": "ACTION_SET_PLAYLIST_PRIVACY",
+                "playlistPrivacy": normalized
+            }));
+        }
+        if actions.is_empty() {
+            return Ok(());
+        }
+
+        let mut body = Self::base_context();
+        body["playlistId"] = json!(raw_id);
+        body["actions"] = json!(actions);
+        let resp = self.post("browse/edit_playlist", body).await?;
+        if resp.get("status").and_then(|v| v.as_str()) == Some("STATUS_FAILED") {
+            return Err(anyhow!("YouTube Music rejected playlist metadata update"));
+        }
+        self.invalidate_cache(Some(playlist_browse_id)).await;
+        Ok(())
+    }
+
+    /// Uploads a custom cover image to YouTube Music (`playlist_image_upload/playlist_custom_thumbnail`)
+    /// and binds the resulting Scotty blob ID to the playlist via `ACTION_SET_CUSTOM_THUMBNAIL`.
+    pub async fn upload_playlist_cover(
+        &self,
+        playlist_browse_id: &str,
+        image_bytes: &[u8],
+        mime_type: &str,
+    ) -> Result<()> {
+        if !self.is_authenticated() {
+            return Err(anyhow!("Sign in to YouTube Music first"));
+        }
+        let raw_id = playlist_browse_id
+            .trim()
+            .strip_prefix("VL")
+            .unwrap_or(playlist_browse_id.trim());
+        if raw_id.is_empty() || raw_id == "LM" {
+            return Err(anyhow!("This playlist cover cannot be edited"));
+        }
+        if image_bytes.is_empty() || image_bytes.len() > 10 * 1024 * 1024 {
+            return Err(anyhow!("Cover image must be between 1 byte and 10 MB"));
+        }
+
+        self.ensure_channel_scope().await;
+        let scope = self.channel_scope.read().await.clone().unwrap_or_default();
+        let (cookie_hdr, auth_hdr) = match (
+            self.cookies.ytm_cookie_header(),
+            self.cookies.ytm_sapisidhash(),
+        ) {
+            (Some(c), Some(a)) => (c, a),
+            _ => return Err(anyhow!("Missing YouTube Music auth cookies")),
+        };
+
+        let mime = match mime_type.trim().to_ascii_lowercase().as_str() {
+            "image/png" => "image/png",
+            "image/webp" => "image/webp",
+            _ => "image/jpeg",
+        };
+        const UPLOAD_ENDPOINT: &str =
+            "https://music.youtube.com/playlist_image_upload/playlist_custom_thumbnail";
+
+        // Step 1: Reserve resumable Scotty upload slot.
+        let mut start_req = self
+            .http
+            .post(UPLOAD_ENDPOINT)
+            .header("User-Agent", WEB_USER_AGENT)
+            .header("Origin", "https://music.youtube.com")
+            .header("X-Origin", "https://music.youtube.com")
+            .header("Referer", "https://music.youtube.com/")
+            .header("Cookie", &cookie_hdr)
+            .header("Authorization", &auth_hdr)
+            .header("X-Goog-AuthUser", "0")
+            .header("X-Goog-Upload-Command", "start")
+            .header("X-Goog-Upload-Protocol", "resumable")
+            .header(
+                "X-Goog-Upload-Header-Content-Length",
+                image_bytes.len().to_string(),
+            )
+            .header("X-Goog-Upload-Header-Content-Type", mime)
+            .header("Content-Length", "0");
+        if let Some(ref page_id) = scope.page_id {
+            start_req = start_req.header("X-Goog-PageId", page_id);
+        }
+        let start_resp = start_req.send().await?;
+        if !start_resp.status().is_success() {
+            return Err(anyhow!(
+                "YouTube Music cover upload handshake failed (HTTP {})",
+                start_resp.status()
+            ));
+        }
+
+        let upload_url = start_resp
+            .headers()
+            .get("x-goog-upload-url")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+            .or_else(|| {
+                start_resp
+                    .headers()
+                    .get("x-guploader-uploadid")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|uid| {
+                        format!("{UPLOAD_ENDPOINT}?upload_id={uid}&upload_protocol=resumable")
+                    })
+            })
+            .ok_or_else(|| anyhow!("Missing upload URL / upload ID from YouTube Music"))?;
+
+        // Step 2: Upload raw image bytes and finalize to receive the encrypted blob ID.
+        let mut put_req = self
+            .http
+            .post(&upload_url)
+            .header("User-Agent", WEB_USER_AGENT)
+            .header("Origin", "https://music.youtube.com")
+            .header("X-Origin", "https://music.youtube.com")
+            .header("Referer", "https://music.youtube.com/")
+            .header("Cookie", &cookie_hdr)
+            .header("Authorization", &auth_hdr)
+            .header("X-Goog-AuthUser", "0")
+            .header("X-Goog-Upload-Command", "upload, finalize")
+            .header("X-Goog-Upload-Offset", "0")
+            .header("Content-Type", mime)
+            .body(image_bytes.to_vec());
+        if let Some(ref page_id) = scope.page_id {
+            put_req = put_req.header("X-Goog-PageId", page_id);
+        }
+        let put_resp = put_req.send().await?;
+        if !put_resp.status().is_success() {
+            return Err(anyhow!(
+                "YouTube Music cover image upload failed (HTTP {})",
+                put_resp.status()
+            ));
+        }
+        let raw_text = put_resp.text().await?;
+        let trimmed = raw_text
+            .strip_prefix(")]}'\n")
+            .or_else(|| raw_text.strip_prefix(")]}'"))
+            .unwrap_or(&raw_text)
+            .trim();
+        let blob_id = serde_json::from_str::<Value>(trimmed)
+            .ok()
+            .and_then(|v| {
+                v.get("encryptedBlobId")
+                    .or_else(|| v.get("playlistScottyEncryptedBlobId"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                if !trimmed.is_empty() && !trimmed.starts_with('{') && !trimmed.starts_with('<') {
+                    Some(trimmed.to_string())
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| anyhow!("Missing encryptedBlobId from YouTube Music upload response"))?;
+
+        // Step 3: Bind custom thumbnail blob to the playlist via browse/edit_playlist.
+        let mut body = Self::base_context();
+        body["playlistId"] = json!(raw_id);
+        body["actions"] = json!([{
+            "action": "ACTION_SET_CUSTOM_THUMBNAIL",
+            "addedCustomThumbnail": {
+                "imageKey": {
+                    "type": "PLAYLIST_IMAGE_TYPE_CUSTOM_THUMBNAIL",
+                    "name": "studio_square_thumbnail"
+                },
+                "playlistScottyEncryptedBlobId": blob_id
+            }
+        }]);
+        let primary = self.post("browse/edit_playlist", body).await;
+        let ok = matches!(
+            primary,
+            Ok(resp) if resp.get("status").and_then(|v| v.as_str()) != Some("STATUS_FAILED")
+        );
+        if !ok {
+            let mut fallback = Self::base_context();
+            fallback["playlistId"] = json!(raw_id);
+            fallback["actions"] = json!([{
+                "action": "ACTION_SET_CUSTOM_THUMBNAIL",
+                "addedCustomThumbnail": {
+                    "playlistScottyEncryptedBlobId": blob_id
+                }
+            }]);
+            let resp = self.post("browse/edit_playlist", fallback).await?;
+            if resp.get("status").and_then(|v| v.as_str()) == Some("STATUS_FAILED") {
+                return Err(anyhow!("YouTube Music rejected custom playlist cover"));
+            }
+        }
+        self.invalidate_cache(Some(playlist_browse_id)).await;
+        Ok(())
+    }
+
     pub async fn search_songs(&self, query: &str) -> Result<Vec<Track>> {
         let mut body = Self::base_context();
         body["query"] = json!(query);
@@ -1158,6 +1397,194 @@ impl YtMusicClient {
         }
 
         Ok(out)
+    }
+
+    /// Fetches the home feed along with top-level mood filter pills (`chipCloudChipRenderer`).
+    pub async fn fetch_home_with_chips(
+        &self,
+        params: Option<&str>,
+    ) -> Result<(Vec<MoodChip>, Vec<HomeShelf>)> {
+        let mut body = Self::base_context();
+        body["browseId"] = json!("FEmusic_home");
+        if let Some(p) = params.filter(|s| !s.is_empty()) {
+            body["params"] = json!(p);
+        }
+        let data = self.post("browse", body).await?;
+        let chips = parse_mood_chips_json(&data);
+        if chips.dropped_rows > 0 {
+            tracing::debug!(
+                provider = "ytmusic",
+                endpoint = "home_chips",
+                dropped_rows = chips.dropped_rows,
+                "dropped malformed mood chip rows"
+            );
+        }
+        let shelves = parse_home_shelves_json(&data);
+        Ok((chips.items, shelves))
+    }
+
+    /// Fetches `FEmusic_explore` shelves alongside `FEmusic_moods_and_genres` category tiles.
+    pub async fn fetch_explore(&self) -> Result<(Vec<HomeShelf>, Vec<MoodCategoryTile>)> {
+        let mut exp_body = Self::base_context();
+        exp_body["browseId"] = json!("FEmusic_explore");
+        let mut moods_body = Self::base_context();
+        moods_body["browseId"] = json!("FEmusic_moods_and_genres");
+
+        let (exp_res, moods_res) = tokio::join!(
+            self.post("browse", exp_body),
+            tokio::time::timeout(Duration::from_secs(6), self.post("browse", moods_body)),
+        );
+
+        let shelves = exp_res
+            .as_ref()
+            .map(parse_home_shelves_json)
+            .unwrap_or_default();
+        let mut parsed_tiles = moods_res
+            .ok()
+            .and_then(Result::ok)
+            .map(|v| parse_mood_tiles_json(&v))
+            .unwrap_or_default();
+        if parsed_tiles.items.is_empty() {
+            if let Ok(ref v) = exp_res {
+                parsed_tiles = parse_mood_tiles_json(v);
+            }
+        }
+        if parsed_tiles.dropped_rows > 0 {
+            tracing::debug!(
+                provider = "ytmusic",
+                endpoint = "explore_moods",
+                dropped_rows = parsed_tiles.dropped_rows,
+                "dropped malformed mood tile rows"
+            );
+        }
+        Ok((shelves, parsed_tiles.items))
+    }
+
+    /// Fetches shelves for a mood or genre category browse endpoint.
+    pub async fn fetch_mood_category(
+        &self,
+        browse_id: &str,
+        params: &str,
+    ) -> Result<Vec<HomeShelf>> {
+        let mut body = Self::base_context();
+        body["browseId"] = json!(browse_id);
+        if !params.is_empty() {
+            body["params"] = json!(params);
+        }
+        let data = self.post("browse", body).await?;
+        Ok(parse_home_shelves_json(&data))
+    }
+
+    /// Fetches saved library albums and track artists.
+    pub async fn fetch_library_albums_and_artists(&self) -> (Vec<HomeCard>, Vec<HomeCard>) {
+        let mut albums_body = Self::base_context();
+        albums_body["browseId"] = json!("FEmusic_liked_albums");
+        let mut artists_body = Self::base_context();
+        artists_body["browseId"] = json!("FEmusic_library_corpus_track_artists");
+
+        let (alb_res, art_res) = tokio::join!(
+            self.post("browse", albums_body),
+            self.post("browse", artists_body),
+        );
+
+        let albums = alb_res
+            .map(|v| parse_cards_tree_json(&v, HomeCardKind::Album))
+            .unwrap_or_default();
+        let artists = art_res
+            .map(|v| parse_cards_tree_json(&v, HomeCardKind::Artist))
+            .unwrap_or_default();
+        if albums.dropped_rows > 0 || artists.dropped_rows > 0 {
+            tracing::debug!(
+                provider = "ytmusic",
+                endpoint = "library_extras",
+                dropped_albums = albums.dropped_rows,
+                dropped_artists = artists.dropped_rows,
+                "dropped malformed library card rows"
+            );
+        }
+        (albums.items, artists.items)
+    }
+
+    /// Fetches full album details including tracks, clickable artists, and alternate versions.
+    pub async fn fetch_album_detail(&self, browse_id: &str) -> Result<AlbumDetail> {
+        let mut body = Self::base_context();
+        body["browseId"] = json!(browse_id);
+        let data = self.post("browse", body).await?;
+        let parsed = parse_album_detail_json(browse_id, &data).map_err(anyhow::Error::new)?;
+        if parsed.dropped_rows > 0 {
+            tracing::debug!(
+                provider = "ytmusic",
+                endpoint = "album_detail",
+                browse_id = browse_id,
+                dropped_rows = parsed.dropped_rows,
+                "dropped malformed album track rows"
+            );
+        }
+        Ok(parsed.detail)
+    }
+
+    /// Fetches a wide artist channel banner URL (`>= 1.5` aspect ratio) if available.
+    pub async fn fetch_artist_banner(&self, browse_id: &str) -> Option<String> {
+        let mut body = Self::base_context();
+        body["browseId"] = json!(browse_id);
+        let data = self.post("browse", body).await.ok()?;
+        parse_artist_banner_url_json(&data)
+    }
+
+    /// Marks a YouTube Music video as disliked.
+    pub async fn set_dislike_status(&self, video_id: &str) -> Result<()> {
+        let mut body = Self::base_context();
+        body["target"] = json!({ "videoId": video_id });
+        let _ = self.post("like/dislike", body).await?;
+        Ok(())
+    }
+
+    /// Saves or removes a YouTube Music playlist/album from the user's library.
+    pub async fn set_playlist_saved(&self, playlist_id: &str, save: bool) -> Result<()> {
+        let mut body = Self::base_context();
+        body["target"] = json!({ "playlistId": playlist_id });
+        let endpoint = if save { "like/like" } else { "like/removelike" };
+        let _ = self.post(endpoint, body).await?;
+        Ok(())
+    }
+
+    /// Fetches live search autocomplete suggestions (`music/get_search_suggestions`).
+    pub async fn fetch_search_suggestions(&self, input: &str) -> Vec<String> {
+        if input.trim().is_empty() {
+            return Vec::new();
+        }
+        let mut body = Self::base_context();
+        body["input"] = json!(input.trim());
+        let Ok(data) = self.post("music/get_search_suggestions", body).await else {
+            return Vec::new();
+        };
+        let parsed = parse_search_suggestions_json(&data);
+        if parsed.dropped_rows > 0 {
+            tracing::debug!(
+                provider = "ytmusic",
+                endpoint = "search_suggestions",
+                dropped_rows = parsed.dropped_rows,
+                "dropped malformed search suggestion rows"
+            );
+        }
+        parsed.items
+    }
+
+    /// Searches YouTube Music and parses categorized songs, videos, albums, artists, and playlists.
+    pub async fn search_rich(&self, query: &str) -> Result<RichSearchResult> {
+        let mut body = Self::base_context();
+        body["query"] = json!(query.trim());
+        let data = self.post("search", body).await?;
+        let parsed = parse_rich_search_json(&data).map_err(anyhow::Error::new)?;
+        if parsed.dropped_rows > 0 {
+            tracing::debug!(
+                provider = "ytmusic",
+                endpoint = "search_rich",
+                dropped_rows = parsed.dropped_rows,
+                "dropped malformed rich search rows"
+            );
+        }
+        Ok(parsed)
     }
 }
 

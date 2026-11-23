@@ -11,12 +11,11 @@ use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui_image::protocol::StatefulProtocol;
 use sonata_core::auth::ExtractedCookies;
-use sonata_core::hyprland;
 use sonata_core::lyrics::LyricsState;
-use sonata_core::player::MpvEvent;
-use sonata_core::providers::hifi::ResolvedStream;
 use sonata_core::providers::{Playlist, Track};
 use sonata_core::updater::UpdateCheckResult;
+use sonata_runtime::hyprland;
+use sonata_runtime::player::SessionCommand;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SplitTarget {
@@ -91,27 +90,6 @@ pub enum AppEvent {
         heading: String,
         tracks: Vec<Track>,
     },
-    StreamReady {
-        play_seq: u64,
-        track_id: String,
-        stream: ResolvedStream,
-    },
-    StreamUpgrade {
-        play_seq: u64,
-        track_id: String,
-        stream: ResolvedStream,
-    },
-    StreamError {
-        play_seq: u64,
-        track_id: String,
-        error: String,
-    },
-    NextTrackPrepared {
-        play_seq: u64,
-        index: usize,
-        track_id: String,
-        result: Result<ResolvedStream, String>,
-    },
     LyricsReady {
         play_seq: u64,
         track_id: String,
@@ -137,7 +115,6 @@ pub enum AppEvent {
         fps: f32,
         frames: Vec<(Option<StatefulProtocol>, Vec<u8>)>,
     },
-    Mpv(MpvEvent),
     PlaylistCreated(Playlist),
     UpdateChecked(UpdateCheckResult),
     StatusMessage(String),
@@ -238,11 +215,14 @@ impl App {
 
     pub fn toggle_jiosaavn(&mut self) {
         self.config.jiosaavn_enabled = !self.config.jiosaavn_enabled;
-        sonata_core::config::AppConfig::set_jiosaavn_enabled(self.config.jiosaavn_enabled);
+        let enabled = self.config.jiosaavn_enabled;
+        self.resolver
+            .update_profile(|profile| profile.jiosaavn_enabled = enabled);
         let _ = self.config.save();
-        if self.config.jiosaavn_enabled {
-            self.start_hifi_upgrade();
-        }
+        self.enqueue_session_cmd(SessionCommand::UpdatePolicy {
+            policy: self.session_policy(),
+            trigger_upgrade: enabled,
+        });
         self.status_line = format!(
             "JioSaavn 320kbps Module: {}",
             if self.config.jiosaavn_enabled {
@@ -255,7 +235,6 @@ impl App {
 
     pub fn toggle_motion_covers(&mut self) {
         self.config.motion_covers = !self.config.motion_covers;
-        sonata_core::config::AppConfig::set_motion_covers_enabled(self.config.motion_covers);
         let _ = self.config.save();
         if !self.config.motion_covers {
             self.anim_art_frames.clear();

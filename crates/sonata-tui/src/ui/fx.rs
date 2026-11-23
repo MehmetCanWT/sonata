@@ -7,8 +7,9 @@ use crate::app::ActiveModal;
 use crate::theme_tui::TuiTheme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Color;
 use std::time::Instant;
-use tachyonfx::{fx, Duration as FxDuration, EffectManager, Interpolation, Motion};
+use tachyonfx::{fx, CellFilter, Duration as FxDuration, EffectManager, Interpolation, Motion};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd, Default)]
 pub enum EffectKey {
@@ -97,7 +98,7 @@ impl UiEffects {
                     14,
                     0,
                     ctx.theme.bg,
-                    (320, Interpolation::QuadOut),
+                    (300, Interpolation::ExpoOut),
                 )
                 .with_area(ctx.screen_area);
                 self.manager.add_unique_effect(EffectKey::Startup, fx);
@@ -108,14 +109,9 @@ impl UiEffects {
         if ctx.tracks_heading != self.last_heading {
             self.last_heading = ctx.tracks_heading.to_string();
             if ctx.tracks_area.width > 0 && ctx.tracks_area.height > 0 {
-                let fx = fx::sweep_in(
-                    Motion::UpToDown,
-                    8,
-                    0,
-                    ctx.theme.bg,
-                    (220, Interpolation::CubicOut),
-                )
-                .with_area(ctx.tracks_area);
+                let fx = fx::fade_from_fg(ctx.theme.bg, (220, Interpolation::CubicOut))
+                    .with_filter(CellFilter::Text)
+                    .with_area(ctx.tracks_area);
                 self.manager.add_unique_effect(EffectKey::TrackList, fx);
             }
         }
@@ -127,7 +123,8 @@ impl UiEffects {
                 && ctx.player_bar_area.width > 0
                 && ctx.player_bar_area.height > 0
             {
-                let fx = fx::fade_from_fg(ctx.theme.accent, (240, Interpolation::QuadOut))
+                let fx = fx::fade_from_fg(ctx.theme.accent, (260, Interpolation::CubicOut))
+                    .with_filter(CellFilter::Text)
                     .with_area(ctx.player_bar_area);
                 self.manager.add_unique_effect(EffectKey::PlayerBar, fx);
             }
@@ -139,8 +136,40 @@ impl UiEffects {
                 && ctx.lyrics_area.width > 0
                 && ctx.lyrics_area.height > 0
             {
-                let fx = fx::fade_from_fg(ctx.theme.accent, (260, Interpolation::SineOut))
-                    .with_area(ctx.lyrics_area);
+                // Upward luminous glide shader synchronized with the anticipatory scroll:
+                // a soft bell-curved light ribbon sweeps bottom-to-top across text cells with
+                // zero start/end pop and zero border/background disturbance.
+                let target_rgb = color_to_rgb(ctx.theme.lyrics_active);
+                let fx = fx::effect_fn((), (280, Interpolation::SineOut), move |_, sctx, cells| {
+                    let alpha = sctx.alpha();
+                    let env = (std::f32::consts::PI * alpha).sin().max(0.0);
+                    if env <= 0.004 || sctx.area.height == 0 {
+                        return;
+                    }
+                    let top = sctx.area.y as f32;
+                    let height = sctx.area.height as f32;
+                    let wave_y = top + height * (1.0 - alpha);
+                    let spread = (height * 0.24).clamp(1.6, 3.4);
+                    let inv_2sig2 = 1.0 / (2.0 * spread * spread);
+                    cells.for_each_cell(|pos, cell| {
+                        let dy = pos.y as f32 - wave_y;
+                        let band = (-(dy * dy) * inv_2sig2).exp();
+                        let mix = (band * env * 0.28).clamp(0.0, 0.30);
+                        if mix > 0.01 {
+                            let (r, g, b) = color_to_rgb(cell.fg);
+                            let lerp = |a: u8, b: u8| {
+                                ((a as f32) + ((b as f32) - (a as f32)) * mix).round() as u8
+                            };
+                            cell.set_fg(Color::Rgb(
+                                lerp(r, target_rgb.0),
+                                lerp(g, target_rgb.1),
+                                lerp(b, target_rgb.2),
+                            ));
+                        }
+                    });
+                })
+                .with_filter(CellFilter::Text)
+                .with_area(ctx.lyrics_area);
                 self.manager.add_unique_effect(EffectKey::LyricsLine, fx);
             }
         }
@@ -150,7 +179,7 @@ impl UiEffects {
             && ctx.screen_area.width > 0
             && ctx.screen_area.height > 0
         {
-            let fx = fx::coalesce((180, Interpolation::QuadOut)).with_area(ctx.screen_area);
+            let fx = fx::coalesce((180, Interpolation::CubicOut)).with_area(ctx.screen_area);
             self.manager.add_unique_effect(EffectKey::Modal, fx);
         }
         self.last_modal_open = ctx.modal_open;
@@ -167,10 +196,27 @@ pub fn is_modal_open(modal: &ActiveModal) -> bool {
     !matches!(modal, ActiveModal::None)
 }
 
+fn color_to_rgb(c: Color) -> (u8, u8, u8) {
+    match c {
+        Color::Rgb(r, g, b) => (r, g, b),
+        Color::White => (245, 245, 250),
+        Color::Gray => (168, 168, 178),
+        Color::DarkGray => (110, 110, 122),
+        Color::Cyan => (110, 225, 250),
+        Color::LightCyan => (170, 240, 255),
+        Color::Magenta => (220, 130, 255),
+        Color::Yellow => (250, 225, 110),
+        Color::Green => (130, 235, 145),
+        Color::Blue => (120, 175, 255),
+        Color::Red => (245, 115, 125),
+        _ => (210, 210, 220),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sonata_core::theme::Theme;
+    use crate::theme::Theme;
 
     fn sample_theme() -> TuiTheme {
         TuiTheme::from_core(&Theme::default())

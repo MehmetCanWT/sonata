@@ -1,8 +1,8 @@
 //! Application coordinator, state container, and event dispatcher for the Sonata terminal UI.
 //!
 //! 1. **Submodules**: exposes `state`, `playback`, and `library`, re-exporting all state and event types from `state`.
-//! 2. **App Container**: `App` owns UI state, provider clients, cache database, mpv handle, and background playback tasks.
-//! 3. **Lifecycle & Events**: `App::new`, `start_background_init`, `handle_app_event`, `tick_playback`, and `shutdown_playback_tasks` drive the TUI loop.
+//! 2. **App Container**: `App` owns UI state, provider clients, cache database, the shared `PlaybackSessionHandle`, and client-local media tasks.
+//! 3. **Lifecycle & Events**: `App::new`, `start_background_init`, `handle_app_event`, `handle_session_event`, `tick_playback`, and `shutdown_playback_tasks` drive the TUI loop.
 
 pub mod library;
 pub mod playback;
@@ -10,6 +10,7 @@ pub mod state;
 
 pub use state::*;
 
+use crate::theme::Theme;
 use crate::theme_tui::TuiTheme;
 use crate::ui::fx::UiEffects;
 use ratatui::layout::Rect;
@@ -17,25 +18,46 @@ use ratatui::widgets::{ListState, TableState};
 use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::StatefulProtocol;
 use reqwest::Client;
-use sonata_core::auth::{extract_browser_cookies, ExtractedCookies};
-use sonata_core::cache::{
-    enforce_active_media_cache_limit_async, start_media_cache_maintenance, CacheDb,
-};
-use sonata_core::config::AppConfig;
-use sonata_core::hyprland;
+use sonata_core::auth::ExtractedCookies;
+use sonata_core::cache::{enforce_media_cache_limit_async, start_media_cache_maintenance, CacheDb};
 use sonata_core::lyrics::LyricsState;
-use sonata_core::player::{
-    MpvController, NextTrackPrecache, PlaybackState, PlaybackTask, PlaybackTaskSet, PrecacheKey,
+use sonata_core::paths::CorePaths;
+use sonata_core::player::{PlaybackState, PlaybackTaskSet};
+use sonata_core::providers::hifi::{
+    FastStartMode, ResolverProfile, StreamFallbackMode, UpgradeDelivery,
 };
-use sonata_core::providers::hifi::{ResolvedStream, StreamResolver};
 use sonata_core::providers::spotify::SpotifyClient;
 use sonata_core::providers::ytmusic::YtMusicClient;
 use sonata_core::providers::{build_http_client, Playlist, ProviderSource, Track};
-use sonata_core::theme::Theme;
 use sonata_core::updater::UpdateCheckResult;
+use sonata_runtime::auth::extract_browser_cookies;
+use sonata_runtime::config::AppConfig;
+use sonata_runtime::hyprland;
+use sonata_runtime::player::{
+    MpvEvent, PlaybackAudioDriver, PlaybackSession, PlaybackSessionConfig, PlaybackSessionHandle,
+    PlaybackStreamSource, SessionCommand, SessionEvent, SessionPolicy,
+};
+use sonata_runtime::process::LinuxStreamResolver;
+use std::collections::VecDeque;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+
+fn linux_core_paths() -> CorePaths {
+    AppConfig::default_core_paths()
+}
+
+fn linux_resolver_profile(config: &AppConfig) -> ResolverProfile {
+    ResolverProfile {
+        fast_start: FastStartMode::BoundedRange,
+        upgrade_delivery: UpgradeDelivery::CacheBeforeReturn,
+        fallback: StreamFallbackMode::ExternalTool,
+        bootstrap_timeout: Duration::from_millis(2400),
+        jiosaavn_enabled: config.jiosaavn_enabled,
+        cache_limit_bytes: config.cache_limit_bytes(),
+    }
+}
 
 pub struct App {
     pub config: AppConfig,
@@ -58,6 +80,14 @@ pub struct App {
     pub kitty_motion_last_drawn: Option<(usize, Rect)>,
     pub kitty_motion_buf_slot: u8,
     pub lyrics: LyricsState,
+    pub lyrics_scroll_row: f32,
+    pub lyrics_scroll_target: f32,
+    pub lyrics_scroll_vel: f32,
+    pub lyrics_scroll_init: bool,
+    pub lyrics_last_step: Instant,
+    pub lyrics_prev_active: Option<usize>,
+    pub lyrics_cur_active: Option<usize>,
+    pub lyrics_changed_at: Instant,
     pub playback: PlaybackState,
     pub focus: FocusPane,
     pub modal: ActiveModal,
@@ -83,33 +113,33 @@ pub struct App {
     pub should_quit: bool,
 
     pub http: Client,
+    pub paths: CorePaths,
+    pub cache_limit_bytes: Arc<AtomicU64>,
     pub cookies: ExtractedCookies,
     pub ytm: YtMusicClient,
     pub spotify: SpotifyClient,
-    pub resolver: StreamResolver,
+    pub resolver: LinuxStreamResolver,
     pub cache_db: Option<CacheDb>,
-    pub mpv: Option<Arc<MpvController>>,
+    pub session: PlaybackSessionHandle,
+    pub pending_session_cmds: VecDeque<SessionCommand>,
     pub tx: mpsc::UnboundedSender<AppEvent>,
-    pub pos_anchor: Option<(f64, Instant)>,
     pub tracks_req_id: u64,
     pub play_seq: u64,
-    pub retried_play_seq: u64,
-    pub playback_tasks: PlaybackTaskSet,
-    pub next_precache: NextTrackPrecache,
-    pub next_prefetch_task: Option<(PrecacheKey, PlaybackTask<Option<ResolvedStream>>)>,
-    pub adopted_prefetch_task: Option<(String, PlaybackTask<Option<ResolvedStream>>)>,
-    pub pending_auto_advance: Option<(u64, String)>,
-    pub awaiting_playback_start: bool,
-    pub upgrade_started_play_seq: Option<u64>,
+    pub media_tasks: PlaybackTaskSet,
     pub cover_started_play_seq: Option<u64>,
     pub config_dirty: bool,
     pub last_exported_state: Option<ExportFingerprint>,
-    pub play_requested_at: Option<Instant>,
     pub fx: UiEffects,
 }
 
 impl App {
-    pub fn new(config: AppConfig, picker: Picker, tx: mpsc::UnboundedSender<AppEvent>) -> Self {
+    pub fn new(
+        config: AppConfig,
+        picker: Picker,
+        tx: mpsc::UnboundedSender<AppEvent>,
+        driver: Arc<dyn PlaybackAudioDriver>,
+        mpv_rx: mpsc::Receiver<MpvEvent>,
+    ) -> (Self, mpsc::Receiver<SessionEvent>) {
         let themes = Theme::load_for_tui(&AppConfig::themes_dir());
         let base_theme = themes
             .iter()
@@ -127,15 +157,42 @@ impl App {
         };
 
         let http = build_http_client();
+        let paths = linux_core_paths();
+        let cache_limit_bytes = Arc::new(AtomicU64::new(config.cache_limit_bytes()));
         let cookies = ExtractedCookies::default();
-        let cache_db = CacheDb::open_default();
+        let cache_db = CacheDb::open_with_paths(&paths, config.cache_limit_gb > 0);
         let ytm = YtMusicClient::new(http.clone(), cookies.clone());
-        let spotify = SpotifyClient::new(http.clone(), None);
-        let resolver =
-            StreamResolver::new(http.clone(), ytm.clone(), cookies.clone(), cache_db.clone());
+        let spotify = SpotifyClient::with_paths(http.clone(), None, paths.clone());
+        let resolver = LinuxStreamResolver::with_profile(
+            http.clone(),
+            ytm.clone(),
+            cookies.clone(),
+            cache_db.clone(),
+            paths.clone(),
+            linux_resolver_profile(&config),
+        );
         let mut playback = PlaybackState::new(config.volume);
         playback.shuffle = config.shuffle;
         playback.repeat = config.repeat_mode;
+
+        let mut session_cfg = PlaybackSessionConfig::for_client("tui");
+        session_cfg.initial_volume = config.volume;
+        session_cfg.initial_shuffle = config.shuffle;
+        session_cfg.initial_repeat = config.repeat_mode;
+        session_cfg.policy = SessionPolicy {
+            hifi_substitution: config.hifi_substitution,
+            jiosaavn_enabled: config.jiosaavn_enabled,
+            cache_enabled: config.cache_limit_gb > 0,
+        };
+        let PlaybackSession {
+            handle: session,
+            events: session_rx,
+        } = PlaybackSession::spawn(
+            session_cfg,
+            driver,
+            Arc::new(resolver.clone()) as Arc<dyn PlaybackStreamSource>,
+            mpv_rx,
+        );
 
         let sidebar_items = vec![SidebarEntry::Search, SidebarEntry::Queue];
         let mut sidebar_state = ListState::default();
@@ -177,6 +234,14 @@ impl App {
             kitty_motion_last_drawn: None,
             kitty_motion_buf_slot: 0,
             lyrics: LyricsState::Idle,
+            lyrics_scroll_row: 0.0,
+            lyrics_scroll_target: 0.0,
+            lyrics_scroll_vel: 0.0,
+            lyrics_scroll_init: false,
+            lyrics_last_step: Instant::now(),
+            lyrics_prev_active: None,
+            lyrics_cur_active: None,
+            lyrics_changed_at: Instant::now(),
             playback,
             focus: FocusPane::Sidebar,
             modal,
@@ -202,38 +267,56 @@ impl App {
             update_info: None,
             should_quit: false,
             http,
+            paths,
+            cache_limit_bytes,
             cookies,
             ytm,
             spotify,
             resolver,
             cache_db,
-            mpv: None,
+            session,
+            pending_session_cmds: VecDeque::new(),
             tx,
-            pos_anchor: None,
             tracks_req_id: 0,
             play_seq: 0,
-            retried_play_seq: 0,
-            playback_tasks: PlaybackTaskSet::default(),
-            next_precache: NextTrackPrecache::default(),
-            next_prefetch_task: None,
-            adopted_prefetch_task: None,
-            pending_auto_advance: None,
-            awaiting_playback_start: false,
-            upgrade_started_play_seq: None,
+            media_tasks: PlaybackTaskSet::default(),
             cover_started_play_seq: None,
             config_dirty: false,
             last_exported_state: None,
-            play_requested_at: None,
         };
         app.rebuild_sidebar();
         app.sync_appearance();
-        app
+        (app, session_rx)
+    }
+
+    pub(super) fn session_policy(&self) -> SessionPolicy {
+        SessionPolicy {
+            hifi_substitution: self.config.hifi_substitution,
+            jiosaavn_enabled: self.config.jiosaavn_enabled,
+            cache_enabled: self.config.cache_limit_gb > 0,
+        }
+    }
+
+    pub(super) fn enqueue_session_cmd(&mut self, cmd: SessionCommand) {
+        self.pending_session_cmds.push_back(cmd);
+    }
+
+    /// Delivers all queued transport commands to [`PlaybackSession`] in strict FIFO order without dropping.
+    pub async fn flush_session_commands(&mut self) {
+        while let Some(cmd) = self.pending_session_cmds.pop_front() {
+            if self.session.send(cmd).await.is_err() {
+                self.pending_session_cmds.clear();
+                break;
+            }
+        }
     }
 
     pub fn start_background_init(&self) {
-        start_media_cache_maintenance();
+        start_media_cache_maintenance(self.paths.clone(), Arc::clone(&self.cache_limit_bytes));
+        let init_paths = self.paths.clone();
+        let init_limit = self.config.cache_limit_bytes();
         tokio::spawn(async move {
-            enforce_active_media_cache_limit_async().await;
+            enforce_media_cache_limit_async(init_paths, init_limit).await;
         });
 
         let resolver = self.resolver.clone();
@@ -247,6 +330,7 @@ impl App {
         let pref_browser = self.config.preferred_browser.clone();
         let saved_spotify_ids = self.config.spotify_playlists.clone();
         let http = self.http.clone();
+        let paths = self.paths.clone();
 
         tokio::spawn(async move {
             let cookies = tokio::task::spawn_blocking(move || {
@@ -256,7 +340,7 @@ impl App {
             .unwrap_or_default();
 
             let ytm = YtMusicClient::new(http.clone(), cookies.clone());
-            let spotify = SpotifyClient::new(http, cookies.spotify_sp_dc.clone());
+            let spotify = SpotifyClient::with_paths(http, cookies.spotify_sp_dc.clone(), paths);
 
             let (ytm_res, spot_res) = tokio::join!(
                 ytm.fetch_library_playlists(),
@@ -299,14 +383,23 @@ impl App {
                     .unwrap_or_else(|| "Guest (No Browser Login)".to_string());
                 self.cookies = cookies;
                 self.ytm = YtMusicClient::new(self.http.clone(), self.cookies.clone());
-                self.spotify =
-                    SpotifyClient::new(self.http.clone(), self.cookies.spotify_sp_dc.clone());
-                self.resolver = StreamResolver::new(
+                self.spotify = SpotifyClient::with_paths(
+                    self.http.clone(),
+                    self.cookies.spotify_sp_dc.clone(),
+                    self.paths.clone(),
+                );
+                self.resolver = LinuxStreamResolver::with_profile(
                     self.http.clone(),
                     self.ytm.clone(),
                     self.cookies.clone(),
                     self.cache_db.clone(),
+                    self.paths.clone(),
+                    linux_resolver_profile(&self.config),
                 );
+                self.enqueue_session_cmd(SessionCommand::UpdateStreamSource(Arc::new(
+                    self.resolver.clone(),
+                )
+                    as Arc<dyn PlaybackStreamSource>));
 
                 if let Some(db) = &self.cache_db {
                     db.put_library("ytm", &ytm_playlists);
@@ -357,152 +450,6 @@ impl App {
                     self.status_line = format!("Loaded {} tracks", self.visible_tracks.len());
                 }
             }
-            AppEvent::StreamReady {
-                play_seq,
-                track_id,
-                stream,
-            } => {
-                if play_seq != self.play_seq {
-                    return;
-                }
-                let current_track = self.playback.current_track().cloned();
-                if let Some(track) = current_track.filter(|t| t.id == track_id) {
-                    tracing::info!(
-                        event = "stream_ready",
-                        client = "tui",
-                        track_id = %track.id,
-                        title = %track.title,
-                        artist = %track.artist,
-                        provider = ?track.source,
-                        play_seq,
-                        attempt = if self.retried_play_seq == play_seq { "retry" } else { "initial" },
-                        transport = if stream.url.starts_with("http") { "remote" } else { "local" },
-                        quality = %stream.badge,
-                        resolve_ms = self.play_requested_at.map_or(0, |at| at.elapsed().as_millis()),
-                        "stream resolved"
-                    );
-                    self.playback.loading_track = false;
-                    self.playback.paused = true;
-                    self.awaiting_playback_start = true;
-                    let resume_at = if self.retried_play_seq == play_seq {
-                        self.playback.position_secs
-                    } else {
-                        0.0
-                    };
-                    self.playback.position_secs = resume_at;
-                    self.pos_anchor = None;
-                    self.playback.set_active_stream(stream.clone());
-                    self.playback.stream_badge = stream.badge.clone();
-                    self.status_line = format!("Starting: {} — {}", track.title, track.artist);
-                    if let Some(mpv) = &self.mpv {
-                        if resume_at >= 0.05 {
-                            mpv.load_stream_at(&stream, resume_at);
-                        } else {
-                            mpv.load_stream(&stream);
-                        }
-                    }
-                }
-            }
-            AppEvent::StreamUpgrade {
-                play_seq,
-                track_id,
-                stream,
-            } => {
-                if play_seq != self.play_seq {
-                    return;
-                }
-                let is_current = self
-                    .playback
-                    .current_track()
-                    .is_some_and(|t| t.id == track_id);
-                if is_current {
-                    if !self.playback.set_upgraded_stream(stream.clone()) {
-                        return;
-                    }
-                    let was_paused = self.playback.paused;
-                    let pos = self.interpolated_position();
-                    self.pos_anchor = Some((pos, Instant::now()));
-                    self.playback.position_secs = pos;
-                    self.playback.stream_badge = stream.badge.clone();
-                    tracing::info!(
-                        event = "quality_upgraded",
-                        client = "tui",
-                        track_id = %track_id,
-                        play_seq,
-                        quality = %stream.badge,
-                        resume_secs = pos,
-                        "audio quality upgraded"
-                    );
-                    if let Some(mpv) = &self.mpv {
-                        mpv.load_stream_at(&stream, pos);
-                        mpv.set_paused(was_paused);
-                    }
-                }
-            }
-            AppEvent::StreamError {
-                play_seq,
-                track_id,
-                error,
-            } => {
-                if play_seq != self.play_seq {
-                    return;
-                }
-                if let Some(track) = self
-                    .playback
-                    .current_track()
-                    .filter(|track| track.id == track_id)
-                {
-                    tracing::error!(
-                        event = "resolve_failed",
-                        client = "tui",
-                        track_id = %track.id,
-                        title = %track.title,
-                        artist = %track.artist,
-                        provider = ?track.source,
-                        play_seq,
-                        error = %error,
-                        "stream resolution failed"
-                    );
-                    self.playback.paused = true;
-                    self.pos_anchor = None;
-                    self.playback.loading_track = false;
-                    self.awaiting_playback_start = false;
-                    self.playback.stream_badge = "Stream Error".to_string();
-                    self.status_line = format!("Failed to resolve stream: {error}");
-                }
-            }
-            AppEvent::NextTrackPrepared {
-                play_seq,
-                index,
-                track_id,
-                result,
-            } => {
-                if play_seq != self.play_seq
-                    || self.pending_auto_advance.as_ref() != Some(&(play_seq, track_id.clone()))
-                {
-                    return;
-                }
-                self.pending_auto_advance = None;
-                if !self
-                    .playback
-                    .queue
-                    .get(index)
-                    .is_some_and(|track| track.id == track_id)
-                {
-                    self.playback.loading_track = false;
-                    return;
-                }
-                match result {
-                    Ok(stream) => {
-                        self.play_queue_index_with_stream(index, true, Some(stream));
-                    }
-                    Err(error) => {
-                        self.playback.loading_track = false;
-                        self.playback.paused = true;
-                        self.status_line = format!("Could not prepare next track: {error}");
-                    }
-                }
-            }
             AppEvent::LyricsReady {
                 play_seq,
                 track_id,
@@ -521,6 +468,11 @@ impl App {
                         }
                     }
                     self.lyrics = lyrics;
+                    self.lyrics_scroll_init = false;
+                    self.lyrics_scroll_target = 0.0;
+                    self.lyrics_scroll_vel = 0.0;
+                    self.lyrics_prev_active = None;
+                    self.lyrics_cur_active = None;
                 }
             }
             AppEvent::ArtworkReady {
@@ -561,8 +513,12 @@ impl App {
                     .iter_mut()
                     .find(|track| track.id == track_id)
                 {
-                    track.thumbnail_url = Some(url);
+                    track.thumbnail_url = Some(url.clone());
                 }
+                self.enqueue_session_cmd(SessionCommand::UpdateTrackThumbnail {
+                    track_id: track_id.clone(),
+                    url,
+                });
                 if self
                     .playback
                     .current_track()
@@ -599,9 +555,6 @@ impl App {
                     self.kitty_motion_buf_slot = 0;
                     self.album_art_track_id = Some(track_id);
                 }
-            }
-            AppEvent::Mpv(mev) => {
-                self.handle_mpv_event(mev);
             }
             AppEvent::PlaylistCreated(pl) => {
                 self.status_line = format!("Created YouTube Music playlist: {}", pl.name);
@@ -672,6 +625,26 @@ impl App {
         });
     }
 
+    pub fn cycle_language(&mut self, forward: bool) {
+        self.config.language = if forward {
+            self.config.language.next()
+        } else {
+            self.config.language.prev()
+        };
+        let _ = self.config.save();
+        self.status_line = format!(
+            "{}: {}",
+            sonata_runtime::i18n::strings(self.config.language).language,
+            self.config.language.label()
+        );
+    }
+
+    pub fn is_lyrics_scrolling(&self) -> bool {
+        self.lyrics_scroll_init
+            && ((self.lyrics_scroll_row - self.lyrics_scroll_target).abs() > 0.015
+                || self.lyrics_scroll_vel.abs() > 0.08)
+    }
+
     pub fn tick_playback(&mut self) -> bool {
         if self.playback.paused
             || self.playback.loading_track
@@ -690,25 +663,20 @@ impl App {
             self.anim_art_idx = (self.anim_art_idx + 1) % self.anim_art_frames.len();
             self.last_anim_step = Instant::now();
         }
-        self.poll_adopted_precache();
-        self.maybe_precache_next();
         true
     }
 
     pub async fn shutdown_playback_tasks(&mut self) {
-        if let Some((_, task)) = self.next_prefetch_task.take() {
-            task.abort();
-        }
-        if let Some((_, task)) = self.adopted_prefetch_task.take() {
-            task.abort();
-        }
-        self.next_precache.take();
         if !self
-            .playback_tasks
+            .media_tasks
             .shutdown(std::time::Duration::from_secs(2))
             .await
         {
-            tracing::warn!("playback tasks exceeded shutdown timeout and were aborted");
+            tracing::warn!("tui media tasks exceeded shutdown timeout and were aborted");
+        }
+        let report = self.session.shutdown().await;
+        if !report.tasks_joined_cleanly {
+            tracing::warn!("playback session tasks exceeded shutdown timeout and were aborted");
         }
     }
 }
