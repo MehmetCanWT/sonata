@@ -1,6 +1,6 @@
 # Maintainer: MehmetCanWT
 pkgname=sonata
-pkgver=1.0.3
+pkgver=1.0.5
 pkgrel=1
 pkgdesc="Rust terminal music player for YouTube Music and Spotify"
 arch=('x86_64' 'aarch64')
@@ -11,6 +11,7 @@ makedepends=('cargo')
 optdepends=(
     'ghostty: full-color and animated album artwork in the terminal'
     'kitty: full-color and animated album artwork in the terminal'
+    'xdg-utils: open GitHub releases from Settings'
 )
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
 sha256sums=('SKIP')

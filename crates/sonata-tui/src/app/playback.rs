@@ -126,16 +126,8 @@ impl App {
                     if let Some((vid, duration)) = telemetry {
                         if !vid.starts_with(sonata_core::providers::jiosaavn::ID_PREFIX) {
                             let ytm = self.ytm.clone();
-                            let playlist_id = self
-                                .current_playlist_id
-                                .as_ref()
-                                .filter(|_| self.visible_tracks.iter().any(|t| t.id == vid))
-                                .cloned();
                             tokio::spawn(async move {
-                                if let Err(err) = ytm
-                                    .report_playback(&vid, playlist_id.as_deref(), duration)
-                                    .await
-                                {
+                                if let Err(err) = ytm.report_playback(&vid, None, duration).await {
                                     tracing::debug!(
                                         client = "tui",
                                         track_id = %vid,
@@ -732,9 +724,9 @@ impl App {
             let picker = self.picker.clone();
             let need_kitty_png = picker.protocol_type() == ProtocolType::Kitty;
             let (max_dim, target_fps, max_frames) = if need_kitty_png {
-                (360, 15.0, 45)
+                (320, 15.0, 40)
             } else {
-                (480, 18.0, 48)
+                (360, 15.0, 40)
             };
             self.playback_tasks.spawn(async move {
                 let Some(motion) = sonata_core::motion::resolve_motion_cover(

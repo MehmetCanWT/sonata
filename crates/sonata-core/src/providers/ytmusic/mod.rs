@@ -608,7 +608,7 @@ impl YtMusicClient {
     pub async fn report_playback(
         &self,
         video_id: &str,
-        playlist_id: Option<&str>,
+        _playlist_id: Option<&str>,
         duration_secs: Option<u64>,
     ) -> Result<()> {
         if !self.is_authenticated() {
@@ -622,46 +622,13 @@ impl YtMusicClient {
             return Ok(());
         }
 
-        let normalized_pl = playlist_id.and_then(normalize_playback_playlist_id);
+        // Report only the individual played song to YouTube Music history (never attach playlistId).
         let mut body = Self::base_context();
         body["videoId"] = json!(clean_vid);
         body["contentCheckOk"] = json!(true);
         body["racyCheckOk"] = json!(true);
-        if let Some(ref pl) = normalized_pl {
-            body["playlistId"] = json!(pl);
-        }
 
-        let mut data = match self.post("player", body).await {
-            Ok(val) => val,
-            Err(err) if normalized_pl.is_some() => {
-                tracing::debug!(
-                    video_id = %clean_vid,
-                    error = %err,
-                    "player tracking call with playlistId failed; retrying single-track"
-                );
-                let mut fallback = Self::base_context();
-                fallback["videoId"] = json!(clean_vid);
-                fallback["contentCheckOk"] = json!(true);
-                fallback["racyCheckOk"] = json!(true);
-                self.post("player", fallback).await?
-            }
-            Err(err) => return Err(err),
-        };
-
-        if data
-            .pointer("/playbackTracking/videostatsPlaybackUrl/baseUrl")
-            .and_then(Value::as_str)
-            .is_none()
-            && normalized_pl.is_some()
-        {
-            let mut fallback = Self::base_context();
-            fallback["videoId"] = json!(clean_vid);
-            fallback["contentCheckOk"] = json!(true);
-            fallback["racyCheckOk"] = json!(true);
-            if let Ok(fb) = self.post("player", fallback).await {
-                data = fb;
-            }
-        }
+        let data = self.post("player", body).await?;
 
         let Some(pb_base) = data
             .pointer("/playbackTracking/videostatsPlaybackUrl/baseUrl")
@@ -680,23 +647,11 @@ impl YtMusicClient {
             .filter(|s| !s.is_empty());
 
         let cpn = generate_cpn();
-        let playback_url = build_videostats_url(
-            pb_base,
-            &cpn,
-            normalized_pl.as_deref(),
-            duration_secs,
-            false,
-        );
+        let playback_url = build_videostats_url(pb_base, &cpn, None, duration_secs, false);
         self.send_videostats_get(&playback_url).await?;
 
         if let Some(wt_url_base) = wt_base {
-            let watchtime_url = build_videostats_url(
-                wt_url_base,
-                &cpn,
-                normalized_pl.as_deref(),
-                duration_secs,
-                true,
-            );
+            let watchtime_url = build_videostats_url(wt_url_base, &cpn, None, duration_secs, true);
             if let Err(err) = self.send_videostats_get(&watchtime_url).await {
                 tracing::debug!(
                     video_id = %clean_vid,
@@ -1415,6 +1370,7 @@ fn classify_mix_card(title: &str) -> MixBucket {
     MixBucket::Personal
 }
 
+#[cfg(test)]
 fn normalize_playback_playlist_id(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     let stripped = trimmed.strip_prefix("VL").unwrap_or(trimmed).trim();
@@ -1480,7 +1436,7 @@ fn append_query_param(url: &mut String, key: &str, encoded_value: &str) {
 fn build_videostats_url(
     base_url: &str,
     cpn: &str,
-    playlist_id: Option<&str>,
+    _playlist_id: Option<&str>,
     duration_secs: Option<u64>,
     is_watchtime: bool,
 ) -> String {
@@ -1498,9 +1454,6 @@ fn build_videostats_url(
     append_query_param(&mut url, "cver", WEB_REMIX_VERSION);
     append_query_param(&mut url, "hl", "en");
     append_query_param(&mut url, "gl", "US");
-    if let Some(pl) = playlist_id.and_then(normalize_playback_playlist_id) {
-        append_query_param(&mut url, "list", &urlencoding::encode(&pl));
-    }
     if let Some(dur) = duration_secs.filter(|&d| d > 0) {
         append_query_param(&mut url, "len", &format!("{dur}.000"));
     }
@@ -1615,7 +1568,7 @@ mod tests {
         assert!(pb.starts_with("https://music.youtube.com/api/stats/playback?"));
         assert!(pb.contains("cpn=CPN1234567890123"));
         assert!(pb.contains("c=WEB_REMIX"));
-        assert!(pb.contains("list=PLtest99"));
+        assert!(!pb.contains("list="));
         assert!(pb.contains("cmt=0"));
         assert!(!pb.contains("final=1"));
 

@@ -3,7 +3,7 @@ name = "sonata-desktop"
 version.workspace = true
 edition = "2021"
 license.workspace = true
-description = "Native Wayland/Hyprland GPUI desktop GUI client for Sonata with Modern Glass aesthetic, MPRIS2, and system tray"
+description = "Native Wayland/Hyprland GPUI music player for Sonata with compositor blur, CSS themes, MPRIS2, and system tray"
 
 [[bin]]
 name = "sonata-desktop"
@@ -16,11 +16,15 @@ dirs.workspace = true
 gpui-kit.workspace = true
 image.workspace = true
 ksni.workspace = true
+libc.workspace = true
 mpris-server.workspace = true
 reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 sonata-core = { path = "../sonata-core" }
 tokio.workspace = true
 tracing.workspace = true
+urlencoding.workspace = true
 
 [lints]
 workspace = true

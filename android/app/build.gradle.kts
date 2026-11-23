@@ -11,8 +11,8 @@ android {
     compileSdk = 35
     ndkVersion = "27.2.12479018"
 
-    val appVersionName = (project.findProperty("sonataVersion") as String?)?.trim().takeIf { !it.isNullOrEmpty() } ?: "1.0.3"
-    val appVersionCode = (project.findProperty("sonataVersionCode") as String?)?.toIntOrNull() ?: 10003
+    val appVersionName = (project.findProperty("sonataVersion") as String?)?.trim().takeIf { !it.isNullOrEmpty() } ?: "1.0.5"
+    val appVersionCode = (project.findProperty("sonataVersionCode") as String?)?.toIntOrNull() ?: 10005
 
     defaultConfig {
         applicationId = "dev.sonata.android"

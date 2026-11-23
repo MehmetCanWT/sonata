@@ -8,8 +8,10 @@
 mod library;
 mod playback;
 mod types;
+pub mod ytm_extra;
 
 pub use types::{BackendCmd, BackendHandle, DesktopSnapshot, NavTarget, UiWindowCmd};
+pub use ytm_extra::{AlbumDetail, MoodCategoryTile, MoodChip, RichSearchResult};
 
 use crate::integrations::mpris::{spawn_mpris, MprisUpdate};
 use crate::integrations::tray::{spawn_tray, TrayHandle, TrayState};
@@ -29,7 +31,6 @@ use sonata_core::player::{
 use sonata_core::providers::hifi::{ResolvedStream, StreamResolver};
 use sonata_core::providers::ytmusic::{ArtistPage, HomeShelf, YtAccountProfile, YtMusicClient};
 use sonata_core::providers::{build_http_client, Playlist, Track};
-use sonata_core::theme::Theme;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -39,7 +40,6 @@ use types::{ExportFingerprint, InternalEvent};
 
 pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Result<BackendHandle> {
     let config = AppConfig::load();
-    let base_theme = Theme::sonata_glass();
     let available_browsers = list_supported_browsers();
 
     let cache_db = CacheDb::open_default();
@@ -59,7 +59,6 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
 
     let initial_snapshot = Arc::new(DesktopSnapshot {
         config: config.clone(),
-        base_theme: base_theme.clone(),
         active_nav: NavTarget::Home,
         status_line: "Loading YouTube Music home...".to_string(),
         available_browsers: available_browsers.clone(),
@@ -69,11 +68,31 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
         signing_in: false,
         sign_in_error: None,
         ytm_playlists: ytm_playlists.clone(),
+        library_albums: Vec::new(),
+        library_artists: Vec::new(),
+        library_extras_loading: false,
+        home_chips: Vec::new(),
+        active_home_chip: None,
         home_shelves: Vec::new(),
         home_loading: true,
         home_error: None,
+        explore_shelves: Vec::new(),
+        mood_tiles: Vec::new(),
+        explore_loading: false,
+        mood_page_title: String::new(),
+        mood_page_shelves: Vec::new(),
+        mood_page_loading: false,
+        shelf_detail: None,
+        radio_shelves: Vec::new(),
+        radio_loading: true,
+        history_tracks: Vec::new(),
+        history_loading: false,
+        last_played_tracks: Vec::new(),
+        recent_searches: Vec::new(),
+        search_suggestions: Vec::new(),
         search_query: String::new(),
         search_results: Vec::new(),
+        search_rich: RichSearchResult::default(),
         search_loading: false,
         playlist_id: None,
         playlist_heading: String::new(),
@@ -82,9 +101,14 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
         playlist_editable: false,
         playlist_tracks: Vec::new(),
         playlist_loading: false,
+        album_detail: None,
+        album_loading: false,
+        album_error: None,
         artist_page: None,
+        artist_banner_url: None,
         artist_loading: false,
         artist_error: None,
+        liked_track_ids: HashSet::new(),
         queue: Vec::new(),
         current_index: None,
         paused: true,
@@ -125,7 +149,6 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
             };
             rt.block_on(run_backend_loop(
                 config,
-                base_theme,
                 cache_db,
                 available_browsers,
                 initial_browser,
@@ -139,16 +162,11 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
             ));
         })?;
 
-    Ok(BackendHandle {
-        cmd_tx,
-        win_tx,
-        snap_rx,
-    })
+    Ok(BackendHandle { cmd_tx, snap_rx })
 }
 
 struct BackendEngine {
     pub(super) config: AppConfig,
-    pub(super) base_theme: Theme,
     pub(super) http: Client,
     pub(super) cookies: ExtractedCookies,
     pub(super) ytm: YtMusicClient,
@@ -171,11 +189,31 @@ struct BackendEngine {
     pub(super) signing_in: bool,
     pub(super) sign_in_error: Option<String>,
     pub(super) ytm_playlists: Vec<Playlist>,
+    pub(super) library_albums: Vec<sonata_core::providers::ytmusic::HomeCard>,
+    pub(super) library_artists: Vec<sonata_core::providers::ytmusic::HomeCard>,
+    pub(super) library_extras_loading: bool,
+    pub(super) home_chips: Vec<MoodChip>,
+    pub(super) active_home_chip: Option<MoodChip>,
     pub(super) home_shelves: Vec<HomeShelf>,
     pub(super) home_loading: bool,
     pub(super) home_error: Option<String>,
+    pub(super) explore_shelves: Vec<HomeShelf>,
+    pub(super) mood_tiles: Vec<MoodCategoryTile>,
+    pub(super) explore_loading: bool,
+    pub(super) mood_page_title: String,
+    pub(super) mood_page_shelves: Vec<HomeShelf>,
+    pub(super) mood_page_loading: bool,
+    pub(super) shelf_detail: Option<HomeShelf>,
+    pub(super) radio_shelves: Vec<HomeShelf>,
+    pub(super) radio_loading: bool,
+    pub(super) history_tracks: Vec<Track>,
+    pub(super) history_loading: bool,
+    pub(super) last_played_tracks: Vec<Track>,
+    pub(super) recent_searches: Vec<String>,
+    pub(super) search_suggestions: Vec<String>,
     pub(super) search_query: String,
     pub(super) search_results: Vec<Track>,
+    pub(super) search_rich: RichSearchResult,
     pub(super) search_loading: bool,
     pub(super) playlist_id: Option<String>,
     pub(super) playlist_heading: String,
@@ -184,9 +222,14 @@ struct BackendEngine {
     pub(super) playlist_editable: bool,
     pub(super) playlist_tracks: Vec<Track>,
     pub(super) playlist_loading: bool,
+    pub(super) album_detail: Option<AlbumDetail>,
+    pub(super) album_loading: bool,
+    pub(super) album_error: Option<String>,
     pub(super) artist_page: Option<ArtistPage>,
+    pub(super) artist_banner_url: Option<String>,
     pub(super) artist_loading: bool,
     pub(super) artist_error: Option<String>,
+    pub(super) liked_track_ids: HashSet<String>,
     pub(super) playback: PlaybackState,
     pub(super) muted: bool,
     pub(super) lyrics: LyricsState,
@@ -199,8 +242,13 @@ struct BackendEngine {
     pub(super) pos_anchor: Option<(f64, Instant)>,
     pub(super) stream_loaded_at: Option<Instant>,
     pub(super) home_req_id: u64,
+    pub(super) explore_req_id: u64,
+    pub(super) mood_req_id: u64,
+    pub(super) radio_req_id: u64,
     pub(super) search_req_id: u64,
+    pub(super) suggest_req_id: u64,
     pub(super) playlist_req_id: u64,
+    pub(super) album_req_id: u64,
     pub(super) artist_req_id: u64,
     pub(super) play_seq: u64,
     pub(super) retried_play_seq: u64,
@@ -223,7 +271,6 @@ struct BackendEngine {
 #[allow(clippy::too_many_arguments)]
 async fn run_backend_loop(
     config: AppConfig,
-    base_theme: Theme,
     cache_db: Option<CacheDb>,
     available_browsers: Vec<BrowserOption>,
     initial_browser: Option<String>,
@@ -259,10 +306,14 @@ async fn run_backend_loop(
 
     let (int_tx, mut int_rx) = mpsc::unbounded_channel();
     let tray_handle = spawn_tray(cmd_tx, win_tx).await;
+    let initial_liked_ids: HashSet<String> = cache_db
+        .as_ref()
+        .and_then(|db| db.get_playlist("YTM:VLLM"))
+        .map(|(_, tracks, _)| tracks.into_iter().map(|t| t.id).collect())
+        .unwrap_or_default();
 
     let mut engine = BackendEngine {
         config,
-        base_theme,
         http,
         cookies,
         ytm,
@@ -285,11 +336,31 @@ async fn run_backend_loop(
         signing_in: false,
         sign_in_error: None,
         ytm_playlists,
+        library_albums: Vec::new(),
+        library_artists: Vec::new(),
+        library_extras_loading: false,
+        home_chips: Vec::new(),
+        active_home_chip: None,
         home_shelves: Vec::new(),
         home_loading: true,
         home_error: None,
+        explore_shelves: Vec::new(),
+        mood_tiles: Vec::new(),
+        explore_loading: false,
+        mood_page_title: String::new(),
+        mood_page_shelves: Vec::new(),
+        mood_page_loading: false,
+        shelf_detail: None,
+        radio_shelves: Vec::new(),
+        radio_loading: true,
+        history_tracks: Vec::new(),
+        history_loading: false,
+        last_played_tracks: Vec::new(),
+        recent_searches: Vec::new(),
+        search_suggestions: Vec::new(),
         search_query: String::new(),
         search_results: Vec::new(),
+        search_rich: RichSearchResult::default(),
         search_loading: false,
         playlist_id: None,
         playlist_heading: String::new(),
@@ -298,9 +369,14 @@ async fn run_backend_loop(
         playlist_editable: false,
         playlist_tracks: Vec::new(),
         playlist_loading: false,
+        album_detail: None,
+        album_loading: false,
+        album_error: None,
         artist_page: None,
+        artist_banner_url: None,
         artist_loading: false,
         artist_error: None,
+        liked_track_ids: initial_liked_ids,
         playback,
         muted: false,
         lyrics: LyricsState::Idle,
@@ -313,8 +389,13 @@ async fn run_backend_loop(
         pos_anchor: None,
         stream_loaded_at: None,
         home_req_id: 0,
+        explore_req_id: 0,
+        mood_req_id: 0,
+        radio_req_id: 0,
         search_req_id: 0,
+        suggest_req_id: 0,
         playlist_req_id: 0,
+        album_req_id: 0,
         artist_req_id: 0,
         play_seq: 0,
         retried_play_seq: 0,
@@ -334,16 +415,27 @@ async fn run_backend_loop(
         thumbnail_slots: Arc::new(Semaphore::new(6)),
     };
 
+    let cached_playlist_thumbs: Vec<String> = engine
+        .ytm_playlists
+        .iter()
+        .filter_map(|p| p.thumbnail_url.clone())
+        .collect();
+    if !cached_playlist_thumbs.is_empty() {
+        engine.prefetch_thumbnails(cached_playlist_thumbs);
+    }
+
     if let Some(browser_id) = initial_browser {
         engine.start_sign_in(browser_id);
     } else {
         engine.load_home_feed();
+        engine.load_explore();
+        engine.load_radio_mixes();
     }
     engine.spawn_update_check();
-    engine.sync_hyprland_opacity();
+    engine.sync_hyprland_opacity(None);
     engine.publish(true).await;
 
-    let mut smooth_tick = tokio::time::interval(Duration::from_millis(40));
+    let mut smooth_tick = tokio::time::interval(Duration::from_millis(250));
     smooth_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
@@ -402,6 +494,22 @@ impl BackendEngine {
                     NavTarget::Home if self.home_shelves.is_empty() && !self.home_loading => {
                         self.load_home_feed();
                     }
+                    NavTarget::Explore
+                        if self.explore_shelves.is_empty() && !self.explore_loading =>
+                    {
+                        self.load_explore();
+                    }
+                    NavTarget::Library
+                        if self.library_albums.is_empty() && !self.library_extras_loading =>
+                    {
+                        self.load_library_extras();
+                    }
+                    NavTarget::History if self.history_tracks.is_empty() => {
+                        self.load_listening_history();
+                    }
+                    NavTarget::Radio if self.radio_shelves.is_empty() && !self.radio_loading => {
+                        self.load_radio_mixes();
+                    }
                     NavTarget::Playlist(pl_id) => {
                         if let Some(pl) = self.ytm_playlists.iter().find(|p| p.id == pl_id).cloned()
                         {
@@ -420,7 +528,23 @@ impl BackendEngine {
                             );
                         }
                     }
-                    NavTarget::Artist(id) => self.open_artist(id),
+                    NavTarget::Artist(id) => {
+                        if let Some(name) = id.strip_prefix("name:") {
+                            self.open_artist_by_name(name.to_string());
+                        } else {
+                            self.open_artist(id);
+                        }
+                    }
+                    NavTarget::Album(id) => {
+                        self.open_album(Some(id), String::new(), String::new(), None);
+                    }
+                    NavTarget::MoodCategory {
+                        title,
+                        browse_id,
+                        params,
+                    } => {
+                        self.open_mood_category(title, browse_id, params);
+                    }
                     _ => {}
                 }
             }
@@ -434,6 +558,27 @@ impl BackendEngine {
                 self.open_collection(id, title, subtitle, thumbnail_url, editable, false);
             }
             BackendCmd::OpenArtist(id) => self.open_artist(id),
+            BackendCmd::OpenArtistByName(name) => self.open_artist_by_name(name),
+            BackendCmd::OpenAlbum {
+                album_id,
+                title,
+                artist,
+                thumbnail_url,
+            } => self.open_album(album_id, title, artist, thumbnail_url),
+            BackendCmd::OpenMoodCategory {
+                title,
+                browse_id,
+                params,
+            } => self.open_mood_category(title, browse_id, params),
+            BackendCmd::OpenShelfDetail(shelf) => {
+                self.active_nav = NavTarget::ShelfDetail {
+                    title: shelf.title.clone(),
+                };
+                self.shelf_detail = Some(shelf);
+            }
+            BackendCmd::SelectHomeChip(chip) => {
+                self.load_home_with_chip(chip);
+            }
             BackendCmd::RefreshActivePlaylist => {
                 if let Some(id) = self.playlist_id.clone() {
                     let heading = self.playlist_heading.clone();
@@ -444,7 +589,27 @@ impl BackendEngine {
                 }
             }
             BackendCmd::RefreshHome => {
-                self.load_home_feed();
+                self.load_home_with_chip(self.active_home_chip.clone());
+                self.load_listening_history();
+            }
+            BackendCmd::RefreshExplore => {
+                self.load_explore();
+            }
+            BackendCmd::RefreshRadio => {
+                self.load_radio_mixes();
+            }
+            BackendCmd::RefreshLibrary => {
+                self.refresh_account();
+                self.load_library_extras();
+            }
+            BackendCmd::RefreshHistory => {
+                self.load_listening_history();
+            }
+            BackendCmd::StartTrackRadio(track) => {
+                self.start_track_radio(track);
+            }
+            BackendCmd::StartQuickRadio => {
+                self.start_quick_radio();
             }
             BackendCmd::RefreshAccount => {
                 self.refresh_account();
@@ -457,6 +622,9 @@ impl BackendEngine {
             }
             BackendCmd::SignOut => {
                 self.sign_out();
+            }
+            BackendCmd::FetchSearchSuggestions(q) => {
+                self.fetch_search_suggestions(&q);
             }
             BackendCmd::Search(q) => {
                 self.execute_search(&q);
@@ -490,6 +658,87 @@ impl BackendEngine {
             BackendCmd::PlayQueueIndex(idx) => {
                 if idx < self.playback.queue.len() {
                     self.play_track_at(idx, true);
+                }
+            }
+            BackendCmd::PlayTrackNext(track) => {
+                let title = track.title.clone();
+                if self.playback.queue.is_empty() {
+                    self.playback.queue.push(track);
+                    self.play_track_at(0, false);
+                } else {
+                    let insert_at = self
+                        .playback
+                        .current_index
+                        .map(|i| (i + 1).min(self.playback.queue.len()))
+                        .unwrap_or(0);
+                    self.playback.queue.insert(insert_at, track);
+                }
+                self.status_line = format!("Playing next: {title}");
+            }
+            BackendCmd::AddTrackToQueue(track) => {
+                let title = track.title.clone();
+                self.playback.queue.push(track);
+                self.status_line = format!("Added to queue: {title}");
+            }
+            BackendCmd::RemoveFromQueue(idx) => {
+                if idx < self.playback.queue.len() && Some(idx) != self.playback.current_index {
+                    self.playback.queue.remove(idx);
+                    if let Some(cur) = self.playback.current_index {
+                        if idx < cur {
+                            self.playback.current_index = Some(cur - 1);
+                        }
+                    }
+                    self.playback.clear_upcoming();
+                }
+            }
+            BackendCmd::MoveQueueItem { from, to } => {
+                let len = self.playback.queue.len();
+                if from < len && to < len && from != to {
+                    let cur_id = self.playback.current_track().map(|t| t.id.clone());
+                    let item = self.playback.queue.remove(from);
+                    self.playback.queue.insert(to, item);
+                    if let Some(cid) = cur_id {
+                        self.playback.current_index =
+                            self.playback.queue.iter().position(|t| t.id == cid);
+                    }
+                    self.playback.clear_upcoming();
+                }
+            }
+            BackendCmd::ClearQueue => {
+                if let Some(cur_idx) = self.playback.current_index {
+                    if let Some(cur) = self.playback.queue.get(cur_idx).cloned() {
+                        self.playback.queue = vec![cur];
+                        self.playback.current_index = Some(0);
+                    } else {
+                        self.playback.queue.clear();
+                        self.playback.current_index = None;
+                    }
+                } else {
+                    self.playback.queue.clear();
+                }
+                self.playback.clear_upcoming();
+                self.status_line = "Cleared upcoming queue".to_string();
+            }
+            BackendCmd::ShuffleQueue => {
+                let len = self.playback.queue.len();
+                if len > 2 {
+                    let cur = self.playback.current_index;
+                    let cur_track = cur.map(|i| self.playback.queue.remove(i));
+                    let mut seed = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.subsec_nanos() as usize)
+                        .unwrap_or(17);
+                    for i in (1..self.playback.queue.len()).rev() {
+                        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        let j = seed % (i + 1);
+                        self.playback.queue.swap(i, j);
+                    }
+                    if let Some(t) = cur_track {
+                        self.playback.queue.insert(0, t);
+                        self.playback.current_index = Some(0);
+                    }
+                    self.playback.clear_upcoming();
+                    self.status_line = "Shuffled queue".to_string();
                 }
             }
             BackendCmd::TogglePause => {
@@ -637,20 +886,6 @@ impl BackendEngine {
                     )
                 };
             }
-            BackendCmd::ToggleTransparentBg => {
-                self.config.transparent_bg = !self.config.transparent_bg;
-                self.base_theme.transparent_bg = None;
-                let _ = self.config.save();
-                self.sync_hyprland_opacity();
-                self.status_line = format!(
-                    "Transparent Glass UI: {}",
-                    if self.config.transparent_bg {
-                        "Enabled"
-                    } else {
-                        "Disabled"
-                    }
-                );
-            }
             BackendCmd::ToggleMotionCovers => {
                 self.config.motion_covers = !self.config.motion_covers;
                 AppConfig::set_motion_covers_enabled(self.config.motion_covers);
@@ -682,40 +917,14 @@ impl BackendEngine {
                     }
                 );
             }
-            BackendCmd::StepHyprlandOpacity(forward) => {
-                if !hyprland::is_hyprland() {
-                    self.status_line =
-                        "Hyprland Opacity is locked to Solid (100%) outside Hyprland".to_string();
-                } else {
-                    const STEPS: &[f32] = &[0.50, 0.60, 0.70, 0.80, 0.90, 1.00];
-                    let cur = self.config.hyprland_opacity;
-                    let idx = STEPS
-                        .iter()
-                        .enumerate()
-                        .min_by(|(_, a), (_, b)| {
-                            ((*a - cur).abs())
-                                .partial_cmp(&((*b - cur).abs()))
-                                .unwrap_or(std::cmp::Ordering::Equal)
-                        })
-                        .map(|(i, _)| i)
-                        .unwrap_or(4);
-                    let next = if forward {
-                        (idx + 1).min(STEPS.len() - 1)
-                    } else {
-                        idx.saturating_sub(1)
-                    };
-                    self.config.hyprland_opacity = STEPS[next];
-                    self.base_theme.hyprland_opacity = None;
-                    let _ = self.config.save();
-                    self.sync_hyprland_opacity();
-                    self.status_line = format!(
-                        "Hyprland Window Opacity: {:.0}%",
-                        self.config.hyprland_opacity * 100.0
-                    );
-                }
-            }
             BackendCmd::ToggleLike(track) => {
                 self.toggle_like_track(track);
+            }
+            BackendCmd::DislikeTrack(track) => {
+                self.dislike_track(track);
+            }
+            BackendCmd::ToggleSaveAlbum => {
+                self.toggle_save_album();
             }
             BackendCmd::CreateYtmPlaylist(title) => {
                 self.create_ytm_playlist(&title);
@@ -741,7 +950,7 @@ impl BackendEngine {
             }
             BackendCmd::SetWindowAddress(addr) => {
                 self.hyprland_window = addr;
-                self.sync_hyprland_opacity();
+                self.sync_hyprland_opacity(None);
             }
             BackendCmd::SetWindowVisible(vis) => {
                 self.window_visible = vis;
@@ -801,6 +1010,10 @@ impl BackendEngine {
                 self.prefetch_thumbnails(urls);
                 self.status_line = "Signed in to YouTube Music".to_string();
                 self.load_home_feed();
+                self.load_explore();
+                self.load_radio_mixes();
+                self.load_library_extras();
+                self.load_listening_history();
             }
             InternalEvent::AccountRefreshed {
                 profile,
@@ -817,6 +1030,12 @@ impl BackendEngine {
                     db.put_library("ytm", &ytm_playlists);
                 }
                 self.ytm_playlists = ytm_playlists;
+                let urls: Vec<String> = self
+                    .ytm_playlists
+                    .iter()
+                    .filter_map(|p| p.thumbnail_url.clone())
+                    .collect();
+                self.prefetch_thumbnails(urls);
                 self.status_line = format!(
                     "Synced {} YouTube Music playlists",
                     self.ytm_playlists.len()
@@ -824,6 +1043,8 @@ impl BackendEngine {
             }
             InternalEvent::HomeLoaded {
                 req_id,
+                chips,
+                chip_selected,
                 shelves,
                 error,
             } => {
@@ -832,6 +1053,9 @@ impl BackendEngine {
                 }
                 self.home_loading = false;
                 self.home_error = error;
+                if !chips.is_empty() && chip_selected.is_none() {
+                    self.home_chips = chips;
+                }
                 if !shelves.is_empty() {
                     let mut urls = Vec::new();
                     for shelf in &shelves {
@@ -851,9 +1075,162 @@ impl BackendEngine {
                     self.status_line = "Home ready".to_string();
                 }
             }
+            InternalEvent::ExploreLoaded {
+                req_id,
+                shelves,
+                mood_tiles,
+            } => {
+                if req_id != self.explore_req_id {
+                    return;
+                }
+                self.explore_loading = false;
+                let mut urls = Vec::new();
+                for s in &shelves {
+                    for c in &s.cards {
+                        if let Some(u) = &c.thumbnail_url {
+                            urls.push(u.clone());
+                        }
+                    }
+                    for t in &s.tracks {
+                        if let Some(u) = &t.thumbnail_url {
+                            urls.push(u.clone());
+                        }
+                    }
+                }
+                self.prefetch_thumbnails(urls);
+                self.explore_shelves = shelves;
+                self.mood_tiles = mood_tiles;
+            }
+            InternalEvent::MoodCategoryLoaded {
+                req_id,
+                title,
+                shelves,
+            } => {
+                if req_id != self.mood_req_id {
+                    return;
+                }
+                self.mood_page_loading = false;
+                self.mood_page_title = title;
+                self.mood_page_shelves = shelves;
+            }
+            InternalEvent::LibraryExtrasLoaded { albums, artists } => {
+                self.library_extras_loading = false;
+                let mut urls = Vec::new();
+                for c in albums.iter().chain(artists.iter()) {
+                    if let Some(u) = &c.thumbnail_url {
+                        urls.push(u.clone());
+                    }
+                }
+                self.prefetch_thumbnails(urls);
+                self.library_albums = albums;
+                self.library_artists = artists;
+            }
+            InternalEvent::RadioLoaded { req_id, shelves } => {
+                if req_id != self.radio_req_id {
+                    return;
+                }
+                self.radio_loading = false;
+                if !shelves.is_empty() {
+                    let mut urls = Vec::new();
+                    for shelf in &shelves {
+                        for c in &shelf.cards {
+                            if let Some(u) = &c.thumbnail_url {
+                                urls.push(u.clone());
+                            }
+                        }
+                        for t in &shelf.tracks {
+                            if let Some(u) = &t.thumbnail_url {
+                                urls.push(u.clone());
+                            }
+                        }
+                    }
+                    self.prefetch_thumbnails(urls);
+                    self.radio_shelves = shelves;
+                }
+            }
+            InternalEvent::HistoryLoaded(tracks) => {
+                self.history_loading = false;
+                let urls: Vec<String> = tracks
+                    .iter()
+                    .filter_map(|t| t.thumbnail_url.clone())
+                    .collect();
+                self.prefetch_thumbnails(urls);
+                if !tracks.is_empty() {
+                    self.history_tracks = tracks.clone();
+                }
+                let mut seen = HashSet::new();
+                let mut merged = Vec::new();
+                for t in self.last_played_tracks.drain(..).chain(tracks) {
+                    if !t.id.is_empty() && seen.insert(t.id.clone()) {
+                        merged.push(t);
+                        if merged.len() >= 50 {
+                            break;
+                        }
+                    }
+                }
+                self.last_played_tracks = merged;
+            }
+            InternalEvent::RadioQueueReady { tracks, label } => {
+                if tracks.is_empty() {
+                    self.status_line = format!("Could not start {label}");
+                    return;
+                }
+                let urls: Vec<String> = tracks
+                    .iter()
+                    .filter_map(|t| t.thumbnail_url.clone())
+                    .collect();
+                self.prefetch_thumbnails(urls);
+                PlaybackCoordinator::apply(
+                    &mut self.playback,
+                    PlaybackCommand::QueueChanged(tracks),
+                );
+                self.play_track_at(0, false);
+                self.status_line = format!("Playing {label}");
+            }
+            InternalEvent::ArtistResolveFallback(query) => {
+                self.artist_loading = false;
+                self.album_loading = false;
+                self.artist_page = None;
+                self.execute_search(&query);
+            }
+            InternalEvent::AlbumDetailLoaded {
+                req_id,
+                album,
+                error,
+            } => {
+                if req_id != self.album_req_id {
+                    return;
+                }
+                self.album_loading = false;
+                self.album_error = error;
+                if let Some(ref alb) = album {
+                    let mut urls = Vec::new();
+                    if let Some(u) = &alb.cover_url {
+                        urls.push(u.clone());
+                    }
+                    for v in &alb.other_versions {
+                        if let Some(u) = &v.thumbnail_url {
+                            urls.push(u.clone());
+                        }
+                    }
+                    self.prefetch_thumbnails(urls);
+                    self.active_nav = NavTarget::Album(alb.id.clone());
+                    self.status_line = format!("Loaded {}", alb.title);
+                }
+                self.album_detail = album;
+            }
+            InternalEvent::SearchSuggestionsLoaded {
+                req_id,
+                suggestions,
+            } => {
+                if req_id == self.suggest_req_id {
+                    self.search_suggestions = suggestions;
+                }
+            }
             InternalEvent::ArtistLoaded {
                 req_id,
                 artist,
+                banner_url,
                 error,
             } => {
                 if req_id != self.artist_req_id {
@@ -861,6 +1238,39 @@ impl BackendEngine {
                 }
                 self.artist_loading = false;
                 self.artist_error = error;
+                self.artist_banner_url = banner_url.clone();
+                if let Some(ref page) = artist {
+                    let mut urls = Vec::new();
+                    if let Some(u) = banner_url {
+                        urls.push(u);
+                    }
+                    if let Some(u) = &page.thumbnail_url {
+                        urls.push(u.clone());
+                    }
+                    if let Some(u) = page
+                        .latest_release
+                        .as_ref()
+                        .and_then(|r| r.thumbnail_url.clone())
+                    {
+                        urls.push(u);
+                    }
+                    for tr in &page.popular_tracks {
+                        if let Some(u) = &tr.thumbnail_url {
+                            urls.push(u.clone());
+                        }
+                    }
+                    for rel in &page.releases {
+                        if let Some(u) = &rel.thumbnail_url {
+                            urls.push(u.clone());
+                        }
+                    }
+                    for sim in &page.related_artists {
+                        if let Some(u) = &sim.thumbnail_url {
+                            urls.push(u.clone());
+                        }
+                    }
+                    self.prefetch_thumbnails(urls);
+                }
                 self.artist_page = artist;
                 self.status_line = self
                     .artist_error
@@ -871,6 +1281,7 @@ impl BackendEngine {
             InternalEvent::SearchLoaded {
                 req_id,
                 tracks,
+                rich,
                 error,
             } => {
                 if req_id != self.search_req_id {
@@ -881,13 +1292,29 @@ impl BackendEngine {
                     self.status_line = format!("Search failed: {err}");
                     return;
                 }
-                let urls: Vec<String> = tracks
+                let mut urls: Vec<String> = tracks
                     .iter()
                     .filter_map(|t| t.thumbnail_url.clone())
                     .collect();
+                for c in rich
+                    .albums
+                    .iter()
+                    .chain(rich.artists.iter())
+                    .chain(rich.playlists.iter())
+                {
+                    if let Some(u) = &c.thumbnail_url {
+                        urls.push(u.clone());
+                    }
+                }
+                for t in &rich.videos {
+                    if let Some(u) = &t.thumbnail_url {
+                        urls.push(u.clone());
+                    }
+                }
                 self.prefetch_thumbnails(urls);
                 let count = tracks.len();
                 self.search_results = tracks;
+                self.search_rich = rich;
                 self.status_line = format!("Found {count} songs on YouTube Music");
             }
             InternalEvent::CollectionLoaded {
@@ -909,6 +1336,15 @@ impl BackendEngine {
                     .collect();
                 self.prefetch_thumbnails(urls);
                 let count = tracks.len();
+                if self.playlist_id.as_deref() == Some("VLLM") {
+                    self.liked_track_ids = tracks.iter().map(|t| t.id.clone()).collect();
+                } else {
+                    for t in &tracks {
+                        if t.liked {
+                            self.liked_track_ids.insert(t.id.clone());
+                        }
+                    }
+                }
                 self.playlist_tracks = tracks;
                 self.status_line = if silent_replace {
                     format!("Synced {count} tracks")
@@ -1243,7 +1679,6 @@ impl BackendEngine {
 
         let snap = Arc::new(DesktopSnapshot {
             config: self.config.clone(),
-            base_theme: self.base_theme.clone(),
             active_nav: self.active_nav.clone(),
             status_line: self.status_line.clone(),
             available_browsers: self.available_browsers.clone(),
@@ -1253,11 +1688,31 @@ impl BackendEngine {
             signing_in: self.signing_in,
             sign_in_error: self.sign_in_error.clone(),
             ytm_playlists: self.ytm_playlists.clone(),
+            library_albums: self.library_albums.clone(),
+            library_artists: self.library_artists.clone(),
+            library_extras_loading: self.library_extras_loading,
+            home_chips: self.home_chips.clone(),
+            active_home_chip: self.active_home_chip.clone(),
             home_shelves: self.home_shelves.clone(),
             home_loading: self.home_loading,
             home_error: self.home_error.clone(),
+            explore_shelves: self.explore_shelves.clone(),
+            mood_tiles: self.mood_tiles.clone(),
+            explore_loading: self.explore_loading,
+            mood_page_title: self.mood_page_title.clone(),
+            mood_page_shelves: self.mood_page_shelves.clone(),
+            mood_page_loading: self.mood_page_loading,
+            shelf_detail: self.shelf_detail.clone(),
+            radio_shelves: self.radio_shelves.clone(),
+            radio_loading: self.radio_loading,
+            history_tracks: self.history_tracks.clone(),
+            history_loading: self.history_loading,
+            last_played_tracks: self.last_played_tracks.clone(),
+            recent_searches: self.recent_searches.clone(),
+            search_suggestions: self.search_suggestions.clone(),
             search_query: self.search_query.clone(),
             search_results: self.search_results.clone(),
+            search_rich: self.search_rich.clone(),
             search_loading: self.search_loading,
             playlist_id: self.playlist_id.clone(),
             playlist_heading: self.playlist_heading.clone(),
@@ -1266,9 +1721,14 @@ impl BackendEngine {
             playlist_editable: self.playlist_editable,
             playlist_tracks: self.playlist_tracks.clone(),
             playlist_loading: self.playlist_loading,
+            album_detail: self.album_detail.clone(),
+            album_loading: self.album_loading,
+            album_error: self.album_error.clone(),
             artist_page: self.artist_page.clone(),
+            artist_banner_url: self.artist_banner_url.clone(),
             artist_loading: self.artist_loading,
             artist_error: self.artist_error.clone(),
+            liked_track_ids: self.liked_track_ids.clone(),
             queue: self.playback.queue.clone(),
             current_index: self.playback.current_index,
             paused: self.playback.paused,
@@ -1377,10 +1837,9 @@ mod tests {
     #[test]
     fn shutdown_sync_receives_ack_without_polling() {
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
-        let (win_tx, _win_rx) = mpsc::unbounded_channel();
+        let (_win_tx, _win_rx) = mpsc::unbounded_channel::<UiWindowCmd>();
         let (_snap_tx, snap_rx) = watch::channel(Arc::new(DesktopSnapshot {
             config: AppConfig::default(),
-            base_theme: Theme::default(),
             active_nav: NavTarget::Home,
             status_line: String::new(),
             available_browsers: Vec::new(),
@@ -1390,11 +1849,31 @@ mod tests {
             signing_in: false,
             sign_in_error: None,
             ytm_playlists: Vec::new(),
+            library_albums: Vec::new(),
+            library_artists: Vec::new(),
+            library_extras_loading: false,
+            home_chips: Vec::new(),
+            active_home_chip: None,
             home_shelves: Vec::new(),
             home_loading: false,
             home_error: None,
+            explore_shelves: Vec::new(),
+            mood_tiles: Vec::new(),
+            explore_loading: false,
+            mood_page_title: String::new(),
+            mood_page_shelves: Vec::new(),
+            mood_page_loading: false,
+            shelf_detail: None,
+            radio_shelves: Vec::new(),
+            radio_loading: false,
+            history_tracks: Vec::new(),
+            history_loading: false,
+            last_played_tracks: Vec::new(),
+            recent_searches: Vec::new(),
+            search_suggestions: Vec::new(),
             search_query: String::new(),
             search_results: Vec::new(),
+            search_rich: RichSearchResult::default(),
             search_loading: false,
             playlist_id: None,
             playlist_heading: String::new(),
@@ -1403,9 +1882,14 @@ mod tests {
             playlist_editable: false,
             playlist_tracks: Vec::new(),
             playlist_loading: false,
+            album_detail: None,
+            album_loading: false,
+            album_error: None,
             artist_page: None,
+            artist_banner_url: None,
             artist_loading: false,
             artist_error: None,
+            liked_track_ids: HashSet::new(),
             queue: Vec::new(),
             current_index: None,
             paused: true,
@@ -1426,11 +1910,7 @@ mod tests {
             update_info: None,
             checking_updates: false,
         }));
-        let handle = BackendHandle {
-            cmd_tx,
-            win_tx,
-            snap_rx,
-        };
+        let handle = BackendHandle { cmd_tx, snap_rx };
         let responder = std::thread::spawn(move || {
             if let Some(BackendCmd::Shutdown(done)) = cmd_rx.blocking_recv() {
                 let _ = done.try_send(());

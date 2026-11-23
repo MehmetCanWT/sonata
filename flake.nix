@@ -10,7 +10,7 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        runtimeTools = with pkgs; [ mpv ffmpeg yt-dlp nodejs ];
+        runtimeTools = with pkgs; [ mpv ffmpeg yt-dlp nodejs xdg-utils ];
         desktopLibs = with pkgs; [
           wayland
           vulkan-loader
@@ -33,7 +33,7 @@
         packages = {
           sonata = pkgs.rustPlatform.buildRustPackage {
             pname = "sonata";
-            version = "1.0.4";
+            version = "1.0.5";
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
             cargoBuildFlags = [ "-p" "sonata-tui" ];
@@ -49,7 +49,7 @@
 
           sonata-desktop = pkgs.rustPlatform.buildRustPackage {
             pname = "sonata-desktop";
-            version = "1.0.4";
+            version = "1.0.5";
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
             cargoBuildFlags = [ "-p" "sonata-desktop" ];

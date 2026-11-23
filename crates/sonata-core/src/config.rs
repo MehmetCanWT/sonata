@@ -129,6 +129,8 @@ pub struct AppConfig {
     /// Maximum retained media cache size in GiB. Zero disables persistent caching.
     pub cache_limit_gb: u8,
     pub transparent_bg: bool,
+    #[serde(default)]
+    pub liquid_glass: bool,
     #[serde(default = "default_true")]
     pub motion_covers: bool,
     pub reduce_motion: bool,
@@ -146,7 +148,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             theme: "Catppuccin Mocha".to_string(),
-            desktop_theme: "Sonata Glass".to_string(),
+            desktop_theme: "Imperial Violet Dark".to_string(),
             volume: 85,
             shuffle: false,
             repeat_mode: RepeatMode::Off,
@@ -155,6 +157,7 @@ impl Default for AppConfig {
             jiosaavn_enabled: false,
             cache_limit_gb: DEFAULT_CACHE_LIMIT_GB,
             transparent_bg: true,
+            liquid_glass: false,
             motion_covers: true,
             reduce_motion: false,
             hyprland_opacity: 0.90,
@@ -319,5 +322,25 @@ error = "#f38ba8"
         fs::write(&tmp, body)?;
         fs::rename(&tmp, &path)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppConfig;
+
+    #[test]
+    fn liquid_glass_defaults_false_and_imperial_violet_dark_is_default_theme() {
+        let default_cfg = AppConfig::default();
+        assert!(!default_cfg.liquid_glass);
+        assert_eq!(default_cfg.desktop_theme, "Imperial Violet Dark");
+
+        let legacy: AppConfig = toml::from_str("").expect("empty legacy config should parse");
+        assert!(!legacy.liquid_glass);
+        assert_eq!(legacy.desktop_theme, "Imperial Violet Dark");
+
+        let enabled: AppConfig =
+            toml::from_str("liquid_glass = true\n").expect("enabled liquid_glass should parse");
+        assert!(enabled.liquid_glass);
     }
 }

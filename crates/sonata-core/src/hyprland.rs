@@ -204,6 +204,36 @@ pub fn find_window_address_for_app(app_class: &str) -> Option<String> {
     match_app_client_address(arr, self_pid, app_class)
 }
 
+/// Switches a Hyprland GUI window between floating (for mini-player mode) and tiled (for full mode).
+/// Runs synchronously; callers on async or UI threads must offload to a background thread.
+pub fn set_app_floating_mode(
+    app_class: &str,
+    floating: bool,
+    width: Option<u32>,
+    height: Option<u32>,
+) {
+    let Some(addr) = find_window_address_for_app(app_class) else {
+        return;
+    };
+    if !is_valid_hex_addr(&addr) {
+        return;
+    }
+    let batch = if floating {
+        if let (Some(w), Some(h)) = (width, height) {
+            format!(
+                "dispatch setfloating address:{addr} ; dispatch resizewindowpixel exact {w} {h},address:{addr}"
+            )
+        } else {
+            format!("dispatch setfloating address:{addr}")
+        }
+    } else {
+        format!("dispatch settiled address:{addr}")
+    };
+    let _ = StdCommand::new("hyprctl")
+        .args(["--batch", &batch])
+        .output();
+}
+
 pub fn lua_set_opacity_script(addr: &str, opacity: f32) -> Option<String> {
     if !is_valid_hex_addr(addr) {
         return None;

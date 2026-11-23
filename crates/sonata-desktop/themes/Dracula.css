@@ -1,0 +1,15 @@
+/* Dracula — spec.draculatheme.com */
+:root {
+  color-scheme: dark;
+
+  --base: #282a36;
+  --text: #f8f8f2;
+  --accent: #bd93f9;
+  --on-accent: #282a36;
+
+  --surface: #44475a;
+  --outline: #44475a;
+  --muted: #6272a4;
+  --danger: #ff5555;
+  --warning: #f1fa8c;
+}

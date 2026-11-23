@@ -217,7 +217,68 @@ jobs:
           elif [[ ! -f "dist/${OUT}.zsync" ]]; then
             (cd dist && zsyncmake -u "${OUT}" -o "${OUT}.zsync" "${OUT}")
           fi
-          ls -lh "dist/${OUT}" "dist/${OUT}.zsync"
+
+          # Package Debian/Ubuntu .deb
+          DEB_ROOT="sonata_${DV}_amd64"
+          mkdir -p "${DEB_ROOT}/DEBIAN" \
+                   "${DEB_ROOT}/usr/bin" \
+                   "${DEB_ROOT}/usr/share/applications" \
+                   "${DEB_ROOT}/usr/share/icons/hicolor/scalable/apps"
+          install -Dm755 target/release/sonata-desktop "${DEB_ROOT}/usr/bin/sonata-desktop"
+          install -Dm755 target/release/sonata "${DEB_ROOT}/usr/bin/sonata"
+          install -Dm644 assets/sonata-desktop.desktop "${DEB_ROOT}/usr/share/applications/sonata-desktop.desktop"
+          install -Dm644 assets/sonata-desktop.svg "${DEB_ROOT}/usr/share/icons/hicolor/scalable/apps/sonata-desktop.svg"
+          cat <<EOF > "${DEB_ROOT}/DEBIAN/control"
+Package: sonata
+Version: ${DV}
+Section: sound
+Priority: optional
+Architecture: amd64
+Maintainer: MehmetCanWT
+Depends: mpv, ffmpeg, libwayland-client0, libvulkan1, libxkbcommon0, libxkbcommon-x11-0, libxcb1, libfontconfig1, libasound2t64 | libasound2, libdbus-1-3
+Recommends: yt-dlp, nodejs, xdg-utils
+Description: Native GPUI desktop & terminal music player for YouTube Music and Spotify
+EOF
+          dpkg-deb --build "${DEB_ROOT}" "dist/sonata-v${DV}-amd64.deb"
+
+          # Package Fedora/RHEL/openSUSE .rpm (when rpmbuild is available)
+          if command -v rpmbuild >/dev/null 2>&1 || sudo apt-get install -y rpm >/dev/null 2>&1; then
+            RPM_TOP="${PWD}/rpmbuild"
+            mkdir -p "${RPM_TOP}"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+            cat <<EOF > "${RPM_TOP}/SPECS/sonata.spec"
+Name:           sonata
+Version:        ${DV}
+Release:        1
+Summary:        Native GPUI desktop & terminal music player for YouTube Music and Spotify
+License:        MIT
+URL:            https://github.com/MehmetCanWT/sonata
+Requires:       mpv, wayland, vulkan-loader, libxkbcommon, libxkbcommon-x11, libxcb, fontconfig, alsa-lib, dbus-libs
+
+%description
+Native Rust desktop and terminal music player for YouTube Music and Spotify.
+
+%install
+install -Dm755 ${PWD}/target/release/sonata-desktop %{buildroot}/usr/bin/sonata-desktop
+install -Dm755 ${PWD}/target/release/sonata %{buildroot}/usr/bin/sonata
+install -Dm644 ${PWD}/assets/sonata-desktop.desktop %{buildroot}/usr/share/applications/sonata-desktop.desktop
+install -Dm644 ${PWD}/assets/sonata-desktop.svg %{buildroot}/usr/share/icons/hicolor/scalable/apps/sonata-desktop.svg
+
+%files
+/usr/bin/sonata-desktop
+/usr/bin/sonata
+/usr/share/applications/sonata-desktop.desktop
+/usr/share/icons/hicolor/scalable/apps/sonata-desktop.svg
+EOF
+            rpmbuild --define "_topdir ${RPM_TOP}" -bb "${RPM_TOP}/SPECS/sonata.spec"
+            cp "${RPM_TOP}"/RPMS/x86_64/*.rpm "dist/sonata-v${DV}-1.x86_64.rpm"
+          fi
+
+          # Package Arch / generic Linux tarball
+          TAR_ROOT="sonata-v${DV}-linux-x86_64"
+          mkdir -p "${TAR_ROOT}"
+          cp target/release/sonata target/release/sonata-desktop assets/sonata-desktop.desktop assets/sonata-desktop.svg PKGBUILD PKGBUILD.desktop LICENSE README.md "${TAR_ROOT}/"
+          tar -czf "dist/${TAR_ROOT}.tar.gz" "${TAR_ROOT}"
+          ls -lh dist/
 
       - name: Upload desktop artifacts
         uses: actions/upload-artifact@v4

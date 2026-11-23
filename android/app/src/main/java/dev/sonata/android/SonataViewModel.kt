@@ -839,7 +839,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
             runCatching {
                 engine.reportPlayback(
                     videoId = ytmVideoId,
-                    playlistId = playlistId,
+                    playlistId = null,
                     durationSecs = track.durationSecs,
                 )
             }.onFailure { err ->
@@ -903,8 +903,6 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
     private fun applyAudioSettings(state: SonataSettingsState) {
         PlaybackAudioBridge.applyPlaybackSpeed(state.playbackSpeed)
         PlaybackAudioBridge.applySkipSilence(state.skipSilenceEnabled)
-        PlaybackAudioBridge.applyLoudnessNormalization(state.loudnessNormEnabled)
-        PlaybackAudioBridge.applyEqualizer(state.eqEnabled, state.eqBandsDb)
     }
 
     private fun observePreferences(supports120Hz: Boolean) {

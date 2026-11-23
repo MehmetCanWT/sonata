@@ -1,0 +1,20 @@
+/* Spotify — Dark neutral panels on pitch black with green accent */
+:root {
+  color-scheme: dark;
+
+  --base: #121212;
+  --text: #ffffff;
+  --accent: #1ed760;
+  --on-accent: #000000;
+
+  --gutter: #000000;
+  --popup: #282828;
+  --surface: #2a2a2a;
+  --surface-hover: #333333;
+  --surface-active: #404040;
+  --outline: #2a2a2a;
+  --subtext: #b3b3b3;
+  --muted: #a7a7a7;
+  --danger: #f3727f;
+  --warning: #ffa42b;
+}

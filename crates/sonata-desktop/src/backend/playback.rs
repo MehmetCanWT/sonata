@@ -132,10 +132,10 @@ impl BackendEngine {
                 ambient_rgb,
             });
         });
-        if self.config.motion_covers && !self.config.reduce_motion {
+        if self.config.motion_covers {
             self.playback_tasks.spawn(async move {
                 if let Some(cover) =
-                    motion::resolve_motion_cover(&anim_http, &anim_track, 768, 24.0, 96).await
+                    motion::resolve_motion_cover(&anim_http, &anim_track, 360, 15.0, 45).await
                 {
                     let _ = anim_tx.send(InternalEvent::AnimatedArtworkReady {
                         play_seq,
@@ -172,7 +172,7 @@ impl BackendEngine {
             return false;
         }
         let next = self.interpolated_position();
-        let changed = if (next - self.playback.position_secs).abs() >= 0.03 {
+        let changed = if (next - self.playback.position_secs).abs() >= 0.015 {
             self.playback.position_secs = next;
             true
         } else {
@@ -213,6 +213,7 @@ impl BackendEngine {
         let PlaybackTransition::Play { track, .. } = transition else {
             return;
         };
+        self.record_played_track(track.clone());
         self.playback_tasks.restart();
         if let Some((_, task)) = self.next_prefetch_task.take() {
             task.abort();
@@ -533,9 +534,20 @@ impl BackendEngine {
                 if self.awaiting_playback_start {
                     return;
                 }
-                self.playback.position_secs = pos;
                 if !self.playback.paused && !self.playback.loading_track {
-                    self.pos_anchor = Some((pos, Instant::now()));
+                    let current = self.interpolated_position();
+                    let err = pos - current;
+                    // Steer smoothly on small IPC jitter (<= 350ms) just like Android's SteeredLyricClock;
+                    // snap immediately on explicit seeks or track jumps (> 350ms).
+                    let steered = if err.abs() > 0.35 || self.pos_anchor.is_none() {
+                        pos
+                    } else {
+                        (current + err * 0.25).max(0.0)
+                    };
+                    self.playback.position_secs = steered;
+                    self.pos_anchor = Some((steered, Instant::now()));
+                } else {
+                    self.playback.position_secs = pos;
                 }
             }
             MpvEvent::Duration(dur) => {
@@ -634,16 +646,8 @@ impl BackendEngine {
                     if let Some((vid, duration)) = telemetry {
                         if !vid.starts_with(sonata_core::providers::jiosaavn::ID_PREFIX) {
                             let ytm = self.ytm.clone();
-                            let playlist_id = self
-                                .playlist_id
-                                .as_ref()
-                                .filter(|_| self.playlist_tracks.iter().any(|t| t.id == vid))
-                                .cloned();
                             tokio::spawn(async move {
-                                if let Err(err) = ytm
-                                    .report_playback(&vid, playlist_id.as_deref(), duration)
-                                    .await
-                                {
+                                if let Err(err) = ytm.report_playback(&vid, None, duration).await {
                                     tracing::debug!(
                                         client = "desktop",
                                         track_id = %vid,

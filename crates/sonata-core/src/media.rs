@@ -752,10 +752,179 @@ fn is_legacy_cover(url: &str) -> bool {
     contains_ignore_ascii_case(url, b"saavncdn") || contains_ignore_ascii_case(url, b"jiosaavn")
 }
 
+/// Trims symmetric near-black pillarbox (left/right) or letterbox (top/bottom) bars commonly baked
+/// into YouTube 16:9 (`480x270`) and 4:3 (`480x360`) video thumbnails while preserving full-bleed
+/// square and naturally dark covers.
+pub fn trim_black_bars(img: DynamicImage) -> DynamicImage {
+    let (w, h) = (img.width(), img.height());
+    if w < 80 || h < 80 {
+        return img;
+    }
+    let rgb = img.to_rgb8();
+
+    let is_black_col = |x: u32| -> bool {
+        let y_start = h / 10;
+        let y_end = h.saturating_sub(h / 10).max(y_start + 1);
+        let samples = 24u32.min(y_end - y_start).max(1);
+        let mut dark = 0u32;
+        for i in 0..samples {
+            let y = y_start + (i * (y_end - y_start)) / samples;
+            let [r, g, b] = rgb.get_pixel(x, y).0;
+            if r <= 14 && g <= 14 && b <= 14 {
+                dark += 1;
+            }
+        }
+        dark * 100 >= samples * 92
+    };
+
+    let is_black_row = |y: u32| -> bool {
+        let x_start = w / 10;
+        let x_end = w.saturating_sub(w / 10).max(x_start + 1);
+        let samples = 24u32.min(x_end - x_start).max(1);
+        let mut dark = 0u32;
+        for i in 0..samples {
+            let x = x_start + (i * (x_end - x_start)) / samples;
+            let [r, g, b] = rgb.get_pixel(x, y).0;
+            if r <= 14 && g <= 14 && b <= 14 {
+                dark += 1;
+            }
+        }
+        dark * 100 >= samples * 92
+    };
+
+    let mut x0 = 0u32;
+    let mut x1 = w;
+    if w > h + 8 {
+        let max_side = w / 3;
+        let mut left = 0u32;
+        while left < max_side && is_black_col(left) {
+            left += 1;
+        }
+        let mut right = 0u32;
+        while right < max_side && is_black_col(w - 1 - right) {
+            right += 1;
+        }
+        let min_bar = (w / 16).max(8);
+        if left >= min_bar && right >= min_bar {
+            let remaining = w.saturating_sub(left + right);
+            if remaining >= (h * 3) / 4 {
+                x0 = left;
+                x1 = w - right;
+            }
+        }
+    }
+
+    let mut y0 = 0u32;
+    let mut y1 = h;
+    let max_vert = h / 4;
+    let mut top = 0u32;
+    while top < max_vert && is_black_row(top) {
+        top += 1;
+    }
+    let mut bottom = 0u32;
+    while bottom < max_vert && is_black_row(h - 1 - bottom) {
+        bottom += 1;
+    }
+    let min_vbar = (h / 14).max(8);
+    if top >= min_vbar && bottom >= min_vbar {
+        let remaining = h.saturating_sub(top + bottom);
+        let cw = x1 - x0;
+        if remaining >= (cw * 2) / 5 {
+            y0 = top;
+            y1 = h - bottom;
+        }
+    }
+
+    let cw = x1.saturating_sub(x0);
+    let ch = y1.saturating_sub(y0);
+    if (x0 == 0 && y0 == 0 && cw == w && ch == h) || cw < 40 || ch < 40 {
+        return img;
+    }
+
+    // Verify the interior has visible content so pure-black artworks are left untouched.
+    let mut lit = 0u32;
+    let total = 16u32;
+    for row in 0..4u32 {
+        for col in 0..4u32 {
+            let sx = x0 + ((col + 1) * cw) / 5;
+            let sy = y0 + ((row + 1) * ch) / 5;
+            let [r, g, b] = rgb.get_pixel(sx.min(w - 1), sy.min(h - 1)).0;
+            if r.max(g).max(b) > 28 {
+                lit += 1;
+            }
+        }
+    }
+    if lit * 4 < total {
+        return img;
+    }
+
+    img.crop_imm(x0, y0, cw, ch)
+}
+
+/// Checks an already-cached non-square PNG on disk and atomically trims baked black pillarbox or
+/// letterbox bars if present. Returns `true` when the file was updated.
+pub async fn repair_cached_art_if_bars(path: PathBuf) -> bool {
+    tokio::task::spawn_blocking(move || {
+        let Ok((w, h)) = image::image_dimensions(&path) else {
+            return false;
+        };
+        if !(w > h + 8 || (w == 480 && h == 360)) {
+            return false;
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            return false;
+        };
+        let Ok(decoded) = image::load_from_memory(&bytes) else {
+            return false;
+        };
+        let trimmed = trim_black_bars(decoded);
+        if trimmed.width() == w && trimmed.height() == h {
+            return false;
+        }
+        let is_wide_banner = (trimmed.width() as f32) > (trimmed.height() as f32 * 1.45);
+        let scaled = if is_wide_banner {
+            if trimmed.width() > 1600 || trimmed.height() > 900 {
+                trimmed.resize(1600, 900, image::imageops::FilterType::Lanczos3)
+            } else {
+                trimmed
+            }
+        } else if trimmed.width() > 480 || trimmed.height() > 480 {
+            trimmed.resize(480, 480, image::imageops::FilterType::Lanczos3)
+        } else {
+            trimmed
+        };
+        let mut png_bytes = Vec::new();
+        if scaled
+            .write_to(
+                &mut std::io::Cursor::new(&mut png_bytes),
+                image::ImageFormat::Png,
+            )
+            .is_err()
+        {
+            return false;
+        }
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let temp_path = path.with_extension(format!("{}.{}.tmp", std::process::id(), unique));
+        if std::fs::write(&temp_path, &png_bytes).is_ok() {
+            if std::fs::rename(&temp_path, &path).is_ok() {
+                return true;
+            }
+            let _ = std::fs::remove_file(&temp_path);
+        }
+        false
+    })
+    .await
+    .unwrap_or(false)
+}
+
 pub async fn fetch_and_decode_art(http: &Client, url: &str) -> Option<(DynamicImage, Vec<u8>)> {
     let cache_path = art_cache_path(url);
     let cache_enabled = AppConfig::active_cache_limit_bytes() > 0;
 
+    let expects_hd_banner = url.contains("=w1600") || url.contains("=w1440");
     if cache_enabled {
         if let Ok(disk_bytes) = tokio::fs::read(&cache_path).await {
             if let Ok(Some((img, disk_bytes))) = tokio::task::spawn_blocking(move || {
@@ -765,7 +934,10 @@ pub async fn fetch_and_decode_art(http: &Client, url: &str) -> Option<(DynamicIm
             })
             .await
             {
-                return Some((img, disk_bytes));
+                // Self-heal previously downscaled 480px wide artist banners automatically.
+                if !expects_hd_banner || img.width() > 640 {
+                    return Some((img, disk_bytes));
+                }
             }
         }
     }
@@ -777,8 +949,15 @@ pub async fn fetch_and_decode_art(http: &Client, url: &str) -> Option<(DynamicIm
     let raw_bytes = resp.bytes().await.ok()?.to_vec();
 
     tokio::task::spawn_blocking(move || {
-        let decoded = image::load_from_memory(&raw_bytes).ok()?;
-        let scaled = if decoded.width() > 480 || decoded.height() > 480 {
+        let decoded = trim_black_bars(image::load_from_memory(&raw_bytes).ok()?);
+        let is_wide_banner = (decoded.width() as f32) > (decoded.height() as f32 * 1.45);
+        let scaled = if is_wide_banner {
+            if decoded.width() > 1600 || decoded.height() > 900 {
+                decoded.resize(1600, 900, image::imageops::FilterType::Lanczos3)
+            } else {
+                decoded
+            }
+        } else if decoded.width() > 480 || decoded.height() > 480 {
             decoded.resize(480, 480, image::imageops::FilterType::Lanczos3)
         } else {
             decoded
@@ -1019,5 +1198,25 @@ mod tests {
             select_fast_hls_variant_url(master).as_deref(),
             Some("https://mvod.itunes.apple.com/itunes-assets/486x486_avc.m3u8")
         );
+    }
+
+    #[test]
+    fn trims_symmetric_black_pillarboxes_without_touching_full_bleed_covers() {
+        // 480x270 thumbnail with a bright 270x270 center square and black pillarboxes.
+        let mut pillarboxed = image::RgbImage::from_pixel(480, 270, image::Rgb([0, 0, 0]));
+        for y in 0..270 {
+            for x in 105..375 {
+                pillarboxed.put_pixel(x, y, image::Rgb([180, 120, 220]));
+            }
+        }
+        let cropped = trim_black_bars(DynamicImage::ImageRgb8(pillarboxed));
+        assert_eq!(cropped.width(), 270);
+        assert_eq!(cropped.height(), 270);
+
+        // Full-bleed dark-border square cover should remain untouched.
+        let square = image::RgbImage::from_pixel(480, 480, image::Rgb([40, 30, 50]));
+        let kept = trim_black_bars(DynamicImage::ImageRgb8(square));
+        assert_eq!(kept.width(), 480);
+        assert_eq!(kept.height(), 480);
     }
 }

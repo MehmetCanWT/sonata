@@ -5,6 +5,7 @@
 //! 3. **Library Mutations & UI Sync**: handles likes, playlist edits, thumbnail prefetching, and Hyprland opacity updates.
 
 use super::types::{InternalEvent, NavTarget};
+use super::ytm_extra::{ExtraYtmClient, MoodChip};
 use super::BackendEngine;
 use sonata_core::auth::{extract_ytm_cookies_from_browser, ExtractedCookies};
 use sonata_core::hyprland;
@@ -12,32 +13,95 @@ use sonata_core::media;
 use sonata_core::providers::hifi::StreamResolver;
 use sonata_core::providers::ytmusic::YtMusicClient;
 use sonata_core::providers::{Playlist, ProviderSource, Track};
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 use tokio::sync::mpsc;
+
+static REPAIRED_ART_PATHS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+
+fn extract_primary_artist_name(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.contains(" play")
+        || lower.ends_with("plays")
+        || lower.contains(" view")
+        || lower.ends_with("views")
+        || lower.contains(" listener")
+    {
+        return String::new();
+    }
+    let first = trimmed
+        .split(['•', ',', ';'])
+        .next()
+        .unwrap_or(trimmed)
+        .trim();
+    let no_feat = first
+        .split(" feat.")
+        .next()
+        .unwrap_or(first)
+        .split(" ft.")
+        .next()
+        .unwrap_or(first)
+        .split(" & ")
+        .next()
+        .unwrap_or(first)
+        .trim();
+    no_feat.to_string()
+}
 
 impl BackendEngine {
     pub(super) fn prefetch_thumbnails(&self, urls: Vec<String>) {
         let mut candidates = Vec::new();
+        let mut existing_to_check = Vec::new();
         {
             let Ok(mut in_flight) = self.in_flight_thumbs.lock() else {
                 return;
             };
+            let checked = REPAIRED_ART_PATHS.get_or_init(|| Mutex::new(HashSet::new()));
             for url in urls {
-                if in_flight.len() >= 96 {
+                if in_flight.len() >= 128 {
                     break;
                 }
                 if url.is_empty() {
                     continue;
                 }
                 let path = media::art_cache_path(&url);
-                if path.exists() || in_flight.contains(&url) {
+                let stale_small_banner = url.contains("=w1600")
+                    && image::image_dimensions(&path).is_ok_and(|(w, _)| w <= 640);
+                if path.exists() && !stale_small_banner {
+                    if existing_to_check.len() < 48 {
+                        if let Ok(mut guard) = checked.lock() {
+                            if guard.insert(path.clone()) {
+                                existing_to_check.push(path);
+                            }
+                        }
+                    }
+                    continue;
+                }
+                if in_flight.contains(&url) {
                     continue;
                 }
                 in_flight.insert(url.clone());
                 candidates.push(url);
-                if candidates.len() >= 48 {
+                if candidates.len() >= 96 {
                     break;
                 }
             }
+        }
+        if !existing_to_check.is_empty() {
+            let int_tx = self.int_tx.clone();
+            tokio::spawn(async move {
+                let mut repaired_any = false;
+                for path in existing_to_check {
+                    if media::repair_cached_art_if_bars(path).await {
+                        repaired_any = true;
+                    }
+                }
+                if repaired_any {
+                    let _ = int_tx.send(InternalEvent::ThumbnailsReady);
+                }
+            });
         }
         if candidates.is_empty() {
             return;
@@ -170,6 +234,10 @@ impl BackendEngine {
             });
         });
         self.load_home_feed();
+        self.load_explore();
+        self.load_radio_mixes();
+        self.load_library_extras();
+        self.load_listening_history();
     }
 
     pub(super) fn sign_out(&mut self) {
@@ -187,6 +255,9 @@ impl BackendEngine {
         self.user_profile = None;
         self.user_avatar_path = None;
         self.ytm_playlists.clear();
+        self.library_albums.clear();
+        self.library_artists.clear();
+        self.history_tracks.clear();
         self.sign_in_error = None;
         if let Some(db) = &self.cache_db {
             db.put_library("ytm", &[]);
@@ -196,32 +267,164 @@ impl BackendEngine {
             self.active_nav = NavTarget::Home;
         }
         self.status_line = "Signed out of YouTube Music".to_string();
+        self.last_played_tracks.clear();
         self.load_home_feed();
+        self.load_explore();
+        self.load_radio_mixes();
+    }
+
+    pub(super) fn load_radio_mixes(&mut self) {
+        self.radio_req_id = self.radio_req_id.wrapping_add(1);
+        let req_id = self.radio_req_id;
+        self.radio_loading = true;
+        let ytm = self.ytm.clone();
+        let int_tx = self.int_tx.clone();
+        tokio::spawn(async move {
+            let shelves = ytm.fetch_radio_mixes().await.unwrap_or_default();
+            let _ = int_tx.send(InternalEvent::RadioLoaded { req_id, shelves });
+        });
+    }
+
+    pub(super) fn load_listening_history(&mut self) {
+        if !self.ytm.is_authenticated() {
+            return;
+        }
+        self.history_loading = true;
+        let ytm = self.ytm.clone();
+        let int_tx = self.int_tx.clone();
+        tokio::spawn(async move {
+            let tracks = ytm.fetch_listening_history().await.unwrap_or_default();
+            let _ = int_tx.send(InternalEvent::HistoryLoaded(tracks));
+        });
+    }
+
+    pub(super) fn load_explore(&mut self) {
+        self.explore_req_id = self.explore_req_id.wrapping_add(1);
+        let req_id = self.explore_req_id;
+        self.explore_loading = true;
+        let extra = ExtraYtmClient::new(self.http.clone(), self.cookies.clone());
+        let int_tx = self.int_tx.clone();
+        tokio::spawn(async move {
+            if let Ok((shelves, mood_tiles)) = extra.fetch_explore().await {
+                let _ = int_tx.send(InternalEvent::ExploreLoaded {
+                    req_id,
+                    shelves,
+                    mood_tiles,
+                });
+            } else {
+                let _ = int_tx.send(InternalEvent::ExploreLoaded {
+                    req_id,
+                    shelves: Vec::new(),
+                    mood_tiles: Vec::new(),
+                });
+            }
+        });
+    }
+
+    pub(super) fn open_mood_category(&mut self, title: String, browse_id: String, params: String) {
+        self.mood_req_id = self.mood_req_id.wrapping_add(1);
+        let req_id = self.mood_req_id;
+        self.active_nav = NavTarget::MoodCategory {
+            title: title.clone(),
+            browse_id: browse_id.clone(),
+            params: params.clone(),
+        };
+        self.mood_page_title = title.clone();
+        self.mood_page_shelves.clear();
+        self.mood_page_loading = true;
+        let extra = ExtraYtmClient::new(self.http.clone(), self.cookies.clone());
+        let int_tx = self.int_tx.clone();
+        tokio::spawn(async move {
+            let shelves = extra
+                .fetch_mood_category(&browse_id, &params)
+                .await
+                .unwrap_or_default();
+            let _ = int_tx.send(InternalEvent::MoodCategoryLoaded {
+                req_id,
+                title,
+                shelves,
+            });
+        });
+    }
+
+    pub(super) fn load_library_extras(&mut self) {
+        if !self.ytm.is_authenticated() {
+            return;
+        }
+        self.library_extras_loading = true;
+        let extra = ExtraYtmClient::new(self.http.clone(), self.cookies.clone());
+        let int_tx = self.int_tx.clone();
+        tokio::spawn(async move {
+            let (albums, artists) = extra.fetch_library_albums_and_artists().await;
+            let _ = int_tx.send(InternalEvent::LibraryExtrasLoaded { albums, artists });
+        });
+    }
+
+    pub(super) fn record_played_track(&mut self, track: Track) {
+        self.last_played_tracks.retain(|t| t.id != track.id);
+        self.last_played_tracks.insert(0, track);
+        self.last_played_tracks.truncate(50);
     }
 
     pub(super) fn load_home_feed(&mut self) {
+        self.load_home_with_chip(None);
+    }
+
+    pub(super) fn load_home_with_chip(&mut self, chip: Option<MoodChip>) {
         self.home_req_id = self.home_req_id.wrapping_add(1);
         let req_id = self.home_req_id;
         self.home_loading = true;
         self.home_error = None;
+        self.active_home_chip = chip.clone();
 
         let ytm = self.ytm.clone();
+        let extra = ExtraYtmClient::new(self.http.clone(), self.cookies.clone());
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
-            match ytm.fetch_home_feed().await {
-                Ok(shelves) => {
-                    let _ = int_tx.send(InternalEvent::HomeLoaded {
-                        req_id,
-                        shelves,
-                        error: None,
-                    });
+            if let Some(ref c) = chip {
+                match extra.fetch_home_with_chips(Some(&c.params)).await {
+                    Ok((chips, shelves)) => {
+                        let _ = int_tx.send(InternalEvent::HomeLoaded {
+                            req_id,
+                            chips,
+                            chip_selected: chip,
+                            shelves,
+                            error: None,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = int_tx.send(InternalEvent::HomeLoaded {
+                            req_id,
+                            chips: Vec::new(),
+                            chip_selected: chip,
+                            shelves: Vec::new(),
+                            error: Some(e.to_string()),
+                        });
+                    }
                 }
-                Err(e) => {
-                    let _ = int_tx.send(InternalEvent::HomeLoaded {
-                        req_id,
-                        shelves: Vec::new(),
-                        error: Some(e.to_string()),
-                    });
+            } else {
+                let (chips_res, feed_res) =
+                    tokio::join!(extra.fetch_home_with_chips(None), ytm.fetch_home_feed());
+                let chips = chips_res.map(|(c, _)| c).unwrap_or_default();
+                match feed_res {
+                    Ok(shelves) => {
+                        let _ = int_tx.send(InternalEvent::HomeLoaded {
+                            req_id,
+                            chips,
+                            chip_selected: None,
+                            shelves,
+                            error: None,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = int_tx.send(InternalEvent::HomeLoaded {
+                            req_id,
+                            chips,
+                            chip_selected: None,
+                            shelves: Vec::new(),
+                            error: Some(e.to_string()),
+                        });
+                    }
                 }
             }
         });
@@ -234,15 +437,22 @@ impl BackendEngine {
         self.artist_loading = true;
         self.artist_error = None;
         self.artist_page = None;
+        self.artist_banner_url = None;
         self.status_line = "Loading artist...".to_string();
         let ytm = self.ytm.clone();
+        let extra = ExtraYtmClient::new(self.http.clone(), self.cookies.clone());
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
-            match ytm.fetch_artist_page(&browse_id).await {
+            let (artist_res, banner_url) = tokio::join!(
+                ytm.fetch_artist_page(&browse_id),
+                extra.fetch_artist_banner(&browse_id),
+            );
+            match artist_res {
                 Ok(artist) => {
                     let _ = int_tx.send(InternalEvent::ArtistLoaded {
                         req_id,
                         artist: Some(artist),
+                        banner_url,
                         error: None,
                     });
                 }
@@ -250,10 +460,241 @@ impl BackendEngine {
                     let _ = int_tx.send(InternalEvent::ArtistLoaded {
                         req_id,
                         artist: None,
+                        banner_url: None,
                         error: Some(error.to_string()),
                     });
                 }
             }
+        });
+    }
+
+    pub(super) fn open_artist_by_name(&mut self, name: String) {
+        let raw = name.trim();
+        if raw.is_empty() {
+            return;
+        }
+        if raw.starts_with("UC") && !raw.contains(' ') {
+            self.open_artist(raw.to_string());
+            return;
+        }
+        // Extract primary artist name (avoid passing "Artist A, Artist B" or play-count noise).
+        let clean = extract_primary_artist_name(raw);
+        if clean.is_empty() || clean.eq_ignore_ascii_case("unknown artist") {
+            self.status_line = "Artist information not available for this track".to_string();
+            return;
+        }
+        self.artist_req_id = self.artist_req_id.wrapping_add(1);
+        let req_id = self.artist_req_id;
+        self.active_nav = NavTarget::Artist(format!("name:{clean}"));
+        self.artist_loading = true;
+        self.artist_error = None;
+        self.artist_page = None;
+        self.artist_banner_url = None;
+        self.status_line = format!("Loading artist {clean}...");
+        let ytm = self.ytm.clone();
+        let extra = ExtraYtmClient::new(self.http.clone(), self.cookies.clone());
+        let int_tx = self.int_tx.clone();
+        tokio::spawn(async move {
+            let mut resolved = ytm.fetch_artist_by_name(&clean).await.ok();
+            // Secondary lookup via categorized artist search so we open the Artist page directly instead of Search.
+            if resolved.is_none() {
+                if let Ok(cat) = extra.search_rich(&clean).await {
+                    if let Some(first_artist) =
+                        cat.artists.into_iter().find(|a| a.id.starts_with("UC"))
+                    {
+                        resolved = ytm.fetch_artist_page(&first_artist.id).await.ok();
+                    }
+                }
+            }
+            match resolved {
+                Some(artist) => {
+                    let banner_url = extra.fetch_artist_banner(&artist.id).await;
+                    let _ = int_tx.send(InternalEvent::ArtistLoaded {
+                        req_id,
+                        artist: Some(artist),
+                        banner_url,
+                        error: None,
+                    });
+                }
+                None => {
+                    let _ = int_tx.send(InternalEvent::ArtistLoaded {
+                        req_id,
+                        artist: None,
+                        banner_url: None,
+                        error: Some(format!("Could not find artist page for \"{clean}\"")),
+                    });
+                }
+            }
+        });
+    }
+
+    pub(super) fn open_album(
+        &mut self,
+        album_id: Option<String>,
+        title: String,
+        artist: String,
+        thumbnail_url: Option<String>,
+    ) {
+        if let Some(id) = album_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| id.starts_with("MPRE"))
+            .map(str::to_string)
+        {
+            self.album_req_id = self.album_req_id.wrapping_add(1);
+            let req_id = self.album_req_id;
+            self.active_nav = NavTarget::Album(id.clone());
+            self.album_loading = true;
+            self.album_error = None;
+            self.album_detail = None;
+            self.status_line = format!(
+                "Loading {}...",
+                if title.trim().is_empty() {
+                    "album"
+                } else {
+                    title.trim()
+                }
+            );
+            let extra = ExtraYtmClient::new(self.http.clone(), self.cookies.clone());
+            let int_tx = self.int_tx.clone();
+            tokio::spawn(async move {
+                match extra.fetch_album_detail(&id).await {
+                    Ok(album) => {
+                        let _ = int_tx.send(InternalEvent::AlbumDetailLoaded {
+                            req_id,
+                            album: Some(album),
+                            error: None,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = int_tx.send(InternalEvent::AlbumDetailLoaded {
+                            req_id,
+                            album: None,
+                            error: Some(e.to_string()),
+                        });
+                    }
+                }
+            });
+            return;
+        }
+
+        if let Some(id) = album_id
+            .map(|s| s.trim().to_string())
+            .filter(|id| id.starts_with("OLAK") || id.starts_with("VL") || id.starts_with("PL"))
+        {
+            let heading = if title.trim().is_empty() {
+                "Album".to_string()
+            } else {
+                title
+            };
+            self.open_collection(id, heading, artist, thumbnail_url, false, false);
+            return;
+        }
+
+        let clean_title = title.trim().to_string();
+        if clean_title.is_empty() {
+            if !artist.trim().is_empty() {
+                self.open_artist_by_name(artist);
+            }
+            return;
+        }
+
+        self.album_req_id = self.album_req_id.wrapping_add(1);
+        let req_id = self.album_req_id;
+        self.status_line = format!("Opening album {clean_title}...");
+        let ytm = self.ytm.clone();
+        let extra = ExtraYtmClient::new(self.http.clone(), self.cookies.clone());
+        let int_tx = self.int_tx.clone();
+        tokio::spawn(async move {
+            match ytm.resolve_album_browse_id(&clean_title, &artist).await {
+                Ok(Some(resolved_id)) if resolved_id.starts_with("MPRE") => {
+                    match extra.fetch_album_detail(&resolved_id).await {
+                        Ok(album) => {
+                            let _ = int_tx.send(InternalEvent::AlbumDetailLoaded {
+                                req_id,
+                                album: Some(album),
+                                error: None,
+                            });
+                        }
+                        Err(e) => {
+                            let _ = int_tx.send(InternalEvent::AlbumDetailLoaded {
+                                req_id,
+                                album: None,
+                                error: Some(e.to_string()),
+                            });
+                        }
+                    }
+                }
+                _ => {
+                    let query = if artist.trim().is_empty() {
+                        clean_title
+                    } else {
+                        format!("{clean_title} {artist}")
+                    };
+                    let _ = int_tx.send(InternalEvent::ArtistResolveFallback(query));
+                }
+            }
+        });
+    }
+
+    pub(super) fn start_track_radio(&mut self, seed: Track) {
+        self.status_line = format!("Starting {} radio...", seed.artist);
+        let ytm = self.ytm.clone();
+        let int_tx = self.int_tx.clone();
+        let label = format!("{} Radio", seed.artist);
+        tokio::spawn(async move {
+            let mut radio = ytm.fetch_radio_queue(&seed.id).await.unwrap_or_default();
+            if radio.is_empty() {
+                let query = format!("{} {} mix", seed.artist, seed.title);
+                radio = ytm.search_songs(&query).await.unwrap_or_default();
+            }
+            let mut combined = Vec::with_capacity(radio.len() + 1);
+            let mut seen = std::collections::HashSet::new();
+            seen.insert(seed.id.clone());
+            combined.push(seed);
+            for tr in radio {
+                if seen.insert(tr.id.clone()) {
+                    combined.push(tr);
+                }
+            }
+            let _ = int_tx.send(InternalEvent::RadioQueueReady {
+                tracks: combined,
+                label,
+            });
+        });
+    }
+
+    pub(super) fn start_quick_radio(&mut self) {
+        if let Some(cur) = self.playback.current_track().cloned() {
+            self.start_track_radio(cur);
+            return;
+        }
+        if let Some(recent) = self.last_played_tracks.first().cloned() {
+            self.start_track_radio(recent);
+            return;
+        }
+        if let Some(first_track) = self
+            .home_shelves
+            .iter()
+            .flat_map(|s| s.tracks.iter())
+            .next()
+            .cloned()
+        {
+            self.start_track_radio(first_track);
+            return;
+        }
+        let ytm = self.ytm.clone();
+        let int_tx = self.int_tx.clone();
+        self.status_line = "Starting Quick Radio...".to_string();
+        tokio::spawn(async move {
+            let tracks = ytm
+                .search_songs("top hits radio mix")
+                .await
+                .unwrap_or_default();
+            let _ = int_tx.send(InternalEvent::RadioQueueReady {
+                tracks,
+                label: "Quick Radio".to_string(),
+            });
         });
     }
 
@@ -376,6 +817,25 @@ impl BackendEngine {
         });
     }
 
+    pub(super) fn fetch_search_suggestions(&mut self, query: &str) {
+        let q = query.trim().to_string();
+        if q.is_empty() {
+            self.search_suggestions.clear();
+            return;
+        }
+        self.suggest_req_id = self.suggest_req_id.wrapping_add(1);
+        let req_id = self.suggest_req_id;
+        let extra = ExtraYtmClient::new(self.http.clone(), self.cookies.clone());
+        let int_tx = self.int_tx.clone();
+        tokio::spawn(async move {
+            let suggestions = extra.fetch_search_suggestions(&q).await;
+            let _ = int_tx.send(InternalEvent::SearchSuggestionsLoaded {
+                req_id,
+                suggestions,
+            });
+        });
+    }
+
     pub(super) fn execute_search(&mut self, query: &str) {
         let q = query.trim().to_string();
         if q.is_empty() {
@@ -383,7 +843,13 @@ impl BackendEngine {
         }
         self.active_nav = NavTarget::Search;
         self.search_query = q.clone();
+        self.search_suggestions.clear();
+        self.recent_searches
+            .retain(|existing| !existing.eq_ignore_ascii_case(&q));
+        self.recent_searches.insert(0, q.clone());
+        self.recent_searches.truncate(10);
         self.search_results.clear();
+        self.search_rich = Default::default();
         self.search_loading = true;
         self.search_req_id = self.search_req_id.wrapping_add(1);
         let req_id = self.search_req_id;
@@ -395,6 +861,7 @@ impl BackendEngine {
         };
 
         let ytm = self.ytm.clone();
+        let extra = ExtraYtmClient::new(self.http.clone(), self.cookies.clone());
         let http = self.http.clone();
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
@@ -405,27 +872,38 @@ impl BackendEngine {
                     Vec::new()
                 }
             };
-            let (ytm_res, jio_tracks) = tokio::join!(ytm.search_songs(&q), jio_fut);
+            let (ytm_res, rich_res, jio_tracks) =
+                tokio::join!(ytm.search_songs(&q), extra.search_rich(&q), jio_fut);
+            let mut rich = rich_res.unwrap_or_default();
             match ytm_res {
                 Ok(mut tracks) => {
                     tracks.extend(jio_tracks);
+                    if rich.songs.is_empty() {
+                        rich.songs = tracks.clone();
+                    }
                     let _ = int_tx.send(InternalEvent::SearchLoaded {
                         req_id,
                         tracks,
+                        rich,
                         error: None,
                     });
                 }
                 Err(e) => {
                     if !jio_tracks.is_empty() {
+                        if rich.songs.is_empty() {
+                            rich.songs = jio_tracks.clone();
+                        }
                         let _ = int_tx.send(InternalEvent::SearchLoaded {
                             req_id,
                             tracks: jio_tracks,
+                            rich,
                             error: None,
                         });
                     } else {
                         let _ = int_tx.send(InternalEvent::SearchLoaded {
                             req_id,
                             tracks: Vec::new(),
+                            rich,
                             error: Some(e.to_string()),
                         });
                     }
@@ -434,7 +912,67 @@ impl BackendEngine {
         });
     }
 
-    pub(super) fn sync_hyprland_opacity(&mut self) {
+    pub(super) fn dislike_track(&mut self, track: Track) {
+        if !self.ytm.is_authenticated() {
+            self.status_line = "Sign in to YouTube Music to rate songs".to_string();
+            return;
+        }
+        let extra = ExtraYtmClient::new(self.http.clone(), self.cookies.clone());
+        let int_tx = self.int_tx.clone();
+        let id = track.id.clone();
+        let title = track.title.clone();
+        tokio::spawn(async move {
+            match extra.set_dislike_status(&id).await {
+                Ok(()) => {
+                    let _ = int_tx.send(InternalEvent::StatusMessage(format!(
+                        "Marked \"{title}\" as disliked"
+                    )));
+                }
+                Err(e) => {
+                    let _ =
+                        int_tx.send(InternalEvent::StatusMessage(format!("Dislike failed: {e}")));
+                }
+            }
+        });
+    }
+
+    pub(super) fn toggle_save_album(&mut self) {
+        if !self.ytm.is_authenticated() {
+            self.status_line = "Sign in to YouTube Music to save albums".to_string();
+            return;
+        }
+        let Some(ref mut album) = self.album_detail else {
+            return;
+        };
+        let Some(pl_id) = album.playlist_id.clone() else {
+            self.status_line = "This release cannot be saved directly".to_string();
+            return;
+        };
+        let target_save = !album.saved;
+        album.saved = target_save;
+        let title = album.title.clone();
+        let extra = ExtraYtmClient::new(self.http.clone(), self.cookies.clone());
+        let int_tx = self.int_tx.clone();
+        tokio::spawn(async move {
+            match extra.set_playlist_saved(&pl_id, target_save).await {
+                Ok(()) => {
+                    let msg = if target_save {
+                        format!("Saved \"{title}\" to Library")
+                    } else {
+                        format!("Removed \"{title}\" from Library")
+                    };
+                    let _ = int_tx.send(InternalEvent::StatusMessage(msg));
+                }
+                Err(e) => {
+                    let _ = int_tx.send(InternalEvent::StatusMessage(format!(
+                        "Library save failed: {e}"
+                    )));
+                }
+            }
+        });
+    }
+
+    pub(super) fn sync_hyprland_opacity(&mut self, opacity_override: Option<f32>) {
         if hyprland::is_hyprland() {
             if let Some(fresh) = hyprland::find_window_address_for_app("sonata-desktop") {
                 self.hyprland_window = Some(fresh);
@@ -443,18 +981,9 @@ impl BackendEngine {
         let Some(addr) = self.hyprland_window.clone() else {
             return;
         };
-        let transparent = self
-            .base_theme
-            .transparent_bg
-            .unwrap_or(self.config.transparent_bg);
-        let opacity = if transparent {
-            self.base_theme
-                .hyprland_opacity
-                .unwrap_or(self.config.hyprland_opacity)
-                .clamp(0.50, 1.00)
-        } else {
-            1.0
-        };
+        // Keep Hyprland compositor opacity at 1.0 when native Wayland blur/alpha paints the window directly,
+        // or respect explicit Hyprland windowrule/opacity sync if requested.
+        let opacity = opacity_override.unwrap_or(1.0).clamp(0.50, 1.00);
         tokio::spawn(async move {
             hyprland::set_window_opacity(&addr, opacity).await;
         });
@@ -472,13 +1001,33 @@ impl BackendEngine {
             self.status_line = "Sign in to YouTube Music to like songs".to_string();
             return;
         }
-        let target_liked = !track.liked;
+        let currently_liked = track.liked || self.liked_track_ids.contains(&track.id);
+        let target_liked = !currently_liked;
+        if target_liked {
+            self.liked_track_ids.insert(track.id.clone());
+        } else {
+            self.liked_track_ids.remove(&track.id);
+        }
         for list in [
             &mut self.playlist_tracks,
             &mut self.search_results,
             &mut self.playback.queue,
         ] {
             for t in list.iter_mut() {
+                if t.id == track.id {
+                    t.liked = target_liked;
+                }
+            }
+        }
+        if let Some(ref mut art) = self.artist_page {
+            for t in &mut art.popular_tracks {
+                if t.id == track.id {
+                    t.liked = target_liked;
+                }
+            }
+        }
+        if let Some(ref mut alb) = self.album_detail {
+            for t in &mut alb.tracks {
                 if t.id == track.id {
                     t.liked = target_liked;
                 }

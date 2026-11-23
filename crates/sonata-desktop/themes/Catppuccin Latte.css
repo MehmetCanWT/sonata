@@ -1,0 +1,20 @@
+/* Catppuccin Latte — github.com/catppuccin/palette */
+:root {
+  color-scheme: light;
+
+  --base: #eff1f5;
+  --text: #4c4f69;
+  --accent: #8839ef;
+  --on-accent: #eff1f5;
+
+  --gutter: #dce0e8;
+  --popup: #e6e9ef;
+  --surface: #ccd0da;
+  --surface-hover: #bcc0cc;
+  --surface-active: #acb0be;
+  --outline: #ccd0da;
+  --subtext: #6c6f85;
+  --muted: #8c8fa1;
+  --danger: #d20f39;
+  --warning: #df8e1d;
+}

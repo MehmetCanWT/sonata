@@ -117,7 +117,7 @@ pub fn render_artwork(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     }
 }
 
-pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &App) {
+pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let block = Block::default()
         .title(" Lyrics ")
         .title_style(
@@ -132,6 +132,7 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .style(Style::default().bg(app.theme.bg).fg(app.theme.fg));
 
     let inner = block.inner(area);
+    app.ui_rects.lyrics_box = inner;
     frame.render_widget(block, area);
 
     if inner.height == 0 || inner.width == 0 {
@@ -228,9 +229,8 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 }
                 used += r;
                 if dist == 0 {
-                    let next_time = lines.get(i + 1).map(|next| next.time_secs);
                     let mut active_line =
-                        render_active_tui_lyric_line(item, next_time, pos, app.theme.lyrics_active);
+                        render_active_tui_lyric_line(item, app.theme.lyrics_active);
                     if item.voice == LyricVoice::Counter {
                         active_line = active_line.alignment(Alignment::Right);
                     }
@@ -278,13 +278,7 @@ pub fn active_karaoke_line(app: &App) -> Option<Line<'_>> {
         LyricsState::Synced(lines) if !lines.is_empty() => {
             let idx = active_line_index(lines, pos)?;
             let item = &lines[idx];
-            let next_time = lines.get(idx + 1).map(|next| next.time_secs);
-            Some(render_active_tui_lyric_line(
-                item,
-                next_time,
-                pos,
-                app.theme.lyrics_active,
-            ))
+            Some(render_active_tui_lyric_line(item, app.theme.lyrics_active))
         }
         LyricsState::Plain(lines) if !lines.is_empty() => {
             let dur = app.playback.duration_secs.max(1.0);
@@ -303,11 +297,6 @@ pub fn active_karaoke_line(app: &App) -> Option<Line<'_>> {
     }
 }
 
-fn estimate_tui_sung_duration(text: &str) -> f64 {
-    let chars = text.chars().count().max(3) as f64;
-    (chars * 0.065).clamp(1.1, 3.6)
-}
-
 fn is_color_too_white(color: Color) -> bool {
     match color {
         Color::White => true,
@@ -316,117 +305,31 @@ fn is_color_too_white(color: Color) -> bool {
     }
 }
 
-fn render_active_tui_lyric_line(
-    item: &LyricLine,
-    next_time_secs: Option<f64>,
-    position_secs: f64,
-    theme_accent: Color,
-) -> Line<'_> {
+fn render_active_tui_lyric_line(item: &LyricLine, theme_accent: Color) -> Line<'_> {
     let accent = if is_color_too_white(theme_accent) {
         Color::Rgb(120, 220, 255)
     } else {
         theme_accent
     };
     let marker_style = Style::default().fg(accent).add_modifier(Modifier::BOLD);
+    let line_style = Style::default()
+        .fg(theme_accent)
+        .add_modifier(Modifier::BOLD);
 
-    if item.text.trim().is_empty() {
+    let text = item.text.trim();
+    if text.is_empty() {
         return Line::from(vec![
             Span::styled("✦ ", marker_style),
-            Span::styled(
-                "♪",
-                Style::default()
-                    .fg(Color::Rgb(255, 255, 255))
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Span::styled("♪", line_style),
             Span::styled(" ✦", marker_style),
         ]);
     }
 
-    let sweep_pos = position_secs;
-    let sung_style = Style::default()
-        .fg(Color::Rgb(255, 255, 255))
-        .add_modifier(Modifier::BOLD);
-    let current_word_style = Style::default()
-        .fg(accent)
-        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
-    let unsung_style = Style::default()
-        .fg(Color::Rgb(150, 160, 182))
-        .add_modifier(Modifier::BOLD);
-
-    let line_end_secs = next_time_secs
-        .map(|ns| {
-            let est = item.time_secs + estimate_tui_sung_duration(&item.text);
-            let gap_cap = item.time_secs + ((ns - item.time_secs) * 0.92).max(0.45);
-            est.max(gap_cap)
-        })
-        .unwrap_or_else(|| item.time_secs + estimate_tui_sung_duration(&item.text));
-
-    let word_shares: Vec<(&str, f64)> = if !item.words.is_empty() {
-        item.words
-            .iter()
-            .enumerate()
-            .map(|(idx, w)| {
-                let end = w
-                    .end_secs
-                    .filter(|&e| e > w.start_secs)
-                    .or_else(|| {
-                        item.words
-                            .get(idx + 1)
-                            .map(|n| n.start_secs)
-                            .filter(|&ns| ns > w.start_secs)
-                    })
-                    .unwrap_or_else(|| line_end_secs.max(w.start_secs + 0.35))
-                    .max(w.start_secs + 0.14);
-                let share =
-                    ((sweep_pos - w.start_secs) / (end - w.start_secs).max(0.12)).clamp(0.0, 1.0);
-                (w.text.as_str(), share)
-            })
-            .collect()
-    } else {
-        let words: Vec<&str> = item.text.split_whitespace().collect();
-        let total_chars: f64 = words.iter().map(|w| (w.chars().count() + 1) as f64).sum();
-        let span = (line_end_secs - item.time_secs).max(0.5);
-        let progress = ((sweep_pos - item.time_secs) / span).clamp(0.0, 1.0);
-        let mut cursor = 0.0;
-        words
-            .into_iter()
-            .map(|w| {
-                let weight = (w.chars().count() + 1) as f64 / total_chars.max(1.0);
-                let start = cursor;
-                let end = (cursor + weight).min(1.0);
-                cursor = end;
-                let share = if end > start {
-                    ((progress - start) / (end - start)).clamp(0.0, 1.0)
-                } else {
-                    1.0
-                };
-                (w, share)
-            })
-            .collect()
-    };
-
-    let active_word_idx = word_shares
-        .iter()
-        .position(|(_, share)| *share > 0.0 && *share < 0.99);
-
-    let word_count = word_shares.len();
-    let mut spans = Vec::with_capacity(word_count * 2 + 2);
-    spans.push(Span::styled("✦ ", marker_style));
-    for (idx, (token, share)) in word_shares.into_iter().enumerate() {
-        let style = if Some(idx) == active_word_idx {
-            current_word_style
-        } else if share >= 0.99 {
-            sung_style
-        } else {
-            unsung_style
-        };
-        spans.push(Span::styled(token, style));
-        if idx + 1 < word_count {
-            spans.push(Span::raw(" "));
-        }
-    }
-    spans.push(Span::styled(" ✦", marker_style));
-    Line::from(spans)
+    Line::from(vec![
+        Span::styled("✦ ", marker_style),
+        Span::styled(text, line_style),
+        Span::styled(" ✦", marker_style),
+    ])
 }
 
 fn wrapped_rows(text: &str, width: u16) -> usize {
@@ -449,7 +352,7 @@ mod tests {
     use sonata_core::lyrics::{LyricLine, LyricVoice, LyricWord};
 
     #[test]
-    fn active_lyric_underline_covers_only_the_word_not_trailing_space() {
+    fn active_lyric_glows_entire_sentence_without_word_underline() {
         let line = LyricLine {
             time_secs: 10.0,
             text: "around like no one knows".to_string(),
@@ -467,13 +370,16 @@ mod tests {
             ],
             voice: LyricVoice::Lead,
         };
-        let rendered = render_active_tui_lyric_line(&line, Some(14.0), 10.2, Color::Cyan);
-        let underlined: Vec<&str> = rendered
+        let rendered = render_active_tui_lyric_line(&line, Color::Cyan);
+        assert!(rendered
             .spans
             .iter()
-            .filter(|s| s.style.add_modifier.contains(Modifier::UNDERLINED))
-            .map(|s| s.content.as_ref())
-            .collect();
-        assert_eq!(underlined, vec!["around"]);
+            .all(|s| !s.style.add_modifier.contains(Modifier::UNDERLINED)));
+        let texts: Vec<&str> = rendered.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(texts, vec!["✦ ", "around like no one knows", " ✦"]);
+        assert!(rendered.spans[1]
+            .style
+            .add_modifier
+            .contains(Modifier::BOLD));
     }
 }

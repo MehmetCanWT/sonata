@@ -1,0 +1,18 @@
+/* Nord Polar Night — nordtheme.com */
+:root {
+  color-scheme: dark;
+
+  --base: #3b4252;
+  --text: #eceff4;
+  --accent: #88c0d0;
+  --on-accent: #2e3440;
+
+  --gutter: #2e3440;
+  --popup: #2e3440;
+  --surface: #434c5e;
+  --surface-hover: #4c566a;
+  --outline: #434c5e;
+  --subtext: #d8dee9;
+  --danger: #bf616a;
+  --warning: #ebcb8b;
+}

@@ -11,6 +11,7 @@ pub mod state;
 pub use state::*;
 
 use crate::theme_tui::TuiTheme;
+use crate::ui::fx::UiEffects;
 use ratatui::layout::Rect;
 use ratatui::widgets::{ListState, TableState};
 use ratatui_image::picker::{Picker, ProtocolType};
@@ -104,6 +105,7 @@ pub struct App {
     pub config_dirty: bool,
     pub last_exported_state: Option<ExportFingerprint>,
     pub play_requested_at: Option<Instant>,
+    pub fx: UiEffects,
 }
 
 impl App {
@@ -189,6 +191,7 @@ impl App {
             tracks_heading: "Search (press /)".to_string(),
             track_table_state,
             ui_rects: UiRects::default(),
+            fx: UiEffects::new(),
             dragging_split: None,
             last_track_click: None,
             last_art_click: None,
@@ -626,6 +629,26 @@ impl App {
     }
 
     pub fn check_for_updates(&mut self) {
+        if self
+            .update_info
+            .as_ref()
+            .is_some_and(|info| info.update_available)
+        {
+            let url = self
+                .update_info
+                .as_ref()
+                .map(|info| info.release_url.as_str())
+                .filter(|u| !u.is_empty())
+                .unwrap_or("https://github.com/MehmetCanWT/sonata/releases");
+            let _ = std::process::Command::new("xdg-open")
+                .arg(url)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            self.status_line = "Opened GitHub Releases in browser".to_string();
+            return;
+        }
         self.status_line = "Checking for updates...".to_string();
         Self::spawn_update_check(self.http.clone(), self.tx.clone());
     }

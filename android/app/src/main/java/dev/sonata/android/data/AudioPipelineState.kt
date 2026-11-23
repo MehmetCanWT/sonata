@@ -18,15 +18,13 @@ data class AudioPipelineInfo(
     val sampleRateHz: Int = 0,
     val channelCount: Int = 0,
     val outputPath: String = "Media3 AudioTrack",
-    val eqActive: Boolean = false,
-    val loudnessActive: Boolean = false,
     val skipSilenceActive: Boolean = false,
     val playbackSpeed: Float = 1.0f,
     val fromCache: Boolean = false,
     val fromOfflineDownload: Boolean = false,
 ) {
     val isBitTransparentDsp: Boolean
-        get() = !eqActive && !loudnessActive && !skipSilenceActive && playbackSpeed == 1.0f
+        get() = !skipSilenceActive && playbackSpeed == 1.0f
 
     val channelLabel: String
         get() = when (channelCount) {

@@ -1,0 +1,20 @@
+/* Tokyo Night Storm — github.com/folke/tokyonight.nvim */
+:root {
+  color-scheme: dark;
+
+  --base: #24283b;
+  --text: #c0caf5;
+  --accent: #7aa2f7;
+  --on-accent: #24283b;
+
+  --gutter: #1f2335;
+  --popup: #1f2335;
+  --surface: #292e42;
+  --surface-hover: #3b4261;
+  --surface-active: #414868;
+  --outline: #292e42;
+  --subtext: #a9b1d6;
+  --muted: #565f89;
+  --danger: #f7768e;
+  --warning: #e0af68;
+}

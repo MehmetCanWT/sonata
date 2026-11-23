@@ -1,0 +1,21 @@
+/* Classic Dark — Sonata Desktop default charcoal + crimson palette */
+:root {
+  color-scheme: dark;
+
+  --base: #141619;
+  --text: #f3f4f6;
+  --accent: #ff333d;
+  --on-accent: #ffffff;
+
+  --gutter: #07080a;
+  --popup: #1f2126;
+  --surface: #1d2025;
+  --surface-hover: #25282d;
+  --surface-active: #2e3238;
+  --outline: #282b31;
+  --subtext: #a8aeb8;
+  --muted: #6b727d;
+  --accent-hover: #ff555e;
+  --danger: #f5717f;
+  --warning: #f2b85c;
+}

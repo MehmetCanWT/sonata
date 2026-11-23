@@ -1,0 +1,20 @@
+/* macOS Light — System light palette */
+:root {
+  color-scheme: light;
+
+  --base: #ffffff;
+  --text: #1d1d1f;
+  --accent: #007aff;
+  --on-accent: #ffffff;
+
+  --gutter: #ececec;
+  --popup: #f5f5f7;
+  --surface: #ebebef;
+  --surface-hover: #e0e0e5;
+  --surface-active: #d1d1d6;
+  --outline: #d1d1d6;
+  --subtext: #6e6e73;
+  --muted: #8e8e93;
+  --danger: #e0352b;
+  --warning: #b25000;
+}

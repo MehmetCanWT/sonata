@@ -149,10 +149,8 @@ fun AudioPipelineModal(
                 accent = activeAccent,
             )
 
-            // Stage 3: Processing / DSP
+            // Stage 3: Playback Processing
             val activeStages = buildList {
-                if (info.eqActive) add("5-Band EQ")
-                if (info.loudnessActive) add("Loudness")
                 if (info.skipSilenceActive) add("Skip Silence")
                 if (info.playbackSpeed != 1.0f) {
                     add(String.format(Locale.US, "%.2fx Speed", info.playbackSpeed))
@@ -160,12 +158,12 @@ fun AudioPipelineModal(
             }
             PipelineStageCard(
                 step = "3",
-                title = "Processing / DSP",
+                title = "Playback Processing",
                 primary = if (activeStages.isEmpty()) "Bit-Transparent Passthrough" else activeStages.joinToString(" · "),
                 secondary = if (activeStages.isEmpty()) {
-                    "No EQ, gain, or time-stretching applied"
+                    "No DSP or time-stretching applied"
                 } else {
-                    "Processed inside Media3 / AudioEffect chain"
+                    "Processed inside Media3 playback chain"
                 },
                 badgeLabel = if (activeStages.isEmpty()) "Bypass" else "Active",
                 badgeActive = activeStages.isNotEmpty(),
@@ -278,22 +276,13 @@ fun SleepTimerSheet(
 @Composable
 fun AudioControlsSheet(
     speed: Float,
-    eqEnabled: Boolean,
-    eqPreset: String,
-    eqBandsDb: List<Float>,
-    loudnessNorm: Boolean,
     skipSilence: Boolean,
     onSpeedChange: (Float) -> Unit,
-    onEqToggle: (Boolean) -> Unit,
-    onEqPreset: (String, List<Float>) -> Unit,
-    onEqBandChange: (Int, Float) -> Unit,
-    onLoudnessToggle: (Boolean) -> Unit,
     onSkipSilenceToggle: (Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val accent = MaterialTheme.colorScheme.primary
-    val safeBands = List(5) { idx -> eqBandsDb.getOrElse(idx) { 0f }.coerceIn(-6f, 6f) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -389,107 +378,11 @@ fun AudioControlsSheet(
                     .padding(horizontal = 14.dp, vertical = 6.dp),
             ) {
                 ToggleRow(
-                    title = "Loudness Normalization",
-                    subtitle = "Balance perceived volume across tracks",
-                    checked = loudnessNorm,
-                    onCheckedChange = onLoudnessToggle,
-                )
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f))
-                ToggleRow(
                     title = "Skip Silence",
                     subtitle = "Trim long silent intros and gaps",
                     checked = skipSilence,
                     onCheckedChange = onSkipSilenceToggle,
                 )
-            }
-
-            // 5-Band Equalizer
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.72f))
-                    .border(
-                        width = 1.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
-                        shape = RoundedCornerShape(18.dp),
-                    )
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column {
-                        Text(
-                            text = "5-Band Equalizer",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        Text(
-                            text = if (eqEnabled) "Preset: $eqPreset" else "Off (transparent)",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Switch(checked = eqEnabled, onCheckedChange = onEqToggle)
-                }
-
-                if (eqEnabled) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        SONATA_EQ_PRESETS.forEach { preset ->
-                            SelectableGlassChip(
-                                label = preset.name,
-                                selected = eqPreset.equals(preset.name, ignoreCase = true),
-                                accent = accent,
-                                onClick = { onEqPreset(preset.name, preset.bandsDb) },
-                            )
-                        }
-                    }
-
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        safeBands.forEachIndexed { index, db ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            ) {
-                                Text(
-                                    text = EQ_BAND_LABELS[index],
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.width(52.dp),
-                                )
-                                Slider(
-                                    value = db,
-                                    onValueChange = { raw ->
-                                        val snapped = (raw * 2f).roundToInt() / 2f
-                                        onEqBandChange(index, snapped.coerceIn(-6f, 6f))
-                                    },
-                                    valueRange = -6f..6f,
-                                    modifier = Modifier.weight(1f),
-                                    colors = SliderDefaults.colors(
-                                        thumbColor = accent,
-                                        activeTrackColor = accent,
-                                    ),
-                                )
-                                Text(
-                                    text = String.format(Locale.US, "%+.1f dB", db),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Medium,
-                                    modifier = Modifier.width(54.dp),
-                                )
-                            }
-                        }
-                    }
-                }
             }
 
             Spacer(modifier = Modifier.height(8.dp))

@@ -1,430 +1,690 @@
-use super::{
-    render_icon_button, render_pill_button, ui_icon, DesktopModal, FluentDivExt, SonataDesktopView,
-};
-use crate::backend::BackendCmd;
-use crate::theme_bridge::GlassPalette;
+//! Interactive context menus, top-bar account popover, browser sign-in, and playlist modals.
+//!
+//! 1. **Right-Click Context Menu**: offers track, queue, collection, and artist quick actions (`Play next`, `Add to queue`, `Start radio`, `Go to album/artist`, `Like`, `Dislike`, `Add to playlist`, `Remove`).
+//! 2. **Account Popover**: switches to Library / Settings / Sign-out cleanly without blocking navigation.
+//! 3. **Modal Dialogs**: handles browser cookie selection (`SignInBrowser`), `CreatePlaylist`, and `AddToPlaylist`.
+
+use super::{ContextMenuKind, DesktopModal, SonataDesktopView};
+use crate::backend::{BackendCmd, NavTarget};
+use crate::ui::components::popup_panel;
 use gpui_kit::assets::IconName;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
+use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
-    div, px, rgba, AnyElement, Context, FontWeight, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, SharedString, StatefulInteractiveElement, Styled, Window,
+    div, prelude::FluentBuilder as _, px, AnyElement, Context, FontWeight, InteractiveElement as _,
+    IntoElement, MouseButton, ParentElement as _, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Window,
 };
-use sonata_core::providers::Track;
 
-pub fn render_modal_overlay(
-    view: &mut SonataDesktopView,
-    p: &GlassPalette,
-    _window: &mut Window,
-    cx: &mut Context<SonataDesktopView>,
-) -> AnyElement {
-    let card = match view.modal.clone() {
-        DesktopModal::None => return div().into_any_element(),
-        DesktopModal::SignInBrowser => render_sign_in_modal(view, p, cx),
-        DesktopModal::CreatePlaylist => render_text_modal(
-            view,
-            p,
-            "New YouTube Music Playlist",
-            "Enter a title for the new playlist on your YouTube Music account.",
-            "Create",
-            cx,
-        ),
-        DesktopModal::AddToPlaylist(track) => render_add_to_playlist_modal(view, p, &track, cx),
-    };
+impl SonataDesktopView {
+    pub fn render_account_popover(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let name = self
+            .snapshot
+            .user_profile
+            .as_ref()
+            .map(|p| p.name.clone())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "Signed in".to_string());
+        let handle = self
+            .snapshot
+            .user_profile
+            .as_ref()
+            .and_then(|p| p.handle.clone())
+            .unwrap_or_default();
 
-    div()
-        .id("modal-backdrop")
-        .absolute()
-        .inset_0()
-        .bg(rgba(0x00000090))
-        .flex()
-        .items_center()
-        .justify_center()
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(|this, _, window, cx| {
-                this.modal = DesktopModal::None;
-                window.focus(&this.focus_handle, cx);
-                cx.notify();
-            }),
-        )
-        .child(card)
-        .into_any_element()
-}
-
-fn modal_shell(
-    title: &str,
-    width_px: f32,
-    p: &GlassPalette,
-    cx: &mut Context<SonataDesktopView>,
-) -> gpui_kit::Div {
-    div()
-        .w(px(width_px))
-        .max_w(px(620.0))
-        .p_5()
-        .rounded_2xl()
-        .bg(p.modal_bg)
-        .border_1()
-        .border_color(p.border)
-        .flex()
-        .flex_col()
-        .gap_4()
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(
-            div()
-                .w_full()
-                .flex()
-                .items_center()
-                .justify_between()
-                .child(
-                    div()
-                        .text_base()
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(p.highlight_fg)
-                        .child(title.to_string()),
-                )
-                .child(render_icon_button(
-                    "modal-close",
-                    IconName::X,
-                    16.0,
-                    28.0,
-                    p.muted,
-                    p.pill_bg,
-                    p.card_hover,
-                    |this, window, cx| {
-                        this.modal = DesktopModal::None;
-                        window.focus(&this.focus_handle, cx);
-                        cx.notify();
-                    },
-                    cx,
-                )),
-        )
-}
-
-fn render_sign_in_modal(
-    view: &SonataDesktopView,
-    p: &GlassPalette,
-    cx: &mut Context<SonataDesktopView>,
-) -> AnyElement {
-    let snap = &view.snapshot;
-    let mut browser_list = div()
-        .id("signin-browser-scroll")
-        .w_full()
-        .max_h(px(320.0))
-        .overflow_y_scroll()
-        .flex()
-        .flex_col()
-        .gap_2();
-
-    for (idx, opt) in snap.available_browsers.iter().enumerate() {
-        let browser_id = opt.id.to_string();
-        let active_browser = snap.signed_in_browser.as_deref() == Some(opt.id);
-
-        browser_list = browser_list.child(
-            div()
-                .id(SharedString::from(format!("signin-br-{idx}")))
-                .w_full()
-                .px_3()
-                .py_3()
-                .rounded_xl()
-                .bg(if active_browser {
-                    p.accent_soft
-                } else {
-                    p.card_bg
-                })
-                .border_1()
-                .border_color(if active_browser {
-                    p.accent
-                } else {
-                    p.border_subtle
-                })
-                .hover(|s| s.bg(p.card_hover))
-                .cursor_pointer()
-                .flex()
-                .items_center()
-                .justify_between()
-                .on_click(cx.listener(move |this, _, _, _| {
-                    if !this.snapshot.signing_in {
-                        this.backend
-                            .send(BackendCmd::SignInWithBrowser(browser_id.clone()));
-                    }
-                }))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_3()
-                        .child(ui_icon(
-                            IconName::Globe,
-                            16.0,
-                            if opt.detected { p.accent } else { p.muted },
-                        ))
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(if opt.detected {
-                                    p.highlight_fg
-                                } else {
-                                    p.muted
-                                })
-                                .child(opt.label),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .when(active_browser, |el| {
-                            el.child(
-                                div()
-                                    .px_2()
-                                    .py(px(2.0))
-                                    .rounded_full()
-                                    .bg(p.accent_soft)
-                                    .text_xs()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(p.accent)
-                                    .child("Active"),
-                            )
-                        })
-                        .child(if opt.detected {
-                            div()
-                                .px_2()
-                                .py(px(2.0))
-                                .rounded_full()
-                                .bg(p.pill_bg)
-                                .text_xs()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(p.success)
-                                .child("Detected")
-                        } else {
-                            div()
-                                .px_2()
-                                .py(px(2.0))
-                                .rounded_full()
-                                .bg(p.pill_bg)
-                                .text_xs()
-                                .text_color(p.muted)
-                                .child("Not Found")
-                        }),
-                ),
-        );
-    }
-
-    modal_shell("Sign In to YouTube Music", 480.0, p, cx)
-        .child(div().text_xs().text_color(p.muted).child(
-            "Choose which browser Sonata should extract your YouTube Music session cookies from:",
-        ))
-        .when(snap.signing_in, |el| {
-            el.child(
-                div()
-                    .px_3()
-                    .py_2()
-                    .rounded_xl()
-                    .bg(p.accent_soft)
-                    .border_1()
-                    .border_color(p.accent)
-                    .text_xs()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(p.accent)
-                    .child("Reading browser cookies and syncing your YouTube Music profile..."),
+        div()
+            .id("acc-pop-backdrop")
+            .absolute()
+            .inset_0()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.account_menu_open = false;
+                    cx.notify();
+                }),
             )
-        })
-        .when(snap.sign_in_error.is_some() && !snap.signing_in, |el| {
-            el.child(
-                div()
-                    .px_3()
-                    .py_2()
-                    .rounded_xl()
-                    .bg(p.pill_bg)
-                    .border_1()
-                    .border_color(p.error)
+            .child(
+                popup_panel(&self.palette)
+                    .id("acc-pop-card")
+                    .absolute()
+                    .top(px(58.0))
+                    .right(px(16.0))
+                    .w(px(230.0))
+                    .p(px(8.0))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(ui_icon(IconName::CircleAlert, 15.0, p.error))
+                    .flex_col()
+                    .gap(px(4.0))
                     .child(
                         div()
-                            .flex_1()
-                            .text_xs()
-                            .text_color(p.error)
-                            .child(snap.sign_in_error.clone().unwrap_or_default()),
-                    ),
+                            .px(px(10.0))
+                            .py(px(8.0))
+                            .border_b_1()
+                            .border_color(self.palette.outline)
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.0))
+                            .child(
+                                div()
+                                    .text_size(px(13.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .truncate()
+                                    .child(name),
+                            )
+                            .when(!handle.is_empty(), |col| {
+                                col.child(
+                                    div()
+                                        .text_size(px(11.0))
+                                        .text_color(self.palette.secondary)
+                                        .truncate()
+                                        .child(handle),
+                                )
+                            }),
+                    )
+                    .child(menu_item_row(
+                        "acc-go-lib",
+                        IconName::Library,
+                        "Your Library",
+                        &self.palette,
+                        cx.listener(|this, _, _, cx| {
+                            this.navigate_to(NavTarget::Library, cx);
+                        }),
+                    ))
+                    .child(menu_item_row(
+                        "acc-go-set",
+                        IconName::Settings,
+                        "Settings",
+                        &self.palette,
+                        cx.listener(|this, _, _, cx| {
+                            this.navigate_to(NavTarget::Settings, cx);
+                        }),
+                    ))
+                    .child(menu_item_row(
+                        "acc-signout",
+                        IconName::LogOut,
+                        "Sign out",
+                        &self.palette,
+                        cx.listener(|this, _, _, cx| {
+                            this.account_menu_open = false;
+                            this.backend.send(BackendCmd::SignOut);
+                            cx.notify();
+                        }),
+                    )),
             )
-        })
-        .child(browser_list)
-        .child(
-            div()
-                .w_full()
-                .flex()
-                .justify_end()
-                .child(render_pill_button(
-                    "signin-cancel",
-                    "Cancel".to_string(),
-                    false,
-                    p,
-                    |this, window, cx| {
-                        this.modal = DesktopModal::None;
-                        window.focus(&this.focus_handle, cx);
-                        cx.notify();
-                    },
-                    cx,
-                )),
-        )
-        .into_any_element()
-}
+            .into_any_element()
+    }
 
-fn render_text_modal(
-    view: &SonataDesktopView,
-    p: &GlassPalette,
-    title: &str,
-    hint: &str,
-    confirm_label: &str,
-    cx: &mut Context<SonataDesktopView>,
-) -> AnyElement {
-    let confirm = confirm_label.to_string();
-    modal_shell(title, 460.0, p, cx)
-        .child(div().text_xs().text_color(p.muted).child(hint.to_string()))
-        .child(
-            div()
-                .w_full()
-                .px_3()
-                .py_2()
-                .rounded_xl()
-                .bg(p.card_bg)
-                .border_1()
-                .border_color(p.accent)
-                .child(Input::new(&view.modal_input).appearance(false)),
-        )
-        .child(
-            div()
-                .w_full()
-                .flex()
-                .justify_end()
-                .gap_2()
-                .child(render_pill_button(
-                    "modal-cancel",
-                    "Cancel".to_string(),
-                    false,
-                    p,
-                    |this, window, cx| {
-                        this.modal = DesktopModal::None;
-                        window.focus(&this.focus_handle, cx);
+    pub fn render_context_menu(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(menu_state) = self.context_menu.clone() else {
+            return div().into_any_element();
+        };
+        let vp = window.viewport_size();
+        let vp_w: f32 = vp.width.into();
+        let vp_h: f32 = vp.height.into();
+        let left = menu_state.pos.x.min((vp_w - 230.0).max(8.0));
+        let top = menu_state.pos.y.min((vp_h - 320.0).max(8.0));
+
+        let mut items: Vec<AnyElement> = Vec::new();
+        match menu_state.kind {
+            ContextMenuKind::Track {
+                track,
+                playlist_remove_idx,
+            } => {
+                let tr_next = track.clone();
+                let tr_q = track.clone();
+                let tr_rad = track.clone();
+                let tr_alb = track.clone();
+                let tr_art = track.clone();
+                let tr_like = track.clone();
+                let tr_dis = track.clone();
+                let tr_add = track.clone();
+                let liked = track.liked;
+
+                items.push(menu_item_row(
+                    "ctx-play-next",
+                    IconName::ListPlus,
+                    "Play next",
+                    &self.palette,
+                    cx.listener(move |this, _, _, cx| {
+                        this.context_menu = None;
+                        this.backend
+                            .send(BackendCmd::PlayTrackNext(tr_next.clone()));
                         cx.notify();
+                    }),
+                ));
+                items.push(menu_item_row(
+                    "ctx-add-q",
+                    IconName::ListMusic,
+                    "Add to queue",
+                    &self.palette,
+                    cx.listener(move |this, _, _, cx| {
+                        this.context_menu = None;
+                        this.backend.send(BackendCmd::AddTrackToQueue(tr_q.clone()));
+                        cx.notify();
+                    }),
+                ));
+                items.push(menu_item_row(
+                    "ctx-radio",
+                    IconName::Radio,
+                    "Start radio",
+                    &self.palette,
+                    cx.listener(move |this, _, _, cx| {
+                        this.context_menu = None;
+                        this.backend
+                            .send(BackendCmd::StartTrackRadio(tr_rad.clone()));
+                        cx.notify();
+                    }),
+                ));
+                if !tr_alb.album.is_empty() || tr_alb.album_id.is_some() {
+                    items.push(menu_item_row(
+                        "ctx-album",
+                        IconName::Disc3,
+                        "Go to album",
+                        &self.palette,
+                        cx.listener(move |this, _, _, cx| {
+                            this.context_menu = None;
+                            this.open_album_for_track(&tr_alb, cx);
+                        }),
+                    ));
+                }
+                items.push(menu_item_row(
+                    "ctx-artist",
+                    IconName::User,
+                    "Go to artist",
+                    &self.palette,
+                    cx.listener(move |this, _, _, cx| {
+                        this.context_menu = None;
+                        this.open_artist_by_name(&tr_art.artist, cx);
+                    }),
+                ));
+                items.push(menu_item_row(
+                    "ctx-like",
+                    IconName::ThumbsUp,
+                    if liked { "Remove like" } else { "Like song" },
+                    &self.palette,
+                    cx.listener(move |this, _, _, cx| {
+                        this.context_menu = None;
+                        this.backend.send(BackendCmd::ToggleLike(tr_like.clone()));
+                        cx.notify();
+                    }),
+                ));
+                items.push(menu_item_row(
+                    "ctx-dislike",
+                    IconName::ThumbsDown,
+                    "Dislike",
+                    &self.palette,
+                    cx.listener(move |this, _, _, cx| {
+                        this.context_menu = None;
+                        this.backend.send(BackendCmd::DislikeTrack(tr_dis.clone()));
+                        cx.notify();
+                    }),
+                ));
+                items.push(menu_item_row(
+                    "ctx-add-pl",
+                    IconName::Plus,
+                    "Add to playlist",
+                    &self.palette,
+                    cx.listener(move |this, _, _, cx| {
+                        this.context_menu = None;
+                        this.modal = DesktopModal::AddToPlaylist(tr_add.clone());
+                        cx.notify();
+                    }),
+                ));
+                if let Some(rm_idx) = playlist_remove_idx {
+                    items.push(menu_item_row(
+                        "ctx-rm-pl",
+                        IconName::Trash,
+                        "Remove from playlist",
+                        &self.palette,
+                        cx.listener(move |this, _, _, cx| {
+                            this.context_menu = None;
+                            this.backend
+                                .send(BackendCmd::RemoveTrackFromPlaylist(rm_idx));
+                            cx.notify();
+                        }),
+                    ));
+                }
+            }
+            ContextMenuKind::QueueItem { index, track } => {
+                let tr_rad = track.clone();
+                let tr_add = track.clone();
+                items.push(menu_item_row(
+                    "ctx-q-play",
+                    IconName::Play,
+                    "Play now",
+                    &self.palette,
+                    cx.listener(move |this, _, _, cx| {
+                        this.context_menu = None;
+                        this.backend.send(BackendCmd::PlayQueueIndex(index));
+                        cx.notify();
+                    }),
+                ));
+                items.push(menu_item_row(
+                    "ctx-q-rad",
+                    IconName::Radio,
+                    "Start radio",
+                    &self.palette,
+                    cx.listener(move |this, _, _, cx| {
+                        this.context_menu = None;
+                        this.backend
+                            .send(BackendCmd::StartTrackRadio(tr_rad.clone()));
+                        cx.notify();
+                    }),
+                ));
+                items.push(menu_item_row(
+                    "ctx-q-add",
+                    IconName::Plus,
+                    "Add to playlist",
+                    &self.palette,
+                    cx.listener(move |this, _, _, cx| {
+                        this.context_menu = None;
+                        this.modal = DesktopModal::AddToPlaylist(tr_add.clone());
+                        cx.notify();
+                    }),
+                ));
+                items.push(menu_item_row(
+                    "ctx-q-rm",
+                    IconName::X,
+                    "Remove from queue",
+                    &self.palette,
+                    cx.listener(move |this, _, _, cx| {
+                        this.context_menu = None;
+                        this.backend.send(BackendCmd::RemoveFromQueue(index));
+                        cx.notify();
+                    }),
+                ));
+            }
+            ContextMenuKind::Collection {
+                id,
+                title,
+                subtitle,
+                thumbnail_url,
+                is_album,
+            } => {
+                items.push(menu_item_row(
+                    "ctx-col-open",
+                    IconName::ExternalLink,
+                    if is_album {
+                        "Open album"
+                    } else {
+                        "Open playlist"
                     },
-                    cx,
-                ))
-                .child(
+                    &self.palette,
+                    cx.listener(move |this, _, _, cx| {
+                        this.context_menu = None;
+                        if is_album {
+                            this.backend.send(BackendCmd::OpenAlbum {
+                                album_id: Some(id.clone()),
+                                title: title.clone(),
+                                artist: subtitle.clone(),
+                                thumbnail_url: thumbnail_url.clone(),
+                            });
+                        } else {
+                            this.backend.send(BackendCmd::OpenCollection {
+                                id: id.clone(),
+                                title: title.clone(),
+                                subtitle: subtitle.clone(),
+                                thumbnail_url: thumbnail_url.clone(),
+                                editable: false,
+                            });
+                        }
+                        cx.notify();
+                    }),
+                ));
+            }
+            ContextMenuKind::Artist { id, name } => {
+                items.push(
                     div()
-                        .id("modal-submit")
-                        .px_4()
-                        .py(px(7.0))
-                        .rounded_lg()
-                        .bg(p.accent)
-                        .cursor_pointer()
-                        .text_xs()
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(p.accent_fg)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            let val = this.modal_input.read(cx).value().to_string();
-                            this.submit_text_modal(val, window, cx);
-                        }))
-                        .child(confirm),
-                ),
-        )
-        .into_any_element()
-}
-
-fn render_add_to_playlist_modal(
-    view: &SonataDesktopView,
-    p: &GlassPalette,
-    track: &Track,
-    cx: &mut Context<SonataDesktopView>,
-) -> AnyElement {
-    let playlists = view.snapshot.writable_ytm_playlists();
-    let mut list = div()
-        .id("add-playlist-scroll")
-        .w_full()
-        .max_h(px(280.0))
-        .overflow_y_scroll()
-        .flex()
-        .flex_col()
-        .gap_1();
-
-    if playlists.is_empty() {
-        list = list.child(
-            div()
-                .py_6()
-                .flex()
-                .justify_center()
-                .text_sm()
-                .text_color(p.muted)
-                .child(if view.snapshot.is_signed_in() {
-                    "No writable YouTube Music playlists found."
-                } else {
-                    "Sign in to YouTube Music to add tracks to playlists."
-                }),
-        );
-    } else {
-        for (idx, pl) in playlists.into_iter().enumerate() {
-            let track_clone = track.clone();
-            let pl_id = pl.id.clone();
-            let pl_name = pl.name.clone();
-            list = list.child(
-                div()
-                    .id(SharedString::from(format!("add-pl-{idx}")))
-                    .w_full()
-                    .px_3()
-                    .py_2()
-                    .rounded_lg()
-                    .bg(p.card_bg)
-                    .hover(|s| s.bg(p.card_hover))
-                    .cursor_pointer()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.backend.send(BackendCmd::AddTrackToPlaylist {
-                            track: track_clone.clone(),
-                            playlist_id: pl_id.clone(),
-                            playlist_name: pl_name.clone(),
-                        });
-                        this.modal = DesktopModal::None;
-                        window.focus(&this.focus_handle, cx);
+                        .px(px(10.0))
+                        .py(px(6.0))
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(self.palette.dim)
+                        .truncate()
+                        .child(name)
+                        .into_any_element(),
+                );
+                items.push(menu_item_row(
+                    "ctx-art-open",
+                    IconName::User,
+                    "Go to artist",
+                    &self.palette,
+                    cx.listener(move |this, _, _, cx| {
+                        this.context_menu = None;
+                        this.backend.send(BackendCmd::OpenArtist(id.clone()));
                         cx.notify();
-                    }))
+                    }),
+                ));
+            }
+        }
+
+        div()
+            .id("ctx-menu-backdrop")
+            .absolute()
+            .inset_0()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.context_menu = None;
+                    cx.notify();
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, _, _, cx| {
+                    this.context_menu = None;
+                    cx.notify();
+                }),
+            )
+            .child(
+                popup_panel(&self.palette)
+                    .id("ctx-menu-box")
+                    .absolute()
+                    .left(px(left))
+                    .top(px(top))
+                    .w(px(216.0))
+                    .p(px(6.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .children(items),
+            )
+            .into_any_element()
+    }
+
+    pub fn render_modal_overlay(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let dialog_content: AnyElement = match self.modal.clone() {
+            DesktopModal::None => return div().into_any_element(),
+            DesktopModal::SignInBrowser => {
+                let browsers = self.snapshot.available_browsers.clone();
+                let signing_in = self.snapshot.signing_in;
+                let err = self.snapshot.sign_in_error.clone();
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(14.0))
                     .child(
                         div()
                             .flex()
+                            .flex_row()
                             .items_center()
-                            .gap_2()
-                            .child(ui_icon(IconName::ListPlus, 15.0, p.accent))
-                            .child(div().text_sm().text_color(p.text).child(pl.name.clone())),
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(18.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child("Sign in to YouTube Music"),
+                            )
+                            .child(
+                                Button::new("mdl-close")
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::X)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.backend.send(BackendCmd::ClearSignInError);
+                                        this.modal = DesktopModal::None;
+                                        cx.notify();
+                                    })),
+                            ),
                     )
                     .child(
-                        div().text_xs().text_color(p.muted).child(
-                            pl.track_count
-                                .map(|c| format!("{c} tracks"))
-                                .unwrap_or_default(),
+                        div()
+                            .text_size(px(13.0))
+                            .text_color(self.palette.secondary)
+                            .child(
+                                "Select the browser where you are signed into music.youtube.com:",
+                            ),
+                    )
+                    .when_some(err, |d, msg| {
+                        d.child(
+                            div()
+                                .p(px(10.0))
+                                .rounded(px(self.palette.radii.item))
+                                .bg(self.palette.danger.opacity(0.15))
+                                .text_size(px(12.0))
+                                .text_color(self.palette.danger)
+                                .child(msg),
+                        )
+                    })
+                    .child(div().flex().flex_col().gap(px(6.0)).children(
+                        browsers.into_iter().enumerate().map(|(i, b)| {
+                            let bid = b.id;
+                            Button::new(SharedString::from(format!("mdl-br-{i}")))
+                                .secondary()
+                                .label(b.label)
+                                .when(signing_in, |btn| btn.opacity(0.5))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.backend
+                                        .send(BackendCmd::SignInWithBrowser(bid.to_string()));
+                                    this.modal = DesktopModal::None;
+                                    cx.notify();
+                                }))
+                        }),
+                    ))
+                    .into_any_element()
+            }
+            DesktopModal::CreatePlaylist => div()
+                .flex()
+                .flex_col()
+                .gap(px(14.0))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_size(px(18.0))
+                                .font_weight(FontWeight::BOLD)
+                                .child("Create playlist"),
+                        )
+                        .child(
+                            Button::new("mdl-cp-close")
+                                .ghost()
+                                .small()
+                                .icon(IconName::X)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.modal = DesktopModal::None;
+                                    cx.notify();
+                                })),
                         ),
-                    ),
-            );
-        }
-    }
+                )
+                .child(
+                    div()
+                        .px(px(10.0))
+                        .py(px(6.0))
+                        .rounded(px(self.palette.radii.control))
+                        .bg(self.palette.surface)
+                        .border_1()
+                        .border_color(self.palette.outline)
+                        .child(Input::new(&self.playlist_name_input).appearance(false)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .justify_end()
+                        .gap(px(8.0))
+                        .child(
+                            Button::new("mdl-cp-cancel")
+                                .secondary()
+                                .label("Cancel")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.modal = DesktopModal::None;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("mdl-cp-create")
+                                .primary()
+                                .label("Create")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    let name = this
+                                        .playlist_name_input
+                                        .read(cx)
+                                        .value()
+                                        .trim()
+                                        .to_string();
+                                    if !name.is_empty() {
+                                        this.backend.send(BackendCmd::CreateYtmPlaylist(name));
+                                    }
+                                    this.modal = DesktopModal::None;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .into_any_element(),
+            DesktopModal::AddToPlaylist(track) => {
+                let playlists = self.snapshot.writable_ytm_playlists();
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.0))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(18.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child("Add to playlist"),
+                            )
+                            .child(
+                                Button::new("mdl-ap-close")
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::X)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.modal = DesktopModal::None;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(self.palette.secondary)
+                            .truncate()
+                            .child(format!("{} • {}", track.title, track.artist)),
+                    )
+                    .child(if playlists.is_empty() {
+                        div()
+                            .py(px(14.0))
+                            .text_size(px(13.0))
+                            .text_color(self.palette.dim)
+                            .child("Sign in and sync playlists first.")
+                            .into_any_element()
+                    } else {
+                        div()
+                            .max_h(px(280.0))
+                            .id("mdl-ap-scroll")
+                            .overflow_y_scroll()
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.0))
+                            .children(playlists.into_iter().enumerate().map(|(i, pl)| {
+                                let tr = track.clone();
+                                let pid = pl.id.clone();
+                                let pname = pl.name.clone();
+                                div()
+                                    .id(SharedString::from(format!("mdl-ap-pl-{i}")))
+                                    .px(px(12.0))
+                                    .py(px(10.0))
+                                    .rounded(px(self.palette.radii.item))
+                                    .bg(self.palette.surface)
+                                    .hover(|s| s.bg(self.palette.surface_hover))
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.backend.send(BackendCmd::AddTrackToPlaylist {
+                                            track: tr.clone(),
+                                            playlist_id: pid.clone(),
+                                            playlist_name: pname.clone(),
+                                        });
+                                        this.modal = DesktopModal::None;
+                                        cx.notify();
+                                    }))
+                                    .text_size(px(13.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(pl.name)
+                            }))
+                            .into_any_element()
+                    })
+                    .into_any_element()
+            }
+        };
 
-    modal_shell("Add Track to Playlist", 440.0, p, cx)
+        div()
+            .id("modal-backdrop")
+            .absolute()
+            .inset_0()
+            .bg(gpui_kit::black().opacity(0.55))
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.modal = DesktopModal::None;
+                    cx.notify();
+                }),
+            )
+            .child(
+                popup_panel(&self.palette)
+                    .id("modal-card")
+                    .w(px(420.0))
+                    .max_w_full()
+                    .p(px(20.0))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(dialog_content),
+            )
+            .into_any_element()
+    }
+}
+
+fn menu_item_row(
+    id: impl Into<gpui_kit::ElementId>,
+    icon: IconName,
+    label: &'static str,
+    palette: &crate::theme::DesktopPalette,
+    on_click: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut gpui_kit::App) + 'static,
+) -> AnyElement {
+    div()
+        .id(id)
+        .h(px(34.0))
+        .px(px(10.0))
+        .rounded(px(palette.radii.item))
+        .cursor_pointer()
+        .hover(|s| s.bg(palette.surface_hover))
+        .on_click(on_click)
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(10.0))
+        .child(Icon::new(icon).size(px(15.0)).text_color(palette.secondary))
         .child(
             div()
-                .px_3()
-                .py_2()
-                .rounded_lg()
-                .bg(p.pill_bg)
-                .text_xs()
-                .text_color(p.text)
-                .truncate()
-                .child(format!("{} — {}", track.title, track.artist)),
+                .text_size(px(13.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(palette.text)
+                .child(label),
         )
-        .child(list)
         .into_any_element()
 }

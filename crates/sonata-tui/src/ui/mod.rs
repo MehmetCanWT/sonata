@@ -3,6 +3,7 @@
 //! 1. **Workspace Layout (`render`)**: Splits the terminal into Now Playing (artwork + lyrics), Track List, Library Sidebar, and the bottom player bar (or compact mini-player tiers).
 //! 2. **Balanced Player Bar (`render_player_bar`)**: Uses symmetric side columns so track metadata and Shuffle/Repeat controls stay dead-center horizontally, paired with a unified thin-track progress and volume bar.
 
+pub mod fx;
 pub mod modals;
 pub mod now_playing;
 pub mod sidebar;
@@ -77,6 +78,26 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
         render_player_bar(frame, root[1], app);
     }
     modals::render(frame, area, app);
+
+    let active_lyric_idx = match &app.lyrics {
+        LyricsState::Synced(lines) if !lines.is_empty() => {
+            sonata_core::lyrics::active_line_index(lines, app.interpolated_position())
+        }
+        _ => None,
+    };
+    let track_id = app.playback.current_track().map(|t| t.id.clone());
+    let fx_ctx = fx::FxFrameContext {
+        screen_area: area,
+        tracks_area: app.ui_rects.tracks_rows,
+        lyrics_area: app.ui_rects.lyrics_box,
+        player_bar_area: app.ui_rects.player_bar,
+        tracks_heading: &app.tracks_heading,
+        track_id: track_id.as_deref(),
+        active_lyric_idx,
+        modal_open: fx::is_modal_open(&app.modal),
+        theme: &app.theme,
+    };
+    app.fx.sync_and_render(&fx_ctx, frame.buffer_mut());
 }
 
 fn render_mini_layout(frame: &mut Frame<'_>, area: Rect, app: &mut App) {

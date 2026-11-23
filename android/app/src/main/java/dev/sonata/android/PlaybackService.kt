@@ -2,8 +2,6 @@ package dev.sonata.android
 
 import android.content.Context
 import android.content.Intent
-import android.media.audiofx.Equalizer
-import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
 import android.os.Handler
 import android.util.Log
@@ -63,8 +61,8 @@ internal object PlaybackQueueBridge {
 }
 
 /**
- * Thread-safe bridge for applying live audio processing settings (speed, skip silence,
- * loudness normalization, and 5-band equalizer) onto the active [PlaybackService].
+ * Thread-safe bridge for applying live playback settings (speed and skip silence)
+ * onto the active [PlaybackService].
  */
 object PlaybackAudioBridge {
     @Volatile
@@ -75,15 +73,6 @@ object PlaybackAudioBridge {
 
     @Volatile
     private var skipSilenceEnabled: Boolean = false
-
-    @Volatile
-    private var loudnessNormEnabled: Boolean = false
-
-    @Volatile
-    private var eqEnabled: Boolean = false
-
-    @Volatile
-    private var eqBandsDb: List<Float> = listOf(0f, 0f, 0f, 0f, 0f)
 
     fun applyPlaybackSpeed(speed: Float) {
         val clamped = speed.coerceIn(0.5f, 2.0f)
@@ -98,27 +87,11 @@ object PlaybackAudioBridge {
         activeService?.applySkipSilenceInternal(enabled)
     }
 
-    fun applyLoudnessNormalization(enabled: Boolean) {
-        loudnessNormEnabled = enabled
-        AudioPipelineBus.update { it.copy(loudnessActive = enabled) }
-        activeService?.applyLoudnessInternal(enabled)
-    }
-
-    fun applyEqualizer(enabled: Boolean, bandsDb: List<Float>) {
-        val sanitized = List(5) { idx -> bandsDb.getOrElse(idx) { 0f }.coerceIn(-6f, 6f) }
-        eqEnabled = enabled
-        eqBandsDb = sanitized
-        AudioPipelineBus.update { it.copy(eqActive = enabled) }
-        activeService?.applyEqualizerInternal(enabled, sanitized)
-    }
-
     internal fun syncAllTo(service: PlaybackService) {
         AudioPipelineBus.update { current ->
             val next = current.copy(
                 playbackSpeed = playbackSpeed,
                 skipSilenceActive = skipSilenceEnabled,
-                loudnessActive = loudnessNormEnabled,
-                eqActive = eqEnabled,
             )
             if (next == current) current else next
         }
@@ -128,12 +101,6 @@ object PlaybackAudioBridge {
         if (skipSilenceEnabled) {
             service.applySkipSilenceInternal(true)
         }
-        if (loudnessNormEnabled) {
-            service.applyLoudnessInternal(true)
-        }
-        if (eqEnabled) {
-            service.applyEqualizerInternal(true, eqBandsDb)
-        }
     }
 }
 
@@ -141,9 +108,6 @@ class PlaybackService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
     private var exoPlayerInstance: ExoPlayer? = null
     private var playerHandler: Handler? = null
-    private var loudnessEnhancer: LoudnessEnhancer? = null
-    private var equalizer: Equalizer? = null
-    private var boundAudioSessionId: Int = C.AUDIO_SESSION_ID_UNSET
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile
     private var lastCacheCheckKey: String? = null
@@ -255,8 +219,7 @@ class PlaybackService : MediaSessionService() {
             eventTime: AnalyticsListener.EventTime,
             audioSessionId: Int,
         ) {
-            if (audioSessionId != boundAudioSessionId && audioSessionId != C.AUDIO_SESSION_ID_UNSET && audioSessionId > 0) {
-                releaseAudioEffects()
+            if (audioSessionId != C.AUDIO_SESSION_ID_UNSET && audioSessionId > 0) {
                 PlaybackAudioBridge.syncAllTo(this@PlaybackService)
             }
         }
@@ -392,74 +355,6 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    @OptIn(UnstableApi::class)
-    internal fun applyLoudnessInternal(enabled: Boolean) {
-        val player = exoPlayerInstance ?: return
-        postOnPlayer {
-            runCatching {
-                if (!enabled) {
-                    runCatching { loudnessEnhancer?.enabled = false }
-                    runCatching { loudnessEnhancer?.release() }
-                    loudnessEnhancer = null
-                    return@runCatching
-                }
-                val sessionId = player.audioSessionId
-                if (sessionId == C.AUDIO_SESSION_ID_UNSET || sessionId <= 0) return@runCatching
-                if (boundAudioSessionId != sessionId) {
-                    releaseAudioEffects()
-                    boundAudioSessionId = sessionId
-                }
-                val enhancer = loudnessEnhancer ?: LoudnessEnhancer(sessionId).also {
-                    loudnessEnhancer = it
-                }
-                enhancer.setTargetGain(LOUDNESS_NORM_TARGET_MB)
-                enhancer.enabled = true
-            }.onFailure { err ->
-                Log.w(TAG, "LoudnessEnhancer update failed: ${err.message}")
-            }
-        }
-    }
-
-    @OptIn(UnstableApi::class)
-    internal fun applyEqualizerInternal(enabled: Boolean, bandsDb: List<Float>) {
-        val player = exoPlayerInstance ?: return
-        postOnPlayer {
-            runCatching {
-                if (!enabled) {
-                    runCatching { equalizer?.enabled = false }
-                    runCatching { equalizer?.release() }
-                    equalizer = null
-                    return@runCatching
-                }
-                val sessionId = player.audioSessionId
-                if (sessionId == C.AUDIO_SESSION_ID_UNSET || sessionId <= 0) return@runCatching
-                if (boundAudioSessionId != sessionId) {
-                    releaseAudioEffects()
-                    boundAudioSessionId = sessionId
-                }
-                val eq = equalizer ?: Equalizer(0, sessionId).also { equalizer = it }
-                val bandCount = eq.numberOfBands.toInt()
-                val range = eq.bandLevelRange
-                val minMb = range.getOrNull(0)?.toInt() ?: -1500
-                val maxMb = range.getOrNull(1)?.toInt() ?: 1500
-                for (band in 0 until bandCount) {
-                    val uiIdx = if (bandCount <= 1) {
-                        0
-                    } else {
-                        ((band.toFloat() / (bandCount - 1)) * (bandsDb.size - 1))
-                            .roundToInt()
-                            .coerceIn(0, bandsDb.lastIndex)
-                    }
-                    val targetMb = (bandsDb[uiIdx] * 100f).roundToInt().coerceIn(minMb, maxMb)
-                    eq.setBandLevel(band.toShort(), targetMb.toShort())
-                }
-                eq.enabled = true
-            }.onFailure { err ->
-                Log.w(TAG, "Equalizer update failed: ${err.message}")
-            }
-        }
-    }
-
     private fun postOnPlayer(block: () -> Unit) {
         if (isServiceDestroyed) return
         val handler = playerHandler ?: return
@@ -474,16 +369,6 @@ class PlaybackService : MediaSessionService() {
                 }
             }
         }
-    }
-
-    private fun releaseAudioEffects() {
-        runCatching { loudnessEnhancer?.enabled = false }
-        runCatching { loudnessEnhancer?.release() }
-        loudnessEnhancer = null
-        runCatching { equalizer?.enabled = false }
-        runCatching { equalizer?.release() }
-        equalizer = null
-        boundAudioSessionId = C.AUDIO_SESSION_ID_UNSET
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
@@ -506,7 +391,6 @@ class PlaybackService : MediaSessionService() {
         playerHandler?.removeCallbacksAndMessages(null)
         playerHandler = null
         exoPlayerInstance = null
-        releaseAudioEffects()
         mediaSession?.run {
             runCatching { player.release() }
             runCatching { release() }

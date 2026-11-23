@@ -168,8 +168,10 @@ async fn main() -> Result<()> {
         }
     });
 
-    let mut smooth_tick = tokio::time::interval(std::time::Duration::from_millis(33));
-    smooth_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut fast_tick = tokio::time::interval(std::time::Duration::from_millis(33));
+    fast_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut calm_tick = tokio::time::interval(std::time::Duration::from_millis(250));
+    calm_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     #[cfg(unix)]
     let (mut sigterm, mut sighup) = (
@@ -190,11 +192,24 @@ async fn main() -> Result<()> {
         #[cfg(not(unix))]
         let term_sig = std::future::pending::<()>();
 
+        let playing = !app.playback.paused
+            && !app.playback.loading_track
+            && app.playback.current_track().is_some();
+        let needs_fast_tick = app.fx.is_running() || (playing && !app.anim_art_frames.is_empty());
+
         tokio::select! {
             _ = term_sig => {
                 app.should_quit = true;
             }
-            _ = smooth_tick.tick(), if !app.playback.paused && !app.playback.loading_track && app.playback.current_track().is_some() => {
+            _ = fast_tick.tick(), if needs_fast_tick => {
+                let playback_dirty = if playing { app.tick_playback() } else { false };
+                if playback_dirty || app.fx.is_running() {
+                    terminal.draw(|f| ui::render(f, &mut app))?;
+                    app.sync_kitty_artwork();
+                    app.export_now_playing();
+                }
+            }
+            _ = calm_tick.tick(), if playing && !needs_fast_tick => {
                 if app.tick_playback() {
                     terminal.draw(|f| ui::render(f, &mut app))?;
                     app.sync_kitty_artwork();

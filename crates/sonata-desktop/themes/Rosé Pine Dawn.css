@@ -1,0 +1,17 @@
+/* Rosé Pine Dawn — github.com/rose-pine/palette */
+:root {
+  color-scheme: light;
+
+  --base: #fffaf3;
+  --text: #464261;
+  --accent: #907aa9;
+  --on-accent: #fffaf3;
+
+  --gutter: #f2e9e1;
+  --popup: #faf4ed;
+  --surface: #f2e9e1;
+  --subtext: #797593;
+  --muted: #9893a5;
+  --danger: #b4637a;
+  --warning: #ea9d34;
+}

@@ -232,7 +232,7 @@ fun NowPlayingOptionsMenu(
                 PopoverActionRow(
                     icon = SonataIcons.GraphicEq,
                     title = "Audio Controls",
-                    subtitle = "Speed, EQ, loudness & silence skip",
+                    subtitle = "Playback speed & silence skip",
                     onClick = {
                         onDismiss()
                         onOpenAudioControls()

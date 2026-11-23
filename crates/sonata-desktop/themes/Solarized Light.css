@@ -1,0 +1,18 @@
+/* Solarized Light — ethanschoonover.com/solarized */
+:root {
+  color-scheme: light;
+
+  --base: #fdf6e3;
+  --text: #073642;
+  --accent: #268bd2;
+  --on-accent: #fdf6e3;
+
+  --popup: #eee8d5;
+  --surface: #eee8d5;
+  --surface-hover: #e3dcc6;
+  --outline: #e3dcc6;
+  --subtext: #586e75;
+  --muted: #657b83;
+  --danger: #dc322f;
+  --warning: #b58900;
+}

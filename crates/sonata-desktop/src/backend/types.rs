@@ -5,15 +5,15 @@
 //! 3. **Handle**: `BackendHandle` sends commands and shuts down synchronously via a bounded `sync_channel` timeout.
 //! 4. **Internal Events**: `InternalEvent` and `ExportFingerprint` carry async task completions and deduplicate now-playing exports.
 
+use super::ytm_extra::{AlbumDetail, MoodCategoryTile, MoodChip, RichSearchResult};
 use sonata_core::auth::{BrowserOption, ExtractedCookies};
 use sonata_core::config::AppConfig;
 use sonata_core::lyrics::{active_line_index, LyricsState};
 use sonata_core::motion::MotionCover;
 use sonata_core::player::RepeatMode;
 use sonata_core::providers::hifi::ResolvedStream;
-use sonata_core::providers::ytmusic::{ArtistPage, HomeShelf, YtAccountProfile};
+use sonata_core::providers::ytmusic::{ArtistPage, HomeCard, HomeShelf, YtAccountProfile};
 use sonata_core::providers::{Playlist, ProviderSource, Track};
-use sonata_core::theme::Theme;
 use sonata_core::updater::UpdateCheckResult;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,10 +23,23 @@ use tokio::sync::{mpsc, watch};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NavTarget {
     Home,
+    Explore,
+    Radio,
+    Library,
+    History,
     Search,
     Queue,
     Playlist(String),
+    Album(String),
     Artist(String),
+    MoodCategory {
+        title: String,
+        browse_id: String,
+        params: String,
+    },
+    ShelfDetail {
+        title: String,
+    },
     Settings,
 }
 
@@ -49,12 +62,33 @@ pub enum BackendCmd {
         editable: bool,
     },
     OpenArtist(String),
+    OpenArtistByName(String),
+    OpenAlbum {
+        album_id: Option<String>,
+        title: String,
+        artist: String,
+        thumbnail_url: Option<String>,
+    },
+    OpenMoodCategory {
+        title: String,
+        browse_id: String,
+        params: String,
+    },
+    OpenShelfDetail(HomeShelf),
+    SelectHomeChip(Option<MoodChip>),
     RefreshActivePlaylist,
     RefreshHome,
+    RefreshExplore,
+    RefreshRadio,
+    RefreshLibrary,
+    RefreshHistory,
     RefreshAccount,
+    StartTrackRadio(Track),
+    StartQuickRadio,
     SignInWithBrowser(String),
     ClearSignInError,
     SignOut,
+    FetchSearchSuggestions(String),
     Search(String),
     PlayTracks {
         tracks: Vec<Track>,
@@ -62,6 +96,15 @@ pub enum BackendCmd {
         shuffle: bool,
     },
     PlayQueueIndex(usize),
+    PlayTrackNext(Track),
+    AddTrackToQueue(Track),
+    RemoveFromQueue(usize),
+    MoveQueueItem {
+        from: usize,
+        to: usize,
+    },
+    ClearQueue,
+    ShuffleQueue,
     TogglePause,
     SetPaused(bool),
     Stop,
@@ -78,11 +121,11 @@ pub enum BackendCmd {
     ToggleHiFi,
     ToggleJioSaavn,
     StepCacheLimit(bool),
-    ToggleTransparentBg,
     ToggleMotionCovers,
     ToggleReduceMotion,
-    StepHyprlandOpacity(bool),
     ToggleLike(Track),
+    DislikeTrack(Track),
+    ToggleSaveAlbum,
     CreateYtmPlaylist(String),
     AddTrackToPlaylist {
         track: Track,
@@ -100,7 +143,6 @@ pub enum BackendCmd {
 #[derive(Debug, Clone)]
 pub struct DesktopSnapshot {
     pub config: AppConfig,
-    pub base_theme: Theme,
     pub active_nav: NavTarget,
     pub status_line: String,
     pub available_browsers: Vec<BrowserOption>,
@@ -110,11 +152,31 @@ pub struct DesktopSnapshot {
     pub signing_in: bool,
     pub sign_in_error: Option<String>,
     pub ytm_playlists: Vec<Playlist>,
+    pub library_albums: Vec<HomeCard>,
+    pub library_artists: Vec<HomeCard>,
+    pub library_extras_loading: bool,
+    pub home_chips: Vec<MoodChip>,
+    pub active_home_chip: Option<MoodChip>,
     pub home_shelves: Vec<HomeShelf>,
     pub home_loading: bool,
     pub home_error: Option<String>,
+    pub explore_shelves: Vec<HomeShelf>,
+    pub mood_tiles: Vec<MoodCategoryTile>,
+    pub explore_loading: bool,
+    pub mood_page_title: String,
+    pub mood_page_shelves: Vec<HomeShelf>,
+    pub mood_page_loading: bool,
+    pub shelf_detail: Option<HomeShelf>,
+    pub radio_shelves: Vec<HomeShelf>,
+    pub radio_loading: bool,
+    pub history_tracks: Vec<Track>,
+    pub history_loading: bool,
+    pub last_played_tracks: Vec<Track>,
+    pub recent_searches: Vec<String>,
+    pub search_suggestions: Vec<String>,
     pub search_query: String,
     pub search_results: Vec<Track>,
+    pub search_rich: RichSearchResult,
     pub search_loading: bool,
     pub playlist_id: Option<String>,
     pub playlist_heading: String,
@@ -123,9 +185,14 @@ pub struct DesktopSnapshot {
     pub playlist_editable: bool,
     pub playlist_tracks: Vec<Track>,
     pub playlist_loading: bool,
+    pub album_detail: Option<AlbumDetail>,
+    pub album_loading: bool,
+    pub album_error: Option<String>,
     pub artist_page: Option<ArtistPage>,
+    pub artist_banner_url: Option<String>,
     pub artist_loading: bool,
     pub artist_error: Option<String>,
+    pub liked_track_ids: std::collections::HashSet<String>,
     pub queue: Vec<Track>,
     pub current_index: Option<usize>,
     pub paused: bool,
@@ -148,6 +215,10 @@ pub struct DesktopSnapshot {
 }
 
 impl DesktopSnapshot {
+    pub fn is_track_liked(&self, track: &Track) -> bool {
+        track.liked || self.liked_track_ids.contains(&track.id)
+    }
+
     pub fn current_track(&self) -> Option<&Track> {
         self.current_index.and_then(|idx| self.queue.get(idx))
     }
@@ -156,33 +227,9 @@ impl DesktopSnapshot {
         self.signed_in_browser.is_some()
     }
 
-    pub fn effective_transparent(&self) -> bool {
-        self.base_theme
-            .transparent_bg
-            .unwrap_or(self.config.transparent_bg)
-    }
-
-    pub fn effective_hyprland_opacity(&self) -> f32 {
-        self.base_theme
-            .hyprland_opacity
-            .unwrap_or(self.config.hyprland_opacity)
-            .clamp(0.50, 1.00)
-    }
-
     pub fn active_lyric_index(&self) -> Option<usize> {
         match &self.lyrics {
             LyricsState::Synced(lines) => active_line_index(lines, self.position_secs),
-            _ => None,
-        }
-    }
-
-    pub fn active_lyric_line(&self) -> Option<&str> {
-        match &self.lyrics {
-            LyricsState::Synced(lines) => self
-                .active_lyric_index()
-                .and_then(|idx| lines.get(idx))
-                .map(|l| l.text.as_str())
-                .filter(|s| !s.is_empty()),
             _ => None,
         }
     }
@@ -199,17 +246,12 @@ impl DesktopSnapshot {
 #[derive(Clone)]
 pub struct BackendHandle {
     pub(super) cmd_tx: mpsc::UnboundedSender<BackendCmd>,
-    pub(super) win_tx: mpsc::UnboundedSender<UiWindowCmd>,
     pub(super) snap_rx: watch::Receiver<Arc<DesktopSnapshot>>,
 }
 
 impl BackendHandle {
     pub fn send(&self, cmd: BackendCmd) {
         let _ = self.cmd_tx.send(cmd);
-    }
-
-    pub fn send_window(&self, cmd: UiWindowCmd) {
-        let _ = self.win_tx.send(cmd);
     }
 
     pub fn snapshot(&self) -> Arc<DesktopSnapshot> {
@@ -247,12 +289,48 @@ pub(super) enum InternalEvent {
     },
     HomeLoaded {
         req_id: u64,
+        chips: Vec<MoodChip>,
+        chip_selected: Option<MoodChip>,
         shelves: Vec<HomeShelf>,
         error: Option<String>,
+    },
+    ExploreLoaded {
+        req_id: u64,
+        shelves: Vec<HomeShelf>,
+        mood_tiles: Vec<MoodCategoryTile>,
+    },
+    MoodCategoryLoaded {
+        req_id: u64,
+        title: String,
+        shelves: Vec<HomeShelf>,
+    },
+    LibraryExtrasLoaded {
+        albums: Vec<HomeCard>,
+        artists: Vec<HomeCard>,
+    },
+    RadioLoaded {
+        req_id: u64,
+        shelves: Vec<HomeShelf>,
+    },
+    HistoryLoaded(Vec<Track>),
+    RadioQueueReady {
+        tracks: Vec<Track>,
+        label: String,
+    },
+    ArtistResolveFallback(String),
+    AlbumDetailLoaded {
+        req_id: u64,
+        album: Option<AlbumDetail>,
+        error: Option<String>,
+    },
+    SearchSuggestionsLoaded {
+        req_id: u64,
+        suggestions: Vec<String>,
     },
     SearchLoaded {
         req_id: u64,
         tracks: Vec<Track>,
+        rich: RichSearchResult,
         error: Option<String>,
     },
     CollectionLoaded {
@@ -269,6 +347,7 @@ pub(super) enum InternalEvent {
     ArtistLoaded {
         req_id: u64,
         artist: Option<ArtistPage>,
+        banner_url: Option<String>,
         error: Option<String>,
     },
     StreamReady {

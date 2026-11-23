@@ -94,10 +94,10 @@ enum class SettingsCategory(
 ) {
     PLAYBACK(
         title = "Playback & Audio",
-        subtitle = "Quality, EQ, crossfade, speed, loudness",
+        subtitle = "Quality, crossfade, speed, skip silence",
         icon = SonataIcons.GraphicEq,
         accent = Color(0xFFE5E5EA),
-        keywords = "playback audio quality lossless high medium low crossfade loudness normalization skip silence speed equalizer eq autoplay",
+        keywords = "playback audio quality lossless high medium low crossfade skip silence speed autoplay",
     ),
     APPEARANCE(
         title = "Appearance & Liquid Glass",
@@ -739,13 +739,6 @@ private fun PlaybackSettingsPage(
                 }
                 SettingsDivider()
                 SettingsToggleRow(
-                    title = "Loudness Normalization",
-                    subtitle = "Balance track volume across releases",
-                    checked = settings.loudnessNormEnabled,
-                    onCheckedChange = { v -> onUpdate { it.copy(loudnessNormEnabled = v) } },
-                )
-                SettingsDivider()
-                SettingsToggleRow(
                     title = "Skip Silence",
                     subtitle = "Trim extended dead air at track edges",
                     checked = settings.skipSilenceEnabled,
@@ -762,57 +755,6 @@ private fun PlaybackSettingsPage(
                         onUpdate { it.copy(playbackSpeed = stepped.coerceIn(0.5f, 2.0f)) }
                     },
                 )
-            }
-        }
-
-        item(key = "pb_eq") {
-            SettingsSection("EQUALIZER") {
-                SettingsToggleRow(
-                    title = "Built-in Equalizer",
-                    subtitle = "Active preset: ${settings.eqPreset}",
-                    checked = settings.eqEnabled,
-                    onCheckedChange = { v -> onUpdate { it.copy(eqEnabled = v) } },
-                )
-                if (settings.eqEnabled) {
-                    SettingsDivider()
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(
-                            text = "Preset",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = LocalLunariaColors.current.onSurfaceSecondary,
-                        )
-                        val rows = EqPresets.chunked(3)
-                        rows.forEach { rowPresets ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                rowPresets.forEach { preset ->
-                                    val tokens = LocalLunariaColors.current
-                                    val selected = settings.eqPreset.equals(preset, ignoreCase = true)
-                                    Box(
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .clip(RoundedCornerShape(12.dp))
-                                            .background(if (selected) tokens.petalLavender else tokens.onSurfacePrimary.copy(alpha = 0.08f))
-                                            .clickable { onUpdate { it.copy(eqPreset = preset) } }
-                                            .padding(vertical = 8.dp),
-                                        contentAlignment = Alignment.Center,
-                                    ) {
-                                        Text(
-                                            text = preset,
-                                            style = MaterialTheme.typography.labelSmall.copy(
-                                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                            ),
-                                            color = if (selected) Color.White else tokens.onSurfacePrimary,
-                                            maxLines = 1,
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
             }
         }
     }

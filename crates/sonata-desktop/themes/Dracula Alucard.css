@@ -1,0 +1,15 @@
+/* Dracula Alucard — spec.draculatheme.com */
+:root {
+  color-scheme: light;
+
+  --base: #fffbeb;
+  --text: #1f1f1f;
+  --accent: #644ac9;
+  --on-accent: #fffbeb;
+
+  --surface: #cfcfde;
+  --outline: #cfcfde;
+  --muted: #6c664b;
+  --danger: #cb3a2a;
+  --warning: #846e15;
+}

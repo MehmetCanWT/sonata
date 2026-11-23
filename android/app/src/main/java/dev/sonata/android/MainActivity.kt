@@ -715,22 +715,8 @@ private fun SonataAppContent(
     if (showAudioControls) {
         AudioControlsSheet(
             speed = settings.playbackSpeed,
-            eqEnabled = settings.eqEnabled,
-            eqPreset = settings.eqPreset,
-            eqBandsDb = settings.eqBandsDb,
-            loudnessNorm = settings.loudnessNormEnabled,
             skipSilence = settings.skipSilenceEnabled,
             onSpeedChange = { speed -> vm.updateSettings { it.copy(playbackSpeed = speed) } },
-            onEqToggle = { enabled -> vm.updateSettings { it.copy(eqEnabled = enabled) } },
-            onEqPreset = { preset, bands -> vm.updateSettings { it.copy(eqPreset = preset, eqBandsDb = bands) } },
-            onEqBandChange = { index, gainDb ->
-                vm.updateSettings { current ->
-                    val updated = current.eqBandsDb.toMutableList()
-                    if (index in updated.indices) updated[index] = gainDb
-                    current.copy(eqPreset = "Custom", eqBandsDb = updated)
-                }
-            },
-            onLoudnessToggle = { enabled -> vm.updateSettings { it.copy(loudnessNormEnabled = enabled) } },
             onSkipSilenceToggle = { enabled -> vm.updateSettings { it.copy(skipSilenceEnabled = enabled) } },
             onDismiss = { showAudioControls = false },
         )

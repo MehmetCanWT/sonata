@@ -31,6 +31,7 @@ pub struct UiRects {
     pub tracks_rows: Rect,
     pub sidebar_inner: Rect,
     pub album_art_box: Rect,
+    pub lyrics_box: Rect,
     pub main_area: Rect,
     pub left_col_area: Rect,
     pub split_left_x: u16,

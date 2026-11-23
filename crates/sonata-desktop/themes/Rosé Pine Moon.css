@@ -1,0 +1,17 @@
+/* Rosé Pine Moon — github.com/rose-pine/palette */
+:root {
+  color-scheme: dark;
+
+  --base: #2a273f;
+  --text: #e0def4;
+  --accent: #c4a7e7;
+  --on-accent: #232136;
+
+  --gutter: #232136;
+  --popup: #393552;
+  --surface: #393552;
+  --subtext: #908caa;
+  --muted: #6e6a86;
+  --danger: #eb6f92;
+  --warning: #f6c177;
+}

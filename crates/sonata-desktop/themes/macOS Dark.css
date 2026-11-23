@@ -1,0 +1,20 @@
+/* macOS Dark — System dark charcoal palette */
+:root {
+  color-scheme: dark;
+
+  --base: #1e1e1e;
+  --text: #f5f5f7;
+  --accent: #0a84ff;
+  --on-accent: #ffffff;
+
+  --gutter: #141414;
+  --popup: #282828;
+  --surface: #3a3a3c;
+  --surface-hover: #444446;
+  --surface-active: #545456;
+  --outline: #3d3d3f;
+  --subtext: #aeaeb2;
+  --muted: #8e8e93;
+  --danger: #ff453a;
+  --warning: #ff9f0a;
+}

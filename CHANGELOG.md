@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-11-23
+
+### Added
+
+- **Floating Glass Desktop Redesign (`sonata-desktop`)**: Rebuilt the desktop shell with `gpui-kit` components, compositor blur (`WindowBackgroundAppearance::Blurred`), frameless client chrome (`--decorated` / `--scheme`), 29 live-reloading CSS themes with WCAG contrast lifting and GTK/Qt palette sync, procedural gradient covers for Moods & Genres, and a live Sonata-only CPU & RAM (RSS) usage readout in Settings.
+- **`tachyonfx` Terminal Animations (`sonata-tui`)**: Added region-scoped shader-like transitions (`Startup`, `TrackList`, `LyricsLine`, `PlayerBar`, `Modal`) powered by `tachyonfx` with automatic idle frame gating so CPU usage drops to zero when animations settle.
+- **Multi-Distro Linux Release Packaging**: Extended `.github/workflows/release.yml`, `PKGBUILD`, `PKGBUILD.desktop`, and `flake.nix` to ship native `.deb` (Debian/Ubuntu), `.rpm` (Fedora/openSUSE), `.tar.gz` + AUR `PKGBUILD`s (Arch), NixOS Flake, and AppImage + `.zsync` bundles.
+- **Direct GitHub Releases Update Actions**: Wired update buttons in Desktop and TUI Settings to open the GitHub Releases page directly.
+
+### Changed
+
+- **Full-Sentence Glowing Synced Lyrics (`sonata-desktop`, `sonata-tui`)**: Replaced word-by-word underlining with full-sentence lighting; on Desktop, active lines bloom smoothly over `320 ms` in pure white with left/right lead & counter-voice alignment and harmonious overlapping `(...)` background vocal highlights.
+- **Isolated Album-Art Fullscreen (`sonata-desktop`)**: Hid the underlying app shell when Fullscreen Now Playing is open to prevent bleed-through and background clicks, and derived an opaque album-art color theme and accent from the active cover.
+- **Single-Track YouTube Music History Reporting (`sonata-core`, `sonata-tui`, `sonata-desktop`, `sonata-android`)**: Removed `playlistId` / `list=` parameters from YouTube Music `report_playback` telemetry so only individual played songs are reported to listening history.
+- **Bit-Transparent Android Playback (`android`)**: Removed the built-in 5-band Equalizer and LoudnessEnhancer DSP effects and their UI controls from Android to match the unfiltered audio path on Desktop and TUI.
+
+### Performance
+
+- **Major Desktop & TUI RAM/CPU Reduction (`sonata-core`, `sonata-desktop`, `sonata-tui`)**: Reclaimed evicted GPUI GPU atlas textures via `cx.drop_image(...)`, capped motion covers to `360x360 @ 15 fps` (lazy-loaded only while Fullscreen is open), lowered playback tick frequency from `60 Hz` to `4 Hz` (`250 ms`), reduced SQLite `mmap_size` to `8 MiB`, and split TUI ticks into `33 ms` active animation vs `250 ms` calm playback (dropping Desktop RSS from `~854 MiB` to `~325–356 MiB` and settled CPU to `0.00%`).
+
+### Fixed
+
+- **Desktop Image Flickering, HD Artist Banners & Hover Corners (`sonata-desktop`, `sonata-core`)**: Fixed `MediaCache` LRU thrashing with `32 MiB` budget, `256px` square covers, hit-first lookups (zero `stat()` syscalls on hits), negative caching, coalesced `16 ms` redraws, rounded hover scrims, uniform square sizing on mixed shelves (`Listen again`), and preserved `1600x900` HD artist banners with self-healing disk cache upgrade.
+- **Artist, Album & Playlist Navigation & Visual Polish (`sonata-desktop`)**: Fixed album track parsing so play counts (`"802M plays"`) are never treated as artist names, resolved primary artists directly to the Artist page instead of falling back to Search, added true per-pixel bottom alpha fades for artist banners and `header_wash` blurs, added song thumbnails and persistent liked-track heart indicators on Artist Top Songs, fixed `[E]` explicit badge and Like/Dislike alignment in the player bar, added Shuffle/Repeat active indicator dots, and centered the search suggestions dropdown directly beneath the search bar.
+
 ## [1.0.4] - 2026-11-23
 
 ### Added

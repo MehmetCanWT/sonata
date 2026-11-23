@@ -1,0 +1,20 @@
+/* Everforest Light — github.com/sainnhe/everforest */
+:root {
+  color-scheme: light;
+
+  --base: #fdf6e3;
+  --text: #5c6a72;
+  --accent: #7c8e01;
+  --on-accent: #fdf6e3;
+
+  --gutter: #efebd4;
+  --popup: #efebd4;
+  --surface: #f4f0d9;
+  --surface-hover: #efebd4;
+  --surface-active: #e6e2cc;
+  --outline: #e6e2cc;
+  --subtext: #829181;
+  --muted: #939f91;
+  --danger: #f85552;
+  --warning: #dfa000;
+}

@@ -830,19 +830,17 @@ impl SonataAndroidEngine {
         Ok(())
     }
 
-    /// Reports playback and watchtime telemetry for `video_id` (with optional `playlist_id`)
-    /// so YouTube Music updates Listening History (`FEmusic_history`) and yearly Replay stats.
+    /// Reports single-track playback and watchtime telemetry for `video_id`
+    /// so YouTube Music updates Listening History (`FEmusic_history`) without attaching playlist IDs.
     pub fn report_playback(
         &self,
         video_id: String,
-        playlist_id: Option<String>,
+        _playlist_id: Option<String>,
         duration_secs: Option<u64>,
     ) -> Result<(), SonataAndroidError> {
         let ytm = self.current_ytm();
-        self.rt.block_on(async move {
-            ytm.report_playback(&video_id, playlist_id.as_deref(), duration_secs)
-                .await
-        })?;
+        self.rt
+            .block_on(async move { ytm.report_playback(&video_id, None, duration_secs).await })?;
         Ok(())
     }
 
