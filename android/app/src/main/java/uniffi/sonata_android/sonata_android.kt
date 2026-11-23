@@ -1189,7 +1189,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_is_signed_in() != 32775.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_report_playback() != 31540.toShort()) {
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_report_playback() != 26339.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_resolve_album_browse_id() != 14269.toShort()) {
@@ -1729,8 +1729,8 @@ public interface SonataAndroidEngineInterface {
     fun `isSignedIn`(): kotlin.Boolean
     
     /**
-     * Reports playback and watchtime telemetry for `video_id` (with optional `playlist_id`)
-     * so YouTube Music updates Listening History (`FEmusic_history`) and yearly Replay stats.
+     * Reports single-track playback and watchtime telemetry for `video_id`
+     * so YouTube Music updates Listening History (`FEmusic_history`) without attaching playlist IDs.
      */
     fun `reportPlayback`(`videoId`: kotlin.String, `playlistId`: kotlin.String?, `durationSecs`: kotlin.ULong?)
     
@@ -2171,8 +2171,8 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
 
     
     /**
-     * Reports playback and watchtime telemetry for `video_id` (with optional `playlist_id`)
-     * so YouTube Music updates Listening History (`FEmusic_history`) and yearly Replay stats.
+     * Reports single-track playback and watchtime telemetry for `video_id`
+     * so YouTube Music updates Listening History (`FEmusic_history`) without attaching playlist IDs.
      */
     @Throws(SonataAndroidException::class)override fun `reportPlayback`(`videoId`: kotlin.String, `playlistId`: kotlin.String?, `durationSecs`: kotlin.ULong?)
         = 

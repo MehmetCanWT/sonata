@@ -835,9 +835,10 @@ impl SonataAndroidEngine {
     pub fn report_playback(
         &self,
         video_id: String,
-        _playlist_id: Option<String>,
+        playlist_id: Option<String>,
         duration_secs: Option<u64>,
     ) -> Result<(), SonataAndroidError> {
+        let _ = playlist_id;
         let ytm = self.current_ytm();
         self.rt
             .block_on(async move { ytm.report_playback(&video_id, None, duration_secs).await })?;
