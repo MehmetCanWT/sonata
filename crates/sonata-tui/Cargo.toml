@@ -3,6 +3,7 @@ name = "sonata-tui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Fast, modular terminal music player for YouTube Music and Spotify with HD album art, synced lyrics, Bit-Perfect playback, and color-only themes"
 
 [[bin]]

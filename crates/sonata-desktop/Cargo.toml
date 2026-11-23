@@ -3,6 +3,7 @@ name = "sonata-desktop"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+repository.workspace = true
 description = "Native Wayland/Hyprland GPUI music player for Sonata with compositor blur, CSS themes, MPRIS2, and system tray"
 
 [[bin]]

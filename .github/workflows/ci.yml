@@ -30,6 +30,11 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Tests
         run: cargo test --workspace --all-targets --locked
+      - name: Verify UniFFI Kotlin bindings
+        run: |
+          cargo build --locked -p sonata-android --lib
+          cargo run --locked -p sonata-android --bin uniffi-bindgen -- generate --no-format --library target/debug/libsonata_android.so --language kotlin --out-dir /tmp/uniffi-check
+          diff -u android/app/src/main/java/uniffi/sonata_android/sonata_android.kt /tmp/uniffi-check/uniffi/sonata_android/sonata_android.kt
       - name: Install cargo-audit
         uses: taiki-e/install-action@cargo-audit
       - name: Dependency audit
