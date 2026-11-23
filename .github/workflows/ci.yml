@@ -41,7 +41,9 @@ jobs:
           cargo run --locked -p sonata-android --bin uniffi-bindgen -- generate --no-format --library target/debug/libsonata_android.so --language kotlin --out-dir /tmp/uniffi-check
           diff -u android/app/src/main/java/uniffi/sonata_android/sonata_android.kt /tmp/uniffi-check/uniffi/sonata_android/sonata_android.kt
       - name: Install cargo-audit
-        uses: taiki-e/install-action@cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
       - name: Dependency audit
         run: cargo audit
       - name: Build TUI
@@ -53,11 +55,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "21"
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - name: Run Android JVM unit tests
         working-directory: android
         run: ./gradlew testDebugUnitTest --console=plain
@@ -73,7 +75,9 @@ jobs:
         with:
           key: android-arm64
       - name: Install cargo-ndk
-        uses: taiki-e/install-action@cargo-ndk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
       - name: Install Android NDK 27.2.12479018
         run: |
           yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018" >/dev/null
@@ -95,13 +99,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: android-arm64-inst
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "21"
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - name: Install cargo-ndk
-        uses: taiki-e/install-action@cargo-ndk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
       - name: Build arm64-v8a native library
         run: |
           yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018" >/dev/null
