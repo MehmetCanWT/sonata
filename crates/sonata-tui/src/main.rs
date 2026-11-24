@@ -157,6 +157,10 @@ async fn main() -> Result<()> {
     }
 
     app.start_background_init();
+    app.flush_session_commands().await;
+    if app.connect_sync_needed {
+        app.sync_connect_server().await;
+    }
 
     let (term_tx, mut term_rx) = mpsc::unbounded_channel::<Event>();
     std::thread::spawn(move || {
@@ -226,6 +230,14 @@ async fn main() -> Result<()> {
                     app.export_now_playing();
                 }
             }
+            Some(ccmd) = app::recv_connect_cmd(&mut app.connect_cmd_rx) => {
+                app.handle_connect_command(ccmd);
+                app.flush_session_commands().await;
+                app.publish_connect_snapshot();
+                terminal.draw(|f| ui::render(f, &mut app))?;
+                app.sync_kitty_artwork();
+                app.export_now_playing();
+            }
             Some(ev) = term_rx.recv() => {
                 match ev {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
@@ -242,6 +254,10 @@ async fn main() -> Result<()> {
                     _ => continue,
                 }
                 app.flush_session_commands().await;
+                if app.connect_sync_needed {
+                    app.sync_connect_server().await;
+                }
+                app.publish_connect_snapshot();
                 terminal.draw(|f| ui::render(f, &mut app))?;
                 app.sync_kitty_artwork();
                 app.export_now_playing();
@@ -252,6 +268,7 @@ async fn main() -> Result<()> {
                     app.handle_session_event(more);
                 }
                 app.flush_session_commands().await;
+                app.publish_connect_snapshot();
                 terminal.draw(|f| ui::render(f, &mut app))?;
                 app.sync_kitty_artwork();
                 app.export_now_playing();
@@ -263,6 +280,10 @@ async fn main() -> Result<()> {
                     app.handle_app_event(more);
                 }
                 app.flush_session_commands().await;
+                if app.connect_sync_needed {
+                    app.sync_connect_server().await;
+                }
+                app.publish_connect_snapshot();
                 terminal.draw(|f| ui::render(f, &mut app))?;
                 app.sync_kitty_artwork();
                 app.export_now_playing();

@@ -503,12 +503,76 @@ impl SonataDesktopView {
         } else {
             s.skip_silence_desc.to_string()
         };
+        let xfade_secs = cfg
+            .crossfade_secs
+            .min(sonata_runtime::config::MAX_CROSSFADE_SECS);
+        let xfade_label = if xfade_secs == 0 {
+            s.off.to_string()
+        } else {
+            format!("{xfade_secs}s")
+        };
+        let xfade_desc = if self.snapshot.video_mode {
+            format!("{} ({})", s.crossfade_desc, s.video)
+        } else {
+            s.crossfade_desc.to_string()
+        };
+        let xfade_ctrl = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .child(
+                Button::new("set-xfade-dec")
+                    .secondary()
+                    .small()
+                    .icon(IconName::Minus)
+                    .on_click(cx.listener(move |this, _, _, _| {
+                        this.backend
+                            .send(BackendCmd::SetCrossfade(xfade_secs.saturating_sub(1)));
+                    })),
+            )
+            .child(
+                div()
+                    .min_w(px(56.0))
+                    .flex()
+                    .justify_center()
+                    .text_size(px(13.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(xfade_label),
+            )
+            .child(
+                Button::new("set-xfade-inc")
+                    .secondary()
+                    .small()
+                    .icon(IconName::Plus)
+                    .on_click(cx.listener(move |this, _, _, _| {
+                        this.backend.send(BackendCmd::SetCrossfade(
+                            xfade_secs
+                                .saturating_add(1)
+                                .min(sonata_runtime::config::MAX_CROSSFADE_SECS),
+                        ));
+                    })),
+            )
+            .into_any_element();
 
         div()
             .flex()
             .flex_col()
             .gap(px(10.0))
             .child(self.settings_row(s.playback_speed, s.playback_speed_desc, speed_control))
+            .child(
+                self.settings_row(
+                    s.gapless_playback,
+                    s.gapless_playback_desc,
+                    Switch::new("sw-gapless")
+                        .checked(cfg.gapless_enabled)
+                        .on_change(cx.listener(|this, _, _, _| {
+                            this.backend.send(BackendCmd::ToggleGapless);
+                        }))
+                        .into_any_element(),
+                ),
+            )
+            .child(self.settings_row(s.crossfade, xfade_desc, xfade_ctrl))
             .child(
                 self.settings_row(
                     s.skip_silence,
@@ -1375,12 +1439,160 @@ impl SonataDesktopView {
             )
             .into_any_element();
 
-        div()
+        let connect_status_text = if !self.snapshot.config.connect_enabled {
+            s.disabled.to_string()
+        } else if let Some(ref err) = self.snapshot.connect_error {
+            format!("Error: {err}")
+        } else if let Some(port) = self.snapshot.connect_http_port {
+            format!("{} (:{port})", s.enabled)
+        } else {
+            s.enabled.to_string()
+        };
+        let connect_ctrl = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(if self.snapshot.connect_running {
+                        self.palette.accent
+                    } else {
+                        self.palette.secondary
+                    })
+                    .child(connect_status_text),
+            )
+            .child(
+                Switch::new("sw-sonata-connect")
+                    .checked(self.snapshot.config.connect_enabled)
+                    .on_change(cx.listener(|this, _, _, _| {
+                        this.backend.send(BackendCmd::ToggleConnect);
+                    })),
+            )
+            .into_any_element();
+
+        let connect_name_ctrl = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .child(
+                div()
+                    .w(px(190.0))
+                    .h(px(30.0))
+                    .px(px(8.0))
+                    .rounded(px(self.palette.radii.small))
+                    .bg(self.palette.surface)
+                    .border_1()
+                    .border_color(self.palette.outline)
+                    .flex()
+                    .items_center()
+                    .child(Input::new(&self.connect_name_input).appearance(false)),
+            )
+            .child(
+                Button::new("set-connect-name-save")
+                    .secondary()
+                    .small()
+                    .label(s.save)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let name = this.connect_name_input.read(cx).value().trim().to_string();
+                        this.backend.send(BackendCmd::SetConnectDeviceName(name));
+                    })),
+            )
+            .into_any_element();
+
+        let mut system_col = div()
             .flex()
             .flex_col()
             .gap(px(10.0))
             .child(self.settings_row(s.discord_rpc, s.discord_rpc_desc, discord_ctrl))
             .child(self.settings_row(s.discord_app_id, s.discord_app_id_desc, discord_app_ctrl))
+            .child(self.settings_row(s.sonata_connect, s.sonata_connect_desc, connect_ctrl))
+            .child(
+                self.settings_row(
+                    s.connect_device_name,
+                    self.snapshot
+                        .config
+                        .effective_connect_device_name()
+                        .to_string(),
+                    connect_name_ctrl,
+                ),
+            );
+
+        if self.snapshot.config.connect_enabled {
+            let pin_text = self
+                .snapshot
+                .connect_pin
+                .clone()
+                .unwrap_or_else(|| "------".to_string());
+            let pin_ctrl = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .child(
+                    div()
+                        .px(px(10.0))
+                        .py(px(4.0))
+                        .rounded(px(self.palette.radii.small))
+                        .bg(self.palette.accent.opacity(0.16))
+                        .text_size(px(14.0))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(self.palette.accent)
+                        .child(pin_text),
+                )
+                .child(
+                    Button::new("set-connect-pin-regen")
+                        .secondary()
+                        .small()
+                        .icon(IconName::RefreshCw)
+                        .label(s.regenerate_pin)
+                        .on_click(cx.listener(|this, _, _, _| {
+                            this.backend.send(BackendCmd::RegenerateConnectPin);
+                        })),
+                )
+                .into_any_element();
+            system_col =
+                system_col.child(self.settings_row(s.pairing_pin, s.sonata_connect_desc, pin_ctrl));
+
+            let paired = self.snapshot.connect_paired_devices.clone();
+            if paired.is_empty() {
+                system_col = system_col.child(
+                    self.settings_row(
+                        s.paired_devices,
+                        s.no_paired_devices,
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(self.palette.dim)
+                            .child("0")
+                            .into_any_element(),
+                    ),
+                );
+            } else {
+                for (idx, dev) in paired.into_iter().enumerate() {
+                    let dev_id = dev.device_id.clone();
+                    system_col = system_col.child(
+                        self.settings_row(
+                            format!("{} • {}", s.paired_devices, dev.device_name),
+                            dev.device_id,
+                            Button::new(("set-connect-unpair", idx))
+                                .secondary()
+                                .small()
+                                .icon(IconName::Trash)
+                                .label(s.unpair)
+                                .on_click(cx.listener(move |this, _, _, _| {
+                                    this.backend
+                                        .send(BackendCmd::UnpairConnectDevice(dev_id.clone()));
+                                }))
+                                .into_any_element(),
+                        ),
+                    );
+                }
+            }
+        }
+
+        system_col
             .child(self.settings_row(
                 "Sonata Resource Usage",
                 "Live CPU & resident memory (RSS) used exclusively by this Sonata Desktop process",
@@ -1443,8 +1655,117 @@ impl SonataDesktopView {
             .into_any_element()
     }
 
+    fn send_save_scrobble_config(
+        &self,
+        lastfm_enabled: bool,
+        listenbrainz_enabled: bool,
+        cx: &Context<Self>,
+    ) {
+        let st = &self.snapshot.scrobble_status;
+        let lastfm_username = self.lastfm_user_input.read(cx).value().trim().to_string();
+        let lastfm_api_key = self.lastfm_key_input.read(cx).value().trim().to_string();
+        let secret_raw = self.lastfm_secret_input.read(cx).value().trim().to_string();
+        let session_raw = self
+            .lastfm_session_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        let listenbrainz_username = self
+            .listenbrainz_user_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        let lb_token_raw = self
+            .listenbrainz_token_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+
+        let lastfm_api_secret = if secret_raw.is_empty() && st.lastfm_configured {
+            None
+        } else {
+            Some(secret_raw)
+        };
+        let lastfm_session_key = if session_raw.is_empty() && st.lastfm_configured {
+            None
+        } else {
+            Some(session_raw)
+        };
+        let listenbrainz_token = if lb_token_raw.is_empty() && st.listenbrainz_configured {
+            None
+        } else {
+            Some(lb_token_raw)
+        };
+
+        self.backend.send(BackendCmd::SaveScrobbleConfig {
+            lastfm_enabled,
+            lastfm_api_key,
+            lastfm_api_secret,
+            lastfm_session_key,
+            lastfm_username,
+            listenbrainz_enabled,
+            listenbrainz_token,
+            listenbrainz_username,
+        });
+    }
+
+    fn scrobble_field_box(
+        &self,
+        label: &'static str,
+        input: &gpui_kit::Entity<gpui_kit::component::input::InputState>,
+    ) -> AnyElement {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap(px(12.0))
+            .child(
+                div()
+                    .w(px(150.0))
+                    .text_size(px(12.0))
+                    .text_color(self.palette.secondary)
+                    .child(label),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .h(px(30.0))
+                    .px(px(8.0))
+                    .rounded(px(self.palette.radii.small))
+                    .bg(self.palette.surface)
+                    .border_1()
+                    .border_color(self.palette.outline)
+                    .flex()
+                    .items_center()
+                    .child(Input::new(input).appearance(false)),
+            )
+            .into_any_element()
+    }
+
     fn render_settings_account(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let s = strings(self.settings.language);
         let signed_in = self.snapshot.is_signed_in();
+        let scrobble = self.snapshot.scrobble_status.clone();
+        let lfm_enabled = scrobble.lastfm_enabled;
+        let lb_enabled = scrobble.listenbrainz_enabled;
+        let lfm_badge = if !lfm_enabled {
+            s.disabled
+        } else if scrobble.lastfm_configured {
+            s.enabled
+        } else {
+            "Incomplete"
+        };
+        let lb_badge = if !lb_enabled {
+            s.disabled
+        } else if scrobble.listenbrainz_configured {
+            s.enabled
+        } else {
+            "Incomplete"
+        };
         let account_label = self
             .snapshot
             .user_profile
@@ -1460,7 +1781,209 @@ impl SonataDesktopView {
             .and_then(|p| p.handle.clone())
             .unwrap_or_else(|| "Extract browser session cookies".to_string());
 
-        div()
+        let lfm_card = div()
+            .w_full()
+            .p(px(14.0))
+            .rounded(px(self.palette.radii.control))
+            .bg(self.palette.surface.opacity(0.45))
+            .border_1()
+            .border_color(self.palette.outline)
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(12.0))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.0))
+                            .child(
+                                div()
+                                    .text_size(px(14.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(self.palette.text)
+                                    .child(s.lastfm_scrobbling),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(self.palette.secondary)
+                                    .child(s.lastfm_scrobbling_desc),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(if scrobble.lastfm_configured {
+                                        self.palette.accent
+                                    } else {
+                                        self.palette.secondary
+                                    })
+                                    .child(lfm_badge),
+                            )
+                            .child(Switch::new("sw-lastfm").checked(lfm_enabled).on_change(
+                                cx.listener(move |this, _, _, cx| {
+                                    this.send_save_scrobble_config(!lfm_enabled, lb_enabled, cx);
+                                }),
+                            )),
+                    ),
+            )
+            .child(self.scrobble_field_box("Username", &self.lastfm_user_input))
+            .child(self.scrobble_field_box("API Key", &self.lastfm_key_input))
+            .child(self.scrobble_field_box("API Secret", &self.lastfm_secret_input))
+            .child(self.scrobble_field_box("Session Key", &self.lastfm_session_input))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .child(
+                        Button::new("set-lfm-clear")
+                            .ghost()
+                            .small()
+                            .label(s.delete)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                for inp in [
+                                    &this.lastfm_user_input,
+                                    &this.lastfm_key_input,
+                                    &this.lastfm_secret_input,
+                                    &this.lastfm_session_input,
+                                ] {
+                                    inp.update(cx, |st, cx| st.set_value("", window, cx));
+                                }
+                                this.backend.send(BackendCmd::ClearScrobbleBackend {
+                                    lastfm: true,
+                                    listenbrainz: false,
+                                });
+                            })),
+                    )
+                    .child(
+                        Button::new("set-lfm-save")
+                            .primary()
+                            .small()
+                            .label(s.save)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.send_save_scrobble_config(lfm_enabled, lb_enabled, cx);
+                            })),
+                    ),
+            );
+
+        let lb_card = div()
+            .w_full()
+            .p(px(14.0))
+            .rounded(px(self.palette.radii.control))
+            .bg(self.palette.surface.opacity(0.45))
+            .border_1()
+            .border_color(self.palette.outline)
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(12.0))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.0))
+                            .child(
+                                div()
+                                    .text_size(px(14.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(self.palette.text)
+                                    .child(s.listenbrainz_scrobbling),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(self.palette.secondary)
+                                    .child(s.listenbrainz_scrobbling_desc),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(if scrobble.listenbrainz_configured {
+                                        self.palette.accent
+                                    } else {
+                                        self.palette.secondary
+                                    })
+                                    .child(lb_badge),
+                            )
+                            .child(
+                                Switch::new("sw-listenbrainz")
+                                    .checked(lb_enabled)
+                                    .on_change(cx.listener(move |this, _, _, cx| {
+                                        this.send_save_scrobble_config(
+                                            lfm_enabled,
+                                            !lb_enabled,
+                                            cx,
+                                        );
+                                    })),
+                            ),
+                    ),
+            )
+            .child(self.scrobble_field_box("Username", &self.listenbrainz_user_input))
+            .child(self.scrobble_field_box("User Token", &self.listenbrainz_token_input))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .child(
+                        Button::new("set-lb-clear")
+                            .ghost()
+                            .small()
+                            .label(s.delete)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                for inp in [
+                                    &this.listenbrainz_user_input,
+                                    &this.listenbrainz_token_input,
+                                ] {
+                                    inp.update(cx, |st, cx| st.set_value("", window, cx));
+                                }
+                                this.backend.send(BackendCmd::ClearScrobbleBackend {
+                                    lastfm: false,
+                                    listenbrainz: true,
+                                });
+                            })),
+                    )
+                    .child(
+                        Button::new("set-lb-save")
+                            .primary()
+                            .small()
+                            .label(s.save)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.send_save_scrobble_config(lfm_enabled, lb_enabled, cx);
+                            })),
+                    ),
+            );
+
+        let mut col = div()
             .flex()
             .flex_col()
             .gap(px(10.0))
@@ -1542,7 +2065,24 @@ impl SonataDesktopView {
                         .into_any_element(),
                 ),
             )
-            .into_any_element()
+            .child(lfm_card)
+            .child(lb_card);
+
+        if let Some(ref err) = scrobble.last_error {
+            col = col.child(
+                div()
+                    .p(px(10.0))
+                    .rounded(px(self.palette.radii.control))
+                    .bg(self.palette.danger.opacity(0.14))
+                    .border_1()
+                    .border_color(self.palette.danger.opacity(0.4))
+                    .text_size(px(12.0))
+                    .text_color(self.palette.danger)
+                    .child(err.clone()),
+            );
+        }
+
+        col.into_any_element()
     }
 
     fn render_settings_about(&mut self, cx: &mut Context<Self>) -> AnyElement {

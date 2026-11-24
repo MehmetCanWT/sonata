@@ -489,6 +489,12 @@ impl SonataDesktopView {
         let view_q = cx.entity().downgrade();
         let view_l = cx.entity().downgrade();
         let view_fs = cx.entity().downgrade();
+        let view_conn = cx.entity().downgrade();
+        let connect_enabled = self.snapshot.config.connect_enabled;
+        let connect_running = self.snapshot.connect_running;
+        let connect_port = self.snapshot.connect_http_port;
+        let connect_pin = self.snapshot.connect_pin.clone();
+        let connect_paired_len = self.snapshot.connect_paired_devices.len();
 
         let right_controls = div()
             .h(px(32.0))
@@ -543,6 +549,62 @@ impl SonataDesktopView {
                             b.send(BackendCmd::SetVideoMode(!video_active));
                         })
                         .child(label),
+                )
+            })
+            .when(!compact && connect_enabled, |r| {
+                let conn_lbl = if connect_paired_len > 0 {
+                    format!("Connect · {connect_paired_len}")
+                } else if let Some(port) = connect_port {
+                    format!("Connect :{port}")
+                } else {
+                    "Connect".to_string()
+                };
+                let conn_tip = match (&connect_pin, connect_port) {
+                    (Some(pin), Some(port)) => {
+                        format!("{} (:{port}) • {}: {pin}", s.sonata_connect, s.pairing_pin)
+                    }
+                    _ => s.sonata_connect.to_string(),
+                };
+                r.child(
+                    div()
+                        .id("pb-connect-pill")
+                        .flex_shrink_0()
+                        .h(px(24.0))
+                        .px(px(8.0))
+                        .rounded(px(self.palette.radii.control))
+                        .bg(if connect_running {
+                            self.palette.accent.opacity(0.18)
+                        } else {
+                            self.palette.surface
+                        })
+                        .border_1()
+                        .border_color(if connect_running {
+                            self.palette.accent
+                        } else {
+                            self.palette.outline
+                        })
+                        .cursor_pointer()
+                        .hover(|st| st.bg(self.palette.surface_hover))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(4.0))
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(if connect_running {
+                            self.palette.accent
+                        } else {
+                            self.palette.secondary
+                        })
+                        .tooltip(move |w, cx| Tooltip::new(conn_tip.clone()).build(w, cx))
+                        .on_click(move |_, _, cx| {
+                            let _ = view_conn.update(cx, |this, cx| {
+                                this.settings_tab = super::SettingsTab::System;
+                                this.navigate_to(crate::backend::NavTarget::Settings, cx);
+                            });
+                        })
+                        .child(Icon::new(IconName::Radio).size(px(12.0)))
+                        .child(conn_lbl),
                 )
             })
             .when(!compact && show_badge, |r| {

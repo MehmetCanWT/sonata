@@ -63,6 +63,11 @@ impl SonataDesktopView {
             icon: IconName::Clock,
         });
         nav_items.push(NavEntry {
+            target: NavTarget::Stats,
+            label: s.listening_stats,
+            icon: IconName::ChartPie,
+        });
+        nav_items.push(NavEntry {
             target: NavTarget::Settings,
             label: s.settings,
             icon: IconName::Settings,

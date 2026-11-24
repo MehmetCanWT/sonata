@@ -24,6 +24,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                 SidebarEntry::Search => (" / ", app.theme.accent),
                 SidebarEntry::Queue => (" ≡ ", app.theme.fg),
                 SidebarEntry::Downloads => (" ↓ ", app.theme.accent),
+                SidebarEntry::ListeningStats => (" ◔ ", app.theme.accent),
                 SidebarEntry::LocalSongs => (" ♪ ", app.theme.success),
                 SidebarEntry::LocalAlbum(_) => (" ◉ ", app.theme.accent),
                 SidebarEntry::LocalFolder(_) => (" ▤ ", app.theme.muted),
@@ -42,6 +43,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                 SidebarEntry::Downloads => {
                     Cow::Owned(format!("{} ({})", s.downloads, app.downloaded_tracks.len()))
                 }
+                SidebarEntry::ListeningStats => Cow::Borrowed(s.listening_stats),
                 SidebarEntry::LocalSongs => {
                     Cow::Owned(format!("Songs ({})", app.local_scan.tracks.len()))
                 }

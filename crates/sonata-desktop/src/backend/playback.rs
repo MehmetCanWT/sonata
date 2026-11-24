@@ -6,7 +6,7 @@
 //!    covers under a per-generation `PlaybackTaskSet`.
 //! 3. **Now Playing Export**: writes deduplicated `$XDG_RUNTIME_DIR/sonata/now_playing.json` state.
 
-use super::types::{ExportFingerprint, InternalEvent};
+use super::types::{track_source_tag, ExportFingerprint, InternalEvent};
 use super::BackendEngine;
 use crate::integrations::mpris::MprisUpdate;
 use sonata_core::lyrics::{
@@ -16,6 +16,8 @@ use sonata_core::player::RepeatMode;
 use sonata_core::providers::hifi::{ResolvedMusicVideo, VideoQualityStream};
 use sonata_core::providers::ytmusic::MusicVideoSyncSegment;
 use sonata_core::providers::Track;
+use sonata_core::redaction::sensitive_text;
+use sonata_core::scrobble::{should_scrobble, ScrobbleTrack, ScrobbleTracker};
 use sonata_runtime::config::AppConfig;
 use sonata_runtime::discord::{DiscordConfig, DiscordPlaybackState, DiscordTrackInfo};
 use sonata_runtime::media;
@@ -23,7 +25,7 @@ use sonata_runtime::motion;
 use sonata_runtime::player::{SessionCommand, SessionEvent};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const PLAYBACK_SPEED_PRESETS: &[f64] = &[0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
 pub const SLEEP_TIMER_PRESET_SECS: &[Option<u64>] = &[
@@ -260,6 +262,159 @@ impl BackendEngine {
         (secs > 0).then_some(secs)
     }
 
+    pub(super) fn now_unix_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+
+    pub(super) fn start_listen_tracking(&mut self, play_seq: u64, track: &Track) {
+        let now_unix = Self::now_unix_secs();
+        let scrobble_track = ScrobbleTrack::from_track(track);
+        self.scrobble_tracker = Some(ScrobbleTracker::start(
+            track.id.clone(),
+            scrobble_track.clone(),
+            now_unix,
+        ));
+        self.active_listen_session = Some(super::ActiveListenSession {
+            play_seq,
+            track: track.clone(),
+            started_at_unix: now_unix,
+            accumulated_secs: 0.0,
+            last_tick: Some(Instant::now()),
+            stats_recorded: false,
+        });
+        if self.scrobble_config.any_configured()
+            && !scrobble_track.title.trim().is_empty()
+            && !scrobble_track.artist.trim().is_empty()
+        {
+            let client = self.scrobble_client.clone();
+            let cfg = self.scrobble_config.clone();
+            let int_tx = self.int_tx.clone();
+            tokio::spawn(async move {
+                match client.update_now_playing(&cfg, &scrobble_track).await {
+                    Ok(()) => {
+                        let _ = int_tx.send(InternalEvent::ScrobbleError(None));
+                    }
+                    Err(err) => {
+                        let safe = sensitive_text(&err.to_string());
+                        tracing::debug!(client = "desktop", error = %safe, "scrobble now-playing failed");
+                        let _ = int_tx.send(InternalEvent::ScrobbleError(Some(safe)));
+                    }
+                }
+            });
+        }
+    }
+
+    pub(super) fn pause_listen_tracking(&mut self) {
+        if let Some(ref mut sess) = self.active_listen_session {
+            if let Some(prev) = sess.last_tick.take() {
+                let delta = prev.elapsed().as_secs_f64().clamp(0.0, 2.0);
+                sess.accumulated_secs += delta;
+            }
+        }
+    }
+
+    pub(super) fn resume_listen_tracking(&mut self) {
+        if let Some(ref mut sess) = self.active_listen_session {
+            if sess.last_tick.is_none() {
+                sess.last_tick = Some(Instant::now());
+            }
+        }
+    }
+
+    pub(super) fn advance_listen_tracking(&mut self) {
+        if self.playback.paused || self.playback.loading_track {
+            return;
+        }
+        let delta = match self.active_listen_session.as_mut() {
+            Some(sess) if sess.play_seq == self.play_seq => {
+                let now = Instant::now();
+                let delta = sess
+                    .last_tick
+                    .map(|prev| {
+                        now.saturating_duration_since(prev)
+                            .as_secs_f64()
+                            .clamp(0.0, 2.0)
+                    })
+                    .unwrap_or(0.0);
+                sess.last_tick = Some(now);
+                sess.accumulated_secs += delta;
+                delta
+            }
+            _ => return,
+        };
+
+        if let Some(tracker) = self.scrobble_tracker.as_mut() {
+            if let Some((strack, started_at)) = tracker.advance(delta) {
+                if self.scrobble_config.any_configured() {
+                    let client = self.scrobble_client.clone();
+                    let cfg = self.scrobble_config.clone();
+                    let track_owned = strack.clone();
+                    let int_tx = self.int_tx.clone();
+                    tokio::spawn(async move {
+                        match client.scrobble(&cfg, &track_owned, Some(started_at)).await {
+                            Ok(()) => {
+                                let _ = int_tx.send(InternalEvent::ScrobbleError(None));
+                            }
+                            Err(err) => {
+                                let safe = sensitive_text(&err.to_string());
+                                tracing::debug!(client = "desktop", error = %safe, "scrobble submit failed");
+                                let _ = int_tx.send(InternalEvent::ScrobbleError(Some(safe)));
+                            }
+                        }
+                    });
+                }
+            }
+        }
+    }
+
+    pub(super) fn finalize_listen_stats(&mut self) {
+        self.pause_listen_tracking();
+        let Some(ref mut sess) = self.active_listen_session else {
+            return;
+        };
+        if sess.stats_recorded {
+            return;
+        }
+        let played_secs = sess.accumulated_secs.round() as u64;
+        let duration_secs = sess.track.duration_secs.unwrap_or(0);
+        if !should_scrobble(sess.track.duration_secs, played_secs) {
+            return;
+        }
+        sess.stats_recorded = true;
+        let Some(db) = self.stats_db.clone() else {
+            return;
+        };
+        let track = sess.track.clone();
+        let started_at = sess.started_at_unix;
+        let source_tag = track_source_tag(&track).to_string();
+        let refresh_window =
+            (self.active_nav == super::types::NavTarget::Stats).then_some(self.stats_window);
+        let int_tx = self.int_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Err(err) = db.record_play(
+                &track.id,
+                &track.title,
+                &track.artist,
+                &track.album,
+                &source_tag,
+                duration_secs,
+                played_secs,
+                started_at,
+            ) {
+                tracing::debug!(client = "desktop", error = %err, "failed to record listening stat");
+                return;
+            }
+            if let Some(window) = refresh_window {
+                if let Ok(summary) = db.query_summary(window) {
+                    let _ = int_tx.send(InternalEvent::StatsLoaded { window, summary });
+                }
+            }
+        });
+    }
+
     pub(super) async fn handle_session_event(&mut self, event: SessionEvent) {
         match event {
             SessionEvent::QueueChanged {
@@ -285,6 +440,9 @@ impl BackendEngine {
                 track,
                 ..
             } => {
+                self.finalize_listen_stats();
+                self.scrobble_tracker = None;
+                self.active_listen_session = None;
                 self.play_seq = generation.value();
                 self.playback.current_index = Some(index);
                 self.playback.position_secs = 0.0;
@@ -365,6 +523,15 @@ impl BackendEngine {
                     self.playback.stream_badge = badge;
                 }
                 if was_initial_start {
+                    self.start_listen_tracking(generation.value(), &track);
+                    if let Some((seek_id, seek_secs)) = self.pending_connect_seek.take() {
+                        if seek_id == track.id && seek_secs.is_finite() && seek_secs > 0.5 {
+                            let _ = self
+                                .session
+                                .send(SessionCommand::SeekAbsolute(seek_secs))
+                                .await;
+                        }
+                    }
                     self.status_line = format!("Playing: {} — {}", track.title, track.artist);
                     if sonata_core::playlists::is_personal_track_id(&track.id) {
                         if self.config.effective_attribute_personal_to_ytm()
@@ -413,6 +580,8 @@ impl BackendEngine {
                             }
                         });
                     }
+                } else {
+                    self.resume_listen_tracking();
                 }
                 self.start_cover_enrichment();
                 self.sync_discord_rpc();
@@ -446,6 +615,11 @@ impl BackendEngine {
             } => {
                 self.playback.paused = paused;
                 self.playback.position_secs = position_secs;
+                if paused {
+                    self.pause_listen_tracking();
+                } else {
+                    self.resume_listen_tracking();
+                }
                 self.sync_discord_rpc();
             }
             SessionEvent::Seeked { position_secs, .. } => {
@@ -569,8 +743,11 @@ impl BackendEngine {
                 self.playback.stream_badge = "Retrying...".to_string();
                 self.status_line = format!("Stream expired; refreshing \"{}\"...", track.title);
             }
-            SessionEvent::TrackEnded { .. } => {}
+            SessionEvent::TrackEnded { .. } => {
+                self.finalize_listen_stats();
+            }
             SessionEvent::QueueFinished { .. } => {
+                self.finalize_listen_stats();
                 if self.config.autoplay
                     && !self.config.personal_only_mode
                     && self.playback.repeat == RepeatMode::Off
@@ -619,6 +796,9 @@ impl BackendEngine {
                 }
             }
             SessionEvent::Stopped { generation } => {
+                self.finalize_listen_stats();
+                self.scrobble_tracker = None;
+                self.active_listen_session = None;
                 self.play_seq = generation.value();
                 self.media_tasks.restart();
                 self.playback.paused = true;

@@ -584,6 +584,28 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                 .add_modifier(Modifier::BOLD),
         ));
     }
+    if app.config.connect_enabled {
+        let conn_txt = if let Some(port) = app.connect_http_port {
+            if !app.connect_paired_devices.is_empty() {
+                format!("◎ Connect:{}", app.connect_paired_devices.len())
+            } else {
+                format!("◎ :{port}")
+            }
+        } else {
+            "◎ Connect".to_string()
+        };
+        mode_spans.push(Span::styled(" · ", Style::default().fg(app.theme.border)));
+        mode_spans.push(Span::styled(
+            conn_txt,
+            Style::default()
+                .fg(if app.connect_handle.is_some() {
+                    app.theme.success
+                } else {
+                    app.theme.muted
+                })
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
     let modes_line = Line::from(mode_spans);
     frame.render_widget(
         Paragraph::new(modes_line).alignment(Alignment::Center),

@@ -6,8 +6,9 @@
 //! 4. **Internal Events**: `InternalEvent` and `ExportFingerprint` carry async task completions and deduplicate now-playing exports.
 
 use sonata_core::auth::ExtractedCookies;
+use sonata_core::connect::ConnectStateSnapshot;
 use sonata_core::lyrics::{active_line_index, LyricsState};
-use sonata_core::player::RepeatMode;
+use sonata_core::player::{PlaybackState, RepeatMode};
 use sonata_core::playlists::{is_personal_track_id, PersonalPlaylist};
 use sonata_core::providers::hifi::{ResolvedMusicVideo, VideoQualityStream};
 use sonata_core::providers::local::LocalScanResult;
@@ -19,9 +20,11 @@ use sonata_core::providers::ytmusic::{
     RichSearchResult, YtAccountProfile,
 };
 use sonata_core::providers::{Playlist, ProviderSource, Track};
+use sonata_core::stats::{StatsSummary, StatsWindow};
 use sonata_core::updater::UpdateCheckResult;
 use sonata_runtime::auth::BrowserOption;
 use sonata_runtime::config::AppConfig;
+use sonata_runtime::connect::PairedDeviceInfo;
 use sonata_runtime::discord::DiscordRpcStatus;
 use sonata_runtime::downloads::{DownloadCollectionRef, DownloadedCollection, DownloadedTrack};
 use sonata_runtime::i18n::AppLanguage;
@@ -39,6 +42,7 @@ pub enum NavTarget {
     Radio,
     Library,
     History,
+    Stats,
     Search,
     Queue,
     Playlist(String),
@@ -237,7 +241,41 @@ pub enum BackendCmd {
     SetWindowAddress(Option<String>),
     SetWindowVisible(bool),
     SetUiCompact(bool),
+    ToggleGapless,
+    SetCrossfade(u8),
+    SaveScrobbleConfig {
+        lastfm_enabled: bool,
+        lastfm_api_key: String,
+        lastfm_api_secret: Option<String>,
+        lastfm_session_key: Option<String>,
+        lastfm_username: String,
+        listenbrainz_enabled: bool,
+        listenbrainz_token: Option<String>,
+        listenbrainz_username: String,
+    },
+    ClearScrobbleBackend {
+        lastfm: bool,
+        listenbrainz: bool,
+    },
+    LoadListeningStats(StatsWindow),
+    ToggleConnect,
+    SetConnectDeviceName(String),
+    RegenerateConnectPin,
+    UnpairConnectDevice(String),
     Shutdown(std::sync::mpsc::SyncSender<()>),
+}
+
+/// Redacted scrobbler status exposed to the UI without exposing API secrets or tokens.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScrobbleUiStatus {
+    pub lastfm_enabled: bool,
+    pub lastfm_configured: bool,
+    pub lastfm_username: String,
+    pub lastfm_api_key: String,
+    pub listenbrainz_enabled: bool,
+    pub listenbrainz_configured: bool,
+    pub listenbrainz_username: String,
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -346,6 +384,15 @@ pub struct DesktopSnapshot {
     pub local_scan: LocalScanResult,
     pub local_scanning: bool,
     pub personal_playlists: Vec<PersonalPlaylist>,
+    pub scrobble_status: ScrobbleUiStatus,
+    pub stats_window: StatsWindow,
+    pub stats_summary: StatsSummary,
+    pub stats_loading: bool,
+    pub connect_running: bool,
+    pub connect_http_port: Option<u16>,
+    pub connect_pin: Option<String>,
+    pub connect_paired_devices: Vec<PairedDeviceInfo>,
+    pub connect_error: Option<String>,
 }
 
 /// Active source tab shown in the Desktop Library view.
@@ -753,7 +800,93 @@ pub(super) enum InternalEvent {
     },
     LocalMusicScanned(LocalScanResult),
     PersonalPlaylistsLoaded(Vec<PersonalPlaylist>),
+    StatsDbOpened(Option<sonata_core::stats::StatsDb>),
+    StatsLoaded {
+        window: StatsWindow,
+        summary: StatsSummary,
+    },
+    ScrobbleError(Option<String>),
     StatusMessage(String),
+}
+
+/// Maps a Sonata track to its canonical short source tag (`LOC`, `SMB`, `JFN`, `SUB`, `DAV`, `JIO`, `SPF`, `YTM`).
+pub fn track_source_tag(track: &Track) -> &'static str {
+    if track.id.starts_with("local:") {
+        "LOC"
+    } else if track.id.starts_with("smb:") {
+        "SMB"
+    } else if track.id.starts_with("jellyfin:") {
+        "JFN"
+    } else if track.id.starts_with("subsonic:") {
+        "SUB"
+    } else if track.id.starts_with("webdav:") {
+        "DAV"
+    } else if track.is_jiosaavn() {
+        "JIO"
+    } else if track.source == ProviderSource::Spotify {
+        "SPF"
+    } else {
+        "YTM"
+    }
+}
+
+/// Builds a live [`ConnectStateSnapshot`] from current desktop playback state.
+pub fn build_connect_snapshot(
+    device_id: &str,
+    device_name: &str,
+    playback: &PlaybackState,
+    muted: bool,
+    loading_track: bool,
+) -> ConnectStateSnapshot {
+    let current = playback.current_track();
+    let playing = current.is_some() && !playback.paused && !loading_track;
+    ConnectStateSnapshot {
+        device_id: device_id.to_string(),
+        device_name: device_name.to_string(),
+        playing,
+        paused: playback.paused,
+        track_id: current.map(|t| t.id.clone()),
+        title: current.map(|t| t.title.clone()),
+        artist: current.map(|t| t.artist.clone()),
+        album: current.map(|t| t.album.clone()),
+        thumbnail_url: current.and_then(|t| t.thumbnail_url.clone()),
+        position_secs: playback.position_secs.max(0.0),
+        duration_secs: playback.duration_secs.max(0.0),
+        volume: if muted { 0 } else { playback.volume.min(100) },
+        shuffle: playback.shuffle,
+        repeat_mode: playback.repeat,
+        queue: playback.queue.clone(),
+        current_index: playback.current_index,
+        updated_at_unix: 0,
+    }
+}
+
+/// Filters a Connect `TransferQueue` track list according to Personal Only Mode and clamps `start_index`.
+pub fn filter_transfer_tracks(
+    tracks: Vec<Track>,
+    start_index: usize,
+    personal_only_mode: bool,
+    downloaded_track_ids: &HashSet<String>,
+) -> Option<(Vec<Track>, usize)> {
+    if tracks.is_empty() {
+        return None;
+    }
+    if !personal_only_mode {
+        let clamped = start_index.min(tracks.len() - 1);
+        return Some((tracks, clamped));
+    }
+    let target_id = tracks.get(start_index).map(|t| t.id.clone());
+    let filtered: Vec<Track> = tracks
+        .into_iter()
+        .filter(|t| can_play_track_in_mode(t, true, downloaded_track_ids.contains(&t.id)))
+        .collect();
+    if filtered.is_empty() {
+        return None;
+    }
+    let mapped_idx = target_id
+        .and_then(|id| filtered.iter().position(|t| t.id == id))
+        .unwrap_or(0);
+    Some((filtered, mapped_idx))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -962,5 +1095,47 @@ mod tests {
             sample_note: "ok".to_string(),
         };
         assert_eq!(format_server_speed_badge(&speed_slow), "18.3 Mbps • 42 ms");
+    }
+
+    #[test]
+    fn connect_snapshot_and_transfer_queue_filtering_respect_mode() {
+        let mut playback = PlaybackState::new(72);
+        let t1 = dummy_track("local:/music/a.flac", ProviderSource::YouTubeMusic);
+        let t2 = dummy_track("ytm123", ProviderSource::YouTubeMusic);
+        let t3 = dummy_track("smb:nas:b.flac", ProviderSource::YouTubeMusic);
+        playback.queue = vec![t1.clone(), t2.clone(), t3.clone()];
+        playback.current_index = Some(2);
+        playback.paused = false;
+        playback.position_secs = 42.5;
+        playback.duration_secs = 180.0;
+
+        let snap = build_connect_snapshot("dev-1", "Sonata Desk", &playback, false, false);
+        assert!(snap.playing);
+        assert!(!snap.paused);
+        assert_eq!(snap.device_name, "Sonata Desk");
+        assert_eq!(snap.track_id.as_deref(), Some("smb:nas:b.flac"));
+        assert_eq!(snap.volume, 72);
+        assert_eq!(snap.queue.len(), 3);
+        assert_eq!(snap.current_index, Some(2));
+
+        let muted_snap = build_connect_snapshot("dev-1", "Sonata Desk", &playback, true, false);
+        assert_eq!(muted_snap.volume, 0);
+
+        let dl_ids = HashSet::new();
+        let (filtered, idx) =
+            filter_transfer_tracks(vec![t1, t2.clone(), t3], 2, true, &dl_ids).expect("filtered");
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(idx, 1);
+        assert_eq!(filtered[idx].id, "smb:nas:b.flac");
+
+        assert!(filter_transfer_tracks(vec![t2], 0, true, &dl_ids).is_none());
+        assert_eq!(
+            track_source_tag(&dummy_track("jellyfin:s:1", ProviderSource::YouTubeMusic)),
+            "JFN"
+        );
+        assert_eq!(
+            track_source_tag(&dummy_track("spf1", ProviderSource::Spotify)),
+            "SPF"
+        );
     }
 }

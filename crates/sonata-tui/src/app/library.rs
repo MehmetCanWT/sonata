@@ -188,6 +188,13 @@ impl App {
                 self.focus = FocusPane::Tracks;
                 self.refresh_downloads();
             }
+            SidebarEntry::ListeningStats => {
+                self.refresh_listening_stats(self.stats_window);
+                self.modal = ActiveModal::ListeningStats(super::StatsModalState {
+                    tab: 0,
+                    selected: 0,
+                });
+            }
             SidebarEntry::LocalSongs => {
                 self.tracks_req_id = self.tracks_req_id.wrapping_add(1);
                 self.current_playlist_id = Some("SONATA:LOCAL_SONGS".to_string());

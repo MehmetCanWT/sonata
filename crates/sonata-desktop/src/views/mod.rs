@@ -17,6 +17,7 @@ pub mod right_panel;
 pub mod search;
 pub mod settings;
 pub mod sidebar;
+pub mod stats;
 
 use crate::backend::{BackendCmd, BackendHandle, DesktopSnapshot, LibrarySource, NavTarget};
 use crate::background_appearance_for;
@@ -202,6 +203,13 @@ pub struct SonataDesktopView {
     pub downloads_dir_input: Entity<InputState>,
     pub local_dir_input: Entity<InputState>,
     pub discord_app_id_input: Entity<InputState>,
+    pub connect_name_input: Entity<InputState>,
+    pub lastfm_user_input: Entity<InputState>,
+    pub lastfm_key_input: Entity<InputState>,
+    pub lastfm_secret_input: Entity<InputState>,
+    pub lastfm_session_input: Entity<InputState>,
+    pub listenbrainz_user_input: Entity<InputState>,
+    pub listenbrainz_token_input: Entity<InputState>,
     pub server_name_input: Entity<InputState>,
     pub server_url_input: Entity<InputState>,
     pub server_user_input: Entity<InputState>,
@@ -319,6 +327,69 @@ impl SonataDesktopView {
             cx.new(|cx| InputState::new(window, cx).placeholder("/mnt/nas/music (optional)"));
         let local_dir_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("/home/user/Music"));
+        let init_connect_name = snapshot.config.connect_device_name.clone();
+        let connect_name_input = cx.new(|cx| {
+            let mut st = InputState::new(window, cx)
+                .placeholder(sonata_runtime::config::DEFAULT_CONNECT_DEVICE_NAME);
+            if !init_connect_name.is_empty() {
+                st.set_value(init_connect_name, window, cx);
+            }
+            st
+        });
+        let init_lfm_user = snapshot.scrobble_status.lastfm_username.clone();
+        let lastfm_user_input = cx.new(|cx| {
+            let mut st = InputState::new(window, cx).placeholder("Last.fm username");
+            if !init_lfm_user.is_empty() {
+                st.set_value(init_lfm_user, window, cx);
+            }
+            st
+        });
+        let init_lfm_key = snapshot.scrobble_status.lastfm_api_key.clone();
+        let lastfm_key_input = cx.new(|cx| {
+            let mut st = InputState::new(window, cx).placeholder("Last.fm API key");
+            if !init_lfm_key.is_empty() {
+                st.set_value(init_lfm_key, window, cx);
+            }
+            st
+        });
+        let lastfm_secret_ph = if snapshot.scrobble_status.lastfm_configured {
+            "API secret (saved)"
+        } else {
+            "Last.fm API secret"
+        };
+        let lastfm_secret_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(lastfm_secret_ph)
+                .masked(true)
+        });
+        let lastfm_session_ph = if snapshot.scrobble_status.lastfm_configured {
+            "Session key (saved)"
+        } else {
+            "Last.fm session key"
+        };
+        let lastfm_session_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(lastfm_session_ph)
+                .masked(true)
+        });
+        let init_lb_user = snapshot.scrobble_status.listenbrainz_username.clone();
+        let listenbrainz_user_input = cx.new(|cx| {
+            let mut st = InputState::new(window, cx).placeholder("ListenBrainz username");
+            if !init_lb_user.is_empty() {
+                st.set_value(init_lb_user, window, cx);
+            }
+            st
+        });
+        let lb_token_ph = if snapshot.scrobble_status.listenbrainz_configured {
+            "User token (saved)"
+        } else {
+            "ListenBrainz user token"
+        };
+        let listenbrainz_token_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(lb_token_ph)
+                .masked(true)
+        });
 
         let dur = snapshot.duration_secs.max(1.0) as f32;
         let pos = (snapshot.position_secs as f32).clamp(0.0, dur);
@@ -629,6 +700,13 @@ impl SonataDesktopView {
             downloads_dir_input,
             local_dir_input,
             discord_app_id_input,
+            connect_name_input,
+            lastfm_user_input,
+            lastfm_key_input,
+            lastfm_secret_input,
+            lastfm_session_input,
+            listenbrainz_user_input,
+            listenbrainz_token_input,
             server_name_input,
             server_url_input,
             server_user_input,
@@ -1491,6 +1569,41 @@ impl SonataDesktopView {
                 .local_dir_input
                 .read(cx)
                 .focus_handle(cx)
+                .is_focused(window)
+            || self
+                .connect_name_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
+                .lastfm_user_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
+                .lastfm_key_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
+                .lastfm_secret_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
+                .lastfm_session_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
+                .listenbrainz_user_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
+                .listenbrainz_token_input
+                .read(cx)
+                .focus_handle(cx)
                 .is_focused(window);
 
         let key = ev.keystroke.key.as_str();
@@ -1570,6 +1683,7 @@ impl SonataDesktopView {
             NavTarget::Radio => self.render_radio_page(window, cx),
             NavTarget::Library => self.render_library_page(window, cx),
             NavTarget::History => self.render_history_page(window, cx),
+            NavTarget::Stats => self.render_stats_page(window, cx),
             NavTarget::Queue => self.render_queue_page(window, cx),
             NavTarget::Playlist(_) => self.render_playlist_page(window, cx),
             NavTarget::Album(_) => self.render_album_page(window, cx),

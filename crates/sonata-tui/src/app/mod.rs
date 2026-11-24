@@ -20,6 +20,7 @@ use ratatui_image::protocol::StatefulProtocol;
 use reqwest::Client;
 use sonata_core::auth::ExtractedCookies;
 use sonata_core::cache::{enforce_media_cache_limit_async, start_media_cache_maintenance, CacheDb};
+use sonata_core::connect::ConnectCommand;
 use sonata_core::lyrics::LyricsState;
 use sonata_core::paths::CorePaths;
 use sonata_core::player::{PlaybackState, PlaybackTaskSet};
@@ -29,9 +30,13 @@ use sonata_core::providers::hifi::{
 use sonata_core::providers::spotify::SpotifyClient;
 use sonata_core::providers::ytmusic::YtMusicClient;
 use sonata_core::providers::{build_http_client, Playlist, ProviderSource, Track};
+use sonata_core::redaction::sensitive_text;
+use sonata_core::scrobble::{ScrobbleClient, ScrobbleConfig, ScrobbleTracker};
+use sonata_core::stats::{StatsDb, StatsSummary, StatsWindow};
 use sonata_core::updater::UpdateCheckResult;
 use sonata_runtime::auth::extract_browser_cookies;
-use sonata_runtime::config::AppConfig;
+use sonata_runtime::config::{sanitize_crossfade_secs, AppConfig};
+use sonata_runtime::connect::{ConnectHandle, ConnectServerConfig, PairedDeviceInfo};
 use sonata_runtime::hyprland;
 use sonata_runtime::player::{
     MpvEvent, PlaybackAudioDriver, PlaybackSession, PlaybackSessionConfig, PlaybackSessionHandle,
@@ -163,6 +168,42 @@ pub struct App {
     pub server_speed_tests:
         std::collections::HashMap<String, sonata_core::providers::servers::ServerSpeedTestReport>,
     pub server_speed_testing: std::collections::HashSet<String>,
+    pub scrobble_config: ScrobbleConfig,
+    pub scrobble_client: ScrobbleClient,
+    pub scrobble_tracker: Option<ScrobbleTracker>,
+    pub scrobble_last_error: Option<String>,
+    pub active_listen_session: Option<TuiListenSession>,
+    pub stats_db: Option<StatsDb>,
+    pub stats_window: StatsWindow,
+    pub stats_summary: StatsSummary,
+    pub stats_loading: bool,
+    pub connect_handle: Option<ConnectHandle>,
+    pub connect_cmd_rx: Option<mpsc::Receiver<ConnectCommand>>,
+    pub connect_sync_needed: bool,
+    pub connect_pin: Option<String>,
+    pub connect_http_port: Option<u16>,
+    pub connect_paired_devices: Vec<PairedDeviceInfo>,
+    pub connect_error: Option<String>,
+    pub pending_connect_seek: Option<(String, f64)>,
+    pub last_connect_publish: Instant,
+}
+
+pub struct TuiListenSession {
+    pub play_seq: u64,
+    pub track: Track,
+    pub started_at_unix: u64,
+    pub accumulated_secs: f64,
+    pub last_tick: Option<Instant>,
+    pub stats_recorded: bool,
+}
+
+pub async fn recv_connect_cmd(
+    rx: &mut Option<mpsc::Receiver<ConnectCommand>>,
+) -> Option<ConnectCommand> {
+    match rx {
+        Some(receiver) => receiver.recv().await,
+        None => std::future::pending().await,
+    }
 }
 
 impl App {
@@ -234,6 +275,8 @@ impl App {
         session_cfg.initial_volume = config.volume;
         session_cfg.initial_shuffle = config.shuffle;
         session_cfg.initial_repeat = config.repeat_mode;
+        session_cfg.initial_gapless = config.gapless_enabled;
+        session_cfg.initial_crossfade_secs = sanitize_crossfade_secs(config.crossfade_secs);
         session_cfg.policy = SessionPolicy {
             hifi_substitution: config.hifi_substitution,
             jiosaavn_enabled: config.effective_jiosaavn_enabled(),
@@ -270,6 +313,10 @@ impl App {
 
         let initial_speed = sonata_runtime::config::sanitize_playback_speed(config.playback_speed);
         let initial_skip_silence = config.skip_silence;
+        let initial_gapless = config.gapless_enabled;
+        let scrobble_config = ScrobbleConfig::load_from_paths(&paths).unwrap_or_default();
+        let scrobble_client = ScrobbleClient::new();
+        let connect_sync_needed = config.connect_enabled;
         let mut app = Self {
             config,
             themes,
@@ -371,6 +418,24 @@ impl App {
             server_health: std::collections::HashMap::new(),
             server_speed_tests: std::collections::HashMap::new(),
             server_speed_testing: std::collections::HashSet::new(),
+            scrobble_config,
+            scrobble_client,
+            scrobble_tracker: None,
+            scrobble_last_error: None,
+            active_listen_session: None,
+            stats_db: None,
+            stats_window: StatsWindow::Week,
+            stats_summary: StatsSummary::default(),
+            stats_loading: true,
+            connect_handle: None,
+            connect_cmd_rx: None,
+            connect_sync_needed,
+            connect_pin: None,
+            connect_http_port: None,
+            connect_paired_devices: Vec::new(),
+            connect_error: None,
+            pending_connect_seek: None,
+            last_connect_publish: Instant::now(),
         };
         app.rebuild_sidebar();
         app.refresh_downloads();
@@ -384,6 +449,9 @@ impl App {
         }
         if initial_skip_silence {
             app.enqueue_session_cmd(SessionCommand::SetSkipSilence(true));
+        }
+        if !initial_gapless {
+            app.enqueue_session_cmd(SessionCommand::SetGapless(false));
         }
         (app, session_rx)
     }
@@ -421,6 +489,19 @@ impl App {
         let resolver = self.resolver.clone();
         tokio::spawn(async move {
             resolver.warm().await;
+        });
+
+        let stats_paths = self.paths.clone();
+        let stats_tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let db = match StatsDb::open_with_paths(&stats_paths) {
+                Ok(db) => Some(db),
+                Err(err) => {
+                    tracing::warn!(client = "tui", error = %err, "failed to open stats.db");
+                    None
+                }
+            };
+            let _ = stats_tx.send(AppEvent::StatsDbOpened(db));
         });
 
         Self::spawn_update_check(self.http.clone(), self.tx.clone());
@@ -892,6 +973,23 @@ impl App {
                     self.track_table_state.select(Some(0));
                 }
             }
+            AppEvent::StatsDbOpened(db_opt) => {
+                self.stats_db = db_opt;
+                if self.stats_db.is_some() {
+                    self.refresh_listening_stats(self.stats_window);
+                } else {
+                    self.stats_loading = false;
+                }
+            }
+            AppEvent::StatsLoaded { window, summary } => {
+                if window == self.stats_window {
+                    self.stats_summary = summary;
+                    self.stats_loading = false;
+                }
+            }
+            AppEvent::ScrobbleError(err) => {
+                self.scrobble_last_error = err;
+            }
         }
     }
 
@@ -979,6 +1077,10 @@ impl App {
             return false;
         }
         self.playback.position_secs = self.interpolated_position();
+        self.advance_listen_tracking();
+        if self.last_connect_publish.elapsed() >= Duration::from_secs(1) {
+            self.publish_connect_snapshot();
+        }
         let step_interval =
             std::time::Duration::from_secs_f32(1.0 / self.anim_fps.clamp(8.0, 24.0));
         if !self.anim_art_frames.is_empty()
@@ -993,6 +1095,10 @@ impl App {
     }
 
     pub async fn shutdown_playback_tasks(&mut self) {
+        self.finalize_listen_stats();
+        if let Some(handle) = self.connect_handle.take() {
+            handle.shutdown();
+        }
         if !self
             .media_tasks
             .shutdown(std::time::Duration::from_secs(2))
@@ -1005,5 +1111,237 @@ impl App {
             tracing::warn!("playback session tasks exceeded shutdown timeout and were aborted");
         }
         self.discord_rpc.shutdown().await;
+    }
+
+    pub fn refresh_listening_stats(&mut self, window: StatsWindow) {
+        self.stats_window = window;
+        let Some(db) = self.stats_db.clone() else {
+            self.stats_loading = false;
+            return;
+        };
+        self.stats_loading = true;
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let summary = db.query_summary(window).unwrap_or_default();
+            let _ = tx.send(AppEvent::StatsLoaded { window, summary });
+        });
+    }
+
+    pub fn save_lastfm_form(&mut self, form: &LastFmFormState) {
+        self.scrobble_config.lastfm.enabled = form.enabled;
+        self.scrobble_config.lastfm.username = form.username.trim().to_string();
+        self.scrobble_config.lastfm.api_key = form.api_key.trim().to_string();
+        self.scrobble_config.lastfm.api_secret = form.api_secret.trim().to_string();
+        self.scrobble_config.lastfm.session_key = form.session_key.trim().to_string();
+        self.persist_scrobble_config("Last.fm settings saved");
+    }
+
+    pub fn save_listenbrainz_form(&mut self, form: &ListenBrainzFormState) {
+        self.scrobble_config.listenbrainz.enabled = form.enabled;
+        self.scrobble_config.listenbrainz.username = form.username.trim().to_string();
+        self.scrobble_config.listenbrainz.token = form.token.trim().to_string();
+        self.persist_scrobble_config("ListenBrainz settings saved");
+    }
+
+    pub fn toggle_lastfm_enabled(&mut self) {
+        self.scrobble_config.lastfm.enabled = !self.scrobble_config.lastfm.enabled;
+        let s = sonata_runtime::i18n::strings(self.config.language);
+        let msg = format!(
+            "{}: {}",
+            s.lastfm_scrobbling,
+            if self.scrobble_config.lastfm.enabled {
+                s.enabled
+            } else {
+                s.disabled
+            }
+        );
+        self.persist_scrobble_config(&msg);
+    }
+
+    pub fn toggle_listenbrainz_enabled(&mut self) {
+        self.scrobble_config.listenbrainz.enabled = !self.scrobble_config.listenbrainz.enabled;
+        let s = sonata_runtime::i18n::strings(self.config.language);
+        let msg = format!(
+            "{}: {}",
+            s.listenbrainz_scrobbling,
+            if self.scrobble_config.listenbrainz.enabled {
+                s.enabled
+            } else {
+                s.disabled
+            }
+        );
+        self.persist_scrobble_config(&msg);
+    }
+
+    fn persist_scrobble_config(&mut self, ok_msg: &str) {
+        match self.scrobble_config.save_to_paths(&self.paths) {
+            Ok(()) => {
+                self.scrobble_last_error = None;
+                self.status_line = ok_msg.to_string();
+            }
+            Err(err) => {
+                let safe = sensitive_text(&err.to_string());
+                self.scrobble_last_error = Some(safe.clone());
+                self.status_line = format!("Failed to save scrobble config: {safe}");
+            }
+        }
+    }
+
+    pub fn toggle_connect(&mut self) {
+        self.config.connect_enabled = !self.config.connect_enabled;
+        let _ = self.config.save();
+        self.connect_sync_needed = true;
+        let s = sonata_runtime::i18n::strings(self.config.language);
+        self.status_line = format!(
+            "{}: {}",
+            s.sonata_connect,
+            if self.config.connect_enabled {
+                s.enabled
+            } else {
+                s.disabled
+            }
+        );
+    }
+
+    pub fn set_connect_device_name(&mut self, name: &str) {
+        let trimmed = name.trim();
+        self.config.connect_device_name = if trimmed.is_empty() {
+            sonata_runtime::config::DEFAULT_CONNECT_DEVICE_NAME.to_string()
+        } else {
+            trimmed.to_string()
+        };
+        let _ = self.config.save();
+        if self.config.connect_enabled {
+            self.connect_sync_needed = true;
+        }
+        self.status_line = format!(
+            "Sonata Connect device: {}",
+            self.config.effective_connect_device_name()
+        );
+    }
+
+    pub fn regenerate_connect_pin(&mut self) {
+        if let Some(ref handle) = self.connect_handle {
+            self.connect_pin = Some(handle.regenerate_pin());
+            self.status_line = "Sonata Connect pairing PIN refreshed".to_string();
+        }
+    }
+
+    pub fn unpair_connect_device(&mut self, device_id: &str) {
+        if let Some(ref handle) = self.connect_handle {
+            match handle.unpair_device(device_id) {
+                Ok(removed) => {
+                    self.connect_paired_devices = handle.paired_devices();
+                    if removed {
+                        self.status_line = "Paired device removed".to_string();
+                    }
+                }
+                Err(err) => {
+                    let safe = sensitive_text(&err.to_string());
+                    self.connect_error = Some(safe.clone());
+                    self.status_line = format!("Unpair failed: {safe}");
+                }
+            }
+        }
+    }
+
+    pub async fn sync_connect_server(&mut self) {
+        self.connect_sync_needed = false;
+        if let Some(prev) = self.connect_handle.take() {
+            prev.shutdown();
+        }
+        self.connect_cmd_rx = None;
+        self.connect_pin = None;
+        self.connect_http_port = None;
+        self.connect_error = None;
+        if !self.config.connect_enabled {
+            self.connect_paired_devices.clear();
+            return;
+        }
+        let cfg = ConnectServerConfig {
+            device_name: self.config.effective_connect_device_name().to_string(),
+            paired_store_path: self.paths.connect_paired_path(),
+            ..ConnectServerConfig::default()
+        };
+        match ConnectHandle::start(cfg).await {
+            Ok((handle, cmd_rx)) => {
+                self.connect_pin = Some(handle.current_pin());
+                self.connect_http_port = Some(handle.http_port());
+                self.connect_paired_devices = handle.paired_devices();
+                self.connect_handle = Some(handle);
+                self.connect_cmd_rx = Some(cmd_rx);
+                self.publish_connect_snapshot();
+            }
+            Err(err) => {
+                let safe = sensitive_text(&err.to_string());
+                tracing::warn!(client = "tui", error = %safe, "failed to start Sonata Connect");
+                self.connect_error = Some(safe);
+            }
+        }
+    }
+
+    pub fn publish_connect_snapshot(&mut self) {
+        let Some(ref handle) = self.connect_handle else {
+            return;
+        };
+        self.last_connect_publish = Instant::now();
+        self.connect_paired_devices = handle.paired_devices();
+        self.connect_pin = Some(handle.current_pin());
+        let snapshot =
+            build_tui_connect_snapshot(self.config.effective_connect_device_name(), &self.playback);
+        handle.update_state(snapshot);
+    }
+
+    pub fn handle_connect_command(&mut self, cmd: ConnectCommand) {
+        match cmd {
+            ConnectCommand::Play => {
+                self.enqueue_session_cmd(SessionCommand::SetPaused(false));
+            }
+            ConnectCommand::Pause => {
+                self.enqueue_session_cmd(SessionCommand::SetPaused(true));
+            }
+            ConnectCommand::Next => {
+                self.enqueue_session_cmd(SessionCommand::Next);
+            }
+            ConnectCommand::Prev => {
+                self.enqueue_session_cmd(SessionCommand::Previous {
+                    restart_if_after_secs: Some(4.0),
+                });
+            }
+            ConnectCommand::SeekAbsolute { position_secs } => {
+                if position_secs.is_finite() {
+                    self.enqueue_session_cmd(SessionCommand::SeekAbsolute(position_secs.max(0.0)));
+                }
+            }
+            ConnectCommand::SetVolume { volume } => {
+                self.set_volume(volume, true);
+            }
+            ConnectCommand::TransferQueue {
+                tracks,
+                start_index,
+                position_secs,
+            } => {
+                let Some((filtered, idx)) = filter_tui_transfer_tracks(
+                    tracks,
+                    start_index,
+                    self.config.personal_only_mode,
+                    &self.downloaded_track_ids,
+                ) else {
+                    self.status_line =
+                        "Connect handoff ignored: no playable tracks in current mode".to_string();
+                    return;
+                };
+                self.pending_connect_seek = filtered
+                    .get(idx)
+                    .filter(|_| position_secs.is_finite() && position_secs > 0.5)
+                    .map(|t| (t.id.clone(), position_secs.max(0.0)));
+                self.status_line = "Adopted queue from Sonata Connect".to_string();
+                self.enqueue_session_cmd(SessionCommand::PlayQueue {
+                    tracks: filtered,
+                    start_index: idx,
+                    push_history: true,
+                });
+            }
+        }
     }
 }

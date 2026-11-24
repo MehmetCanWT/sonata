@@ -371,6 +371,15 @@ pub struct UiStrings {
     pub connect_device_name: &'static str,
     pub pairing_pin: &'static str,
     pub paired_devices: &'static str,
+    pub stats_week: &'static str,
+    pub stats_month: &'static str,
+    pub stats_year: &'static str,
+    pub stats_all_time: &'static str,
+    pub regenerate_pin: &'static str,
+    pub unpair: &'static str,
+    pub no_stats_yet: &'static str,
+    pub no_paired_devices: &'static str,
+    pub scrobbling: &'static str,
 }
 
 /// Translates common YouTube Music mood and genre chip/tile titles into `Tr` / `Ru`.
@@ -836,6 +845,15 @@ pub const EN: UiStrings = UiStrings {
     connect_device_name: "Device Name",
     pairing_pin: "Pairing PIN",
     paired_devices: "Paired Devices",
+    stats_week: "Week",
+    stats_month: "Month",
+    stats_year: "Year",
+    stats_all_time: "All Time",
+    regenerate_pin: "New PIN",
+    unpair: "Unpair",
+    no_stats_yet: "No listening history recorded yet.",
+    no_paired_devices: "No paired devices",
+    scrobbling: "Scrobbling",
 };
 
 pub const TR: UiStrings = UiStrings {
@@ -1141,6 +1159,15 @@ pub const TR: UiStrings = UiStrings {
     connect_device_name: "Cihaz Adı",
     pairing_pin: "Eşleştirme PIN'i",
     paired_devices: "Eşleştirilmiş Cihazlar",
+    stats_week: "Hafta",
+    stats_month: "Ay",
+    stats_year: "Yıl",
+    stats_all_time: "Tüm Zamanlar",
+    regenerate_pin: "Yeni PIN",
+    unpair: "Eşleştirmeyi Kaldır",
+    no_stats_yet: "Henüz dinleme kaydı yok.",
+    no_paired_devices: "Eşleştirilmiş cihaz yok",
+    scrobbling: "Skroblama",
 };
 
 pub const RU: UiStrings = UiStrings {
@@ -1447,6 +1474,15 @@ pub const RU: UiStrings = UiStrings {
     connect_device_name: "Имя устройства",
     pairing_pin: "PIN-код сопряжения",
     paired_devices: "Сопряжённые устройства",
+    stats_week: "Неделя",
+    stats_month: "Месяц",
+    stats_year: "Год",
+    stats_all_time: "Всё время",
+    regenerate_pin: "Новый PIN",
+    unpair: "Отвязать",
+    no_stats_yet: "История прослушиваний пока пуста.",
+    no_paired_devices: "Нет сопряжённых устройств",
+    scrobbling: "Скробблинг",
 };
 
 #[cfg(test)]

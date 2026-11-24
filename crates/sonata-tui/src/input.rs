@@ -91,17 +91,19 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                         7 => app.toggle_autoplay(),
                         8 => app.step_playback_speed(true),
                         9 => app.toggle_skip_silence(),
-                        10 => app.cycle_sleep_timer(true),
-                        11 => app.toggle_lyrics_translate(),
-                        12 => app.toggle_lyrics_romanize(),
-                        13 => app.cycle_language(true),
-                        14 => app.cycle_theme(true),
-                        15 => app.toggle_motion_covers(),
-                        16 => app.toggle_transparent_bg(),
-                        17 => app.cycle_hyprland_opacity(true),
-                        18 => app.step_cache_limit(true),
-                        19 => app.step_downloads_limit(true),
-                        20 => {
+                        10 => app.toggle_gapless(),
+                        11 => app.step_crossfade(true),
+                        12 => app.cycle_sleep_timer(true),
+                        13 => app.toggle_lyrics_translate(),
+                        14 => app.toggle_lyrics_romanize(),
+                        15 => app.cycle_language(true),
+                        16 => app.cycle_theme(true),
+                        17 => app.toggle_motion_covers(),
+                        18 => app.toggle_transparent_bg(),
+                        19 => app.cycle_hyprland_opacity(true),
+                        20 => app.step_cache_limit(true),
+                        21 => app.step_downloads_limit(true),
+                        22 => {
                             let s = sonata_runtime::i18n::strings(app.config.language);
                             let buf = app
                                 .config
@@ -116,9 +118,9 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                                 target: crate::app::TextInputTarget::DownloadsDir,
                             };
                         }
-                        21 => app.clear_all_downloads(),
-                        22 => app.toggle_discord_rpc(),
-                        23 => {
+                        23 => app.clear_all_downloads(),
+                        24 => app.toggle_discord_rpc(),
+                        25 => {
                             let s = sonata_runtime::i18n::strings(app.config.language);
                             let buf = app.config.discord_app_id.clone().unwrap_or_default();
                             app.modal = ActiveModal::TextInput {
@@ -128,8 +130,40 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                                 target: crate::app::TextInputTarget::DiscordAppId,
                             };
                         }
-                        24 => app.refresh_account(),
-                        25 => app.check_for_updates(),
+                        26 => {
+                            app.modal = ActiveModal::LastFmConfig(
+                                crate::app::LastFmFormState::from_config(&app.scrobble_config),
+                            );
+                        }
+                        27 => {
+                            app.modal = ActiveModal::ListenBrainzConfig(
+                                crate::app::ListenBrainzFormState::from_config(
+                                    &app.scrobble_config,
+                                ),
+                            );
+                        }
+                        28 => {
+                            app.refresh_listening_stats(app.stats_window);
+                            app.modal = ActiveModal::ListeningStats(crate::app::StatsModalState {
+                                tab: 0,
+                                selected: 0,
+                            });
+                        }
+                        29 => {
+                            app.modal = ActiveModal::ConnectManager(0);
+                        }
+                        30 => {
+                            let s = sonata_runtime::i18n::strings(app.config.language);
+                            let buf = app.config.effective_connect_device_name().to_string();
+                            app.modal = ActiveModal::TextInput {
+                                title: s.connect_device_name.to_string(),
+                                prompt: "Device name advertised on local network:".to_string(),
+                                buf,
+                                target: crate::app::TextInputTarget::ConnectDeviceName,
+                            };
+                        }
+                        31 => app.refresh_account(),
+                        32 => app.check_for_updates(),
                         _ => {}
                     }
                 }
@@ -143,17 +177,22 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                     7 => app.toggle_autoplay(),
                     8 => app.step_playback_speed(false),
                     9 => app.toggle_skip_silence(),
-                    10 => app.cycle_sleep_timer(false),
-                    11 => app.toggle_lyrics_translate(),
-                    12 => app.toggle_lyrics_romanize(),
-                    13 => app.cycle_language(false),
-                    14 => app.cycle_theme(false),
-                    15 => app.toggle_motion_covers(),
-                    16 => app.toggle_transparent_bg(),
-                    17 => app.cycle_hyprland_opacity(false),
-                    18 => app.step_cache_limit(false),
-                    19 => app.step_downloads_limit(false),
-                    22 => app.toggle_discord_rpc(),
+                    10 => app.toggle_gapless(),
+                    11 => app.step_crossfade(false),
+                    12 => app.cycle_sleep_timer(false),
+                    13 => app.toggle_lyrics_translate(),
+                    14 => app.toggle_lyrics_romanize(),
+                    15 => app.cycle_language(false),
+                    16 => app.cycle_theme(false),
+                    17 => app.toggle_motion_covers(),
+                    18 => app.toggle_transparent_bg(),
+                    19 => app.cycle_hyprland_opacity(false),
+                    20 => app.step_cache_limit(false),
+                    21 => app.step_downloads_limit(false),
+                    24 => app.toggle_discord_rpc(),
+                    26 => app.toggle_lastfm_enabled(),
+                    27 => app.toggle_listenbrainz_enabled(),
+                    29 => app.toggle_connect(),
                     _ => {}
                 },
                 _ => {}
@@ -242,11 +281,12 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             match key.code {
                 KeyCode::Esc => {
                     app.modal = match target {
-                        crate::app::TextInputTarget::DownloadsDir => ActiveModal::Settings(20),
-                        crate::app::TextInputTarget::DiscordAppId => ActiveModal::Settings(23),
+                        crate::app::TextInputTarget::DownloadsDir => ActiveModal::Settings(22),
+                        crate::app::TextInputTarget::DiscordAppId => ActiveModal::Settings(25),
                         crate::app::TextInputTarget::LocalMusicDir => {
                             ActiveModal::LocalMusicManager(0)
                         }
+                        crate::app::TextInputTarget::ConnectDeviceName => ActiveModal::Settings(30),
                     };
                 }
                 KeyCode::Backspace => {
@@ -262,18 +302,22 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                                 Some(std::path::PathBuf::from(val))
                             };
                             app.set_downloads_dir(dir);
-                            ActiveModal::Settings(20)
+                            ActiveModal::Settings(22)
                         }
                         crate::app::TextInputTarget::DiscordAppId => {
                             let id = if val.is_empty() { None } else { Some(val) };
                             app.set_discord_app_id(id);
-                            ActiveModal::Settings(23)
+                            ActiveModal::Settings(25)
                         }
                         crate::app::TextInputTarget::LocalMusicDir => {
                             if !val.is_empty() {
                                 app.add_local_music_dir(std::path::PathBuf::from(val));
                             }
                             ActiveModal::LocalMusicManager(0)
+                        }
+                        crate::app::TextInputTarget::ConnectDeviceName => {
+                            app.set_connect_device_name(&val);
+                            ActiveModal::Settings(30)
                         }
                     };
                 }
@@ -503,6 +547,202 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             }
             return;
         }
+        ActiveModal::ListeningStats(st) => {
+            use sonata_core::stats::StatsWindow;
+            let row_len = match st.tab {
+                1 => app.stats_summary.top_artists.len(),
+                2 => app.stats_summary.top_albums.len(),
+                _ => app.stats_summary.top_tracks.len(),
+            };
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => app.modal = ActiveModal::None,
+                KeyCode::Char('1') => {
+                    st.selected = 0;
+                    app.refresh_listening_stats(StatsWindow::Week);
+                }
+                KeyCode::Char('2') => {
+                    st.selected = 0;
+                    app.refresh_listening_stats(StatsWindow::Month);
+                }
+                KeyCode::Char('3') => {
+                    st.selected = 0;
+                    app.refresh_listening_stats(StatsWindow::Year);
+                }
+                KeyCode::Char('4') => {
+                    st.selected = 0;
+                    app.refresh_listening_stats(StatsWindow::AllTime);
+                }
+                KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
+                    st.tab = (st.tab + 1) % 3;
+                    st.selected = 0;
+                }
+                KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
+                    st.tab = (st.tab + 2) % 3;
+                    st.selected = 0;
+                }
+                KeyCode::Down | KeyCode::Char('j') if row_len > 0 => {
+                    st.selected = (st.selected + 1) % row_len;
+                }
+                KeyCode::Up | KeyCode::Char('k') if row_len > 0 => {
+                    st.selected = (st.selected + row_len - 1) % row_len;
+                }
+                KeyCode::Char('r') => app.refresh_listening_stats(app.stats_window),
+                KeyCode::Enter if st.tab == 0 && row_len > 0 => {
+                    let idx = st.selected.min(row_len - 1);
+                    if let Some(stat) = app.stats_summary.top_tracks.get(idx) {
+                        let source = if stat.source_tag.eq_ignore_ascii_case("SPF") {
+                            sonata_core::providers::ProviderSource::Spotify
+                        } else {
+                            sonata_core::providers::ProviderSource::YouTubeMusic
+                        };
+                        let tr = sonata_core::providers::Track {
+                            id: stat.track_id.clone(),
+                            title: stat.title.clone(),
+                            artist: stat.artist.clone(),
+                            album: stat.album.clone(),
+                            duration_secs: None,
+                            thumbnail_url: None,
+                            source,
+                            audio_badge: (!stat.source_tag.is_empty())
+                                .then(|| stat.source_tag.clone()),
+                            set_video_id: None,
+                            liked: false,
+                            album_id: None,
+                            is_explicit: false,
+                        };
+                        if crate::app::can_play_tui_track(
+                            &tr,
+                            app.config.personal_only_mode,
+                            app.downloaded_track_ids.contains(&tr.id),
+                        ) {
+                            app.modal = ActiveModal::None;
+                            app.enqueue_session_cmd(
+                                sonata_runtime::player::SessionCommand::PlayQueue {
+                                    tracks: vec![tr],
+                                    start_index: 0,
+                                    push_history: false,
+                                },
+                            );
+                        } else {
+                            app.status_line =
+                                "Personal Only Mode active: streaming tracks are disabled"
+                                    .to_string();
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+        ActiveModal::LastFmConfig(form) => {
+            use crate::app::LastFmField;
+            match key.code {
+                KeyCode::Esc => app.modal = ActiveModal::Settings(26),
+                KeyCode::Tab | KeyCode::Down => form.focused = form.focused.next(),
+                KeyCode::BackTab | KeyCode::Up => form.focused = form.focused.prev(),
+                KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
+                    if form.focused == LastFmField::Enabled =>
+                {
+                    form.enabled = !form.enabled;
+                }
+                KeyCode::Enter => {
+                    let snapshot = form.clone();
+                    app.modal = ActiveModal::Settings(26);
+                    app.save_lastfm_form(&snapshot);
+                }
+                KeyCode::Backspace => match form.focused {
+                    LastFmField::Enabled => {}
+                    LastFmField::Username => {
+                        form.username.pop();
+                    }
+                    LastFmField::ApiKey => {
+                        form.api_key.pop();
+                    }
+                    LastFmField::ApiSecret => {
+                        form.api_secret.pop();
+                    }
+                    LastFmField::SessionKey => {
+                        form.session_key.pop();
+                    }
+                },
+                KeyCode::Char(c) => match form.focused {
+                    LastFmField::Enabled => {}
+                    LastFmField::Username => form.username.push(c),
+                    LastFmField::ApiKey => form.api_key.push(c),
+                    LastFmField::ApiSecret => form.api_secret.push(c),
+                    LastFmField::SessionKey => form.session_key.push(c),
+                },
+                _ => {}
+            }
+            return;
+        }
+        ActiveModal::ListenBrainzConfig(form) => {
+            use crate::app::ListenBrainzField;
+            match key.code {
+                KeyCode::Esc => app.modal = ActiveModal::Settings(27),
+                KeyCode::Tab | KeyCode::Down => form.focused = form.focused.next(),
+                KeyCode::BackTab | KeyCode::Up => form.focused = form.focused.prev(),
+                KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
+                    if form.focused == ListenBrainzField::Enabled =>
+                {
+                    form.enabled = !form.enabled;
+                }
+                KeyCode::Enter => {
+                    let snapshot = form.clone();
+                    app.modal = ActiveModal::Settings(27);
+                    app.save_listenbrainz_form(&snapshot);
+                }
+                KeyCode::Backspace => match form.focused {
+                    ListenBrainzField::Enabled => {}
+                    ListenBrainzField::Username => {
+                        form.username.pop();
+                    }
+                    ListenBrainzField::Token => {
+                        form.token.pop();
+                    }
+                },
+                KeyCode::Char(c) => match form.focused {
+                    ListenBrainzField::Enabled => {}
+                    ListenBrainzField::Username => form.username.push(c),
+                    ListenBrainzField::Token => form.token.push(c),
+                },
+                _ => {}
+            }
+            return;
+        }
+        ActiveModal::ConnectManager(sel) => {
+            let count = app.connect_paired_devices.len();
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => app.modal = ActiveModal::Settings(29),
+                KeyCode::Down | KeyCode::Char('j') if count > 0 => *sel = (*sel + 1) % count,
+                KeyCode::Up | KeyCode::Char('k') if count > 0 => *sel = (*sel + count - 1) % count,
+                KeyCode::Char('t') | KeyCode::Char(' ') => app.toggle_connect(),
+                KeyCode::Char('r') => app.regenerate_connect_pin(),
+                KeyCode::Char('n') => {
+                    let s = sonata_runtime::i18n::strings(app.config.language);
+                    let buf = app.config.effective_connect_device_name().to_string();
+                    app.modal = ActiveModal::TextInput {
+                        title: s.connect_device_name.to_string(),
+                        prompt: "Device name advertised on local network:".to_string(),
+                        buf,
+                        target: crate::app::TextInputTarget::ConnectDeviceName,
+                    };
+                }
+                KeyCode::Char('d') | KeyCode::Char('x') | KeyCode::Delete if count > 0 => {
+                    let idx = (*sel).min(count - 1);
+                    let dev_id = app.connect_paired_devices[idx].device_id.clone();
+                    app.unpair_connect_device(&dev_id);
+                    let next_len = app.connect_paired_devices.len();
+                    app.modal = ActiveModal::ConnectManager(if next_len == 0 {
+                        0
+                    } else {
+                        idx.min(next_len - 1)
+                    });
+                }
+                _ => {}
+            }
+            return;
+        }
         ActiveModal::None => {}
     }
 
@@ -607,6 +847,14 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             };
         }
         KeyCode::Char('S') => app.modal = ActiveModal::Settings(0),
+        KeyCode::Char('W') => {
+            app.refresh_listening_stats(app.stats_window);
+            app.modal = ActiveModal::ListeningStats(crate::app::StatsModalState {
+                tab: 0,
+                selected: 0,
+            });
+        }
+        KeyCode::Char('C') => app.modal = ActiveModal::ConnectManager(0),
         KeyCode::Char('m') => app.toggle_mini_mode(),
         KeyCode::Char('R') => app.refresh_account(),
         _ => {}

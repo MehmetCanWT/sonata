@@ -13,8 +13,9 @@ pub use sonata_core::providers::ytmusic::{
     AlbumDetail, MoodCategoryTile, MoodChip, RichSearchResult,
 };
 pub use types::{
-    can_play_track_in_mode, format_server_health_badge, format_server_speed_badge, BackendCmd,
-    BackendHandle, DesktopSnapshot, LibrarySource, NavTarget, UiWindowCmd,
+    build_connect_snapshot, can_play_track_in_mode, filter_transfer_tracks,
+    format_server_health_badge, format_server_speed_badge, BackendCmd, BackendHandle,
+    DesktopSnapshot, LibrarySource, NavTarget, ScrobbleUiStatus, UiWindowCmd,
 };
 
 use crate::integrations::mpris::{spawn_mpris, MprisUpdate};
@@ -22,6 +23,7 @@ use crate::integrations::tray::{spawn_tray, TrayHandle, TrayState};
 use reqwest::Client;
 use sonata_core::auth::ExtractedCookies;
 use sonata_core::cache::{enforce_media_cache_limit_async, start_media_cache_maintenance, CacheDb};
+use sonata_core::connect::ConnectCommand;
 use sonata_core::lyrics::LyricsState;
 use sonata_core::paths::CorePaths;
 use sonata_core::player::{PlaybackState, PlaybackTaskSet};
@@ -40,8 +42,12 @@ use sonata_core::providers::ytmusic::{
     ArtistPage, HomeShelf, MusicVideoCandidate, YtAccountProfile, YtMusicClient,
 };
 use sonata_core::providers::{build_http_client, Playlist, Track};
+use sonata_core::redaction::sensitive_text;
+use sonata_core::scrobble::{ScrobbleClient, ScrobbleConfig, ScrobbleTracker};
+use sonata_core::stats::{StatsDb, StatsSummary, StatsWindow};
 use sonata_runtime::auth::{list_supported_browsers, BrowserOption};
-use sonata_runtime::config::AppConfig;
+use sonata_runtime::config::{sanitize_crossfade_secs, AppConfig};
+use sonata_runtime::connect::{ConnectHandle, ConnectServerConfig, PairedDeviceInfo};
 use sonata_runtime::discord::{DiscordRpcHandle, DiscordRpcStatus};
 use sonata_runtime::downloads::{DownloadStore, DownloadedCollection, DownloadedTrack};
 use sonata_runtime::hyprland;
@@ -113,6 +119,17 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
     let personal_playlists = PersonalPlaylistStore::new(&paths)
         .list()
         .unwrap_or_default();
+    let initial_scrobble_cfg = ScrobbleConfig::load_from_paths(&paths).unwrap_or_default();
+    let initial_scrobble_status = ScrobbleUiStatus {
+        lastfm_enabled: initial_scrobble_cfg.lastfm.enabled,
+        lastfm_configured: initial_scrobble_cfg.lastfm.is_configured(),
+        lastfm_username: initial_scrobble_cfg.lastfm.username.clone(),
+        lastfm_api_key: initial_scrobble_cfg.lastfm.api_key.clone(),
+        listenbrainz_enabled: initial_scrobble_cfg.listenbrainz.enabled,
+        listenbrainz_configured: initial_scrobble_cfg.listenbrainz.is_configured(),
+        listenbrainz_username: initial_scrobble_cfg.listenbrainz.username.clone(),
+        last_error: None,
+    };
     let active_server_id = server_profiles
         .iter()
         .find(|p| p.enabled)
@@ -239,6 +256,15 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
         local_scan: LocalScanResult::default(),
         local_scanning: config.local_music_enabled,
         personal_playlists: personal_playlists.clone(),
+        scrobble_status: initial_scrobble_status,
+        stats_window: StatsWindow::Week,
+        stats_summary: StatsSummary::default(),
+        stats_loading: true,
+        connect_running: false,
+        connect_http_port: None,
+        connect_pin: None,
+        connect_paired_devices: Vec::new(),
+        connect_error: None,
     });
 
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -429,6 +455,31 @@ struct BackendEngine {
     pub(super) local_scanning: bool,
     pub(super) local_scan_req_id: u64,
     pub(super) personal_playlists: Vec<PersonalPlaylist>,
+    pub(super) scrobble_config: ScrobbleConfig,
+    pub(super) scrobble_client: ScrobbleClient,
+    pub(super) scrobble_tracker: Option<ScrobbleTracker>,
+    pub(super) scrobble_last_error: Option<String>,
+    pub(super) active_listen_session: Option<ActiveListenSession>,
+    pub(super) stats_db: Option<StatsDb>,
+    pub(super) stats_window: StatsWindow,
+    pub(super) stats_summary: StatsSummary,
+    pub(super) stats_loading: bool,
+    pub(super) connect_handle: Option<ConnectHandle>,
+    pub(super) connect_cmd_rx: Option<mpsc::Receiver<ConnectCommand>>,
+    pub(super) connect_pin: Option<String>,
+    pub(super) connect_http_port: Option<u16>,
+    pub(super) connect_paired_devices: Vec<PairedDeviceInfo>,
+    pub(super) connect_error: Option<String>,
+    pub(super) pending_connect_seek: Option<(String, f64)>,
+}
+
+pub(super) struct ActiveListenSession {
+    pub(super) play_seq: u64,
+    pub(super) track: Track,
+    pub(super) started_at_unix: u64,
+    pub(super) accumulated_secs: f64,
+    pub(super) last_tick: Option<Instant>,
+    pub(super) stats_recorded: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -498,6 +549,8 @@ async fn run_backend_loop(
     session_cfg.initial_volume = config.volume;
     session_cfg.initial_shuffle = config.shuffle;
     session_cfg.initial_repeat = config.repeat_mode;
+    session_cfg.initial_gapless = config.gapless_enabled;
+    session_cfg.initial_crossfade_secs = sanitize_crossfade_secs(config.crossfade_secs);
     session_cfg.policy = SessionPolicy {
         hifi_substitution: config.hifi_substitution,
         jiosaavn_enabled: config.effective_jiosaavn_enabled(),
@@ -531,6 +584,11 @@ async fn run_backend_loop(
     if initial_skip_silence {
         let _ = session.send(SessionCommand::SetSkipSilence(true)).await;
     }
+    if !config.gapless_enabled {
+        let _ = session.send(SessionCommand::SetGapless(false)).await;
+    }
+    let scrobble_config = ScrobbleConfig::load_from_paths(&paths).unwrap_or_default();
+    let scrobble_client = ScrobbleClient::new();
 
     let personal_only_startup = config.personal_only_mode;
     let initial_nav_loop = if personal_only_startup {
@@ -677,7 +735,26 @@ async fn run_backend_loop(
         local_scanning: false,
         local_scan_req_id: 0,
         personal_playlists,
+        scrobble_config,
+        scrobble_client,
+        scrobble_tracker: None,
+        scrobble_last_error: None,
+        active_listen_session: None,
+        stats_db: None,
+        stats_window: StatsWindow::Week,
+        stats_summary: StatsSummary::default(),
+        stats_loading: true,
+        connect_handle: None,
+        connect_cmd_rx: None,
+        connect_pin: None,
+        connect_http_port: None,
+        connect_paired_devices: Vec::new(),
+        connect_error: None,
+        pending_connect_seek: None,
     };
+
+    engine.spawn_open_stats_db();
+    engine.sync_connect_server().await;
 
     if let Some(sid) = active_server_id {
         engine.load_server_browse(sid, None, None);
@@ -713,6 +790,8 @@ async fn run_backend_loop(
 
     let mut smooth_tick = tokio::time::interval(Duration::from_millis(250));
     smooth_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut listen_tick = tokio::time::interval(Duration::from_secs(1));
+    listen_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut sleep_tick = tokio::time::interval(Duration::from_secs(1));
     sleep_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -729,6 +808,14 @@ async fn run_backend_loop(
                         .send((engine.playback.position_secs, engine.playback.duration_secs));
                     engine.sync_discord_rpc();
                 }
+            }
+            _ = listen_tick.tick(), if active_play => {
+                engine.advance_listen_tracking();
+                engine.publish_connect_snapshot();
+            }
+            Some(ccmd) = recv_connect_cmd(&mut engine.connect_cmd_rx) => {
+                engine.handle_connect_command(ccmd).await;
+                engine.publish(true).await;
             }
             _ = sleep_tick.tick(), if engine.sleep_timer_deadline.is_some() => {
                 if engine.remaining_sleep_secs().is_none() {
@@ -773,6 +860,15 @@ async fn run_backend_loop(
             }
             else => break,
         }
+    }
+}
+
+async fn recv_connect_cmd(
+    rx: &mut Option<mpsc::Receiver<ConnectCommand>>,
+) -> Option<ConnectCommand> {
+    match rx {
+        Some(receiver) => receiver.recv().await,
+        None => std::future::pending().await,
     }
 }
 
@@ -833,6 +929,9 @@ impl BackendEngine {
                         if !self.config.personal_only_mode && self.history_tracks.is_empty() =>
                     {
                         self.load_listening_history();
+                    }
+                    NavTarget::Stats => {
+                        self.refresh_listening_stats(self.stats_window);
                     }
                     NavTarget::Radio
                         if !self.config.personal_only_mode
@@ -1729,6 +1828,158 @@ impl BackendEngine {
                     self.resume_deferred_media();
                 }
             }
+            BackendCmd::ToggleGapless => {
+                self.config.gapless_enabled = !self.config.gapless_enabled;
+                let _ = self.config.save();
+                let _ = self
+                    .session
+                    .send(SessionCommand::SetGapless(self.config.gapless_enabled))
+                    .await;
+                let s = sonata_runtime::i18n::strings(self.ytm_language);
+                self.status_line = format!(
+                    "{}: {}",
+                    s.gapless_playback,
+                    if self.config.gapless_enabled {
+                        s.enabled
+                    } else {
+                        s.disabled
+                    }
+                );
+            }
+            BackendCmd::SetCrossfade(secs) => {
+                let clamped = sanitize_crossfade_secs(secs);
+                self.config.crossfade_secs = clamped;
+                let _ = self.config.save();
+                let _ = self
+                    .session
+                    .send(SessionCommand::SetCrossfade(clamped))
+                    .await;
+                let s = sonata_runtime::i18n::strings(self.ytm_language);
+                self.status_line = if clamped == 0 {
+                    format!("{}: {}", s.crossfade, s.off)
+                } else {
+                    format!("{}: {clamped}s", s.crossfade)
+                };
+            }
+            BackendCmd::SaveScrobbleConfig {
+                lastfm_enabled,
+                lastfm_api_key,
+                lastfm_api_secret,
+                lastfm_session_key,
+                lastfm_username,
+                listenbrainz_enabled,
+                listenbrainz_token,
+                listenbrainz_username,
+            } => {
+                self.scrobble_config.lastfm.enabled = lastfm_enabled;
+                self.scrobble_config.lastfm.api_key = lastfm_api_key.trim().to_string();
+                if let Some(secret) = lastfm_api_secret {
+                    self.scrobble_config.lastfm.api_secret = secret.trim().to_string();
+                }
+                if let Some(sk) = lastfm_session_key {
+                    self.scrobble_config.lastfm.session_key = sk.trim().to_string();
+                }
+                self.scrobble_config.lastfm.username = lastfm_username.trim().to_string();
+
+                self.scrobble_config.listenbrainz.enabled = listenbrainz_enabled;
+                if let Some(token) = listenbrainz_token {
+                    self.scrobble_config.listenbrainz.token = token.trim().to_string();
+                }
+                self.scrobble_config.listenbrainz.username =
+                    listenbrainz_username.trim().to_string();
+
+                match self.scrobble_config.save_to_paths(&self.paths) {
+                    Ok(()) => {
+                        self.scrobble_last_error = None;
+                        self.status_line = "Scrobbling settings saved".to_string();
+                    }
+                    Err(err) => {
+                        let safe = sensitive_text(&err.to_string());
+                        self.scrobble_last_error = Some(safe.clone());
+                        self.status_line = format!("Failed to save scrobble settings: {safe}");
+                    }
+                }
+            }
+            BackendCmd::ClearScrobbleBackend {
+                lastfm,
+                listenbrainz,
+            } => {
+                if lastfm {
+                    self.scrobble_config.lastfm = Default::default();
+                }
+                if listenbrainz {
+                    self.scrobble_config.listenbrainz = Default::default();
+                }
+                match self.scrobble_config.save_to_paths(&self.paths) {
+                    Ok(()) => {
+                        self.scrobble_last_error = None;
+                        self.status_line = "Scrobbling credentials cleared".to_string();
+                    }
+                    Err(err) => {
+                        let safe = sensitive_text(&err.to_string());
+                        self.scrobble_last_error = Some(safe.clone());
+                        self.status_line = format!("Failed to update scrobble settings: {safe}");
+                    }
+                }
+            }
+            BackendCmd::LoadListeningStats(window) => {
+                self.refresh_listening_stats(window);
+            }
+            BackendCmd::ToggleConnect => {
+                self.config.connect_enabled = !self.config.connect_enabled;
+                let _ = self.config.save();
+                self.sync_connect_server().await;
+                let s = sonata_runtime::i18n::strings(self.ytm_language);
+                self.status_line = format!(
+                    "{}: {}",
+                    s.sonata_connect,
+                    if self.config.connect_enabled {
+                        s.enabled
+                    } else {
+                        s.disabled
+                    }
+                );
+            }
+            BackendCmd::SetConnectDeviceName(name) => {
+                let trimmed = name.trim();
+                self.config.connect_device_name = if trimmed.is_empty() {
+                    sonata_runtime::config::DEFAULT_CONNECT_DEVICE_NAME.to_string()
+                } else {
+                    trimmed.to_string()
+                };
+                let _ = self.config.save();
+                if self.config.connect_enabled {
+                    self.sync_connect_server().await;
+                }
+                self.status_line = format!(
+                    "Sonata Connect device: {}",
+                    self.config.effective_connect_device_name()
+                );
+            }
+            BackendCmd::RegenerateConnectPin => {
+                if let Some(ref handle) = self.connect_handle {
+                    let next_pin = handle.regenerate_pin();
+                    self.connect_pin = Some(next_pin);
+                    self.status_line = "Sonata Connect pairing PIN refreshed".to_string();
+                }
+            }
+            BackendCmd::UnpairConnectDevice(device_id) => {
+                if let Some(ref handle) = self.connect_handle {
+                    match handle.unpair_device(&device_id) {
+                        Ok(removed) => {
+                            self.connect_paired_devices = handle.paired_devices();
+                            if removed {
+                                self.status_line = "Paired device removed".to_string();
+                            }
+                        }
+                        Err(err) => {
+                            let safe = sensitive_text(&err.to_string());
+                            self.connect_error = Some(safe.clone());
+                            self.status_line = format!("Unpair failed: {safe}");
+                        }
+                    }
+                }
+            }
             BackendCmd::Shutdown(_) => {}
         }
     }
@@ -2575,6 +2826,23 @@ impl BackendEngine {
                     }
                 }
             }
+            InternalEvent::StatsDbOpened(db_opt) => {
+                self.stats_db = db_opt;
+                if self.stats_db.is_some() {
+                    self.refresh_listening_stats(self.stats_window);
+                } else {
+                    self.stats_loading = false;
+                }
+            }
+            InternalEvent::StatsLoaded { window, summary } => {
+                if window == self.stats_window {
+                    self.stats_summary = summary;
+                    self.stats_loading = false;
+                }
+            }
+            InternalEvent::ScrobbleError(err) => {
+                self.scrobble_last_error = err;
+            }
             InternalEvent::ServerBrowseLoaded {
                 req_id,
                 server_id,
@@ -2629,6 +2897,152 @@ impl BackendEngine {
         }
     }
 
+    fn spawn_open_stats_db(&mut self) {
+        let paths = self.paths.clone();
+        let int_tx = self.int_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let db = match StatsDb::open_with_paths(&paths) {
+                Ok(db) => Some(db),
+                Err(err) => {
+                    tracing::warn!(client = "desktop", error = %err, "failed to open stats.db");
+                    None
+                }
+            };
+            let _ = int_tx.send(InternalEvent::StatsDbOpened(db));
+        });
+    }
+
+    fn refresh_listening_stats(&mut self, window: StatsWindow) {
+        self.stats_window = window;
+        let Some(db) = self.stats_db.clone() else {
+            self.stats_loading = false;
+            return;
+        };
+        self.stats_loading = true;
+        let int_tx = self.int_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let summary = db.query_summary(window).unwrap_or_default();
+            let _ = int_tx.send(InternalEvent::StatsLoaded { window, summary });
+        });
+    }
+
+    async fn sync_connect_server(&mut self) {
+        if let Some(prev) = self.connect_handle.take() {
+            prev.shutdown();
+        }
+        self.connect_cmd_rx = None;
+        self.connect_pin = None;
+        self.connect_http_port = None;
+        self.connect_error = None;
+        if !self.config.connect_enabled {
+            self.connect_paired_devices.clear();
+            return;
+        }
+        let cfg = ConnectServerConfig {
+            device_name: self.config.effective_connect_device_name().to_string(),
+            paired_store_path: self.paths.connect_paired_path(),
+            ..ConnectServerConfig::default()
+        };
+        match ConnectHandle::start(cfg).await {
+            Ok((handle, cmd_rx)) => {
+                self.connect_pin = Some(handle.current_pin());
+                self.connect_http_port = Some(handle.http_port());
+                self.connect_paired_devices = handle.paired_devices();
+                self.connect_handle = Some(handle);
+                self.connect_cmd_rx = Some(cmd_rx);
+                self.publish_connect_snapshot();
+            }
+            Err(err) => {
+                let safe = sensitive_text(&err.to_string());
+                tracing::warn!(client = "desktop", error = %safe, "failed to start Sonata Connect");
+                self.connect_error = Some(safe);
+            }
+        }
+    }
+
+    fn publish_connect_snapshot(&mut self) {
+        let Some(ref handle) = self.connect_handle else {
+            return;
+        };
+        self.connect_paired_devices = handle.paired_devices();
+        self.connect_pin = Some(handle.current_pin());
+        let snapshot = build_connect_snapshot(
+            "",
+            self.config.effective_connect_device_name(),
+            &self.playback,
+            self.muted,
+            self.playback.loading_track,
+        );
+        handle.update_state(snapshot);
+    }
+
+    async fn handle_connect_command(&mut self, cmd: ConnectCommand) {
+        match cmd {
+            ConnectCommand::Play => {
+                let _ = self.session.send(SessionCommand::SetPaused(false)).await;
+            }
+            ConnectCommand::Pause => {
+                let _ = self.session.send(SessionCommand::SetPaused(true)).await;
+            }
+            ConnectCommand::Next => {
+                let _ = self.session.send(SessionCommand::Next).await;
+            }
+            ConnectCommand::Prev => {
+                let _ = self
+                    .session
+                    .send(SessionCommand::Previous {
+                        restart_if_after_secs: Some(4.0),
+                    })
+                    .await;
+            }
+            ConnectCommand::SeekAbsolute { position_secs } => {
+                if position_secs.is_finite() {
+                    let _ = self
+                        .session
+                        .send(SessionCommand::SeekAbsolute(position_secs.max(0.0)))
+                        .await;
+                }
+            }
+            ConnectCommand::SetVolume { volume } => {
+                let clamped = volume.min(100);
+                self.muted = false;
+                self.playback.volume = clamped;
+                self.config.volume = clamped;
+                self.config_dirty = true;
+                let _ = self.session.send(SessionCommand::SetVolume(clamped)).await;
+            }
+            ConnectCommand::TransferQueue {
+                tracks,
+                start_index,
+                position_secs,
+            } => {
+                let Some((filtered, idx)) = filter_transfer_tracks(
+                    tracks,
+                    start_index,
+                    self.config.personal_only_mode,
+                    &self.downloaded_track_ids,
+                ) else {
+                    self.status_line =
+                        "Connect handoff ignored: no playable tracks in current mode".to_string();
+                    return;
+                };
+                self.pending_connect_seek = filtered
+                    .get(idx)
+                    .filter(|_| position_secs.is_finite() && position_secs > 0.5)
+                    .map(|t| (t.id.clone(), position_secs.max(0.0)));
+                self.status_line = "Adopted queue from Sonata Connect".to_string();
+                let _ = self
+                    .session
+                    .send(SessionCommand::PlayQueue {
+                        tracks: filtered,
+                        start_index: idx,
+                        push_history: true,
+                    })
+                    .await;
+            }
+        }
+    }
+
     fn spawn_update_check(&mut self) {
         if self.checking_updates {
             return;
@@ -2656,12 +3070,24 @@ impl BackendEngine {
 
     async fn publish(&mut self, notify_integrations: bool) {
         self.export_now_playing();
+        self.publish_connect_snapshot();
         if self.config_dirty {
             match self.config.save() {
                 Ok(()) => self.config_dirty = false,
                 Err(err) => tracing::warn!(?err, "failed to save desktop config"),
             }
         }
+
+        let scrobble_status = ScrobbleUiStatus {
+            lastfm_enabled: self.scrobble_config.lastfm.enabled,
+            lastfm_configured: self.scrobble_config.lastfm.is_configured(),
+            lastfm_username: self.scrobble_config.lastfm.username.clone(),
+            lastfm_api_key: self.scrobble_config.lastfm.api_key.clone(),
+            listenbrainz_enabled: self.scrobble_config.listenbrainz.enabled,
+            listenbrainz_configured: self.scrobble_config.listenbrainz.is_configured(),
+            listenbrainz_username: self.scrobble_config.listenbrainz.username.clone(),
+            last_error: self.scrobble_last_error.clone(),
+        };
 
         let snap = Arc::new(DesktopSnapshot {
             config: self.config.clone(),
@@ -2772,6 +3198,15 @@ impl BackendEngine {
             local_scan: self.local_scan.clone(),
             local_scanning: self.local_scanning,
             personal_playlists: self.personal_playlists.clone(),
+            scrobble_status,
+            stats_window: self.stats_window,
+            stats_summary: self.stats_summary.clone(),
+            stats_loading: self.stats_loading,
+            connect_running: self.connect_handle.is_some(),
+            connect_http_port: self.connect_http_port,
+            connect_pin: self.connect_pin.clone(),
+            connect_paired_devices: self.connect_paired_devices.clone(),
+            connect_error: self.connect_error.clone(),
         });
 
         if self.window_visible {
@@ -2801,6 +3236,10 @@ impl BackendEngine {
     }
 
     async fn shutdown(&mut self) {
+        self.finalize_listen_stats();
+        if let Some(handle) = self.connect_handle.take() {
+            handle.shutdown();
+        }
         if let Some(addr) = &self.hyprland_window {
             hyprland::set_window_opacity_sync(addr, 1.0);
         }
@@ -2975,6 +3414,15 @@ mod tests {
             local_scan: LocalScanResult::default(),
             local_scanning: false,
             personal_playlists: Vec::new(),
+            scrobble_status: ScrobbleUiStatus::default(),
+            stats_window: StatsWindow::Week,
+            stats_summary: StatsSummary::default(),
+            stats_loading: false,
+            connect_running: false,
+            connect_http_port: None,
+            connect_pin: None,
+            connect_paired_devices: Vec::new(),
+            connect_error: None,
         }));
         let (_progress_tx, progress_rx) = watch::channel((0.0_f64, 0.0_f64));
         let handle = BackendHandle {

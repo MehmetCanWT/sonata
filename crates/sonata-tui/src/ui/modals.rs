@@ -4,8 +4,9 @@
 //! 2. **Library & Theme Modals**: Renders theme picker, Spotify playlist import, playlist creation/addition, image protocol warning, and keybindings help.
 
 use crate::app::{
-    format_tui_health_badge, format_tui_speed_badge, ActiveModal, App, ServerBrowserState,
-    ServerBrowserTab, ServerFormField, ServerFormState, TuiPlaylistAddTarget,
+    format_tui_health_badge, format_tui_speed_badge, ActiveModal, App, LastFmField,
+    LastFmFormState, ListenBrainzField, ListenBrainzFormState, ServerBrowserState,
+    ServerBrowserTab, ServerFormField, ServerFormState, StatsModalState, TuiPlaylistAddTarget,
 };
 use crate::theme_tui::to_ratatui_color;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -16,8 +17,9 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 use sonata_core::providers::servers::ServerKind;
+use sonata_core::stats::StatsWindow;
 use sonata_core::updater::CURRENT_VERSION;
-use sonata_runtime::config::AppConfig;
+use sonata_runtime::config::{sanitize_crossfade_secs, AppConfig};
 use sonata_runtime::hyprland;
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -43,6 +45,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ActiveModal::ServerManager(selected) => render_server_manager(frame, area, app, *selected),
         ActiveModal::AddServer(form) => render_add_server(frame, area, app, form),
         ActiveModal::ServerBrowser(st) => render_server_browser(frame, area, app, st),
+        ActiveModal::ListeningStats(st) => render_listening_stats(frame, area, app, st),
+        ActiveModal::LastFmConfig(form) => render_lastfm_form(frame, area, app, form),
+        ActiveModal::ListenBrainzConfig(form) => render_listenbrainz_form(frame, area, app, form),
+        ActiveModal::ConnectManager(selected) => {
+            render_connect_manager(frame, area, app, *selected)
+        }
         ActiveModal::Help => render_help(frame, area, app),
     }
 }
@@ -61,7 +69,7 @@ pub fn sized_popup(min_w: u16, max_w: u16, target_h: u16, area: Rect) -> Rect {
     }
 }
 
-pub const SETTINGS_ROW_COUNT: usize = 26;
+pub const SETTINGS_ROW_COUNT: usize = 33;
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn settings_popup_rect(area: Rect, row_count: usize) -> Rect {
@@ -527,6 +535,29 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
         },
         SettingEntry {
             section: None,
+            label: s.gapless_playback,
+            description: s.gapless_playback_desc,
+            value: SettingValueKind::Toggle(app.config.gapless_enabled, s.enabled, s.disabled),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: None,
+            label: s.crossfade,
+            description: s.crossfade_desc,
+            value: SettingValueKind::Text({
+                let secs = sanitize_crossfade_secs(app.config.crossfade_secs);
+                if app.video_mode && secs > 0 {
+                    format!("{secs}s ({})", s.video)
+                } else if secs == 0 {
+                    s.off.to_string()
+                } else {
+                    format!("{secs}s")
+                }
+            }),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: None,
             label: s.sleep_timer,
             description: s.sleep_timer_desc,
             value: SettingValueKind::Text(match app.sleep_timer_remaining_secs() {
@@ -628,6 +659,66 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
             label: s.discord_app_id,
             description: s.discord_app_id_desc,
             value: SettingValueKind::Text(discord_app_text),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: None,
+            label: s.lastfm_scrobbling,
+            description: s.lastfm_scrobbling_desc,
+            value: SettingValueKind::Toggle(
+                app.scrobble_config.lastfm.enabled,
+                if app.scrobble_config.lastfm.is_configured() {
+                    s.enabled
+                } else {
+                    "Incomplete"
+                },
+                s.disabled,
+            ),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: None,
+            label: s.listenbrainz_scrobbling,
+            description: s.listenbrainz_scrobbling_desc,
+            value: SettingValueKind::Toggle(
+                app.scrobble_config.listenbrainz.enabled,
+                if app.scrobble_config.listenbrainz.is_configured() {
+                    s.enabled
+                } else {
+                    "Incomplete"
+                },
+                s.disabled,
+            ),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: None,
+            label: s.listening_stats,
+            description: s.listening_stats_desc,
+            value: SettingValueKind::Text(format!(
+                "{} {} · {}m",
+                app.stats_summary.total_plays, s.total_plays, app.stats_summary.total_minutes
+            )),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: None,
+            label: s.sonata_connect,
+            description: s.sonata_connect_desc,
+            value: SettingValueKind::Text(if !app.config.connect_enabled {
+                s.disabled.to_string()
+            } else {
+                let pin = app.connect_pin.as_deref().unwrap_or("------");
+                let port = app.connect_http_port.unwrap_or(0);
+                format!("PIN {pin} (:{port})")
+            }),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: None,
+            label: s.connect_device_name,
+            description: s.sonata_connect_desc,
+            value: SettingValueKind::Text(app.config.effective_connect_device_name().to_string()),
             adjustable: true,
         },
         SettingEntry {
@@ -949,7 +1040,8 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
         "Sources:     v             Switch active Library source tab",
         "Spotify:     i             Import any Spotify playlist URL",
         "Offline:     d / D         Download/remove track or collection",
-        "Settings:    S             Providers, Downloads, Servers, Discord & Theme",
+        "Ecosystem:   W             Listening Stats  |  C  Sonata Connect",
+        "Settings:    S             Providers, Downloads, Servers, Scrobbling & Theme",
         "Keybinds:    k / ?         Show or close this Keybindings menu",
         "Mini Mode:   m / Dbl-Click Toggle Mini Mode (Art + Lyrics / Art / Mini Player)",
         "Themes:      t             Open Theme Picker (live preview)",
@@ -1315,6 +1407,469 @@ fn render_server_browser(frame: &mut Frame<'_>, area: Rect, app: &App, st: &Serv
 
     frame.render_widget(
         Paragraph::new("←/→/Tab: Section  ↑/↓: Select  Enter: Open/Play  r: Refresh  Esc: Close")
+            .style(Style::default().fg(app.theme.muted)),
+        chunks[2],
+    );
+}
+
+fn render_listening_stats(frame: &mut Frame<'_>, area: Rect, app: &App, st: &StatsModalState) {
+    let s = sonata_runtime::i18n::strings(app.config.language);
+    let popup = sized_popup(54, 92, 22, area);
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .title(format!(" {} ", s.listening_stats))
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(app.theme.accent))
+        .style(Style::default().bg(app.theme.surface).fg(app.theme.fg));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    if inner.height < 6 {
+        return;
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Min(2),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    let windows = [
+        (StatsWindow::Week, s.stats_week),
+        (StatsWindow::Month, s.stats_month),
+        (StatsWindow::Year, s.stats_year),
+        (StatsWindow::AllTime, s.stats_all_time),
+    ];
+    let win_spans: Vec<Span<'static>> = windows
+        .iter()
+        .enumerate()
+        .map(|(idx, (w, lbl))| {
+            let num = idx + 1;
+            if *w == app.stats_window {
+                Span::styled(
+                    format!(" [{num}:{lbl}] "),
+                    Style::default()
+                        .fg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::styled(
+                    format!("  {num}:{lbl}  "),
+                    Style::default().fg(app.theme.muted),
+                )
+            }
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(Line::from(win_spans)), chunks[0]);
+
+    let summary = &app.stats_summary;
+    let src_text = if summary.source_breakdown.is_empty() {
+        "-".to_string()
+    } else {
+        summary
+            .source_breakdown
+            .iter()
+            .take(5)
+            .map(|b| format!("{}:{}", b.source_tag, b.plays))
+            .collect::<Vec<_>>()
+            .join("  ")
+    };
+    let kpi_lines = vec![
+        Line::from(vec![
+            Span::styled(
+                format!("{}: ", s.total_plays),
+                Style::default().fg(app.theme.muted),
+            ),
+            Span::styled(
+                format!("{}  ", summary.total_plays),
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{}: ", s.listening_time),
+                Style::default().fg(app.theme.muted),
+            ),
+            Span::styled(
+                format!("{}m  ", summary.total_minutes),
+                Style::default()
+                    .fg(app.theme.fg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{}: ", s.streak_days),
+                Style::default().fg(app.theme.muted),
+            ),
+            Span::styled(
+                format!("{}d", summary.streak_days),
+                Style::default()
+                    .fg(app.theme.success)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                format!("{}: ", s.sources),
+                Style::default().fg(app.theme.muted),
+            ),
+            Span::styled(src_text, Style::default().fg(app.theme.fg)),
+        ]),
+    ];
+    frame.render_widget(Paragraph::new(kpi_lines), chunks[1]);
+
+    let tabs = [(0, s.top_tracks), (1, s.top_artists), (2, s.top_albums)];
+    let tab_spans: Vec<Span<'static>> = tabs
+        .iter()
+        .map(|(idx, lbl)| {
+            if st.tab == *idx {
+                Span::styled(
+                    format!(" [{lbl}] "),
+                    Style::default()
+                        .fg(app.theme.highlight_fg)
+                        .bg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::styled(format!("  {lbl}  "), Style::default().fg(app.theme.muted))
+            }
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(Line::from(tab_spans)), chunks[2]);
+
+    let rows: Vec<String> = match st.tab {
+        1 => summary
+            .top_artists
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                format!(
+                    "{}. {}  ({} plays · {}m)",
+                    i + 1,
+                    a.artist,
+                    a.plays,
+                    a.minutes
+                )
+            })
+            .collect(),
+        2 => summary
+            .top_albums
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                format!(
+                    "{}. {} — {}  ({} plays · {}m)",
+                    i + 1,
+                    a.album,
+                    a.artist,
+                    a.plays,
+                    a.minutes
+                )
+            })
+            .collect(),
+        _ => summary
+            .top_tracks
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                format!(
+                    "{}. {} — {} [{}] ({} plays · {}m)",
+                    i + 1,
+                    t.title,
+                    t.artist,
+                    t.source_tag,
+                    t.plays,
+                    t.minutes
+                )
+            })
+            .collect(),
+    };
+    if app.stats_loading {
+        frame.render_widget(
+            Paragraph::new("Loading stats...").style(Style::default().fg(app.theme.muted)),
+            chunks[3],
+        );
+    } else if rows.is_empty() {
+        frame.render_widget(
+            Paragraph::new(s.no_stats_yet).style(Style::default().fg(app.theme.muted)),
+            chunks[3],
+        );
+    } else {
+        let sel = st.selected.min(rows.len().saturating_sub(1));
+        let items: Vec<ListItem> = rows.into_iter().map(ListItem::new).collect();
+        let mut state = ListState::default();
+        state.select(Some(sel));
+        let list = List::new(items)
+            .highlight_style(
+                Style::default()
+                    .bg(app.theme.highlight_bg)
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol("▸ ");
+        frame.render_stateful_widget(list, chunks[3], &mut state);
+    }
+
+    frame.render_widget(
+        Paragraph::new("1-4: Window  Tab/←→: Chart  ↑↓: Scroll  Enter: Play  r: Refresh  Esc")
+            .style(Style::default().fg(app.theme.muted)),
+        chunks[4],
+    );
+}
+
+fn render_lastfm_form(frame: &mut Frame<'_>, area: Rect, app: &App, form: &LastFmFormState) {
+    let s = sonata_runtime::i18n::strings(app.config.language);
+    let popup = sized_popup(50, 80, 14, area);
+    frame.render_widget(Clear, popup);
+
+    let secret_mask = "*".repeat(form.api_secret.chars().count());
+    let session_mask = "*".repeat(form.session_key.chars().count());
+    let enabled_lbl = if form.enabled { s.enabled } else { s.disabled };
+    let rows = [
+        (LastFmField::Enabled, "Status", enabled_lbl),
+        (LastFmField::Username, "Username", form.username.as_str()),
+        (LastFmField::ApiKey, "API Key", form.api_key.as_str()),
+        (LastFmField::ApiSecret, "API Secret", secret_mask.as_str()),
+        (
+            LastFmField::SessionKey,
+            "Session Key",
+            session_mask.as_str(),
+        ),
+    ];
+
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(rows.len() + 4);
+    for (field, label, val) in rows {
+        let active = form.focused == field;
+        let cursor = if active && field != LastFmField::Enabled {
+            "▏"
+        } else {
+            ""
+        };
+        let label_style = if active {
+            Style::default()
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(app.theme.muted)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(if active { "▸ " } else { "  " }, label_style),
+            Span::styled(format!("{label:<14} "), label_style),
+            Span::styled(format!("{val}{cursor}"), Style::default().fg(app.theme.fg)),
+        ]));
+    }
+    if let Some(ref err) = app.scrobble_last_error {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            err.clone(),
+            Style::default().fg(app.theme.error),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Tab/↑↓: Field  Space/←→: Toggle  Enter: Save  Esc: Cancel",
+        Style::default().fg(app.theme.muted),
+    )));
+
+    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        Block::default()
+            .title(format!(" {} ", s.lastfm_scrobbling))
+            .title_alignment(Alignment::Center)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(app.theme.accent))
+            .style(Style::default().bg(app.theme.surface).fg(app.theme.fg)),
+    );
+    frame.render_widget(p, popup);
+}
+
+fn render_listenbrainz_form(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    app: &App,
+    form: &ListenBrainzFormState,
+) {
+    let s = sonata_runtime::i18n::strings(app.config.language);
+    let popup = sized_popup(50, 80, 12, area);
+    frame.render_widget(Clear, popup);
+
+    let token_mask = "*".repeat(form.token.chars().count());
+    let enabled_lbl = if form.enabled { s.enabled } else { s.disabled };
+    let rows = [
+        (ListenBrainzField::Enabled, "Status", enabled_lbl),
+        (
+            ListenBrainzField::Username,
+            "Username",
+            form.username.as_str(),
+        ),
+        (ListenBrainzField::Token, "User Token", token_mask.as_str()),
+    ];
+
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(rows.len() + 4);
+    for (field, label, val) in rows {
+        let active = form.focused == field;
+        let cursor = if active && field != ListenBrainzField::Enabled {
+            "▏"
+        } else {
+            ""
+        };
+        let label_style = if active {
+            Style::default()
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(app.theme.muted)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(if active { "▸ " } else { "  " }, label_style),
+            Span::styled(format!("{label:<14} "), label_style),
+            Span::styled(format!("{val}{cursor}"), Style::default().fg(app.theme.fg)),
+        ]));
+    }
+    if let Some(ref err) = app.scrobble_last_error {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            err.clone(),
+            Style::default().fg(app.theme.error),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Tab/↑↓: Field  Space/←→: Toggle  Enter: Save  Esc: Cancel",
+        Style::default().fg(app.theme.muted),
+    )));
+
+    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        Block::default()
+            .title(format!(" {} ", s.listenbrainz_scrobbling))
+            .title_alignment(Alignment::Center)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(app.theme.accent))
+            .style(Style::default().bg(app.theme.surface).fg(app.theme.fg)),
+    );
+    frame.render_widget(p, popup);
+}
+
+fn render_connect_manager(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize) {
+    let s = sonata_runtime::i18n::strings(app.config.language);
+    let dev_count = app.connect_paired_devices.len().max(1);
+    let target_h = (dev_count as u16 + 10).clamp(13, 20).min(area.height);
+    let popup = sized_popup(50, 84, target_h, area);
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .title(format!(" {} ", s.sonata_connect))
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(app.theme.accent))
+        .style(Style::default().bg(app.theme.surface).fg(app.theme.fg));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    if inner.height < 6 {
+        return;
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(4),
+            Constraint::Min(2),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    let status_txt = if !app.config.connect_enabled {
+        s.disabled.to_string()
+    } else if let Some(ref err) = app.connect_error {
+        format!("Error: {err}")
+    } else if let Some(port) = app.connect_http_port {
+        format!("{} (HTTP :{port})", s.enabled)
+    } else {
+        s.enabled.to_string()
+    };
+    let pin_txt = app.connect_pin.as_deref().unwrap_or("------");
+    let info_lines = vec![
+        Line::from(vec![
+            Span::styled("Status: ", Style::default().fg(app.theme.muted)),
+            Span::styled(
+                status_txt,
+                Style::default()
+                    .fg(if app.connect_handle.is_some() {
+                        app.theme.success
+                    } else {
+                        app.theme.muted
+                    })
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                format!("{}: ", s.connect_device_name),
+                Style::default().fg(app.theme.muted),
+            ),
+            Span::styled(
+                app.config.effective_connect_device_name(),
+                Style::default()
+                    .fg(app.theme.fg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                format!("{}: ", s.pairing_pin),
+                Style::default().fg(app.theme.muted),
+            ),
+            Span::styled(
+                pin_txt,
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(Span::styled(
+            format!("── {} ──", s.paired_devices),
+            Style::default().fg(app.theme.border),
+        )),
+    ];
+    frame.render_widget(Paragraph::new(info_lines), chunks[0]);
+
+    if app.connect_paired_devices.is_empty() {
+        frame.render_widget(
+            Paragraph::new(s.no_paired_devices).style(Style::default().fg(app.theme.muted)),
+            chunks[1],
+        );
+    } else {
+        let sel = selected.min(app.connect_paired_devices.len().saturating_sub(1));
+        let items: Vec<ListItem> = app
+            .connect_paired_devices
+            .iter()
+            .map(|d| ListItem::new(format!("{} ({})", d.device_name, d.device_id)))
+            .collect();
+        let mut state = ListState::default();
+        state.select(Some(sel));
+        let list = List::new(items)
+            .highlight_style(
+                Style::default()
+                    .bg(app.theme.highlight_bg)
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol("▸ ");
+        frame.render_stateful_widget(list, chunks[1], &mut state);
+    }
+
+    frame.render_widget(
+        Paragraph::new("t: Toggle  r: New PIN  n: Name  d/Del: Unpair  Esc: Close")
             .style(Style::default().fg(app.theme.muted)),
         chunks[2],
     );

@@ -11,16 +11,21 @@ use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui_image::protocol::StatefulProtocol;
 use sonata_core::auth::ExtractedCookies;
+use sonata_core::connect::ConnectStateSnapshot;
 use sonata_core::lyrics::LyricsState;
+use sonata_core::player::PlaybackState;
 use sonata_core::playlists::{is_personal_track_id, PersonalPlaylist};
 use sonata_core::providers::local::LocalScanResult;
 use sonata_core::providers::servers::{
     ServerHealthReport, ServerKind, ServerProfile, ServerSpeedTestReport,
 };
 use sonata_core::providers::{Playlist, ProviderSource, Track};
+use sonata_core::scrobble::ScrobbleConfig;
+use sonata_core::stats::{StatsDb, StatsSummary, StatsWindow};
 use sonata_core::updater::UpdateCheckResult;
 use sonata_runtime::hyprland;
 use sonata_runtime::player::SessionCommand;
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SplitTarget {
@@ -181,6 +186,7 @@ pub enum SidebarEntry {
     Search,
     Queue,
     Downloads,
+    ListeningStats,
     LocalSongs,
     LocalAlbum(usize),
     LocalFolder(usize),
@@ -194,6 +200,111 @@ pub enum TextInputTarget {
     DownloadsDir,
     DiscordAppId,
     LocalMusicDir,
+    ConnectDeviceName,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LastFmField {
+    Enabled,
+    Username,
+    ApiKey,
+    ApiSecret,
+    SessionKey,
+}
+
+impl LastFmField {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Enabled => Self::Username,
+            Self::Username => Self::ApiKey,
+            Self::ApiKey => Self::ApiSecret,
+            Self::ApiSecret => Self::SessionKey,
+            Self::SessionKey => Self::Enabled,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Enabled => Self::SessionKey,
+            Self::Username => Self::Enabled,
+            Self::ApiKey => Self::Username,
+            Self::ApiSecret => Self::ApiKey,
+            Self::SessionKey => Self::ApiSecret,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LastFmFormState {
+    pub enabled: bool,
+    pub username: String,
+    pub api_key: String,
+    pub api_secret: String,
+    pub session_key: String,
+    pub focused: LastFmField,
+}
+
+impl LastFmFormState {
+    pub fn from_config(cfg: &ScrobbleConfig) -> Self {
+        Self {
+            enabled: cfg.lastfm.enabled,
+            username: cfg.lastfm.username.clone(),
+            api_key: cfg.lastfm.api_key.clone(),
+            api_secret: cfg.lastfm.api_secret.clone(),
+            session_key: cfg.lastfm.session_key.clone(),
+            focused: LastFmField::Enabled,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListenBrainzField {
+    Enabled,
+    Username,
+    Token,
+}
+
+impl ListenBrainzField {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Enabled => Self::Username,
+            Self::Username => Self::Token,
+            Self::Token => Self::Enabled,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Enabled => Self::Token,
+            Self::Username => Self::Enabled,
+            Self::Token => Self::Username,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListenBrainzFormState {
+    pub enabled: bool,
+    pub username: String,
+    pub token: String,
+    pub focused: ListenBrainzField,
+}
+
+impl ListenBrainzFormState {
+    pub fn from_config(cfg: &ScrobbleConfig) -> Self {
+        Self {
+            enabled: cfg.listenbrainz.enabled,
+            username: cfg.listenbrainz.username.clone(),
+            token: cfg.listenbrainz.token.clone(),
+            focused: ListenBrainzField::Enabled,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatsModalState {
+    pub tab: usize,
+    pub selected: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -394,6 +505,10 @@ pub enum ActiveModal {
     ServerManager(usize),
     AddServer(ServerFormState),
     ServerBrowser(ServerBrowserState),
+    ListeningStats(StatsModalState),
+    LastFmConfig(LastFmFormState),
+    ListenBrainzConfig(ListenBrainzFormState),
+    ConnectManager(usize),
     Help,
 }
 
@@ -502,6 +617,91 @@ pub enum AppEvent {
         report: ServerSpeedTestReport,
     },
     LocalMusicScanned(LocalScanResult),
+    StatsDbOpened(Option<StatsDb>),
+    StatsLoaded {
+        window: StatsWindow,
+        summary: StatsSummary,
+    },
+    ScrobbleError(Option<String>),
+}
+
+/// Maps a Sonata track to its canonical short source tag (`LOC`, `SMB`, `JFN`, `SUB`, `DAV`, `JIO`, `SPF`, `YTM`).
+pub fn tui_track_source_tag(track: &Track) -> &'static str {
+    if track.id.starts_with("local:") {
+        "LOC"
+    } else if track.id.starts_with("smb:") {
+        "SMB"
+    } else if track.id.starts_with("jellyfin:") {
+        "JFN"
+    } else if track.id.starts_with("subsonic:") {
+        "SUB"
+    } else if track.id.starts_with("webdav:") {
+        "DAV"
+    } else if track
+        .id
+        .starts_with(sonata_core::providers::jiosaavn::ID_PREFIX)
+    {
+        "JIO"
+    } else if track.source == ProviderSource::Spotify {
+        "SPF"
+    } else {
+        "YTM"
+    }
+}
+
+/// Builds a live [`ConnectStateSnapshot`] from current TUI playback state.
+pub fn build_tui_connect_snapshot(
+    device_name: &str,
+    playback: &PlaybackState,
+) -> ConnectStateSnapshot {
+    let current = playback.current_track();
+    let playing = current.is_some() && !playback.paused && !playback.loading_track;
+    ConnectStateSnapshot {
+        device_id: String::new(),
+        device_name: device_name.to_string(),
+        playing,
+        paused: playback.paused,
+        track_id: current.map(|t| t.id.clone()),
+        title: current.map(|t| t.title.clone()),
+        artist: current.map(|t| t.artist.clone()),
+        album: current.map(|t| t.album.clone()),
+        thumbnail_url: current.and_then(|t| t.thumbnail_url.clone()),
+        position_secs: playback.position_secs.max(0.0),
+        duration_secs: playback.duration_secs.max(0.0),
+        volume: playback.volume.min(100),
+        shuffle: playback.shuffle,
+        repeat_mode: playback.repeat,
+        queue: playback.queue.clone(),
+        current_index: playback.current_index,
+        updated_at_unix: 0,
+    }
+}
+
+/// Filters Connect `TransferQueue` tracks for Personal Only Mode and clamps `start_index`.
+pub fn filter_tui_transfer_tracks(
+    tracks: Vec<Track>,
+    start_index: usize,
+    personal_only_mode: bool,
+    downloaded_track_ids: &HashSet<String>,
+) -> Option<(Vec<Track>, usize)> {
+    if tracks.is_empty() {
+        return None;
+    }
+    if !personal_only_mode {
+        return Some((tracks.clone(), start_index.min(tracks.len() - 1)));
+    }
+    let target_id = tracks.get(start_index).map(|t| t.id.clone());
+    let filtered: Vec<Track> = tracks
+        .into_iter()
+        .filter(|t| can_play_tui_track(t, true, downloaded_track_ids.contains(&t.id)))
+        .collect();
+    if filtered.is_empty() {
+        return None;
+    }
+    let mapped_idx = target_id
+        .and_then(|id| filtered.iter().position(|t| t.id == id))
+        .unwrap_or(0);
+    Some((filtered, mapped_idx))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -560,6 +760,7 @@ impl App {
             SidebarEntry::Search,
             SidebarEntry::Queue,
             SidebarEntry::Downloads,
+            SidebarEntry::ListeningStats,
         ];
         match self.active_source {
             TuiLibrarySource::YouTube => {
@@ -909,16 +1110,19 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{
-        can_play_tui_track, compute_tui_library_sources, format_tui_health_badge,
-        format_tui_speed_badge, resolve_tui_playlist_add_targets, ServerBrowserTab,
-        ServerFormField, TuiLibrarySource, TuiPlaylistAddTarget,
+        build_tui_connect_snapshot, can_play_tui_track, compute_tui_library_sources,
+        filter_tui_transfer_tracks, format_tui_health_badge, format_tui_speed_badge,
+        resolve_tui_playlist_add_targets, tui_track_source_tag, ServerBrowserTab, ServerFormField,
+        TuiLibrarySource, TuiPlaylistAddTarget,
     };
+    use sonata_core::player::PlaybackState;
     use sonata_core::playlists::PersonalPlaylist;
     use sonata_core::providers::servers::{
         ServerHealthReport, ServerKind, ServerProfile, ServerSpeedTestReport,
     };
     use sonata_core::providers::{Playlist, ProviderSource, Track};
     use sonata_runtime::config::AppConfig;
+    use std::collections::HashSet;
 
     fn dummy_track(id: &str) -> Track {
         Track {
@@ -1105,5 +1309,76 @@ mod tests {
             sample_note: "ok".to_string(),
         };
         assert_eq!(format_tui_speed_badge(&speed), "84.2 Mbps (11ms)");
+    }
+
+    #[test]
+    fn tui_connect_snapshot_transfer_filter_and_source_tags() {
+        let mut playback = PlaybackState::new(64);
+        let t1 = dummy_track("local:/a.flac");
+        let t2 = dummy_track("ytm_abc");
+        let t3 = dummy_track("subsonic:s1:9");
+        playback.queue = vec![t1.clone(), t2.clone(), t3.clone()];
+        playback.current_index = Some(0);
+        playback.paused = false;
+
+        let snap = build_tui_connect_snapshot("TUI Desk", &playback);
+        assert!(snap.playing);
+        assert_eq!(snap.volume, 64);
+        assert_eq!(snap.track_id.as_deref(), Some("local:/a.flac"));
+
+        let dl = HashSet::new();
+        let (filtered, idx) =
+            filter_tui_transfer_tracks(vec![t1, t2.clone(), t3], 2, true, &dl).expect("filtered");
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(idx, 1);
+        assert_eq!(filtered[idx].id, "subsonic:s1:9");
+        assert!(filter_tui_transfer_tracks(vec![t2], 0, true, &dl).is_none());
+
+        assert_eq!(tui_track_source_tag(&dummy_track("smb:nas:1")), "SMB");
+        assert_eq!(tui_track_source_tag(&dummy_track("webdav:d:1")), "DAV");
+    }
+
+    #[test]
+    fn tui_scrobble_forms_cycle_fields_and_roundtrip_config() {
+        use super::{LastFmField, LastFmFormState, ListenBrainzField, ListenBrainzFormState};
+        use sonata_core::scrobble::{LastFmConfig, ListenBrainzConfig, ScrobbleConfig};
+
+        let mut f = LastFmField::Enabled;
+        for _ in 0..5 {
+            f = f.next();
+        }
+        assert_eq!(f, LastFmField::Enabled);
+        assert_eq!(LastFmField::Enabled.prev(), LastFmField::SessionKey);
+
+        let mut lb = ListenBrainzField::Enabled;
+        for _ in 0..3 {
+            lb = lb.next();
+        }
+        assert_eq!(lb, ListenBrainzField::Enabled);
+        assert_eq!(ListenBrainzField::Enabled.prev(), ListenBrainzField::Token);
+
+        let cfg = ScrobbleConfig {
+            lastfm: LastFmConfig {
+                enabled: true,
+                api_key: "k1".to_string(),
+                api_secret: "s1".to_string(),
+                session_key: "sk1".to_string(),
+                username: "alice".to_string(),
+            },
+            listenbrainz: ListenBrainzConfig {
+                enabled: true,
+                token: "tok1".to_string(),
+                username: "alice_lb".to_string(),
+            },
+        };
+        let lfm_form = LastFmFormState::from_config(&cfg);
+        assert!(lfm_form.enabled);
+        assert_eq!(lfm_form.username, "alice");
+        assert_eq!(lfm_form.api_key, "k1");
+
+        let lb_form = ListenBrainzFormState::from_config(&cfg);
+        assert!(lb_form.enabled);
+        assert_eq!(lb_form.username, "alice_lb");
+        assert_eq!(lb_form.token, "tok1");
     }
 }
