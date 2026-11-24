@@ -43,6 +43,10 @@ import dev.sonata.android.data.SonataDownloadManager
 import dev.sonata.android.data.SonataPreferences
 import dev.sonata.android.data.SonataSettingsState
 import dev.sonata.android.data.VideoQualityPreference
+import dev.sonata.android.discord.DiscordPresenceConfig
+import dev.sonata.android.discord.DiscordPresenceTrack
+import dev.sonata.android.discord.DiscordRpcClient
+import dev.sonata.android.discord.DiscordRpcStatus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -55,11 +59,14 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -456,6 +463,13 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _uiState = MutableStateFlow(SonataUiState())
     val uiState: StateFlow<SonataUiState> = _uiState.asStateFlow()
+
+    private val discordRpcClient = DiscordRpcClient()
+    private val discordSeekSignal = MutableStateFlow(0L)
+    val discordStatus: StateFlow<DiscordRpcStatus> = discordRpcClient.status
+    val discordConnected: StateFlow<Boolean> = preferences.discordToken
+        .map { !it.isNullOrBlank() }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, preferences.hasDiscordToken())
 
     private val playbackGeneration = PlaybackGenerationCounter()
     private val recoveryBudget = RecoveryBudget(MAX_RECOVERY_ATTEMPTS)
@@ -1272,9 +1286,73 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
 
         applyAudioSettings(initialSettings)
         observePreferences(supports120Hz)
+        observeDiscordPresence()
         registerQueueBridge()
         startPositionPoller()
         startColdLaunchBootstrap(application, supports120Hz)
+    }
+
+    private fun observeDiscordPresence() {
+        viewModelScope.launch {
+            val playbackFlow = _uiState
+                .map { Triple(it.activeTrack, it.isPlaying, it.isBuffering) }
+                .distinctUntilChanged()
+            combine(
+                preferences.discordToken,
+                preferences.state,
+                playbackFlow,
+                discordSeekSignal,
+            ) { token, prefsState, (track, isPlaying, isBuffering), _ ->
+                val config = DiscordPresenceConfig(
+                    enabled = prefsState.discordRpcEnabled,
+                    appId = prefsState.discordAppId,
+                    activityType = prefsState.discordActivityType,
+                    showTimestamps = prefsState.discordShowTimestamps,
+                    showArtwork = prefsState.discordShowArtwork,
+                    showButtons = prefsState.discordShowButtons,
+                )
+                val presenceTrack = track?.let { active ->
+                    val durationMs = playbackClock.durationMs.takeIf { it > 0L }
+                        ?: ((active.durationSecs?.toLong() ?: 0L) * 1000L)
+                    DiscordPresenceTrack(
+                        id = active.id,
+                        title = active.title,
+                        artist = active.artist,
+                        album = active.album,
+                        durationMs = durationMs,
+                        artworkUrl = active.thumbnailUrl,
+                        isPlaying = isPlaying && !isBuffering,
+                        positionMs = playbackClock.positionMs,
+                        playbackSpeed = prefsState.playbackSpeed,
+                    )
+                }
+                Triple(token, config, presenceTrack)
+            }.collect { (token, config, presenceTrack) ->
+                discordRpcClient.updateAuthAndConfig(token, config)
+                discordRpcClient.updatePresence(presenceTrack)
+            }
+        }
+    }
+
+    fun saveDiscordToken(token: String) {
+        val cleaned = token.trim()
+        if (cleaned.isEmpty()) return
+        preferences.setDiscordToken(cleaned)
+        if (!preferences.state.value.discordRpcEnabled) {
+            preferences.update { it.copy(discordRpcEnabled = true) }
+        }
+    }
+
+    fun signOutDiscord() {
+        preferences.clearDiscordToken()
+        discordRpcClient.updateAuthAndConfig(
+            newToken = null,
+            newConfig = DiscordPresenceConfig(enabled = false, appId = preferences.state.value.discordAppId),
+        )
+    }
+
+    fun reconnectDiscord() {
+        discordRpcClient.reconnect()
     }
 
     private fun applyAudioSettings(state: SonataSettingsState) {
@@ -2010,6 +2088,20 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                         }
                         if (preferences.state.value.repeatMode != repeatMode) {
                             preferences.update { it.copy(repeatMode = repeatMode) }
+                        }
+                    }
+
+                    override fun onPositionDiscontinuity(
+                        oldPosition: Player.PositionInfo,
+                        newPosition: Player.PositionInfo,
+                        reason: Int,
+                    ) {
+                        if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+                            val activeId = _uiState.value.activeTrack?.id
+                            if (activeId != null && ctrl.currentMediaItem?.mediaId == activeId) {
+                                playbackClock.onSeek(newPosition.positionMs.coerceAtLeast(0L))
+                                discordSeekSignal.value += 1L
+                            }
                         }
                     }
 
@@ -5179,6 +5271,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         val clamped = positionMs.coerceAtLeast(0L)
         runCatching { controller?.seekTo(clamped) }
         playbackClock.onSeek(clamped)
+        discordSeekSignal.value += 1L
     }
 
     private var updateDownloadJob: Job? = null
@@ -5901,6 +5994,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         collectionJob = null
         updateDownloadJob?.cancel()
         updateDownloadJob = null
+        discordRpcClient.disconnect()
         cipherSolver.destroy()
         runCatching { controller?.release() }
         controller = null

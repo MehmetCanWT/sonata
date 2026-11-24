@@ -579,10 +579,56 @@ data class SettingsStrings(
     val storageFreeOf: (String, String) -> String,
 )
 
+data class DiscordStrings(
+    val catDiscord: String,
+    val discordSummary: String,
+    val hdrDiscordAccount: String,
+    val hdrDiscordPresence: String,
+    val hdrDiscordAppId: String,
+    val footerDiscordAppId: String,
+    val discordSignInTitle: String,
+    val discordSignInSubtitle: String,
+    val discordSignInCompleting: String,
+    val discordSignInAction: String,
+    val discordSignInActionDesc: String,
+    val discordSignOutAction: String,
+    val discordSignOutDesc: String,
+    val discordConsentTitle: String,
+    val discordConsentBody: String,
+    val discordConsentContinue: String,
+    val discordEnableRpc: String,
+    val discordEnableRpcDesc: String,
+    val discordActivityType: String,
+    val discordActivityListening: String,
+    val discordActivityPlaying: String,
+    val discordActivityWatching: String,
+    val discordActivityCompeting: String,
+    val discordShowTimestamps: String,
+    val discordShowTimestampsDesc: String,
+    val discordShowArtwork: String,
+    val discordShowArtworkDesc: String,
+    val discordShowButtons: String,
+    val discordShowButtonsDesc: String,
+    val discordAppIdLabel: String,
+    val discordAppIdPlaceholder: String,
+    val discordAppIdApply: String,
+    val discordAppIdReset: String,
+    val discordAppIdInvalid: String,
+    val discordStatusLabel: String,
+    val discordStatusConnected: String,
+    val discordStatusConnectedAs: (String) -> String,
+    val discordStatusConnecting: String,
+    val discordStatusReconnecting: String,
+    val discordStatusDisconnected: String,
+    val discordStatusAuthFailed: String,
+    val discordStatusError: (String) -> String,
+    val discordReconnect: String,
+)
+
 /**
  * UI string table shared across all Sonata Android screens, menus, dialogs, and settings.
  *
- * Split across four sub-records to stay well below the JVM 255-parameter constructor limit
+ * Split across five sub-records to stay well below the JVM 255-parameter constructor limit
  * while keeping flat property accessors for every UI caller.
  */
 data class SonataStrings(
@@ -590,6 +636,7 @@ data class SonataStrings(
     val feed: FeedStrings,
     val player: PlayerStrings,
     val settings: SettingsStrings,
+    val discord: DiscordStrings,
 ) {
     val tabHome: String get() = common.tabHome
     val tabExplore: String get() = common.tabExplore
@@ -1157,6 +1204,49 @@ data class SonataStrings(
     val eqPresetLateNight: String get() = settings.eqPresetLateNight
     val eqPresetCustom: String get() = settings.eqPresetCustom
     val storageFreeOf: (String, String) -> String get() = settings.storageFreeOf
+    val catDiscord: String get() = discord.catDiscord
+    val discordSummary: String get() = discord.discordSummary
+    val hdrDiscordAccount: String get() = discord.hdrDiscordAccount
+    val hdrDiscordPresence: String get() = discord.hdrDiscordPresence
+    val hdrDiscordAppId: String get() = discord.hdrDiscordAppId
+    val footerDiscordAppId: String get() = discord.footerDiscordAppId
+    val discordSignInTitle: String get() = discord.discordSignInTitle
+    val discordSignInSubtitle: String get() = discord.discordSignInSubtitle
+    val discordSignInCompleting: String get() = discord.discordSignInCompleting
+    val discordSignInAction: String get() = discord.discordSignInAction
+    val discordSignInActionDesc: String get() = discord.discordSignInActionDesc
+    val discordSignOutAction: String get() = discord.discordSignOutAction
+    val discordSignOutDesc: String get() = discord.discordSignOutDesc
+    val discordConsentTitle: String get() = discord.discordConsentTitle
+    val discordConsentBody: String get() = discord.discordConsentBody
+    val discordConsentContinue: String get() = discord.discordConsentContinue
+    val discordEnableRpc: String get() = discord.discordEnableRpc
+    val discordEnableRpcDesc: String get() = discord.discordEnableRpcDesc
+    val discordActivityType: String get() = discord.discordActivityType
+    val discordActivityListening: String get() = discord.discordActivityListening
+    val discordActivityPlaying: String get() = discord.discordActivityPlaying
+    val discordActivityWatching: String get() = discord.discordActivityWatching
+    val discordActivityCompeting: String get() = discord.discordActivityCompeting
+    val discordShowTimestamps: String get() = discord.discordShowTimestamps
+    val discordShowTimestampsDesc: String get() = discord.discordShowTimestampsDesc
+    val discordShowArtwork: String get() = discord.discordShowArtwork
+    val discordShowArtworkDesc: String get() = discord.discordShowArtworkDesc
+    val discordShowButtons: String get() = discord.discordShowButtons
+    val discordShowButtonsDesc: String get() = discord.discordShowButtonsDesc
+    val discordAppIdLabel: String get() = discord.discordAppIdLabel
+    val discordAppIdPlaceholder: String get() = discord.discordAppIdPlaceholder
+    val discordAppIdApply: String get() = discord.discordAppIdApply
+    val discordAppIdReset: String get() = discord.discordAppIdReset
+    val discordAppIdInvalid: String get() = discord.discordAppIdInvalid
+    val discordStatusLabel: String get() = discord.discordStatusLabel
+    val discordStatusConnected: String get() = discord.discordStatusConnected
+    val discordStatusConnectedAs: (String) -> String get() = discord.discordStatusConnectedAs
+    val discordStatusConnecting: String get() = discord.discordStatusConnecting
+    val discordStatusReconnecting: String get() = discord.discordStatusReconnecting
+    val discordStatusDisconnected: String get() = discord.discordStatusDisconnected
+    val discordStatusAuthFailed: String get() = discord.discordStatusAuthFailed
+    val discordStatusError: (String) -> String get() = discord.discordStatusError
+    val discordReconnect: String get() = discord.discordReconnect
 }
 
 val EnglishSonataStrings = SonataStrings(
@@ -1730,6 +1820,51 @@ val EnglishSonataStrings = SonataStrings(
         eqPresetLateNight = "Late Night",
         eqPresetCustom = "Custom",
         storageFreeOf = { free, total -> "$free free of $total" },
+    ),
+    discord = DiscordStrings(
+        catDiscord = "Discord Rich Presence",
+        discordSummary = "Mobile Discord RPC, status, app ID",
+        hdrDiscordAccount = "Discord Account",
+        hdrDiscordPresence = "Presence Display",
+        hdrDiscordAppId = "Discord Application ID",
+        footerDiscordAppId = "Use Sonata's default Application ID or paste your own Discord Developer Portal Application ID.",
+        discordSignInTitle = "Sign In to Discord",
+        discordSignInSubtitle = "Authenticate in Discord to share Listening status",
+        discordSignInCompleting = "Completing sign-in...",
+        discordSignInAction = "Sign In to Discord",
+        discordSignInActionDesc = "Connect your Discord account for mobile Rich Presence",
+        discordSignOutAction = "Sign Out of Discord",
+        discordSignOutDesc = "Clear local Discord session and stop Rich Presence",
+        discordConsentTitle = "Discord Rich Presence Notice",
+        discordConsentBody = "Sonata connects directly to Discord's Gateway using your Discord account session so your Listening activity appears on mobile without needing a PC.\n\nYour Discord session credential is stored locally on this device, excluded from settings backups, and never logged or sent anywhere except Discord.",
+        discordConsentContinue = "I Understand, Continue",
+        discordEnableRpc = "Enable Discord Rich Presence",
+        discordEnableRpcDesc = "Broadcast currently playing tracks to your Discord profile",
+        discordActivityType = "Activity Type",
+        discordActivityListening = "Listening",
+        discordActivityPlaying = "Playing",
+        discordActivityWatching = "Watching",
+        discordActivityCompeting = "Competing",
+        discordShowTimestamps = "Show Progress Timestamps",
+        discordShowTimestampsDesc = "Display playback progress adjusted for playback speed",
+        discordShowArtwork = "Show Track Artwork",
+        discordShowArtworkDesc = "Proxy album covers through Discord external assets",
+        discordShowButtons = "Show Listen Button",
+        discordShowButtonsDesc = "Include a YouTube Music link button on your activity card",
+        discordAppIdLabel = "Application ID",
+        discordAppIdPlaceholder = "Enter Discord Application ID",
+        discordAppIdApply = "Save",
+        discordAppIdReset = "Reset Default",
+        discordAppIdInvalid = "Enter a valid numeric Discord Application ID (15–22 digits)",
+        discordStatusLabel = "Connection Status",
+        discordStatusConnected = "Connected",
+        discordStatusConnectedAs = { user -> "Connected as $user" },
+        discordStatusConnecting = "Connecting to Discord Gateway...",
+        discordStatusReconnecting = "Reconnecting to Discord...",
+        discordStatusDisconnected = "Disconnected",
+        discordStatusAuthFailed = "Session expired or rejected — sign in again",
+        discordStatusError = { err -> "Connection error: $err" },
+        discordReconnect = "Reconnect Gateway",
     ),
 )
 
@@ -2305,6 +2440,51 @@ val TurkishSonataStrings = SonataStrings(
         eqPresetCustom = "Özel",
         storageFreeOf = { free, total -> "$total içinde $free boş" },
     ),
+    discord = DiscordStrings(
+        catDiscord = "Discord Rich Presence",
+        discordSummary = "Mobil Discord RPC, durum, uygulama kimliği",
+        hdrDiscordAccount = "Discord Hesabı",
+        hdrDiscordPresence = "Görünüm Seçenekleri",
+        hdrDiscordAppId = "Discord Uygulama Kimliği",
+        footerDiscordAppId = "Sonata'nın varsayılan Uygulama Kimliğini kullanın veya kendi Discord Developer Portal Uygulama Kimliğinizi yapıştırın.",
+        discordSignInTitle = "Discord ile Giriş Yap",
+        discordSignInSubtitle = "Dinliyor durumunu paylaşmak için Discord'da oturum açın",
+        discordSignInCompleting = "Giriş tamamlanıyor...",
+        discordSignInAction = "Discord ile Giriş Yap",
+        discordSignInActionDesc = "Mobil Rich Presence için Discord hesabınızı bağlayın",
+        discordSignOutAction = "Discord Çıkışı Yap",
+        discordSignOutDesc = "Yerel Discord oturumunu temizle ve Rich Presence'ı durdur",
+        discordConsentTitle = "Discord Rich Presence Bilgilendirmesi",
+        discordConsentBody = "Sonata, bilgisayar gerekmeden mobilde Dinliyor durumunuzu gösterebilmek için Discord oturumunuzla doğrudan Discord Gateway'e bağlanır.\n\nDiscord oturum bilginiz yalnızca bu cihazda yerel olarak saklanır, ayar yedeklerine dahil edilmez ve Discord dışında hiçbir yere gönderilmez veya günlüğe yazılmaz.",
+        discordConsentContinue = "Anladım, Devam Et",
+        discordEnableRpc = "Discord Rich Presence'ı Etkinleştir",
+        discordEnableRpcDesc = "Şu anda çalan parçaları Discord profilinizde yayınlayın",
+        discordActivityType = "Etkinlik Türü",
+        discordActivityListening = "Dinliyor",
+        discordActivityPlaying = "Oynuyor",
+        discordActivityWatching = "İzliyor",
+        discordActivityCompeting = "Yarışıyor",
+        discordShowTimestamps = "İlerleme Zaman Damgalarını Göster",
+        discordShowTimestampsDesc = "Oynatma hızına göre ayarlanmış şarkı ilerlemesini göster",
+        discordShowArtwork = "Parça Kapağını Göster",
+        discordShowArtworkDesc = "Albüm kapaklarını Discord harici varlıkları üzerinden ilet",
+        discordShowButtons = "Dinle Düğmesini Göster",
+        discordShowButtonsDesc = "Etkinlik kartında YouTube Music bağlantı düğmesi göster",
+        discordAppIdLabel = "Uygulama Kimliği",
+        discordAppIdPlaceholder = "Discord Uygulama Kimliği girin",
+        discordAppIdApply = "Kaydet",
+        discordAppIdReset = "Varsayılana Sıfırla",
+        discordAppIdInvalid = "Geçerli bir sayısal Discord Uygulama Kimliği girin (15–22 basamak)",
+        discordStatusLabel = "Bağlantı Durumu",
+        discordStatusConnected = "Bağlı",
+        discordStatusConnectedAs = { user -> "$user olarak bağlı" },
+        discordStatusConnecting = "Discord Gateway'e bağlanılıyor...",
+        discordStatusReconnecting = "Discord'a yeniden bağlanılıyor...",
+        discordStatusDisconnected = "Bağlı değil",
+        discordStatusAuthFailed = "Oturum süresi doldu veya reddedildi — tekrar giriş yapın",
+        discordStatusError = { err -> "Bağlantı hatası: $err" },
+        discordReconnect = "Gateway'e Yeniden Bağlan",
+    ),
 )
 
 val RussianSonataStrings = SonataStrings(
@@ -2878,6 +3058,51 @@ val RussianSonataStrings = SonataStrings(
         eqPresetLateNight = "Ночной режим",
         eqPresetCustom = "Свой",
         storageFreeOf = { free, total -> "Свободно $free из $total" },
+    ),
+    discord = DiscordStrings(
+        catDiscord = "Discord Rich Presence",
+        discordSummary = "Мобильный Discord RPC, статус, App ID",
+        hdrDiscordAccount = "Аккаунт Discord",
+        hdrDiscordPresence = "Отображение статуса",
+        hdrDiscordAppId = "ID приложения Discord",
+        footerDiscordAppId = "Используйте стандартный ID Sonata или вставьте свой Application ID из Discord Developer Portal.",
+        discordSignInTitle = "Войти в Discord",
+        discordSignInSubtitle = "Авторизуйтесь в Discord для показа статуса прослушивания",
+        discordSignInCompleting = "Завершение входа...",
+        discordSignInAction = "Войти в Discord",
+        discordSignInActionDesc = "Подключите аккаунт Discord для мобильного Rich Presence",
+        discordSignOutAction = "Выйти из Discord",
+        discordSignOutDesc = "Очистить локальную сессию Discord и остановить RPC",
+        discordConsentTitle = "Уведомление о Discord Rich Presence",
+        discordConsentBody = "Sonata подключается напрямую к Discord Gateway с использованием вашей сессии Discord, чтобы статус прослушивания отображался с телефона без ПК.\n\nУчётные данные сессии хранятся только локально на устройстве, исключены из резервных копий настроек и не логируются.",
+        discordConsentContinue = "Понятно, продолжить",
+        discordEnableRpc = "Включить Discord Rich Presence",
+        discordEnableRpcDesc = "Показывать текущий трек в вашем профиле Discord",
+        discordActivityType = "Тип активности",
+        discordActivityListening = "Слушает",
+        discordActivityPlaying = "Играет",
+        discordActivityWatching = "Смотрит",
+        discordActivityCompeting = "Соревнуется",
+        discordShowTimestamps = "Показывать таймер трека",
+        discordShowTimestampsDesc = "Отображать прогресс с учётом скорости воспроизведения",
+        discordShowArtwork = "Показывать обложку трека",
+        discordShowArtworkDesc = "Проксировать обложки через внешние ресурсы Discord",
+        discordShowButtons = "Показывать кнопку «Слушать»",
+        discordShowButtonsDesc = "Добавить ссылку на YouTube Music в карточку активности",
+        discordAppIdLabel = "Application ID",
+        discordAppIdPlaceholder = "Введите Discord Application ID",
+        discordAppIdApply = "Сохранить",
+        discordAppIdReset = "Сбросить",
+        discordAppIdInvalid = "Введите корректный числовой ID приложения Discord (15–22 цифры)",
+        discordStatusLabel = "Статус подключения",
+        discordStatusConnected = "Подключено",
+        discordStatusConnectedAs = { user -> "Подключено: $user" },
+        discordStatusConnecting = "Подключение к Discord Gateway...",
+        discordStatusReconnecting = "Переподключение к Discord...",
+        discordStatusDisconnected = "Отключено",
+        discordStatusAuthFailed = "Сессия истекла или отклонена — войдите снова",
+        discordStatusError = { err -> "Ошибка подключения: $err" },
+        discordReconnect = "Переподключить Gateway",
     ),
 )
 

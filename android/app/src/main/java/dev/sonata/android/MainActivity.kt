@@ -1593,6 +1593,8 @@ private fun SonataAppContent(
                     vm.queryDownloadStorageStats()
                 }
             }
+            val discordConnected by vm.discordConnected.collectAsStateWithLifecycle()
+            val discordStatus by vm.discordStatus.collectAsStateWithLifecycle()
             SonataSettingsScreen(
                 settings = settings,
                 signedIn = state.signedIn,
@@ -1614,6 +1616,11 @@ private fun SonataAppContent(
                 onCheckForUpdates = { vm.checkForUpdates(autoPopup = true, isManual = true) },
                 onDownloadUpdate = vm::downloadAndInstallUpdate,
                 onBack = vm::dismissSettingsSheet,
+                discordConnected = discordConnected,
+                discordStatus = discordStatus,
+                onSaveDiscordToken = vm::saveDiscordToken,
+                onClearDiscordToken = vm::signOutDiscord,
+                onReconnectDiscord = vm::reconnectDiscord,
             )
         }
 

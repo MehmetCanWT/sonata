@@ -3,6 +3,8 @@ package dev.sonata.android.data
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.compose.runtime.Immutable
+import dev.sonata.android.discord.DiscordActivityType
+import dev.sonata.android.discord.DiscordApplication
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -233,6 +235,14 @@ data class SonataSettingsState(
     // Music Video Mode
     val suppressVideoAudioQualityWarning: Boolean = false,
     val videoQuality: VideoQualityPreference = VideoQualityPreference.AUTO,
+
+    // Discord Rich Presence (non-secret configuration only; token lives in isolated private storage)
+    val discordRpcEnabled: Boolean = false,
+    val discordAppId: String = DiscordApplication.DEFAULT_APP_ID,
+    val discordActivityType: DiscordActivityType = DiscordActivityType.LISTENING,
+    val discordShowTimestamps: Boolean = true,
+    val discordShowArtwork: Boolean = true,
+    val discordShowButtons: Boolean = true,
 ) {
     fun resolvedDesignTheme(): DesignTheme = when (themeMode) {
         ThemeMode.VIOLET_LIGHT, ThemeMode.VIOLET_DARK -> DesignTheme.VIOLET
@@ -263,6 +273,9 @@ class SonataPreferences(context: Context) {
     private val prefs: SharedPreferences by lazy {
         appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
+    private val discordAuthPrefs: SharedPreferences by lazy {
+        appContext.getSharedPreferences(DISCORD_AUTH_PREFS_NAME, Context.MODE_PRIVATE)
+    }
 
     private val lock = Any()
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -272,6 +285,9 @@ class SonataPreferences(context: Context) {
 
     private val _state = MutableStateFlow(SonataSettingsState())
     val state: StateFlow<SonataSettingsState> = _state.asStateFlow()
+
+    private val _discordToken = MutableStateFlow<String?>(null)
+    val discordToken: StateFlow<String?> = _discordToken.asStateFlow()
 
     init {
         ioScope.launch {
@@ -289,8 +305,47 @@ class SonataPreferences(context: Context) {
     private fun ensureStateLoadedLocked() {
         if (stateLoaded) return
         _state.value = readState()
+        _discordToken.value = readDiscordToken()
         stateLoaded = true
     }
+
+    /**
+     * Returns the privately stored Discord user token, or null if not signed in.
+     * Never included in [exportBackupJson].
+     */
+    fun getDiscordToken(): String? {
+        synchronized(lock) {
+            ensureStateLoadedLocked()
+            return _discordToken.value
+        }
+    }
+
+    /**
+     * Persists or clears the Discord user token in dedicated private [SharedPreferences].
+     */
+    fun setDiscordToken(token: String?) {
+        val cleaned = token?.trim()?.takeIf { it.isNotEmpty() }
+        synchronized(lock) {
+            ensureStateLoadedLocked()
+            val editor = discordAuthPrefs.edit()
+            if (cleaned == null) {
+                editor.remove(KEY_DISCORD_AUTH_SECRET)
+            } else {
+                editor.putString(KEY_DISCORD_AUTH_SECRET, cleaned)
+            }
+            editor.apply()
+            _discordToken.value = cleaned
+        }
+    }
+
+    fun clearDiscordToken() {
+        setDiscordToken(null)
+    }
+
+    fun hasDiscordToken(): Boolean = !getDiscordToken().isNullOrBlank()
+
+    private fun readDiscordToken(): String? =
+        discordAuthPrefs.getString(KEY_DISCORD_AUTH_SECRET, null)?.trim()?.takeIf { it.isNotEmpty() }
 
     /**
      * Applies [transform] to the current [SonataSettingsState], normalizes bounded values,
@@ -478,6 +533,27 @@ class SonataPreferences(context: Context) {
                         settingsObj.optString(KEY_VIDEO_QUALITY),
                         defaults.videoQuality,
                     ),
+                    discordRpcEnabled = settingsObj.optBoolean(
+                        KEY_DISCORD_RPC_ENABLED,
+                        defaults.discordRpcEnabled,
+                    ),
+                    discordAppId = settingsObj.optString(KEY_DISCORD_APP_ID, defaults.discordAppId),
+                    discordActivityType = parseEnum(
+                        settingsObj.optString(KEY_DISCORD_ACTIVITY_TYPE),
+                        defaults.discordActivityType,
+                    ),
+                    discordShowTimestamps = settingsObj.optBoolean(
+                        KEY_DISCORD_SHOW_TIMESTAMPS,
+                        defaults.discordShowTimestamps,
+                    ),
+                    discordShowArtwork = settingsObj.optBoolean(
+                        KEY_DISCORD_SHOW_ARTWORK,
+                        defaults.discordShowArtwork,
+                    ),
+                    discordShowButtons = settingsObj.optBoolean(
+                        KEY_DISCORD_SHOW_BUTTONS,
+                        defaults.discordShowButtons,
+                    ),
                 ),
             )
 
@@ -618,6 +694,18 @@ class SonataPreferences(context: Context) {
                     defaults.suppressVideoAudioQualityWarning,
                 ),
                 videoQuality = parseEnum(prefs.getString(KEY_VIDEO_QUALITY, null), defaults.videoQuality),
+                discordRpcEnabled = prefs.getBoolean(KEY_DISCORD_RPC_ENABLED, defaults.discordRpcEnabled),
+                discordAppId = prefs.getString(KEY_DISCORD_APP_ID, null) ?: defaults.discordAppId,
+                discordActivityType = parseEnum(
+                    prefs.getString(KEY_DISCORD_ACTIVITY_TYPE, null),
+                    defaults.discordActivityType,
+                ),
+                discordShowTimestamps = prefs.getBoolean(
+                    KEY_DISCORD_SHOW_TIMESTAMPS,
+                    defaults.discordShowTimestamps,
+                ),
+                discordShowArtwork = prefs.getBoolean(KEY_DISCORD_SHOW_ARTWORK, defaults.discordShowArtwork),
+                discordShowButtons = prefs.getBoolean(KEY_DISCORD_SHOW_BUTTONS, defaults.discordShowButtons),
             ),
         )
     }
@@ -683,6 +771,12 @@ class SonataPreferences(context: Context) {
             .putBoolean(KEY_JIOSAAVN_ENABLED, state.jioSaavnEnabled)
             .putBoolean(KEY_SUPPRESS_VIDEO_AUDIO_WARNING, state.suppressVideoAudioQualityWarning)
             .putString(KEY_VIDEO_QUALITY, state.videoQuality.name)
+            .putBoolean(KEY_DISCORD_RPC_ENABLED, state.discordRpcEnabled)
+            .putString(KEY_DISCORD_APP_ID, state.discordAppId)
+            .putString(KEY_DISCORD_ACTIVITY_TYPE, state.discordActivityType.name)
+            .putBoolean(KEY_DISCORD_SHOW_TIMESTAMPS, state.discordShowTimestamps)
+            .putBoolean(KEY_DISCORD_SHOW_ARTWORK, state.discordShowArtwork)
+            .putBoolean(KEY_DISCORD_SHOW_BUTTONS, state.discordShowButtons)
 
         if (trackOffsetsOverride != null) {
             editor.putString(KEY_TRACK_LYRIC_OFFSETS, encodeTrackOffsets(trackOffsetsOverride))
@@ -726,6 +820,8 @@ class SonataPreferences(context: Context) {
 
     companion object {
         private const val PREFS_NAME = "sonata_preferences"
+        private const val DISCORD_AUTH_PREFS_NAME = "sonata_discord_auth"
+        private const val KEY_DISCORD_AUTH_SECRET = "discord_session_credential"
 
         internal fun encodeTrackOffsets(offsets: Map<String, Long>): String {
             val obj = JSONObject()
@@ -761,6 +857,7 @@ class SonataPreferences(context: Context) {
                 repeatMode = state.repeatMode.coerceIn(0, 2),
                 lyricsTranslationLang = state.lyricsTranslationLang.trim().lowercase().ifEmpty { "en" },
                 lyricsOffsetMs = state.lyricsOffsetMs.coerceIn(MIN_LYRIC_OFFSET_MS, MAX_LYRIC_OFFSET_MS),
+                discordAppId = DiscordApplication.resolveAppId(state.discordAppId),
             )
         }
 
@@ -868,6 +965,13 @@ class SonataPreferences(context: Context) {
         private const val KEY_SUPPRESS_VIDEO_AUDIO_WARNING = "suppress_video_audio_warning"
         private const val KEY_VIDEO_QUALITY = "video_quality"
 
+        private const val KEY_DISCORD_RPC_ENABLED = "discord_rpc_enabled"
+        private const val KEY_DISCORD_APP_ID = "discord_app_id"
+        private const val KEY_DISCORD_ACTIVITY_TYPE = "discord_activity_type"
+        private const val KEY_DISCORD_SHOW_TIMESTAMPS = "discord_show_timestamps"
+        private const val KEY_DISCORD_SHOW_ARTWORK = "discord_show_artwork"
+        private const val KEY_DISCORD_SHOW_BUTTONS = "discord_show_buttons"
+
         private const val KEY_TRACK_LYRIC_OFFSETS = "track_lyric_offsets"
 
         internal fun formatBackupJson(
@@ -937,6 +1041,12 @@ class SonataPreferences(context: Context) {
                 put(KEY_JIOSAAVN_ENABLED, current.jioSaavnEnabled)
                 put(KEY_SUPPRESS_VIDEO_AUDIO_WARNING, current.suppressVideoAudioQualityWarning)
                 put(KEY_VIDEO_QUALITY, current.videoQuality.name)
+                put(KEY_DISCORD_RPC_ENABLED, current.discordRpcEnabled)
+                put(KEY_DISCORD_APP_ID, current.discordAppId)
+                put(KEY_DISCORD_ACTIVITY_TYPE, current.discordActivityType.name)
+                put(KEY_DISCORD_SHOW_TIMESTAMPS, current.discordShowTimestamps)
+                put(KEY_DISCORD_SHOW_ARTWORK, current.discordShowArtwork)
+                put(KEY_DISCORD_SHOW_BUTTONS, current.discordShowButtons)
             }
 
             val offsetsObj = JSONObject().apply {

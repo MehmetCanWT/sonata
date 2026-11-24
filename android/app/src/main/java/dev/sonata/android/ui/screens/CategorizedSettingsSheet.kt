@@ -76,6 +76,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import coil3.compose.AsyncImage
 import dev.sonata.android.data.AppLanguage
 import dev.sonata.android.data.AudioQualityTier
@@ -87,6 +89,11 @@ import dev.sonata.android.data.SonataDownloadManager
 import dev.sonata.android.data.SonataSettingsState
 import dev.sonata.android.data.ThemeMode
 import dev.sonata.android.data.VideoDownloadQuality
+import dev.sonata.android.discord.DiscordActivityType
+import dev.sonata.android.discord.DiscordApplication
+import dev.sonata.android.discord.DiscordConsentWarningDialog
+import dev.sonata.android.discord.DiscordLoginScreen
+import dev.sonata.android.discord.DiscordRpcStatus
 import dev.sonata.android.isGlassSupported
 import dev.sonata.android.ui.PillSegmentedControl
 import dev.sonata.android.ui.SonataIcons
@@ -123,6 +130,7 @@ enum class SettingsCategory(
     STORAGE("Storage", SonataIcons.Folder),
     YOUR_DATA("Your Data", SonataIcons.Download),
     MISC("Miscellaneous", SonataIcons.Settings),
+    DISCORD("Discord Rich Presence", SonataIcons.MusicNote),
     ACCOUNT("Account & Updates", SonataIcons.Person),
 }
 
@@ -135,6 +143,7 @@ private enum class SettingsChoiceKind(val title: String) {
     DESIGN_THEME("Theme"),
     PLAYER_BACKDROP("Player Backdrop"),
     LYRICS_LANGUAGE("Translation Language"),
+    DISCORD_ACTIVITY_TYPE("Activity Type"),
 }
 
 private fun SettingsChoiceKind.localizedTitle(strings: SonataStrings): String = when (this) {
@@ -146,6 +155,7 @@ private fun SettingsChoiceKind.localizedTitle(strings: SonataStrings): String = 
     SettingsChoiceKind.DESIGN_THEME -> strings.designTheme
     SettingsChoiceKind.PLAYER_BACKDROP -> strings.playerBackdrop
     SettingsChoiceKind.LYRICS_LANGUAGE -> strings.translationLanguage
+    SettingsChoiceKind.DISCORD_ACTIVITY_TYPE -> strings.discordActivityType
 }
 
 private fun SettingsCategory.localizedTitle(strings: SonataStrings): String = when (this) {
@@ -157,6 +167,7 @@ private fun SettingsCategory.localizedTitle(strings: SonataStrings): String = wh
     SettingsCategory.STORAGE -> strings.catStorage
     SettingsCategory.YOUR_DATA -> strings.catYourData
     SettingsCategory.MISC -> strings.catMisc
+    SettingsCategory.DISCORD -> strings.catDiscord
     SettingsCategory.ACCOUNT -> strings.catAccountUpdates
 }
 
@@ -222,6 +233,11 @@ fun SonataSettingsScreen(
     onDownloadUpdate: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    discordConnected: Boolean = false,
+    discordStatus: DiscordRpcStatus = DiscordRpcStatus.Disconnected,
+    onSaveDiscordToken: (String) -> Unit = {},
+    onClearDiscordToken: () -> Unit = {},
+    onReconnectDiscord: () -> Unit = {},
 ) {
     val strings = LocalSonataStrings.current
     val tokens = LocalLunariaColors.current
@@ -229,6 +245,8 @@ fun SonataSettingsScreen(
     var route by remember { mutableStateOf<SettingsRoute>(SettingsRoute.Root) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var confirmClearDownloads by remember { mutableStateOf(false) }
+    var showDiscordConsentDialog by remember { mutableStateOf(false) }
+    var showDiscordLoginSheet by remember { mutableStateOf(false) }
 
     val navigateBack: () -> Unit = {
         when (val current = route) {
@@ -281,6 +299,38 @@ fun SonataSettingsScreen(
                 }
             },
         )
+    }
+
+    if (showDiscordConsentDialog) {
+        DiscordConsentWarningDialog(
+            onConfirm = {
+                showDiscordConsentDialog = false
+                showDiscordLoginSheet = true
+            },
+            onDismiss = { showDiscordConsentDialog = false },
+            containerColor = cardBg,
+            titleColor = primaryText,
+            bodyColor = secondaryText,
+        )
+    }
+
+    if (showDiscordLoginSheet) {
+        Dialog(
+            onDismissRequest = { showDiscordLoginSheet = false },
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false,
+            ),
+        ) {
+            DiscordLoginScreen(
+                onTokenCaptured = { token ->
+                    showDiscordLoginSheet = false
+                    onSaveDiscordToken(token)
+                },
+                onDismiss = { showDiscordLoginSheet = false },
+                requireConsent = false,
+            )
+        }
     }
 
     Box(
@@ -516,6 +566,12 @@ fun SonataSettingsScreen(
                                                 SettingsCategory.STORAGE -> strings.storageSummary
                                                 SettingsCategory.YOUR_DATA -> strings.yourDataSummary
                                                 SettingsCategory.MISC -> strings.miscSummary
+                                                SettingsCategory.DISCORD ->
+                                                    if (discordConnected) {
+                                                        discordStatusLabel(discordStatus, strings)
+                                                    } else {
+                                                        strings.discordSummary
+                                                    }
                                                 SettingsCategory.ACCOUNT ->
                                                     "v$installedVersionName${if (updateInfo?.updateAvailable == true) " · ${strings.updateAvailable}" else ""}"
                                             }
@@ -744,6 +800,36 @@ fun SonataSettingsScreen(
                                         Spacer(Modifier.height(14.dp))
                                     }
 
+                                    if (search.matches(
+                                            "Discord",
+                                            "Rich Presence",
+                                            "RPC",
+                                            "Presence",
+                                            "Application ID",
+                                            "Timestamps",
+                                            "Activity",
+                                            "Status",
+                                        )
+                                    ) {
+                                        matchCount++
+                                        DiscordCategoryContent(
+                                            settings = settings,
+                                            discordConnected = discordConnected,
+                                            discordStatus = discordStatus,
+                                            search = search,
+                                            cardBg = cardBg,
+                                            dividerColor = dividerColor,
+                                            primaryText = primaryText,
+                                            secondaryText = secondaryText,
+                                            onUpdateSettings = onUpdateSettings,
+                                            onOpenChoice = { kind -> route = SettingsRoute.Choice(kind, SettingsRoute.Root) },
+                                            onRequestSignIn = { showDiscordConsentDialog = true },
+                                            onSignOut = onClearDiscordToken,
+                                            onReconnect = onReconnectDiscord,
+                                        )
+                                        Spacer(Modifier.height(14.dp))
+                                    }
+
                                     if (search.matches("Account", "Update", "Version", "Sign in", "Sign out", "GitHub")) {
                                         matchCount++
                                         AccountCategoryContent(
@@ -873,6 +959,24 @@ fun SonataSettingsScreen(
                                         primaryText = primaryText,
                                         secondaryText = secondaryText,
                                         onUpdateSettings = onUpdateSettings,
+                                    )
+
+                                    SettingsCategory.DISCORD -> DiscordCategoryContent(
+                                        settings = settings,
+                                        discordConnected = discordConnected,
+                                        discordStatus = discordStatus,
+                                        search = search,
+                                        cardBg = cardBg,
+                                        dividerColor = dividerColor,
+                                        primaryText = primaryText,
+                                        secondaryText = secondaryText,
+                                        onUpdateSettings = onUpdateSettings,
+                                        onOpenChoice = { kind ->
+                                            route = SettingsRoute.Choice(kind, SettingsRoute.Category(activeCategory))
+                                        },
+                                        onRequestSignIn = { showDiscordConsentDialog = true },
+                                        onSignOut = onClearDiscordToken,
+                                        onReconnect = onReconnectDiscord,
                                     )
 
                                     SettingsCategory.ACCOUNT -> AccountCategoryContent(
@@ -2017,6 +2121,282 @@ private fun MiscellaneousCategoryContent(
     }
 }
 
+private fun discordStatusLabel(status: DiscordRpcStatus, strings: SonataStrings): String = when (status) {
+    DiscordRpcStatus.Disconnected -> strings.discordStatusDisconnected
+    DiscordRpcStatus.Connecting -> strings.discordStatusConnecting
+    is DiscordRpcStatus.Connected ->
+        status.username?.takeIf { it.isNotBlank() }?.let { strings.discordStatusConnectedAs(it) }
+            ?: strings.discordStatusConnected
+    DiscordRpcStatus.Reconnecting -> strings.discordStatusReconnecting
+    DiscordRpcStatus.AuthFailed -> strings.discordStatusAuthFailed
+    is DiscordRpcStatus.Error -> strings.discordStatusError(status.message)
+}
+
+private fun discordActivityTypeLabel(type: DiscordActivityType, strings: SonataStrings): String = when (type) {
+    DiscordActivityType.LISTENING -> strings.discordActivityListening
+    DiscordActivityType.PLAYING -> strings.discordActivityPlaying
+    DiscordActivityType.WATCHING -> strings.discordActivityWatching
+    DiscordActivityType.COMPETING -> strings.discordActivityCompeting
+}
+
+@Composable
+private fun DiscordCategoryContent(
+    settings: SonataSettingsState,
+    discordConnected: Boolean,
+    discordStatus: DiscordRpcStatus,
+    search: SettingsSearchMatcher,
+    cardBg: Color,
+    dividerColor: Color,
+    primaryText: Color,
+    secondaryText: Color,
+    onUpdateSettings: ((SonataSettingsState) -> SonataSettingsState) -> Unit,
+    onOpenChoice: (SettingsChoiceKind) -> Unit,
+    onRequestSignIn: () -> Unit,
+    onSignOut: () -> Unit,
+    onReconnect: () -> Unit,
+) {
+    val strings = LocalSonataStrings.current
+    var appIdDraft by remember(settings.discordAppId) { mutableStateOf(settings.discordAppId) }
+    var appIdValidationError by remember(settings.discordAppId) { mutableStateOf(false) }
+
+    SettingsGroup(
+        cardBg = cardBg,
+        dividerColor = dividerColor,
+        header = strings.hdrDiscordAccount,
+        secondaryText = secondaryText,
+    ) {
+        val statusText = discordStatusLabel(discordStatus, strings)
+        val statusColor = when (discordStatus) {
+            is DiscordRpcStatus.Connected -> IosSwitchGreen
+            DiscordRpcStatus.AuthFailed, is DiscordRpcStatus.Error -> BasicPalette.AccentRed
+            else -> secondaryText
+        }
+        addRow(dividerStart = ROW_INSET) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 52.dp)
+                    .padding(horizontal = ROW_INSET, vertical = 11.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .clip(CircleShape)
+                        .background(statusColor),
+                )
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = strings.discordStatusLabel,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = primaryText,
+                    )
+                    Text(
+                        text = statusText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = statusColor,
+                    )
+                }
+            }
+        }
+        if (discordConnected) {
+            if (settings.discordRpcEnabled) {
+                SettingsActionRow(
+                    title = strings.discordReconnect,
+                    titleColor = primaryText,
+                    secondaryText = secondaryText,
+                    onClick = onReconnect,
+                )
+            }
+            SettingsActionRow(
+                title = strings.discordSignOutAction,
+                subtitle = strings.discordSignOutDesc,
+                titleColor = BasicPalette.AccentRed,
+                secondaryText = secondaryText,
+                onClick = onSignOut,
+            )
+        } else {
+            SettingsActionRow(
+                title = strings.discordSignInAction,
+                subtitle = strings.discordSignInActionDesc,
+                titleColor = primaryText,
+                secondaryText = secondaryText,
+                onClick = onRequestSignIn,
+            )
+        }
+    }
+
+    Spacer(Modifier.height(14.dp))
+
+    SettingsGroup(
+        cardBg = cardBg,
+        dividerColor = dividerColor,
+        header = strings.hdrDiscordPresence,
+        secondaryText = secondaryText,
+    ) {
+        if (search.matches("Discord", "Enable", "Rich Presence", "RPC")) {
+            SettingsSwitchRow(
+                title = strings.discordEnableRpc,
+                subtitle = strings.discordEnableRpcDesc,
+                checked = settings.discordRpcEnabled,
+                primaryText = primaryText,
+                secondaryText = secondaryText,
+                onCheckedChange = { enabled ->
+                    onUpdateSettings { it.copy(discordRpcEnabled = enabled) }
+                },
+            )
+        }
+        if (search.matches("Discord", "Activity", "Listening", "Playing", "Watching")) {
+            SettingsRow(
+                icon = SonataIcons.MusicNote,
+                title = strings.discordActivityType,
+                value = discordActivityTypeLabel(settings.discordActivityType, strings),
+                primaryText = primaryText,
+                secondaryText = secondaryText,
+                onClick = { onOpenChoice(SettingsChoiceKind.DISCORD_ACTIVITY_TYPE) },
+            )
+        }
+        if (search.matches("Discord", "Timestamps", "Progress", "Speed")) {
+            SettingsSwitchRow(
+                title = strings.discordShowTimestamps,
+                subtitle = strings.discordShowTimestampsDesc,
+                checked = settings.discordShowTimestamps,
+                primaryText = primaryText,
+                secondaryText = secondaryText,
+                onCheckedChange = { enabled ->
+                    onUpdateSettings { it.copy(discordShowTimestamps = enabled) }
+                },
+            )
+        }
+        if (search.matches("Discord", "Artwork", "Cover", "Image")) {
+            SettingsSwitchRow(
+                title = strings.discordShowArtwork,
+                subtitle = strings.discordShowArtworkDesc,
+                checked = settings.discordShowArtwork,
+                primaryText = primaryText,
+                secondaryText = secondaryText,
+                onCheckedChange = { enabled ->
+                    onUpdateSettings { it.copy(discordShowArtwork = enabled) }
+                },
+            )
+        }
+        if (search.matches("Discord", "Button", "Link", "YouTube Music")) {
+            SettingsSwitchRow(
+                title = strings.discordShowButtons,
+                subtitle = strings.discordShowButtonsDesc,
+                checked = settings.discordShowButtons,
+                primaryText = primaryText,
+                secondaryText = secondaryText,
+                onCheckedChange = { enabled ->
+                    onUpdateSettings { it.copy(discordShowButtons = enabled) }
+                },
+            )
+        }
+    }
+
+    Spacer(Modifier.height(14.dp))
+
+    SettingsGroup(
+        cardBg = cardBg,
+        dividerColor = dividerColor,
+        header = strings.hdrDiscordAppId,
+        footer = strings.footerDiscordAppId,
+        secondaryText = secondaryText,
+    ) {
+        addRow(dividerStart = ROW_INSET) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = ROW_INSET, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    text = strings.discordAppIdLabel,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = primaryText,
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(dividerColor.copy(alpha = 0.45f))
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                ) {
+                    if (appIdDraft.isEmpty()) {
+                        Text(
+                            text = strings.discordAppIdPlaceholder,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = secondaryText,
+                        )
+                    }
+                    BasicTextField(
+                        value = appIdDraft,
+                        onValueChange = { next ->
+                            appIdDraft = next.filter { it.isDigit() }
+                            appIdValidationError = false
+                        },
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = primaryText),
+                        cursorBrush = SolidColor(primaryText),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                if (appIdValidationError) {
+                    Text(
+                        text = strings.discordAppIdInvalid,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = BasicPalette.AccentRed,
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(primaryText)
+                            .clickable {
+                                val trimmed = appIdDraft.trim()
+                                if (DiscordApplication.isValidSnowflakeAppId(trimmed)) {
+                                    appIdValidationError = false
+                                    onUpdateSettings { it.copy(discordAppId = trimmed) }
+                                } else {
+                                    appIdValidationError = true
+                                }
+                            }
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                    ) {
+                        Text(
+                            text = strings.discordAppIdApply,
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                            color = if (primaryText == Color.White) Color.Black else Color.White,
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(dividerColor.copy(alpha = 0.6f))
+                            .clickable {
+                                appIdDraft = DiscordApplication.DEFAULT_APP_ID
+                                appIdValidationError = false
+                                onUpdateSettings { it.copy(discordAppId = DiscordApplication.DEFAULT_APP_ID) }
+                            }
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                    ) {
+                        Text(
+                            text = strings.discordAppIdReset,
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium),
+                            color = primaryText,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun AccountCategoryContent(
     signedIn: Boolean,
@@ -2368,6 +2748,28 @@ private fun SettingsChoicePage(
                         accentTint = accentTint,
                         onClick = {
                             onUpdateSettings { it.copy(lyricsTranslationLang = code) }
+                            onSelectDone()
+                        },
+                    )
+                }
+            }
+        }
+
+        SettingsChoiceKind.DISCORD_ACTIVITY_TYPE -> {
+            SettingsGroup(
+                cardBg = cardBg,
+                dividerColor = dividerColor,
+                secondaryText = secondaryText,
+            ) {
+                DiscordActivityType.entries.forEach { activityType ->
+                    SettingsChoiceRow(
+                        title = discordActivityTypeLabel(activityType, strings),
+                        selected = settings.discordActivityType == activityType,
+                        primaryText = primaryText,
+                        secondaryText = secondaryText,
+                        accentTint = accentTint,
+                        onClick = {
+                            onUpdateSettings { it.copy(discordActivityType = activityType) }
                             onSelectDone()
                         },
                     )
