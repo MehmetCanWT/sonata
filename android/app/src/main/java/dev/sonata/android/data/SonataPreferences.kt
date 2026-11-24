@@ -192,6 +192,7 @@ data class SonataSettingsState(
     // Playback & Audio
     val audioQuality: AudioQualityTier = AudioQualityTier.HIGH,
     val preferHighQuality: Boolean = true,
+    val gaplessEnabled: Boolean = true,
     val crossfadeEnabled: Boolean = false,
     val crossfadeSeconds: Int = 4,
     val loudnessNormEnabled: Boolean = false,
@@ -246,6 +247,12 @@ data class SonataSettingsState(
     val discordShowTimestamps: Boolean = true,
     val discordShowArtwork: Boolean = true,
     val discordShowButtons: Boolean = true,
+
+    // Sonata Connect & Scrobbling (non-secret flags & device label only; tokens/keys stay isolated)
+    val connectEnabled: Boolean = false,
+    val connectDeviceName: String = SonataPreferences.DEFAULT_CONNECT_DEVICE_NAME,
+    val lastFmEnabled: Boolean = false,
+    val listenBrainzEnabled: Boolean = false,
 ) {
     fun resolvedDesignTheme(): DesignTheme = when (themeMode) {
         ThemeMode.VIOLET_LIGHT, ThemeMode.VIOLET_DARK -> DesignTheme.VIOLET
@@ -303,6 +310,24 @@ class SonataPreferences(context: Context) {
     private val _attributePersonalToYtm = MutableStateFlow(false)
     val attributePersonalToYtm: StateFlow<Boolean> = _attributePersonalToYtm.asStateFlow()
 
+    private val _gaplessEnabled = MutableStateFlow(true)
+    val gaplessEnabled: StateFlow<Boolean> = _gaplessEnabled.asStateFlow()
+
+    private val _crossfadeSeconds = MutableStateFlow(0)
+    val crossfadeSeconds: StateFlow<Int> = _crossfadeSeconds.asStateFlow()
+
+    private val _connectEnabled = MutableStateFlow(false)
+    val connectEnabled: StateFlow<Boolean> = _connectEnabled.asStateFlow()
+
+    private val _connectDeviceName = MutableStateFlow(DEFAULT_CONNECT_DEVICE_NAME)
+    val connectDeviceName: StateFlow<String> = _connectDeviceName.asStateFlow()
+
+    private val _lastFmEnabled = MutableStateFlow(false)
+    val lastFmEnabled: StateFlow<Boolean> = _lastFmEnabled.asStateFlow()
+
+    private val _listenBrainzEnabled = MutableStateFlow(false)
+    val listenBrainzEnabled: StateFlow<Boolean> = _listenBrainzEnabled.asStateFlow()
+
     private val _discordToken = MutableStateFlow<String?>(null)
     val discordToken: StateFlow<String?> = _discordToken.asStateFlow()
 
@@ -331,6 +356,16 @@ class SonataPreferences(context: Context) {
         _personalOnlyMode.value = next.personalOnlyMode
         _localMusicEnabled.value = next.localMusicEnabled
         _attributePersonalToYtm.value = next.attributePersonalToYtm
+        _gaplessEnabled.value = next.gaplessEnabled
+        _crossfadeSeconds.value = if (next.crossfadeEnabled) {
+            next.crossfadeSeconds.coerceIn(MIN_CROSSFADE_SEC, MAX_CROSSFADE_SEC)
+        } else {
+            0
+        }
+        _connectEnabled.value = next.connectEnabled
+        _connectDeviceName.value = next.connectDeviceName
+        _lastFmEnabled.value = next.lastFmEnabled
+        _listenBrainzEnabled.value = next.listenBrainzEnabled
     }
 
     /**
@@ -405,6 +440,56 @@ class SonataPreferences(context: Context) {
      */
     fun setAttributePersonalToYtm(enabled: Boolean) {
         update { it.copy(attributePersonalToYtm = enabled) }
+    }
+
+    /**
+     * Enables or disables gapless audio transitions across consecutive queued tracks.
+     */
+    fun setGaplessEnabled(enabled: Boolean) {
+        update { it.copy(gaplessEnabled = enabled) }
+    }
+
+    /**
+     * Sets effective crossfade duration in seconds (`0` disables crossfade; `1..12` enables it).
+     */
+    fun setCrossfadeSeconds(seconds: Int) {
+        val clamped = seconds.coerceIn(0, MAX_CROSSFADE_SEC)
+        update { current ->
+            if (clamped == 0) {
+                current.copy(crossfadeEnabled = false)
+            } else {
+                current.copy(crossfadeEnabled = true, crossfadeSeconds = clamped)
+            }
+        }
+    }
+
+    /**
+     * Enables or disables the Sonata Connect LAN client.
+     */
+    fun setConnectEnabled(enabled: Boolean) {
+        update { it.copy(connectEnabled = enabled) }
+    }
+
+    /**
+     * Updates the user-visible device name advertised to Sonata Connect peers.
+     */
+    fun setConnectDeviceName(name: String) {
+        val normalized = normalizeConnectDeviceName(name)
+        update { it.copy(connectDeviceName = normalized) }
+    }
+
+    /**
+     * Enables or disables Last.fm scrobbling.
+     */
+    fun setLastFmEnabled(enabled: Boolean) {
+        update { it.copy(lastFmEnabled = enabled) }
+    }
+
+    /**
+     * Enables or disables ListenBrainz scrobbling.
+     */
+    fun setListenBrainzEnabled(enabled: Boolean) {
+        update { it.copy(listenBrainzEnabled = enabled) }
     }
 
     /**
@@ -509,6 +594,7 @@ class SonataPreferences(context: Context) {
 
                     audioQuality = parseEnum(settingsObj.optString(KEY_AUDIO_QUALITY), defaults.audioQuality),
                     preferHighQuality = settingsObj.optBoolean(KEY_PREFER_HIGH_QUALITY, defaults.preferHighQuality),
+                    gaplessEnabled = settingsObj.optBoolean(KEY_GAPLESS_ENABLED, defaults.gaplessEnabled),
                     crossfadeEnabled = settingsObj.optBoolean(KEY_CROSSFADE_ENABLED, defaults.crossfadeEnabled),
                     crossfadeSeconds = settingsObj.optInt(KEY_CROSSFADE_SECONDS, defaults.crossfadeSeconds),
                     loudnessNormEnabled = settingsObj.optBoolean(KEY_LOUDNESS_NORM_ENABLED, defaults.loudnessNormEnabled),
@@ -606,6 +692,16 @@ class SonataPreferences(context: Context) {
                         KEY_DISCORD_SHOW_BUTTONS,
                         defaults.discordShowButtons,
                     ),
+                    connectEnabled = settingsObj.optBoolean(KEY_CONNECT_ENABLED, defaults.connectEnabled),
+                    connectDeviceName = settingsObj.optString(
+                        KEY_CONNECT_DEVICE_NAME,
+                        defaults.connectDeviceName,
+                    ),
+                    lastFmEnabled = settingsObj.optBoolean(KEY_LASTFM_ENABLED, defaults.lastFmEnabled),
+                    listenBrainzEnabled = settingsObj.optBoolean(
+                        KEY_LISTENBRAINZ_ENABLED,
+                        defaults.listenBrainzEnabled,
+                    ),
                 ),
             )
 
@@ -678,6 +774,7 @@ class SonataPreferences(context: Context) {
 
                 audioQuality = parseEnum(prefs.getString(KEY_AUDIO_QUALITY, null), defaults.audioQuality),
                 preferHighQuality = prefs.getBoolean(KEY_PREFER_HIGH_QUALITY, defaults.preferHighQuality),
+                gaplessEnabled = prefs.getBoolean(KEY_GAPLESS_ENABLED, defaults.gaplessEnabled),
                 crossfadeEnabled = prefs.getBoolean(KEY_CROSSFADE_ENABLED, defaults.crossfadeEnabled),
                 crossfadeSeconds = prefs.getInt(KEY_CROSSFADE_SECONDS, defaults.crossfadeSeconds),
                 loudnessNormEnabled = prefs.getBoolean(KEY_LOUDNESS_NORM_ENABLED, defaults.loudnessNormEnabled),
@@ -764,6 +861,11 @@ class SonataPreferences(context: Context) {
                 ),
                 discordShowArtwork = prefs.getBoolean(KEY_DISCORD_SHOW_ARTWORK, defaults.discordShowArtwork),
                 discordShowButtons = prefs.getBoolean(KEY_DISCORD_SHOW_BUTTONS, defaults.discordShowButtons),
+                connectEnabled = prefs.getBoolean(KEY_CONNECT_ENABLED, defaults.connectEnabled),
+                connectDeviceName = prefs.getString(KEY_CONNECT_DEVICE_NAME, null)
+                    ?: defaults.connectDeviceName,
+                lastFmEnabled = prefs.getBoolean(KEY_LASTFM_ENABLED, defaults.lastFmEnabled),
+                listenBrainzEnabled = prefs.getBoolean(KEY_LISTENBRAINZ_ENABLED, defaults.listenBrainzEnabled),
             ),
         )
     }
@@ -796,6 +898,7 @@ class SonataPreferences(context: Context) {
             .putBoolean(KEY_SQUARE_VIDEO_THUMBNAILS, state.squareVideoThumbnails)
             .putString(KEY_AUDIO_QUALITY, state.audioQuality.name)
             .putBoolean(KEY_PREFER_HIGH_QUALITY, state.preferHighQuality)
+            .putBoolean(KEY_GAPLESS_ENABLED, state.gaplessEnabled)
             .putBoolean(KEY_CROSSFADE_ENABLED, state.crossfadeEnabled)
             .putInt(KEY_CROSSFADE_SECONDS, state.crossfadeSeconds)
             .putBoolean(KEY_LOUDNESS_NORM_ENABLED, state.loudnessNormEnabled)
@@ -838,6 +941,10 @@ class SonataPreferences(context: Context) {
             .putBoolean(KEY_DISCORD_SHOW_TIMESTAMPS, state.discordShowTimestamps)
             .putBoolean(KEY_DISCORD_SHOW_ARTWORK, state.discordShowArtwork)
             .putBoolean(KEY_DISCORD_SHOW_BUTTONS, state.discordShowButtons)
+            .putBoolean(KEY_CONNECT_ENABLED, state.connectEnabled)
+            .putString(KEY_CONNECT_DEVICE_NAME, state.connectDeviceName)
+            .putBoolean(KEY_LASTFM_ENABLED, state.lastFmEnabled)
+            .putBoolean(KEY_LISTENBRAINZ_ENABLED, state.listenBrainzEnabled)
 
         if (trackOffsetsOverride != null) {
             editor.putString(KEY_TRACK_LYRIC_OFFSETS, encodeTrackOffsets(trackOffsetsOverride))
@@ -932,8 +1039,12 @@ class SonataPreferences(context: Context) {
                 lyricsTranslationLang = state.lyricsTranslationLang.trim().lowercase().ifEmpty { "en" },
                 lyricsOffsetMs = state.lyricsOffsetMs.coerceIn(MIN_LYRIC_OFFSET_MS, MAX_LYRIC_OFFSET_MS),
                 discordAppId = DiscordApplication.resolveAppId(state.discordAppId),
+                connectDeviceName = normalizeConnectDeviceName(state.connectDeviceName),
             )
         }
+
+        internal fun normalizeConnectDeviceName(raw: String?): String =
+            raw?.trim()?.takeIf { it.isNotEmpty() }?.take(64) ?: DEFAULT_CONNECT_DEVICE_NAME
 
         internal fun encodeBands(bands: List<Float>): String =
             JSONArray().apply { bands.forEach { put(it.toDouble()) } }.toString()
@@ -968,6 +1079,7 @@ class SonataPreferences(context: Context) {
         private const val MAX_CROSSFADE_SEC = 12
         private const val MIN_LYRIC_OFFSET_MS = -30_000L
         private const val MAX_LYRIC_OFFSET_MS = 30_000L
+        internal const val DEFAULT_CONNECT_DEVICE_NAME = "Sonata Android"
 
         private const val BACKUP_APP_ID = "sonata"
         private const val BACKUP_SCHEMA_VERSION = 1
@@ -1002,6 +1114,7 @@ class SonataPreferences(context: Context) {
 
         private const val KEY_AUDIO_QUALITY = "audio_quality"
         private const val KEY_PREFER_HIGH_QUALITY = "prefer_high_quality"
+        private const val KEY_GAPLESS_ENABLED = "gapless_enabled"
         private const val KEY_CROSSFADE_ENABLED = "crossfade_enabled"
         private const val KEY_CROSSFADE_SECONDS = "crossfade_seconds"
         private const val KEY_LOUDNESS_NORM_ENABLED = "loudness_norm_enabled"
@@ -1049,6 +1162,11 @@ class SonataPreferences(context: Context) {
         private const val KEY_DISCORD_SHOW_ARTWORK = "discord_show_artwork"
         private const val KEY_DISCORD_SHOW_BUTTONS = "discord_show_buttons"
 
+        private const val KEY_CONNECT_ENABLED = "connect_enabled"
+        private const val KEY_CONNECT_DEVICE_NAME = "connect_device_name"
+        private const val KEY_LASTFM_ENABLED = "lastfm_enabled"
+        private const val KEY_LISTENBRAINZ_ENABLED = "listenbrainz_enabled"
+
         private const val KEY_TRACK_LYRIC_OFFSETS = "track_lyric_offsets"
 
         internal fun formatBackupJson(
@@ -1082,6 +1200,7 @@ class SonataPreferences(context: Context) {
 
                 put(KEY_AUDIO_QUALITY, current.audioQuality.name)
                 put(KEY_PREFER_HIGH_QUALITY, current.preferHighQuality)
+                put(KEY_GAPLESS_ENABLED, current.gaplessEnabled)
                 put(KEY_CROSSFADE_ENABLED, current.crossfadeEnabled)
                 put(KEY_CROSSFADE_SECONDS, current.crossfadeSeconds)
                 put(KEY_LOUDNESS_NORM_ENABLED, current.loudnessNormEnabled)
@@ -1127,6 +1246,10 @@ class SonataPreferences(context: Context) {
                 put(KEY_DISCORD_SHOW_TIMESTAMPS, current.discordShowTimestamps)
                 put(KEY_DISCORD_SHOW_ARTWORK, current.discordShowArtwork)
                 put(KEY_DISCORD_SHOW_BUTTONS, current.discordShowButtons)
+                put(KEY_CONNECT_ENABLED, current.connectEnabled)
+                put(KEY_CONNECT_DEVICE_NAME, current.connectDeviceName)
+                put(KEY_LASTFM_ENABLED, current.lastFmEnabled)
+                put(KEY_LISTENBRAINZ_ENABLED, current.listenBrainzEnabled)
             }
 
             val offsetsObj = JSONObject().apply {

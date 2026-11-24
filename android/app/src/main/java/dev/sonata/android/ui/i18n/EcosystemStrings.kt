@@ -1,0 +1,282 @@
+package dev.sonata.android.ui.i18n
+
+import dev.sonata.android.data.AppLanguage
+import java.util.Locale
+
+/**
+ * Localized UI strings for Sonata Connect, Gapless Playback, Crossfade (0–12s),
+ * Last.fm / ListenBrainz scrobbling, On-Device Listening Stats, and Android Auto nodes.
+ */
+data class EcosystemStrings(
+    // Gapless & Crossfade
+    val gaplessPlaybackTitle: String,
+    val gaplessPlaybackDescription: String,
+    val crossfadeTitle: String,
+    val crossfadeDescription: String,
+    val crossfadeOff: String,
+    val crossfadeSecondsValue: (Int) -> String,
+    val crossfadeVideoBypassHint: String,
+
+    // Sonata Connect
+    val connectTitle: String,
+    val connectSubtitle: String,
+    val connectEnableTitle: String,
+    val connectDeviceNameLabel: String,
+    val connectDiscoverTitle: String,
+    val connectScanning: String,
+    val connectNoDevices: String,
+    val connectPairButton: String,
+    val connectPairPinTitle: String,
+    val connectPairPinHint: String,
+    val connectPairedBadge: String,
+    val connectConnectedTo: (String) -> String,
+    val connectTransferPlayback: String,
+    val connectDisconnect: String,
+    val connectPairFailed: String,
+
+    // Scrobbling (Last.fm & ListenBrainz)
+    val scrobblingTitle: String,
+    val scrobblingSubtitle: String,
+    val lastFmTitle: String,
+    val lastFmDescription: String,
+    val listenBrainzTitle: String,
+    val listenBrainzDescription: String,
+    val listenBrainzTokenHint: String,
+    val scrobbleThresholdHint: String,
+    val scrobbleStatusConnected: (String) -> String,
+    val scrobbleStatusNotSignedIn: String,
+
+    // Listening Stats
+    val listeningStatsTitle: String,
+    val listeningStatsSubtitle: String,
+    val statsWindowWeek: String,
+    val statsWindowMonth: String,
+    val statsWindowYear: String,
+    val statsWindowAllTime: String,
+    val statsTotalPlays: String,
+    val statsTotalMinutes: String,
+    val statsUniqueTracks: String,
+    val statsUniqueArtists: String,
+    val statsStreakDays: (Int) -> String,
+    val statsTopArtists: String,
+    val statsTopTracks: String,
+    val statsTopAlbums: String,
+    val statsSourceBreakdown: String,
+    val statsPrivacyNote: String,
+
+    // Android Auto Browse Tree
+    val autoRootTitle: String,
+    val autoLikedMusic: String,
+    val autoPlaylists: String,
+    val autoPersonalPlaylists: String,
+    val autoDownloads: String,
+    val autoLocalMusic: String,
+    val autoRecentlyPlayed: String,
+    val autoEmptyNode: String,
+)
+
+val EnglishEcosystemStrings = EcosystemStrings(
+    gaplessPlaybackTitle = "Gapless Playback",
+    gaplessPlaybackDescription = "Eliminate silence between consecutive tracks in your queue",
+    crossfadeTitle = "Crossfade",
+    crossfadeDescription = "Smoothly blend the end of one track into the next (0–12s)",
+    crossfadeOff = "Off",
+    crossfadeSecondsValue = { sec -> if (sec <= 0) "Off" else "${sec}s" },
+    crossfadeVideoBypassHint = "Crossfade is automatically paused during Music Video playback",
+
+    connectTitle = "Sonata Connect",
+    connectSubtitle = "Discover and control Sonata desktop or terminal players over LAN",
+    connectEnableTitle = "Enable Sonata Connect",
+    connectDeviceNameLabel = "Device Name",
+    connectDiscoverTitle = "Available Devices",
+    connectScanning = "Listening on local network...",
+    connectNoDevices = "No Sonata devices found on this Wi-Fi network",
+    connectPairButton = "Pair",
+    connectPairPinTitle = "Enter 6-digit PIN",
+    connectPairPinHint = "Enter the 6-digit PIN shown on the target player",
+    connectPairedBadge = "Paired",
+    connectConnectedTo = { name -> "Connected to $name" },
+    connectTransferPlayback = "Transfer Queue",
+    connectDisconnect = "Disconnect",
+    connectPairFailed = "Pairing failed — verify PIN and network connection",
+
+    scrobblingTitle = "Scrobbling",
+    scrobblingSubtitle = "Track your listening history on Last.fm and ListenBrainz",
+    lastFmTitle = "Last.fm",
+    lastFmDescription = "Submit now-playing updates and scrobbles to your Last.fm profile",
+    listenBrainzTitle = "ListenBrainz",
+    listenBrainzDescription = "Submit listens to ListenBrainz using your user token",
+    listenBrainzTokenHint = "Paste your ListenBrainz user token",
+    scrobbleThresholdHint = "Tracks scrobble after 40 seconds or 50% playback",
+    scrobbleStatusConnected = { user -> "Signed in as $user" },
+    scrobbleStatusNotSignedIn = "Not connected",
+
+    listeningStatsTitle = "Listening Stats",
+    listeningStatsSubtitle = "On-device playback insights stored privately on your device",
+    statsWindowWeek = "Week",
+    statsWindowMonth = "Month",
+    statsWindowYear = "Year",
+    statsWindowAllTime = "All Time",
+    statsTotalPlays = "Total Plays",
+    statsTotalMinutes = "Minutes Listened",
+    statsUniqueTracks = "Unique Tracks",
+    statsUniqueArtists = "Unique Artists",
+    statsStreakDays = { days -> if (days == 1) "1 day streak" else "$days day streak" },
+    statsTopArtists = "Top Artists",
+    statsTopTracks = "Top Tracks",
+    statsTopAlbums = "Top Albums",
+    statsSourceBreakdown = "Sources",
+    statsPrivacyNote = "Stored locally in an offline database — zero analytics or external tracking",
+
+    autoRootTitle = "Sonata",
+    autoLikedMusic = "Liked Music",
+    autoPlaylists = "Playlists",
+    autoPersonalPlaylists = "Personal Playlists",
+    autoDownloads = "Downloads",
+    autoLocalMusic = "Local Music",
+    autoRecentlyPlayed = "Recently Played",
+    autoEmptyNode = "Nothing here yet",
+)
+
+val TurkishEcosystemStrings = EcosystemStrings(
+    gaplessPlaybackTitle = "Aralıksız Çalma (Gapless)",
+    gaplessPlaybackDescription = "Sıradaki parçalar arasındaki boşluğu kaldır",
+    crossfadeTitle = "Geçiş (Crossfade)",
+    crossfadeDescription = "Parça sonunu bir sonrakiyle yumuşakça birleştir (0–12 sn)",
+    crossfadeOff = "Kapalı",
+    crossfadeSecondsValue = { sec -> if (sec <= 0) "Kapalı" else "${sec} sn" },
+    crossfadeVideoBypassHint = "Müzik Videosu modunda crossfade otomatik olarak devre dışı bırakılır",
+
+    connectTitle = "Sonata Connect",
+    connectSubtitle = "Yerel ağdaki Sonata masaüstü ve terminal oynatıcılarını keşfet ve yönet",
+    connectEnableTitle = "Sonata Connect'i Etkinleştir",
+    connectDeviceNameLabel = "Cihaz Adı",
+    connectDiscoverTitle = "Bulunan Cihazlar",
+    connectScanning = "Yerel ağ taranıyor...",
+    connectNoDevices = "Bu Wi-Fi ağında Sonata cihazı bulunamadı",
+    connectPairButton = "Eşleştir",
+    connectPairPinTitle = "6 Haneli PIN Girin",
+    connectPairPinHint = "Hedef oynatıcıda görünen 6 haneli PIN kodunu girin",
+    connectPairedBadge = "Eşleşti",
+    connectConnectedTo = { name -> "$name cihazına bağlandı" },
+    connectTransferPlayback = "Sırayı Aktar",
+    connectDisconnect = "Bağlantıyı Kes",
+    connectPairFailed = "Eşleştirme başarısız — PIN kodunu ve ağ bağlantısını kontrol edin",
+
+    scrobblingTitle = "Skroplama (Scrobbling)",
+    scrobblingSubtitle = "Dinleme geçmişini Last.fm ve ListenBrainz ile eşitle",
+    lastFmTitle = "Last.fm",
+    lastFmDescription = "Şu an çalan parçaları ve skropları Last.fm profiline gönder",
+    listenBrainzTitle = "ListenBrainz",
+    listenBrainzDescription = "Kullanıcı anahtarınla ListenBrainz'e dinleme kaydı gönder",
+    listenBrainzTokenHint = "ListenBrainz kullanıcı anahtarını yapıştır",
+    scrobbleThresholdHint = "Parçalar 40 saniye veya %50 oynatma sonrasında kaydedilir",
+    scrobbleStatusConnected = { user -> "$user olarak bağlı" },
+    scrobbleStatusNotSignedIn = "Bağlı değil",
+
+    listeningStatsTitle = "Dinleme İstatistikleri",
+    listeningStatsSubtitle = "Yalnızca cihazında saklanan yerel dinleme özeti",
+    statsWindowWeek = "Hafta",
+    statsWindowMonth = "Ay",
+    statsWindowYear = "Yıl",
+    statsWindowAllTime = "Tüm Zamanlar",
+    statsTotalPlays = "Toplam Çalma",
+    statsTotalMinutes = "Dinlenen Dakika",
+    statsUniqueTracks = "Farklı Parça",
+    statsUniqueArtists = "Farklı Sanatçı",
+    statsStreakDays = { days -> "$days günlük seri" },
+    statsTopArtists = "En Çok Dinlenen Sanatçılar",
+    statsTopTracks = "En Çok Dinlenen Parçalar",
+    statsTopAlbums = "En Çok Dinlenen Albümler",
+    statsSourceBreakdown = "Kaynak Dağılımı",
+    statsPrivacyNote = "Tamamen çevrimdışı yerel veritabanında tutulur — dış izleyici yoktur",
+
+    autoRootTitle = "Sonata",
+    autoLikedMusic = "Beğenilen Müzikler",
+    autoPlaylists = "Çalma Listeleri",
+    autoPersonalPlaylists = "Kişisel Listeler",
+    autoDownloads = "İndirilenler",
+    autoLocalMusic = "Yerel Müzik",
+    autoRecentlyPlayed = "Son Çalınanlar",
+    autoEmptyNode = "Henüz içerik yok",
+)
+
+val RussianEcosystemStrings = EcosystemStrings(
+    gaplessPlaybackTitle = "Непрерывное воспроизведение",
+    gaplessPlaybackDescription = "Убрать паузы между соседними треками в очереди",
+    crossfadeTitle = "Кроссфейд",
+    crossfadeDescription = "Плавное наложение конца одного трека на начало следующего (0–12 с)",
+    crossfadeOff = "Выкл",
+    crossfadeSecondsValue = { sec -> if (sec <= 0) "Выкл" else "${sec} с" },
+    crossfadeVideoBypassHint = "Кроссфейд автоматически отключается в режиме видеоклипа",
+
+    connectTitle = "Sonata Connect",
+    connectSubtitle = "Поиск и управление плеерами Sonata на ПК и в терминале по локальной сети",
+    connectEnableTitle = "Включить Sonata Connect",
+    connectDeviceNameLabel = "Имя устройства",
+    connectDiscoverTitle = "Доступные устройства",
+    connectScanning = "Поиск в локальной сети...",
+    connectNoDevices = "Устройства Sonata в этой сети Wi-Fi не найдены",
+    connectPairButton = "Связать",
+    connectPairPinTitle = "Введите 6-значный PIN",
+    connectPairPinHint = "Введите 6-значный PIN-код с экрана целевого плеера",
+    connectPairedBadge = "Связано",
+    connectConnectedTo = { name -> "Подключено к $name" },
+    connectTransferPlayback = "Передать очередь",
+    connectDisconnect = "Отключить",
+    connectPairFailed = "Ошибка сопряжения — проверьте PIN и сеть",
+
+    scrobblingTitle = "Скробблинг",
+    scrobblingSubtitle = "Отправка истории прослушиваний в Last.fm и ListenBrainz",
+    lastFmTitle = "Last.fm",
+    lastFmDescription = "Отправка текущего трека и скробблов в профиль Last.fm",
+    listenBrainzTitle = "ListenBrainz",
+    listenBrainzDescription = "Отправка прослушиваний в ListenBrainz по токену пользователя",
+    listenBrainzTokenHint = "Вставьте токен пользователя ListenBrainz",
+    scrobbleThresholdHint = "Трек засчитывается после 40 секунд или 50% длительности",
+    scrobbleStatusConnected = { user -> "Вход выполнен: $user" },
+    scrobbleStatusNotSignedIn = "Не подключено",
+
+    listeningStatsTitle = "Статистика прослушиваний",
+    listeningStatsSubtitle = "Локальная аналитика, хранящаяся только на вашем устройстве",
+    statsWindowWeek = "Неделя",
+    statsWindowMonth = "Месяц",
+    statsWindowYear = "Год",
+    statsWindowAllTime = "Всё время",
+    statsTotalPlays = "Всего запусков",
+    statsTotalMinutes = "Минут прослушано",
+    statsUniqueTracks = "Уникальных треков",
+    statsUniqueArtists = "Уникальных исполнителей",
+    statsStreakDays = { days -> "Серия: $days дн." },
+    statsTopArtists = "Топ исполнителей",
+    statsTopTracks = "Топ треков",
+    statsTopAlbums = "Топ альбомов",
+    statsSourceBreakdown = "Источники",
+    statsPrivacyNote = "Хранится только в локальной базе данных — без внешней телеметрии",
+
+    autoRootTitle = "Sonata",
+    autoLikedMusic = "Понравившиеся",
+    autoPlaylists = "Плейлисты",
+    autoPersonalPlaylists = "Личные плейлисты",
+    autoDownloads = "Загрузки",
+    autoLocalMusic = "Локальная музыка",
+    autoRecentlyPlayed = "Недавние",
+    autoEmptyNode = "Здесь пока пусто",
+)
+
+/**
+ * Resolves [EcosystemStrings] for [lang], using [systemLocale] when [lang] is [AppLanguage.SYSTEM].
+ */
+fun ecosystemStrings(
+    lang: AppLanguage,
+    systemLocale: Locale = Locale.getDefault(),
+): EcosystemStrings = when (lang) {
+    AppLanguage.ENGLISH -> EnglishEcosystemStrings
+    AppLanguage.TURKISH -> TurkishEcosystemStrings
+    AppLanguage.RUSSIAN -> RussianEcosystemStrings
+    AppLanguage.SYSTEM -> when (systemLocale.language.lowercase(Locale.ROOT)) {
+        "tr" -> TurkishEcosystemStrings
+        "ru" -> RussianEcosystemStrings
+        else -> EnglishEcosystemStrings
+    }
+}

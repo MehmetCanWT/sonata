@@ -42,9 +42,14 @@ import androidx.media3.exoplayer.source.LoadEventInfo
 import androidx.media3.exoplayer.source.MediaLoadData
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.session.LibraryResult
+import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
-import androidx.media3.session.MediaSessionService
+import androidx.media3.session.SessionError
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
 import dev.sonata.android.data.AudioPipelineBus
+import dev.sonata.android.data.AppLanguage
 import dev.sonata.android.data.formatMeasuredAudioBadge
 import dev.sonata.android.data.normalizeAudioCodecLabel
 import dev.sonata.android.data.parseHttpContentLength
@@ -52,7 +57,10 @@ import dev.sonata.android.data.parseHttpContentRangeTotal
 import dev.sonata.android.data.pcmEncodingToBitDepth
 import dev.sonata.android.data.resolveMeasuredBitrateKbps
 import dev.sonata.android.playback.EndedStateTransitionGuard
+import dev.sonata.android.playback.SonataAutoBrowser
 import dev.sonata.android.playback.SonataDspAudioProcessor
+import dev.sonata.android.ui.i18n.EcosystemStrings
+import dev.sonata.android.ui.i18n.ecosystemStrings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -71,6 +79,7 @@ import kotlin.math.sin
 internal object PlaybackQueueBridge {
     private val defaultFalse: () -> Boolean = { false }
     private val defaultUnit: () -> Unit = {}
+    private val defaultStringUnit: (String) -> Unit = {}
 
     @Volatile
     var canSkipNext: () -> Boolean = defaultFalse
@@ -93,6 +102,9 @@ internal object PlaybackQueueBridge {
     @Volatile
     var onTrackEnded: () -> Unit = defaultUnit
 
+    @Volatile
+    var onPlayMediaId: (String) -> Unit = defaultStringUnit
+
     fun reset() {
         canSkipNext = defaultFalse
         canSkipPrevious = defaultFalse
@@ -101,6 +113,7 @@ internal object PlaybackQueueBridge {
         onSkipPrevious = defaultUnit
         onPlayFromEmpty = defaultUnit
         onTrackEnded = defaultUnit
+        onPlayMediaId = defaultStringUnit
     }
 
     fun hasActiveCallbacks(): Boolean {
@@ -110,8 +123,38 @@ internal object PlaybackQueueBridge {
             onSkipNext !== defaultUnit ||
             onSkipPrevious !== defaultUnit ||
             onPlayFromEmpty !== defaultUnit ||
-            onTrackEnded !== defaultUnit
+            onTrackEnded !== defaultUnit ||
+            onPlayMediaId !== defaultStringUnit
     }
+}
+
+enum class CrossfadePhase {
+    FADE_OUT,
+    FADE_IN,
+}
+
+/**
+ * Clamps crossfade duration in seconds to the supported `0..12` range (`0` = disabled).
+ */
+fun clampCrossfadeSeconds(seconds: Int): Int = seconds.coerceIn(0, 12)
+
+/**
+ * Computes an equal-power crossfade DSP gain multiplier in `0f..1f` for [phase].
+ * Returns `1f` when crossfade is disabled (`durationMs <= 0L`) or when [videoModeActive] is true.
+ */
+fun computeCrossfadeGain(
+    phase: CrossfadePhase,
+    elapsedMs: Long,
+    durationMs: Long,
+    videoModeActive: Boolean = false,
+): Float {
+    if (videoModeActive || durationMs <= 0L) return 1f
+    val progress = (elapsedMs.coerceAtLeast(0L).toDouble() / durationMs.toDouble()).coerceIn(0.0, 1.0)
+    val gain = when (phase) {
+        CrossfadePhase.FADE_OUT -> cos(progress * (Math.PI / 2.0))
+        CrossfadePhase.FADE_IN -> sin(progress * (Math.PI / 2.0))
+    }
+    return gain.toFloat().coerceIn(0f, 1f)
 }
 
 /**
@@ -138,6 +181,9 @@ object PlaybackAudioBridge {
     private var loudnessNormEnabled: Boolean = false
 
     @Volatile
+    private var gaplessEnabled: Boolean = true
+
+    @Volatile
     private var crossfadeEnabled: Boolean = false
 
     @Volatile
@@ -148,6 +194,16 @@ object PlaybackAudioBridge {
 
     @Volatile
     var stopMusicOnClose: Boolean = false
+
+    internal val autoBrowser = SonataAutoBrowser()
+
+    fun registerAutoDataProvider(provider: SonataAutoBrowser.AutoDataProvider) {
+        autoBrowser.dataProvider = provider
+    }
+
+    fun registerAutoStringsProvider(provider: () -> EcosystemStrings) {
+        autoBrowser.stringsProvider = provider
+    }
 
     private val _videoAspectRatio = MutableStateFlow(16f / 9f)
     val videoAspectRatio: StateFlow<Float> = _videoAspectRatio.asStateFlow()
@@ -220,14 +276,28 @@ object PlaybackAudioBridge {
         activeService?.applyLoudnessNormalizationInternal(enabled)
     }
 
+    fun applyGapless(enabled: Boolean) {
+        gaplessEnabled = enabled
+        activeService?.applyGaplessInternal(enabled)
+    }
+
+    fun isGaplessEnabled(): Boolean = gaplessEnabled
+
+    fun applyCrossfade(seconds: Int) {
+        val clamped = clampCrossfadeSeconds(seconds)
+        applyCrossfade(enabled = clamped > 0, seconds = clamped)
+    }
+
     fun applyCrossfade(enabled: Boolean, seconds: Int) {
-        val clampedSeconds = seconds.coerceIn(1, 12)
-        crossfadeEnabled = enabled
-        crossfadeSeconds = clampedSeconds
+        val clamped = clampCrossfadeSeconds(seconds)
+        val effectiveEnabled = enabled && clamped > 0
+        val storedSeconds = if (clamped > 0) clamped else crossfadeSeconds.coerceIn(1, 12)
+        crossfadeEnabled = effectiveEnabled
+        crossfadeSeconds = storedSeconds
         AudioPipelineBus.update {
-            it.copy(crossfadeSeconds = if (enabled) clampedSeconds else 0)
+            it.copy(crossfadeSeconds = if (effectiveEnabled) storedSeconds else 0)
         }
-        activeService?.applyCrossfadeInternal(enabled, clampedSeconds)
+        activeService?.applyCrossfadeInternal(effectiveEnabled, storedSeconds)
     }
 
     fun applySleepFadeMultiplier(multiplier: Float) {
@@ -296,13 +366,14 @@ object PlaybackAudioBridge {
         }
         service.applyEqualizerInternal(eqEnabled, eqBandsDb)
         service.applyLoudnessNormalizationInternal(loudnessNormEnabled)
+        service.applyGaplessInternal(gaplessEnabled)
         service.applyCrossfadeInternal(crossfadeEnabled, crossfadeSeconds)
         service.applySleepFadeMultiplierInternal(sleepFadeMultiplier)
     }
 }
 
-class PlaybackService : MediaSessionService() {
-    private var mediaSession: MediaSession? = null
+class PlaybackService : MediaLibraryService() {
+    private var mediaSession: MediaLibrarySession? = null
     private var exoPlayerInstance: ExoPlayer? = null
     private var videoSourceFactory: ProgressiveMediaSource.Factory? = null
     private var attachedTextureView: TextureView? = null
@@ -310,6 +381,9 @@ class PlaybackService : MediaSessionService() {
     private var dspProcessor: SonataDspAudioProcessor? = null
     private var loudnessEnhancer: LoudnessEnhancer? = null
     private var loudnessSessionId: Int = C.AUDIO_SESSION_ID_UNSET
+
+    @Volatile
+    private var gaplessEnabledFlag: Boolean = true
 
     @Volatile
     private var crossfadeEnabledFlag: Boolean = false
@@ -418,7 +492,7 @@ class PlaybackService : MediaSessionService() {
                 crossfadeFadeOutTriggeredToken = -1
                 crossfadeAdvanceDispatchedToken = -1
                 crossfadeFadeOutStartRemainingMs = 0L
-                if (!pendingCrossfadeFadeIn || !crossfadeEnabledFlag || mediaItem == null) {
+                if (!pendingCrossfadeFadeIn || !crossfadeEnabledFlag || videoModePlaybackActive || mediaItem == null) {
                     pendingCrossfadeFadeIn = false
                     crossfadeFadeInDurationMs = 0L
                     dspProcessor?.setCrossfadeMultiplier(1f)
@@ -493,7 +567,8 @@ class PlaybackService : MediaSessionService() {
         PlaybackAudioBridge.syncAllTo(this)
 
         val sessionPlayer = QueueAwarePlayer(exoPlayer, endedTransitionGuard)
-        mediaSession = MediaSession.Builder(this, sessionPlayer).build()
+        mediaSession = MediaLibrarySession.Builder(this, sessionPlayer, createLibrarySessionCallback())
+            .build()
     }
 
     @OptIn(UnstableApi::class)
@@ -926,9 +1001,24 @@ class PlaybackService : MediaSessionService() {
         postOnPlayer {
             runCatching {
                 player.skipSilenceEnabled = if (active) false else PlaybackAudioBridge.isSkipSilenceEnabled()
-                if (!active) {
+                if (active) {
+                    // Music Video playback never applies audio crossfade ramps.
+                    resetCrossfadeState()
+                } else {
                     player.clearVideoSurface()
+                    maybeScheduleCrossfadeMonitor()
                 }
+            }
+        }
+    }
+
+    @OptIn(UnstableApi::class)
+    internal fun applyGaplessInternal(enabled: Boolean) {
+        gaplessEnabledFlag = enabled
+        val player = exoPlayerInstance ?: return
+        postOnPlayer {
+            runCatching {
+                player.pauseAtEndOfMediaItems = !enabled
             }
         }
     }
@@ -954,10 +1044,11 @@ class PlaybackService : MediaSessionService() {
     }
 
     internal fun applyCrossfadeInternal(enabled: Boolean, seconds: Int) {
-        crossfadeEnabledFlag = enabled
-        crossfadeDurationMs = seconds.coerceIn(1, 12) * 1_000L
+        val clamped = clampCrossfadeSeconds(seconds)
+        crossfadeEnabledFlag = enabled && clamped > 0
+        crossfadeDurationMs = clamped.coerceAtLeast(1) * 1_000L
         postOnPlayer {
-            if (!crossfadeEnabledFlag) {
+            if (!crossfadeEnabledFlag || videoModePlaybackActive) {
                 resetCrossfadeState()
             } else {
                 maybeScheduleCrossfadeMonitor()
@@ -1020,6 +1111,7 @@ class PlaybackService : MediaSessionService() {
     private fun shouldRunCrossfadeMonitor(): Boolean {
         val player = exoPlayerInstance ?: return false
         return crossfadeEnabledFlag &&
+            !videoModePlaybackActive &&
             (player.isPlaying || pendingCrossfadeFadeIn) &&
             player.playbackState == Player.STATE_READY
     }
@@ -1046,7 +1138,7 @@ class PlaybackService : MediaSessionService() {
 
     private fun maybeStartCrossfadeFadeIn() {
         if (!pendingCrossfadeFadeIn) return
-        if (!crossfadeEnabledFlag) {
+        if (!crossfadeEnabledFlag || videoModePlaybackActive) {
             pendingCrossfadeFadeIn = false
             dspProcessor?.setCrossfadeMultiplier(1f)
             return
@@ -1060,7 +1152,7 @@ class PlaybackService : MediaSessionService() {
 
     private fun stepCrossfadeMonitor() {
         val player = exoPlayerInstance ?: return
-        if (!crossfadeEnabledFlag) {
+        if (!crossfadeEnabledFlag || videoModePlaybackActive) {
             resetCrossfadeState()
             return
         }
@@ -1068,11 +1160,14 @@ class PlaybackService : MediaSessionService() {
         if (pendingCrossfadeFadeIn && player.playbackState == Player.STATE_READY && player.isPlaying) {
             maybeStartCrossfadeFadeIn()
             val elapsed = (android.os.SystemClock.elapsedRealtime() - crossfadeFadeInStartMs).coerceAtLeast(0L)
-            val progress = (elapsed.toFloat() / crossfadeFadeInDurationMs.coerceAtLeast(1L).toFloat())
-                .coerceIn(0f, 1f)
-            val gain = sin(progress * (Math.PI / 2.0)).toFloat().coerceIn(0f, 1f)
+            val gain = computeCrossfadeGain(
+                phase = CrossfadePhase.FADE_IN,
+                elapsedMs = elapsed,
+                durationMs = crossfadeFadeInDurationMs.coerceAtLeast(1L),
+                videoModeActive = videoModePlaybackActive,
+            )
             dspProcessor?.setCrossfadeMultiplier(gain)
-            if (progress >= 1f) {
+            if (elapsed >= crossfadeFadeInDurationMs.coerceAtLeast(1L)) {
                 pendingCrossfadeFadeIn = false
                 crossfadeFadeInDurationMs = 0L
                 dspProcessor?.setCrossfadeMultiplier(1f)
@@ -1110,11 +1205,15 @@ class PlaybackService : MediaSessionService() {
 
         val totalFadeOutMs = (crossfadeFadeOutStartRemainingMs - CROSSFADE_TAIL_MS).coerceAtLeast(250L)
         val elapsedInWindow = (crossfadeFadeOutStartRemainingMs - remainingMs).coerceAtLeast(0L)
-        val progress = (elapsedInWindow.toFloat() / totalFadeOutMs.toFloat()).coerceIn(0f, 1f)
-        val fadeOutGain = cos(progress * (Math.PI / 2.0)).toFloat().coerceIn(0f, 1f)
+        val fadeOutGain = computeCrossfadeGain(
+            phase = CrossfadePhase.FADE_OUT,
+            elapsedMs = elapsedInWindow,
+            durationMs = totalFadeOutMs,
+            videoModeActive = videoModePlaybackActive,
+        )
         dspProcessor?.setCrossfadeMultiplier(fadeOutGain)
 
-        if ((remainingMs <= CROSSFADE_TAIL_MS || progress >= 1f) &&
+        if ((remainingMs <= CROSSFADE_TAIL_MS || elapsedInWindow >= totalFadeOutMs) &&
             crossfadeAdvanceDispatchedToken != crossfadeActiveItemToken
         ) {
             crossfadeAdvanceDispatchedToken = crossfadeActiveItemToken
@@ -1175,6 +1274,7 @@ class PlaybackService : MediaSessionService() {
         val factory = videoSourceFactory ?: return false
         videoModePlaybackActive = true
         postOnPlayer {
+            resetCrossfadeState()
             player.skipSilenceEnabled = false
             val videoItem = mediaItem.buildUpon()
                 .setUri(videoUrl)
@@ -1212,7 +1312,118 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
+    @OptIn(UnstableApi::class)
+    private fun createLibrarySessionCallback(): MediaLibrarySession.Callback =
+        object : MediaLibrarySession.Callback {
+            override fun onGetLibraryRoot(
+                session: MediaLibrarySession,
+                browser: MediaSession.ControllerInfo,
+                params: LibraryParams?,
+            ): ListenableFuture<LibraryResult<MediaItem>> {
+                return Futures.immediateFuture(
+                    LibraryResult.ofItem(PlaybackAudioBridge.autoBrowser.getRootItem(), params),
+                )
+            }
+
+            override fun onGetChildren(
+                session: MediaLibrarySession,
+                browser: MediaSession.ControllerInfo,
+                parentId: String,
+                page: Int,
+                pageSize: Int,
+                params: LibraryParams?,
+            ): ListenableFuture<LibraryResult<com.google.common.collect.ImmutableList<MediaItem>>> {
+                val children = PlaybackAudioBridge.autoBrowser.getChildren(parentId, page, pageSize)
+                    ?: return Futures.immediateFuture(
+                        LibraryResult.ofError(SessionError.ERROR_BAD_VALUE),
+                    )
+                return Futures.immediateFuture(
+                    LibraryResult.ofItemList(children, params),
+                )
+            }
+
+            override fun onGetItem(
+                session: MediaLibrarySession,
+                browser: MediaSession.ControllerInfo,
+                mediaId: String,
+            ): ListenableFuture<LibraryResult<MediaItem>> {
+                val item = PlaybackAudioBridge.autoBrowser.getItem(mediaId)
+                    ?: return Futures.immediateFuture(
+                        LibraryResult.ofError(SessionError.ERROR_BAD_VALUE),
+                    )
+                return Futures.immediateFuture(LibraryResult.ofItem(item, null))
+            }
+
+            override fun onSearch(
+                session: MediaLibrarySession,
+                browser: MediaSession.ControllerInfo,
+                query: String,
+                params: LibraryParams?,
+            ): ListenableFuture<LibraryResult<Void>> {
+                val results = PlaybackAudioBridge.autoBrowser.search(query)
+                session.notifySearchResultChanged(browser, query, results.size, params)
+                return Futures.immediateFuture(LibraryResult.ofVoid())
+            }
+
+            override fun onGetSearchResult(
+                session: MediaLibrarySession,
+                browser: MediaSession.ControllerInfo,
+                query: String,
+                page: Int,
+                pageSize: Int,
+                params: LibraryParams?,
+            ): ListenableFuture<LibraryResult<com.google.common.collect.ImmutableList<MediaItem>>> {
+                val results = PlaybackAudioBridge.autoBrowser.search(query, page, pageSize)
+                return Futures.immediateFuture(LibraryResult.ofItemList(results, params))
+            }
+
+            override fun onAddMediaItems(
+                mediaSession: MediaSession,
+                controller: MediaSession.ControllerInfo,
+                mediaItems: MutableList<MediaItem>,
+            ): ListenableFuture<MutableList<MediaItem>> {
+                val resolved = mediaItems.map { requested ->
+                    if (requested.localConfiguration != null) {
+                        requested
+                    } else {
+                        PlaybackAudioBridge.autoBrowser.getItem(requested.mediaId) ?: requested
+                    }
+                }.toMutableList()
+                val firstNeedsResolution = resolved.firstOrNull()?.let {
+                    it.localConfiguration == null && it.mediaId.isNotBlank()
+                } == true
+                if (firstNeedsResolution) {
+                    PlaybackQueueBridge.onPlayMediaId(resolved.first().mediaId)
+                }
+                return Futures.immediateFuture(resolved)
+            }
+
+            override fun onSetMediaItems(
+                mediaSession: MediaSession,
+                controller: MediaSession.ControllerInfo,
+                mediaItems: MutableList<MediaItem>,
+                startIndex: Int,
+                startPositionMs: Long,
+            ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+                val hasExternalUri = mediaItems.any { it.localConfiguration != null }
+                if (!hasExternalUri && mediaItems.isNotEmpty()) {
+                    val target = mediaItems.getOrNull(startIndex.coerceAtLeast(0)) ?: mediaItems.first()
+                    if (target.mediaId.isNotBlank()) {
+                        PlaybackQueueBridge.onPlayMediaId(target.mediaId)
+                        return Futures.immediateFuture(
+                            MediaSession.MediaItemsWithStartPosition(
+                                emptyList(),
+                                C.INDEX_UNSET,
+                                C.TIME_UNSET,
+                            ),
+                        )
+                    }
+                }
+                return super.onSetMediaItems(mediaSession, controller, mediaItems, startIndex, startPositionMs)
+            }
+        }
+
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? {
         return mediaSession
     }
 
