@@ -56,7 +56,117 @@ pub enum FocusPane {
 pub enum SidebarEntry {
     Search,
     Queue,
+    Downloads,
+    Server(sonata_core::providers::servers::ServerProfile),
     Playlist(Playlist),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextInputTarget {
+    DownloadsDir,
+    DiscordAppId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerFormField {
+    Kind,
+    Name,
+    BaseUrl,
+    Username,
+    Password,
+    Token,
+}
+
+impl ServerFormField {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Kind => Self::Name,
+            Self::Name => Self::BaseUrl,
+            Self::BaseUrl => Self::Username,
+            Self::Username => Self::Password,
+            Self::Password => Self::Token,
+            Self::Token => Self::Kind,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Kind => Self::Token,
+            Self::Name => Self::Kind,
+            Self::BaseUrl => Self::Name,
+            Self::Username => Self::BaseUrl,
+            Self::Password => Self::Username,
+            Self::Token => Self::Password,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerFormState {
+    pub kind: sonata_core::providers::servers::ServerKind,
+    pub name: String,
+    pub base_url: String,
+    pub username: String,
+    pub password: String,
+    pub token: String,
+    pub focused: ServerFormField,
+    pub status: Option<String>,
+}
+
+impl Default for ServerFormState {
+    fn default() -> Self {
+        Self {
+            kind: sonata_core::providers::servers::ServerKind::Jellyfin,
+            name: String::new(),
+            base_url: String::new(),
+            username: String::new(),
+            password: String::new(),
+            token: String::new(),
+            focused: ServerFormField::Kind,
+            status: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerBrowserTab {
+    Tracks,
+    Playlists,
+    Albums,
+    Artists,
+    Libraries,
+}
+
+impl ServerBrowserTab {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Tracks => Self::Playlists,
+            Self::Playlists => Self::Albums,
+            Self::Albums => Self::Artists,
+            Self::Artists => Self::Libraries,
+            Self::Libraries => Self::Tracks,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Tracks => Self::Libraries,
+            Self::Playlists => Self::Tracks,
+            Self::Albums => Self::Playlists,
+            Self::Artists => Self::Albums,
+            Self::Libraries => Self::Artists,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerBrowserState {
+    pub server_id: String,
+    pub server_name: String,
+    pub server_kind: sonata_core::providers::servers::ServerKind,
+    pub tab: ServerBrowserTab,
+    pub selected: usize,
+    pub folder_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +178,15 @@ pub enum ActiveModal {
     AddToPlaylist(usize),
     CreatePlaylist(String),
     Settings(usize),
+    TextInput {
+        title: String,
+        prompt: String,
+        buf: String,
+        target: TextInputTarget,
+    },
+    ServerManager(usize),
+    AddServer(ServerFormState),
+    ServerBrowser(ServerBrowserState),
     Help,
 }
 
@@ -122,6 +241,40 @@ pub enum AppEvent {
     },
     UpdateChecked(UpdateCheckResult),
     StatusMessage(String),
+    DownloadsLoaded {
+        tracks: Vec<sonata_runtime::downloads::DownloadedTrack>,
+        collections: Vec<sonata_runtime::downloads::DownloadedCollection>,
+        total_bytes: u64,
+    },
+    TrackDownloadFinished {
+        track_id: String,
+        title: String,
+        result: Result<(), String>,
+    },
+    CollectionDownloadFinished {
+        title: String,
+        saved: usize,
+        errors: usize,
+    },
+    ServerTested {
+        server_id: String,
+        result: Result<String, String>,
+    },
+    ServerSaved {
+        profiles: Vec<sonata_core::providers::servers::ServerProfile>,
+        message: String,
+    },
+    ServerBrowseLoaded {
+        server_id: String,
+        folder_path: Option<String>,
+        libraries: Vec<sonata_core::providers::servers::ServerLibrary>,
+        artists: Vec<sonata_core::providers::ytmusic::HomeCard>,
+        albums: Vec<sonata_core::providers::ytmusic::HomeCard>,
+        playlists: Vec<Playlist>,
+        tracks: Vec<Track>,
+        folders: Vec<String>,
+        error: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,7 +289,16 @@ pub struct ExportFingerprint {
 
 impl App {
     pub fn rebuild_sidebar(&mut self) {
-        let mut items = vec![SidebarEntry::Search, SidebarEntry::Queue];
+        let mut items = vec![
+            SidebarEntry::Search,
+            SidebarEntry::Queue,
+            SidebarEntry::Downloads,
+        ];
+        for server in &self.server_profiles {
+            if server.enabled {
+                items.push(SidebarEntry::Server(server.clone()));
+            }
+        }
         if self.config.provider_mode.uses_ytm() {
             for p in &self.ytm_playlists {
                 items.push(SidebarEntry::Playlist(p.clone()));
@@ -365,5 +527,27 @@ impl App {
             }
         }
         self.playback.current_track().cloned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ServerBrowserTab, ServerFormField};
+
+    #[test]
+    fn server_form_and_browser_tab_cycling_wraps_cleanly() {
+        let mut field = ServerFormField::Kind;
+        for _ in 0..6 {
+            field = field.next();
+        }
+        assert_eq!(field, ServerFormField::Kind);
+        assert_eq!(ServerFormField::Kind.prev(), ServerFormField::Token);
+
+        let mut tab = ServerBrowserTab::Tracks;
+        for _ in 0..5 {
+            tab = tab.next();
+        }
+        assert_eq!(tab, ServerBrowserTab::Tracks);
+        assert_eq!(ServerBrowserTab::Tracks.prev(), ServerBrowserTab::Libraries);
     }
 }

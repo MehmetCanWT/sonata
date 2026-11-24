@@ -22,6 +22,7 @@ use sonata_core::providers::hifi::{
     audio_quality_badge, clean_search_title, extract_badge_kbps, is_bounded_fast_start_url,
     pick_best_ytm_match, should_upgrade_candidate, ResolvedStream, ResolverProfile, StreamResolver,
 };
+use sonata_core::providers::servers::{load_server_profiles, parse_server_item_id, ServerClient};
 use sonata_core::providers::ytmusic::YtMusicClient;
 use sonata_core::providers::{jiosaavn, ProviderSource, Track};
 use sonata_core::redaction::{
@@ -234,6 +235,10 @@ impl LinuxStreamResolver {
             return Ok(offline);
         }
 
+        if track.is_self_hosted() {
+            return self.resolve_self_hosted_stream(track).await;
+        }
+
         let profile = self.profile();
         if !profile.allows_external_fallback() || track.is_jiosaavn() {
             return self.core.resolve_fast(track).await;
@@ -274,6 +279,10 @@ impl LinuxStreamResolver {
     /// Recovery after `mpv` rejects a stream. Never repeats the cached stream URL.
     #[tracing::instrument(level = "debug", skip(self, track), fields(track_id = %track.id, provider = ?track.source))]
     pub async fn resolve_recovery(&self, track: &Track) -> Result<ResolvedStream> {
+        if track.is_self_hosted() {
+            return self.resolve_self_hosted_stream(track).await;
+        }
+
         let profile = self.profile();
         if !profile.allows_external_fallback() || track.is_jiosaavn() {
             return self.core.resolve_recovery(track).await;
@@ -323,6 +332,10 @@ impl LinuxStreamResolver {
             {
                 return Some(offline);
             }
+            return None;
+        }
+
+        if track.is_self_hosted() {
             return None;
         }
 
@@ -468,6 +481,10 @@ impl LinuxStreamResolver {
             return Some(offline);
         }
 
+        if track.is_self_hosted() {
+            return None;
+        }
+
         let profile = self.profile();
         if !profile.cache_enabled() || !allow_hifi {
             return None;
@@ -517,6 +534,42 @@ impl LinuxStreamResolver {
         allow_hifi: bool,
     ) -> Option<ResolvedStream> {
         self.precache_hifi_audio(track, allow_hifi).await
+    }
+
+    async fn resolve_self_hosted_stream(&self, track: &Track) -> Result<ResolvedStream> {
+        let item_ref = parse_server_item_id(&track.id)
+            .ok_or_else(|| anyhow!("Track is not a self-hosted server item"))?;
+        let paths = self.paths().clone();
+        let profiles = tokio::task::spawn_blocking(move || load_server_profiles(&paths))
+            .await
+            .map_err(|err| anyhow!("Server profile load task panicked: {err}"))?
+            .map_err(|err| anyhow!("Failed to load server profiles: {err}"))?;
+        let profile = profiles
+            .into_iter()
+            .find(|p| p.id == item_ref.server_id)
+            .ok_or_else(|| anyhow!("Server profile '{}' not found", item_ref.server_id))?;
+        if !profile.enabled {
+            return Err(anyhow!("Server '{}' is disabled", profile.name));
+        }
+        let client = ServerClient::new(self.http_client().clone());
+        let stream = client
+            .resolve_stream(&profile, track)
+            .map_err(|err| anyhow!("{err}"))?;
+        let badge = stream
+            .audio_badge
+            .or_else(|| track.audio_badge.clone())
+            .unwrap_or_else(|| profile.kind.display_name().to_string());
+        tracing::debug!(
+            "[sonata:resolver] result=ok method=self-hosted kind={:?} url={} badge={}",
+            profile.kind,
+            redact_stream_url(&stream.url),
+            badge
+        );
+        Ok(ResolvedStream {
+            url: stream.url,
+            badge,
+            headers: stream.headers,
+        })
     }
 
     async fn resolve_youtube_fast_with_ytdlp(
@@ -941,5 +994,99 @@ mod tests {
             .await
             .expect("precache should return offline download");
         assert_eq!(precached.url, saved.audio_path.to_string_lossy());
+    }
+
+    #[tokio::test]
+    async fn resolve_fast_resolves_self_hosted_servers_with_headers() {
+        use crate::downloads::test_support::TempTestDir;
+        use sonata_core::providers::profile::{FastStartMode, StreamFallbackMode, UpgradeDelivery};
+        use sonata_core::providers::servers::{save_server_profiles, ServerKind, ServerProfile};
+
+        let core_dir = TempTestDir::new("ytdlp_srv_core");
+        let paths = CorePaths::for_app_roots(core_dir.path(), core_dir.path());
+
+        let mut jf = ServerProfile::new(
+            "jf-home",
+            "Home Jellyfin",
+            ServerKind::Jellyfin,
+            "https://jf.internal",
+        );
+        jf.api_key = Some("jf-secret-token".to_string());
+
+        let mut dav = ServerProfile::new(
+            "dav-home",
+            "Nextcloud",
+            ServerKind::WebDav,
+            "https://dav.internal/Music",
+        );
+        dav.username = Some("alice".to_string());
+        dav.password = Some("dav-pass".to_string());
+
+        save_server_profiles(&paths, &[jf, dav]).expect("save server profiles");
+
+        let http = sonata_core::providers::build_http_client();
+        let cookies = ExtractedCookies::default();
+        let ytm = YtMusicClient::new(http.clone(), cookies.clone());
+        let profile = ResolverProfile {
+            fast_start: FastStartMode::BoundedRange,
+            upgrade_delivery: UpgradeDelivery::CacheBeforeReturn,
+            fallback: StreamFallbackMode::InnerTubeOnly,
+            bootstrap_timeout: Duration::from_millis(500),
+            jiosaavn_enabled: false,
+            cache_limit_bytes: 0,
+        };
+        let resolver = LinuxStreamResolver::with_profile(http, ytm, cookies, None, paths, profile);
+
+        let jf_track = Track {
+            id: "jellyfin:jf-home:item-99".to_string(),
+            title: "Server Song".to_string(),
+            artist: "Artist".to_string(),
+            album: "Album".to_string(),
+            duration_secs: Some(200),
+            thumbnail_url: None,
+            source: ProviderSource::YouTubeMusic,
+            audio_badge: Some("FLAC · Jellyfin".to_string()),
+            set_video_id: None,
+            liked: false,
+            album_id: None,
+            is_explicit: false,
+        };
+        let jf_stream = resolver
+            .resolve_fast(&jf_track)
+            .await
+            .expect("jellyfin stream");
+        assert_eq!(
+            jf_stream.url,
+            "https://jf.internal/Audio/item-99/stream?static=true"
+        );
+        assert_eq!(jf_stream.badge, "FLAC · Jellyfin");
+        assert!(jf_stream
+            .headers
+            .iter()
+            .any(|(k, v)| k == "X-Emby-Token" && v == "jf-secret-token"));
+
+        let dav_track = Track {
+            id: "webdav:dav-home:/Music/track.flac".to_string(),
+            title: "DAV Song".to_string(),
+            artist: "Artist".to_string(),
+            album: String::new(),
+            duration_secs: None,
+            thumbnail_url: None,
+            source: ProviderSource::YouTubeMusic,
+            audio_badge: Some("FLAC · WebDAV".to_string()),
+            set_video_id: None,
+            liked: false,
+            album_id: None,
+            is_explicit: false,
+        };
+        let dav_stream = resolver
+            .resolve_fast(&dav_track)
+            .await
+            .expect("webdav stream");
+        assert_eq!(dav_stream.url, "https://dav.internal/Music/track.flac");
+        assert!(dav_stream
+            .headers
+            .iter()
+            .any(|(k, v)| k == "Authorization" && v.starts_with("Basic ")));
     }
 }

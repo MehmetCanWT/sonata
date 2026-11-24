@@ -40,6 +40,7 @@ use gpui_kit::{
     MouseButton, MouseMoveEvent, ParentElement as _, Pixels, Point, Render, RenderImage,
     ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
 };
+use sonata_core::providers::servers::ServerKind;
 use sonata_core::providers::Track;
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -52,6 +53,8 @@ pub enum LibraryTab {
     Playlists,
     Albums,
     Artists,
+    Downloads,
+    Servers,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +101,7 @@ pub enum DesktopModal {
         cover_path: Option<std::path::PathBuf>,
     },
     AddToPlaylist(Track),
+    AddServer,
 }
 
 #[derive(Debug, Clone)]
@@ -184,6 +188,14 @@ pub struct SonataDesktopView {
     pub search_input: Entity<InputState>,
     pub library_filter_input: Entity<InputState>,
     pub playlist_name_input: Entity<InputState>,
+    pub downloads_dir_input: Entity<InputState>,
+    pub discord_app_id_input: Entity<InputState>,
+    pub server_name_input: Entity<InputState>,
+    pub server_url_input: Entity<InputState>,
+    pub server_user_input: Entity<InputState>,
+    pub server_pass_input: Entity<InputState>,
+    pub server_token_input: Entity<InputState>,
+    pub server_modal_kind: ServerKind,
     pub progress_slider: Entity<SliderState>,
     pub volume_slider: Entity<SliderState>,
     pub opacity_slider: Entity<SliderState>,
@@ -249,6 +261,40 @@ impl SonataDesktopView {
         });
         let playlist_name_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Playlist name"));
+        let init_dl_dir = snapshot
+            .config
+            .downloads_dir
+            .as_ref()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let downloads_dir_input = cx.new(|cx| {
+            let mut st = InputState::new(window, cx).placeholder(
+                sonata_runtime::config::AppConfig::default_downloads_dir()
+                    .to_string_lossy()
+                    .to_string(),
+            );
+            if !init_dl_dir.is_empty() {
+                st.set_value(init_dl_dir, window, cx);
+            }
+            st
+        });
+        let init_discord_id = snapshot.config.discord_app_id.clone().unwrap_or_default();
+        let discord_app_id_input = cx.new(|cx| {
+            let mut st = InputState::new(window, cx)
+                .placeholder(sonata_runtime::discord::DEFAULT_SONATA_DISCORD_APP_ID);
+            if !init_discord_id.is_empty() {
+                st.set_value(init_discord_id, window, cx);
+            }
+            st
+        });
+        let server_name_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Home Music Server"));
+        let server_url_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("https://music.example.com"));
+        let server_user_input = cx.new(|cx| InputState::new(window, cx).placeholder("Username"));
+        let server_pass_input = cx.new(|cx| InputState::new(window, cx).placeholder("Password"));
+        let server_token_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("API Key / Bearer Token"));
 
         let dur = snapshot.duration_secs.max(1.0) as f32;
         let pos = (snapshot.position_secs as f32).clamp(0.0, dur);
@@ -537,6 +583,14 @@ impl SonataDesktopView {
             search_input,
             library_filter_input,
             playlist_name_input,
+            downloads_dir_input,
+            discord_app_id_input,
+            server_name_input,
+            server_url_input,
+            server_user_input,
+            server_pass_input,
+            server_token_input,
+            server_modal_kind: ServerKind::Jellyfin,
             progress_slider,
             volume_slider,
             opacity_slider,
@@ -1322,6 +1376,41 @@ impl SonataDesktopView {
                 .is_focused(window)
             || self
                 .playlist_name_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
+                .downloads_dir_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
+                .discord_app_id_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
+                .server_name_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
+                .server_url_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
+                .server_user_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
+                .server_pass_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
+                .server_token_input
                 .read(cx)
                 .focus_handle(cx)
                 .is_focused(window);

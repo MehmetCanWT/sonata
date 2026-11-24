@@ -12,10 +12,35 @@ use crate::integrations::mpris::MprisUpdate;
 use sonata_core::lyrics::{active_line_index, lrclib, LyricsState};
 use sonata_core::player::RepeatMode;
 use sonata_core::providers::Track;
+use sonata_runtime::config::AppConfig;
+use sonata_runtime::discord::{DiscordConfig, DiscordPlaybackState, DiscordTrackInfo};
 use sonata_runtime::media;
 use sonata_runtime::motion;
 use sonata_runtime::player::SessionEvent;
 use std::sync::Arc;
+
+pub(super) fn discord_config_from(config: &AppConfig) -> DiscordConfig {
+    DiscordConfig {
+        enabled: config.discord_rpc_enabled,
+        ..DiscordConfig::default()
+    }
+    .with_app_id(config.discord_app_id.clone())
+}
+
+fn discord_track_info(track: &Track, duration_secs: f64) -> DiscordTrackInfo {
+    let mut info = DiscordTrackInfo::from_track(track);
+    if duration_secs > 0.0 {
+        info.duration_secs = Some(duration_secs);
+    }
+    if track.is_self_hosted() {
+        info.listen_url = None;
+        info.buttons.clear();
+        if track.thumbnail_url.is_none() {
+            info.artwork_url = None;
+        }
+    }
+    info
+}
 
 impl BackendEngine {
     pub(super) fn handle_session_event(&mut self, event: SessionEvent) {
@@ -55,6 +80,7 @@ impl BackendEngine {
                 self.record_played_track(track.clone());
                 self.start_client_media_for_track(generation.value(), track);
                 self.maybe_prefetch_endless_autoplay();
+                self.sync_discord_rpc();
             }
             SessionEvent::PreparingNextTrack { track, .. } => {
                 self.playback.loading_track = true;
@@ -81,6 +107,7 @@ impl BackendEngine {
                 if let Some(track) = self.playback.current_track().filter(|t| t.id == track_id) {
                     self.status_line = format!("Starting: {} — {}", track.title, track.artist);
                 }
+                self.sync_discord_rpc();
             }
             SessionEvent::PlaybackStarted {
                 generation,
@@ -97,10 +124,7 @@ impl BackendEngine {
                 self.playback.stream_badge = badge;
                 if was_initial_start {
                     self.status_line = format!("Playing: {} — {}", track.title, track.artist);
-                    if !track
-                        .id
-                        .starts_with(sonata_core::providers::jiosaavn::ID_PREFIX)
-                    {
+                    if !track.is_jiosaavn() && !track.is_self_hosted() {
                         let ytm = self.ytm.clone();
                         let vid = track.id.clone();
                         let duration = track.duration_secs;
@@ -117,6 +141,7 @@ impl BackendEngine {
                     }
                 }
                 self.start_cover_enrichment();
+                self.sync_discord_rpc();
             }
             SessionEvent::PausedChanged {
                 paused,
@@ -125,10 +150,12 @@ impl BackendEngine {
             } => {
                 self.playback.paused = paused;
                 self.playback.position_secs = position_secs;
+                self.sync_discord_rpc();
             }
             SessionEvent::Seeked { position_secs, .. } => {
                 self.playback.position_secs = position_secs;
                 let _ = self.mpris_tx.send(MprisUpdate::Seeked(position_secs));
+                self.sync_discord_rpc();
             }
             SessionEvent::DurationChanged {
                 generation,
@@ -153,6 +180,7 @@ impl BackendEngine {
                         track.duration_secs = Some(dur_u64);
                     }
                 }
+                self.sync_discord_rpc();
                 if let Some(lyrics_track) = updated_track {
                     let lyrics_valid = matches!(
                         &self.lyrics,
@@ -287,6 +315,7 @@ impl BackendEngine {
                     self.playback.position_secs = 0.0;
                     self.playback.stream_badge = "Finished".to_string();
                     self.status_line = "Queue finished".to_string();
+                    self.discord_rpc.try_clear_activity();
                 }
             }
             SessionEvent::Stopped { generation } => {
@@ -297,6 +326,7 @@ impl BackendEngine {
                 self.upgrading_quality = false;
                 self.playback.position_secs = 0.0;
                 self.playback.stream_badge = "Stopped".to_string();
+                self.discord_rpc.try_clear_activity();
             }
             SessionEvent::PlaybackError {
                 generation,
@@ -312,6 +342,7 @@ impl BackendEngine {
                 self.playback.paused = true;
                 self.playback.stream_badge = badge;
                 self.status_line = format!("Playback failed: {error}");
+                self.sync_discord_rpc();
             }
             SessionEvent::ModeChanged {
                 shuffle,
@@ -361,10 +392,13 @@ impl BackendEngine {
             .queue
             .iter()
             .rev()
-            .map(|t| t.id.clone())
-            .filter(|id| {
-                !id.is_empty() && !id.starts_with("local:") && !id.starts_with("jiosaavn:")
+            .filter(|t| {
+                !t.id.is_empty()
+                    && !t.id.starts_with("local:")
+                    && !t.is_jiosaavn()
+                    && !t.is_self_hosted()
             })
+            .map(|t| t.id.clone())
             .take(3)
             .collect()
     }
@@ -630,6 +664,26 @@ impl BackendEngine {
         }
     }
 
+    pub(super) fn sync_discord_rpc(&self) {
+        let Some(track) = self.playback.current_track() else {
+            self.discord_rpc.try_clear_activity();
+            return;
+        };
+        let pos = self.interpolated_position();
+        let dur = if self.playback.duration_secs > 0.0 {
+            self.playback.duration_secs
+        } else {
+            track.duration_secs.unwrap_or(0) as f64
+        };
+        let info = discord_track_info(track, dur);
+        let state = if self.playback.paused || self.playback.loading_track {
+            DiscordPlaybackState::paused(Some(info), pos, self.playback_speed)
+        } else {
+            DiscordPlaybackState::playing(info, pos, self.playback_speed)
+        };
+        self.discord_rpc.try_update_playback(state);
+    }
+
     pub(super) fn export_now_playing(&mut self) {
         let track = self.playback.current_track();
         let status = match track {
@@ -682,5 +736,45 @@ impl BackendEngine {
             art_url.as_deref(),
         );
         media::write_now_playing_json(&payload);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sonata_core::providers::ProviderSource;
+
+    #[test]
+    fn discord_track_info_clears_ytm_links_for_self_hosted_tracks() {
+        let track = Track {
+            id: "jellyfin:srv1:item42".to_string(),
+            title: "Midnight Signal".to_string(),
+            artist: "Echoes".to_string(),
+            album: "Home NAS".to_string(),
+            album_id: None,
+            duration_secs: Some(215),
+            thumbnail_url: None,
+            source: ProviderSource::YouTubeMusic,
+            liked: false,
+            is_explicit: false,
+            set_video_id: None,
+            audio_badge: Some("FLAC".to_string()),
+        };
+        let info = discord_track_info(&track, 215.0);
+        assert!(info.listen_url.is_none());
+        assert!(info.buttons.is_empty());
+        assert!(info.artwork_url.is_none());
+    }
+
+    #[test]
+    fn discord_config_respects_enabled_and_custom_app_id() {
+        let cfg = AppConfig {
+            discord_rpc_enabled: false,
+            discord_app_id: Some("999999999999999999".to_string()),
+            ..Default::default()
+        };
+        let dc = discord_config_from(&cfg);
+        assert!(!dc.enabled);
+        assert_eq!(dc.effective_app_id(), "999999999999999999");
     }
 }

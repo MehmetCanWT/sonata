@@ -850,6 +850,10 @@ impl SonataDesktopView {
         let show_album = opts.show_album;
         let playlist_remove_idx = opts.playlist_remove_idx;
         let is_liked = self.snapshot.is_track_liked(track);
+        let is_downloaded = self.snapshot.is_track_downloaded(&track.id);
+        let is_downloading = self.snapshot.is_track_downloading(&track.id);
+        let is_self_hosted = track.is_self_hosted();
+        let source_tag = track.source_tag();
         let is_cur = self
             .snapshot
             .current_track()
@@ -989,6 +993,32 @@ impl SonataDesktopView {
                             )
                             .when(track.is_explicit, |r| {
                                 r.child(explicit_badge(&self.palette))
+                            })
+                            .when(is_self_hosted, |r| {
+                                r.child(
+                                    div()
+                                        .px(px(5.0))
+                                        .py(px(1.0))
+                                        .rounded(px(self.palette.radii.small))
+                                        .bg(self.palette.surface)
+                                        .border_1()
+                                        .border_color(self.palette.outline)
+                                        .text_size(px(10.0))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(self.palette.secondary)
+                                        .child(source_tag),
+                                )
+                            })
+                            .when(is_downloaded || is_downloading, |r| {
+                                r.child(
+                                    Icon::new(if is_downloaded {
+                                        IconName::Check
+                                    } else {
+                                        IconName::Download
+                                    })
+                                    .size(px(12.0))
+                                    .text_color(self.palette.accent),
+                                )
                             }),
                     )
                     .child(artist_links_row(

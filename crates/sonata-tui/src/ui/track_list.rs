@@ -144,8 +144,16 @@ fn render_tracks_table(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                 Style::default().fg(app.theme.fg)
             };
 
-            let title_cell: Cow<'_, str> = if track.liked {
-                Cow::Owned(format!("♥ {}", track.title))
+            let dl_prefix = if app.downloading_track_ids.contains(&track.id) {
+                "↓ "
+            } else if app.downloaded_track_ids.contains(&track.id) {
+                "✓ "
+            } else {
+                ""
+            };
+            let title_cell: Cow<'_, str> = if track.liked || !dl_prefix.is_empty() {
+                let heart = if track.liked { "♥ " } else { "" };
+                Cow::Owned(format!("{dl_prefix}{heart}{}", track.title))
             } else {
                 Cow::Borrowed(track.title.as_str())
             };

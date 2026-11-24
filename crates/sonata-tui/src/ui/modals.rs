@@ -3,7 +3,9 @@
 //! 1. **Settings Modal (`render_settings`)**: Displays aligned, non-truncated preference rows with keyboard/mouse selectors and a compact footer hint.
 //! 2. **Library & Theme Modals**: Renders theme picker, Spotify playlist import, playlist creation/addition, image protocol warning, and keybindings help.
 
-use crate::app::{ActiveModal, App};
+use crate::app::{
+    ActiveModal, App, ServerBrowserState, ServerBrowserTab, ServerFormField, ServerFormState,
+};
 use crate::theme_tui::to_ratatui_color;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -12,6 +14,7 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
 };
 use ratatui::Frame;
+use sonata_core::providers::servers::ServerKind;
 use sonata_core::updater::CURRENT_VERSION;
 use sonata_runtime::config::AppConfig;
 use sonata_runtime::hyprland;
@@ -25,6 +28,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ActiveModal::AddToPlaylist(selected) => render_add_to_playlist(frame, area, app, *selected),
         ActiveModal::CreatePlaylist(input) => render_create_playlist(frame, area, app, input),
         ActiveModal::Settings(selected) => render_settings(frame, area, app, *selected),
+        ActiveModal::TextInput {
+            title, prompt, buf, ..
+        } => render_text_input(frame, area, app, title, prompt, buf),
+        ActiveModal::ServerManager(selected) => render_server_manager(frame, area, app, *selected),
+        ActiveModal::AddServer(form) => render_add_server(frame, area, app, form),
+        ActiveModal::ServerBrowser(st) => render_server_browser(frame, area, app, st),
         ActiveModal::Help => render_help(frame, area, app),
     }
 }
@@ -43,7 +52,7 @@ pub fn sized_popup(min_w: u16, max_w: u16, target_h: u16, area: Rect) -> Rect {
     }
 }
 
-pub const SETTINGS_ROW_COUNT: usize = 12;
+pub const SETTINGS_ROW_COUNT: usize = 18;
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn settings_popup_rect(area: Rect, row_count: usize) -> Rect {
@@ -277,6 +286,33 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
         ),
     };
 
+    let dl_limit_text = if app.config.downloads_limit_gb == 0 {
+        s.unlimited.to_string()
+    } else {
+        AppConfig::downloads_limit_label(app.config.downloads_limit_gb)
+    };
+    let dl_dir_text = app
+        .config
+        .effective_downloads_dir()
+        .to_string_lossy()
+        .into_owned();
+    let dl_usage_text = format!(
+        "{:.1} MB · {} {}",
+        app.downloads_total_bytes as f64 / (1024.0 * 1024.0),
+        app.downloaded_tracks.len(),
+        s.tracks
+    );
+    let discord_app_text = app
+        .config
+        .discord_app_id
+        .clone()
+        .unwrap_or_else(|| "Default".to_string());
+    let servers_text = if app.server_profiles.is_empty() {
+        "None (Enter to add)".to_string()
+    } else {
+        format!("{} configured (Enter)", app.server_profiles.len())
+    };
+
     let entries = [
         SettingEntry {
             section: Some(s.tui_sec_audio),
@@ -354,6 +390,48 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
             label: s.cache_limit,
             description: s.cache_limit_desc,
             value: SettingValueKind::Text(AppConfig::cache_limit_label(app.config.cache_limit_gb)),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: None,
+            label: s.downloads_limit,
+            description: s.downloads_limit_desc,
+            value: SettingValueKind::Text(dl_limit_text),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: None,
+            label: s.downloads_dir,
+            description: s.downloads_dir_desc,
+            value: SettingValueKind::Text(dl_dir_text),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: None,
+            label: s.clear_downloads,
+            description: s.downloads_usage,
+            value: SettingValueKind::Text(dl_usage_text),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: None,
+            label: s.servers,
+            description: s.servers_desc,
+            value: SettingValueKind::Text(servers_text),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: None,
+            label: s.discord_rpc,
+            description: s.discord_rpc_desc,
+            value: SettingValueKind::Toggle(app.config.discord_rpc_enabled, s.enabled, s.disabled),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: None,
+            label: s.discord_app_id,
+            description: s.discord_app_id_desc,
+            value: SettingValueKind::Text(discord_app_text),
             adjustable: true,
         },
         SettingEntry {
@@ -672,7 +750,8 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
         "             a / x (Del)   Add to / Remove from YTM playlist",
         "             c / R         Create YTM playlist / Refresh account",
         "Spotify:     i             Import any Spotify playlist URL",
-        "Settings:    S             Providers, Hi-Fi, Transparency, Cache & Theme",
+        "Offline:     d / D         Download/remove track or collection",
+        "Settings:    S             Providers, Downloads, Servers, Discord & Theme",
         "Keybinds:    k / ?         Show or close this Keybindings menu",
         "Mini Mode:   m / Dbl-Click Toggle Mini Mode (Art + Lyrics / Art / Mini Player)",
         "Themes:      t             Open Theme Picker (live preview)",
@@ -701,6 +780,309 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 .style(Style::default().bg(app.theme.surface).fg(app.theme.fg)),
         );
     frame.render_widget(p, popup);
+}
+
+fn render_text_input(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    app: &App,
+    title: &str,
+    prompt: &str,
+    buf: &str,
+) {
+    let s = sonata_runtime::i18n::strings(app.config.language);
+    let popup = sized_popup(42, 72, 8, area);
+    frame.render_widget(Clear, popup);
+
+    let text = format!(
+        "{prompt}\n\n> {buf}▏\n\nEnter: {}   Esc: {}",
+        s.save, s.cancel
+    );
+    let p = Paragraph::new(text).wrap(Wrap { trim: false }).block(
+        Block::default()
+            .title(format!(" {title} "))
+            .title_alignment(Alignment::Center)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(app.theme.accent))
+            .style(Style::default().bg(app.theme.surface).fg(app.theme.fg)),
+    );
+    frame.render_widget(p, popup);
+}
+
+fn render_server_manager(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize) {
+    let s = sonata_runtime::i18n::strings(app.config.language);
+    let item_count = app.server_profiles.len().max(1);
+    let target_h = (item_count as u16 + 6).clamp(9, 18).min(area.height);
+    let popup = sized_popup(48, 84, target_h, area);
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .title(format!(" {} ", s.servers))
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(app.theme.accent))
+        .style(Style::default().bg(app.theme.surface).fg(app.theme.fg));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    if inner.height < 4 {
+        return;
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(2), Constraint::Length(2)])
+        .split(inner);
+
+    if app.server_profiles.is_empty() {
+        let p = Paragraph::new(s.no_servers)
+            .wrap(Wrap { trim: false })
+            .style(Style::default().fg(app.theme.muted));
+        frame.render_widget(p, chunks[0]);
+    } else {
+        let sel = selected.min(app.server_profiles.len().saturating_sub(1));
+        let items: Vec<ListItem> = app
+            .server_profiles
+            .iter()
+            .map(|srv| {
+                let state_tag = if srv.enabled { "ON" } else { "OFF" };
+                let status = app
+                    .server_statuses
+                    .get(&srv.id)
+                    .map(|st| format!(" · {st}"))
+                    .unwrap_or_default();
+                ListItem::new(format!(
+                    "[{}] {} ({}) {}{}",
+                    srv.kind.short_tag(),
+                    srv.name,
+                    state_tag,
+                    srv.base_url,
+                    status
+                ))
+            })
+            .collect();
+        let mut state = ListState::default();
+        state.select(Some(sel));
+        let list = List::new(items)
+            .highlight_style(
+                Style::default()
+                    .bg(app.theme.highlight_bg)
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol("▸ ");
+        frame.render_stateful_widget(list, chunks[0], &mut state);
+    }
+
+    let hint = Paragraph::new(
+        "a: Add server  Enter: Enable/Disable  t: Test  b: Browse  d: Remove  Esc: Back",
+    )
+    .style(Style::default().fg(app.theme.muted))
+    .wrap(Wrap { trim: false });
+    frame.render_widget(hint, chunks[1]);
+}
+
+fn render_add_server(frame: &mut Frame<'_>, area: Rect, app: &App, form: &ServerFormState) {
+    let s = sonata_runtime::i18n::strings(app.config.language);
+    let popup = sized_popup(48, 78, 15, area);
+    frame.render_widget(Clear, popup);
+
+    let kind_label = match form.kind {
+        ServerKind::Jellyfin => "Jellyfin / Emby",
+        ServerKind::Subsonic => "Subsonic / OpenSubsonic / Navidrome",
+        ServerKind::WebDav => "WebDAV",
+    };
+    let mask = "*".repeat(form.password.chars().count());
+    let rows = [
+        (ServerFormField::Kind, "Protocol", kind_label),
+        (ServerFormField::Name, "Name", form.name.as_str()),
+        (ServerFormField::BaseUrl, "Base URL", form.base_url.as_str()),
+        (
+            ServerFormField::Username,
+            "Username",
+            form.username.as_str(),
+        ),
+        (ServerFormField::Password, "Password", mask.as_str()),
+        (
+            ServerFormField::Token,
+            "API Key / Token",
+            form.token.as_str(),
+        ),
+    ];
+
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(rows.len() + 4);
+    for (field, label, val) in rows {
+        let active = form.focused == field;
+        let cursor = if active && field != ServerFormField::Kind {
+            "▏"
+        } else {
+            ""
+        };
+        let label_style = if active {
+            Style::default()
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(app.theme.muted)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(if active { "▸ " } else { "  " }, label_style),
+            Span::styled(format!("{label:<16} "), label_style),
+            Span::styled(format!("{val}{cursor}"), Style::default().fg(app.theme.fg)),
+        ]));
+    }
+    if let Some(ref status) = form.status {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            status.clone(),
+            Style::default().fg(app.theme.accent),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Tab/↑↓: Field  ←/→: Protocol  Ctrl+T: Test  Enter: Save  Esc: Cancel",
+        Style::default().fg(app.theme.muted),
+    )));
+
+    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        Block::default()
+            .title(format!(" {} ", s.add_server))
+            .title_alignment(Alignment::Center)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(app.theme.accent))
+            .style(Style::default().bg(app.theme.surface).fg(app.theme.fg)),
+    );
+    frame.render_widget(p, popup);
+}
+
+fn render_server_browser(frame: &mut Frame<'_>, area: Rect, app: &App, st: &ServerBrowserState) {
+    let popup = sized_popup(52, 88, 20, area);
+    frame.render_widget(Clear, popup);
+
+    let title = format!(" {} [{}] ", st.server_name, st.server_kind.short_tag());
+    let block = Block::default()
+        .title(title)
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(app.theme.accent))
+        .style(Style::default().bg(app.theme.surface).fg(app.theme.fg));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    if inner.height < 5 {
+        return;
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(2),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    let tabs = [
+        (ServerBrowserTab::Tracks, "Tracks"),
+        (ServerBrowserTab::Playlists, "Playlists"),
+        (ServerBrowserTab::Albums, "Albums"),
+        (ServerBrowserTab::Artists, "Artists"),
+        (
+            ServerBrowserTab::Libraries,
+            if st.server_kind == ServerKind::WebDav {
+                "Folders"
+            } else {
+                "Libraries"
+            },
+        ),
+    ];
+    let tab_spans: Vec<Span<'static>> = tabs
+        .iter()
+        .map(|(tab, label)| {
+            if *tab == st.tab {
+                Span::styled(
+                    format!(" [{label}] "),
+                    Style::default()
+                        .fg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::styled(format!("  {label}  "), Style::default().fg(app.theme.muted))
+            }
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(Line::from(tab_spans)), chunks[0]);
+
+    if app.server_loading {
+        frame.render_widget(
+            Paragraph::new("Loading server library...").style(Style::default().fg(app.theme.muted)),
+            chunks[1],
+        );
+    } else if let Some(ref err) = app.server_error {
+        frame.render_widget(
+            Paragraph::new(format!("Error: {err}"))
+                .style(Style::default().fg(app.theme.error))
+                .wrap(Wrap { trim: false }),
+            chunks[1],
+        );
+    } else {
+        let labels: Vec<String> = match st.tab {
+            ServerBrowserTab::Tracks => app
+                .server_tracks
+                .iter()
+                .map(|t| format!("{} — {}", t.title, t.artist))
+                .collect(),
+            ServerBrowserTab::Playlists => app
+                .server_playlists
+                .iter()
+                .map(|p| p.name.clone())
+                .collect(),
+            ServerBrowserTab::Albums => app
+                .server_albums
+                .iter()
+                .map(|a| format!("{} — {}", a.title, a.subtitle))
+                .collect(),
+            ServerBrowserTab::Artists => {
+                app.server_artists.iter().map(|a| a.title.clone()).collect()
+            }
+            ServerBrowserTab::Libraries => app
+                .server_libraries
+                .iter()
+                .map(|l| format!("{} ({})", l.name, l.kind))
+                .collect(),
+        };
+        if labels.is_empty() {
+            frame.render_widget(
+                Paragraph::new("No items in this section.")
+                    .style(Style::default().fg(app.theme.muted)),
+                chunks[1],
+            );
+        } else {
+            let sel = st.selected.min(labels.len().saturating_sub(1));
+            let items: Vec<ListItem> = labels.into_iter().map(ListItem::new).collect();
+            let mut state = ListState::default();
+            state.select(Some(sel));
+            let list = List::new(items)
+                .highlight_style(
+                    Style::default()
+                        .bg(app.theme.highlight_bg)
+                        .fg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .highlight_symbol("▸ ");
+            frame.render_stateful_widget(list, chunks[1], &mut state);
+        }
+    }
+
+    frame.render_widget(
+        Paragraph::new("←/→/Tab: Section  ↑/↓: Select  Enter: Open/Play  r: Refresh  Esc: Close")
+            .style(Style::default().fg(app.theme.muted)),
+        chunks[2],
+    );
 }
 
 #[cfg(test)]

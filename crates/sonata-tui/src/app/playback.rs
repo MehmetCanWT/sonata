@@ -13,6 +13,7 @@ use ratatui_image::picker::ProtocolType;
 use sonata_core::lyrics::{active_line_index, lrclib, LyricsState};
 use sonata_core::player::RepeatMode;
 use sonata_core::providers::Track;
+use sonata_runtime::config::AppConfig;
 use sonata_runtime::media;
 use sonata_runtime::player::{SessionCommand, SessionEvent};
 use std::io::Write;
@@ -47,6 +48,7 @@ impl App {
                 self.playback.stream_badge = "Resolving...".to_string();
                 self.status_line = format!("Loading: {} — {}", track.title, track.artist);
                 self.start_client_media_for_track(generation.value(), track);
+                self.sync_discord_rpc();
             }
             SessionEvent::PreparingNextTrack { track, .. } => {
                 self.playback.loading_track = true;
@@ -72,6 +74,7 @@ impl App {
                 if let Some(track) = self.playback.current_track().filter(|t| t.id == track_id) {
                     self.status_line = format!("Starting: {} — {}", track.title, track.artist);
                 }
+                self.sync_discord_rpc();
             }
             SessionEvent::PlaybackStarted {
                 generation,
@@ -86,11 +89,13 @@ impl App {
                 self.playback.loading_track = false;
                 self.playback.paused = false;
                 self.playback.stream_badge = badge;
+                self.sync_discord_rpc();
                 if was_initial_start {
                     self.status_line.clear();
                     if !track
                         .id
                         .starts_with(sonata_core::providers::jiosaavn::ID_PREFIX)
+                        && !track.is_self_hosted()
                     {
                         let ytm = self.ytm.clone();
                         let vid = track.id.clone();
@@ -116,9 +121,11 @@ impl App {
             } => {
                 self.playback.paused = paused;
                 self.playback.position_secs = position_secs;
+                self.sync_discord_rpc();
             }
             SessionEvent::Seeked { position_secs, .. } => {
                 self.playback.position_secs = position_secs;
+                self.sync_discord_rpc();
             }
             SessionEvent::DurationChanged {
                 generation,
@@ -234,6 +241,8 @@ impl App {
                             !id.is_empty()
                                 && !id.starts_with("local:")
                                 && !id.starts_with("jiosaavn:")
+                                && sonata_core::providers::servers::parse_server_item_id(id)
+                                    .is_none()
                         })
                         .take(2)
                         .collect();
@@ -271,6 +280,7 @@ impl App {
                     self.playback.loading_track = false;
                     self.playback.position_secs = 0.0;
                     self.playback.stream_badge = "Finished".to_string();
+                    self.discord_rpc.try_clear_activity();
                 }
             }
             SessionEvent::Stopped { generation } => {
@@ -280,6 +290,7 @@ impl App {
                 self.playback.loading_track = false;
                 self.playback.position_secs = 0.0;
                 self.playback.stream_badge = "Stopped".to_string();
+                self.discord_rpc.try_clear_activity();
             }
             SessionEvent::PlaybackError {
                 generation,
@@ -294,6 +305,7 @@ impl App {
                 self.playback.paused = true;
                 self.playback.stream_badge = badge;
                 self.status_line = format!("Playback error: {error}");
+                self.sync_discord_rpc();
             }
             SessionEvent::ModeChanged {
                 shuffle,
@@ -799,5 +811,90 @@ impl App {
 
     pub fn clear_now_playing(&self) {
         media::clear_now_playing();
+    }
+
+    pub(super) fn discord_config_from(
+        config: &AppConfig,
+    ) -> sonata_runtime::discord::DiscordConfig {
+        let mut dc = sonata_runtime::discord::DiscordConfig::default()
+            .with_app_id(config.discord_app_id.clone());
+        dc.enabled = config.discord_rpc_enabled;
+        dc
+    }
+
+    fn discord_track_info(track: &Track) -> sonata_runtime::discord::DiscordTrackInfo {
+        let mut info = sonata_runtime::discord::DiscordTrackInfo::from_track(track);
+        if track.is_self_hosted() {
+            info.listen_url = None;
+            info.buttons.clear();
+            if track.thumbnail_url.is_none() {
+                info.artwork_url = None;
+            }
+        }
+        info
+    }
+
+    pub fn sync_discord_rpc(&self) {
+        let cfg = Self::discord_config_from(&self.config);
+        if !cfg.enabled {
+            self.discord_rpc.try_update_config(cfg);
+            return;
+        }
+        let Some(track) = self.playback.current_track() else {
+            self.discord_rpc.try_clear_activity();
+            return;
+        };
+        let info = Self::discord_track_info(track);
+        let pos = self.playback.position_secs;
+        let state = if self.playback.paused || self.playback.loading_track {
+            sonata_runtime::discord::DiscordPlaybackState::paused(
+                Some(info),
+                pos,
+                self.playback_speed,
+            )
+        } else {
+            sonata_runtime::discord::DiscordPlaybackState::playing(info, pos, self.playback_speed)
+        };
+        self.discord_rpc.try_update_playback(state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sonata_core::providers::ProviderSource;
+
+    #[test]
+    fn tui_discord_track_info_strips_ytm_links_for_self_hosted_tracks() {
+        let track = Track {
+            id: "subsonic:srv1:tr9".to_string(),
+            title: "Local FLAC".to_string(),
+            artist: "Home Artist".to_string(),
+            album: "Navidrome".to_string(),
+            album_id: None,
+            duration_secs: Some(180),
+            thumbnail_url: None,
+            source: ProviderSource::YouTubeMusic,
+            liked: false,
+            is_explicit: false,
+            set_video_id: None,
+            audio_badge: Some("FLAC".to_string()),
+        };
+        let info = App::discord_track_info(&track);
+        assert!(info.listen_url.is_none());
+        assert!(info.buttons.is_empty());
+        assert!(info.artwork_url.is_none());
+    }
+
+    #[test]
+    fn tui_discord_config_respects_enabled_and_app_id() {
+        let cfg = AppConfig {
+            discord_rpc_enabled: true,
+            discord_app_id: Some("123456789012345678".to_string()),
+            ..Default::default()
+        };
+        let dc = App::discord_config_from(&cfg);
+        assert!(dc.enabled);
+        assert_eq!(dc.effective_app_id(), "123456789012345678");
     }
 }

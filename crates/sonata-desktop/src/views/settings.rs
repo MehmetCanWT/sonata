@@ -8,19 +8,24 @@ use super::{DesktopModal, SettingsTab, SonataDesktopView};
 use crate::backend::BackendCmd;
 use crate::settings::{CornerStyle, DesktopSettings, ThemeModePref, PAGE_INSET_X};
 use crate::ui::components::scroll_edge_fades;
+use crate::views::library::format_bytes;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::Input;
 use gpui_kit::component::select::Select;
 use gpui_kit::component::slider::Slider;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::Sizable as _;
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     div, px, AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement,
     ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
 };
 use sonata_runtime::config::AppConfig;
+use sonata_runtime::discord::DiscordRpcStatus;
 use sonata_runtime::i18n::{strings, AppLanguage};
+use std::path::PathBuf;
 use std::process::Command;
 
 impl SonataDesktopView {
@@ -66,7 +71,7 @@ impl SonataDesktopView {
             SettingsTab::Appearance => self.render_settings_appearance(cx),
             SettingsTab::Playback => self.render_settings_playback(cx),
             SettingsTab::Library => self.render_settings_library(cx),
-            SettingsTab::System => self.render_settings_system(),
+            SettingsTab::System => self.render_settings_system(cx),
             SettingsTab::Account => self.render_settings_account(cx),
             SettingsTab::About => self.render_settings_about(cx),
         };
@@ -109,7 +114,7 @@ impl SonataDesktopView {
 
     fn settings_row(
         &self,
-        title: &'static str,
+        title: impl Into<SharedString>,
         subtitle: impl Into<SharedString>,
         control: AnyElement,
     ) -> AnyElement {
@@ -138,7 +143,7 @@ impl SonataDesktopView {
                             .text_size(px(14.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(self.palette.text)
-                            .child(title),
+                            .child(title.into()),
                     )
                     .child(
                         div()
@@ -506,11 +511,271 @@ impl SonataDesktopView {
             )
             .into_any_element();
 
+        let dl_limit_label = if self.snapshot.config.downloads_limit_gb == 0 {
+            s.unlimited.to_string()
+        } else {
+            AppConfig::downloads_limit_label(self.snapshot.config.downloads_limit_gb)
+        };
+        let dl_limit_ctrl = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .child(
+                Button::new("set-dl-dec")
+                    .secondary()
+                    .small()
+                    .icon(IconName::Minus)
+                    .on_click(cx.listener(|this, _, _, _| {
+                        this.backend.send(BackendCmd::StepDownloadsLimit(false));
+                    })),
+            )
+            .child(
+                div()
+                    .min_w(px(72.0))
+                    .flex()
+                    .justify_center()
+                    .text_size(px(13.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(dl_limit_label),
+            )
+            .child(
+                Button::new("set-dl-inc")
+                    .secondary()
+                    .small()
+                    .icon(IconName::Plus)
+                    .on_click(cx.listener(|this, _, _, _| {
+                        this.backend.send(BackendCmd::StepDownloadsLimit(true));
+                    })),
+            )
+            .into_any_element();
+
+        let dl_dir_ctrl = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .child(
+                div()
+                    .w(px(210.0))
+                    .h(px(30.0))
+                    .px(px(8.0))
+                    .rounded(px(self.palette.radii.small))
+                    .bg(self.palette.surface)
+                    .border_1()
+                    .border_color(self.palette.outline)
+                    .flex()
+                    .items_center()
+                    .child(Input::new(&self.downloads_dir_input).appearance(false)),
+            )
+            .child(
+                Button::new("set-dl-pick")
+                    .secondary()
+                    .small()
+                    .icon(IconName::Folder)
+                    .on_click(cx.listener(|_this, _, window, cx| {
+                        let rx = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
+                            files: false,
+                            directories: true,
+                            multiple: false,
+                            prompt: Some("Select offline downloads folder".into()),
+                        });
+                        let weak_win = window.window_handle();
+                        cx.spawn(async move |weak, cx| {
+                            if let Ok(Ok(Some(paths))) = rx.await {
+                                if let Some(path) = paths.into_iter().next() {
+                                    let path_str = path.to_string_lossy().into_owned();
+                                    let _ = weak.update(cx, |this, cx| {
+                                        let _ = weak_win.update(cx, |_, window, cx| {
+                                            this.downloads_dir_input.update(cx, |st, cx| {
+                                                st.set_value(path_str, window, cx);
+                                            });
+                                        });
+                                        this.backend.send(BackendCmd::SetDownloadsDir(Some(path)));
+                                        cx.notify();
+                                    });
+                                }
+                            }
+                        })
+                        .detach();
+                    })),
+            )
+            .child(
+                Button::new("set-dl-save")
+                    .secondary()
+                    .small()
+                    .label(s.save)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let raw = this.downloads_dir_input.read(cx).value().trim().to_string();
+                        let dir = if raw.is_empty() {
+                            None
+                        } else {
+                            Some(PathBuf::from(raw))
+                        };
+                        this.backend.send(BackendCmd::SetDownloadsDir(dir));
+                    })),
+            )
+            .child(
+                Button::new("set-dl-reset")
+                    .ghost()
+                    .small()
+                    .label(s.reset_default)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.downloads_dir_input.update(cx, |st, cx| {
+                            st.set_value("", window, cx);
+                        });
+                        this.backend.send(BackendCmd::SetDownloadsDir(None));
+                    })),
+            )
+            .into_any_element();
+
+        let dl_usage_str = format!(
+            "{} • {} {}",
+            format_bytes(self.snapshot.downloads_total_bytes),
+            self.snapshot.downloaded_tracks.len(),
+            s.tracks
+        );
+        let dl_usage_ctrl = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(self.palette.secondary)
+                    .child(dl_usage_str),
+            )
+            .when(!self.snapshot.downloaded_tracks.is_empty(), |el| {
+                el.child(
+                    Button::new("set-dl-clear")
+                        .secondary()
+                        .small()
+                        .icon(IconName::Trash)
+                        .label(s.clear_downloads)
+                        .on_click(cx.listener(|this, _, _, _| {
+                            this.backend.send(BackendCmd::ClearAllDownloads);
+                        })),
+                )
+            })
+            .into_any_element();
+
+        let mut servers_section = div().flex().flex_col().gap(px(8.0)).child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .pt(px(8.0))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .child(
+                            div()
+                                .text_size(px(14.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(self.palette.text)
+                                .child(s.servers),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .text_color(self.palette.secondary)
+                                .child(s.servers_desc),
+                        ),
+                )
+                .child(
+                    Button::new("set-add-server")
+                        .primary()
+                        .small()
+                        .icon(IconName::Plus)
+                        .label(s.add_server)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_add_server_modal(window, cx);
+                        })),
+                ),
+        );
+
+        if self.snapshot.server_profiles.is_empty() {
+            servers_section = servers_section.child(
+                div()
+                    .px(px(14.0))
+                    .py(px(12.0))
+                    .rounded(px(self.palette.radii.control))
+                    .bg(self.palette.surface)
+                    .border_1()
+                    .border_color(self.palette.outline)
+                    .text_size(px(12.0))
+                    .text_color(self.palette.secondary)
+                    .child(s.no_servers),
+            );
+        } else {
+            for (idx, profile) in self.snapshot.server_profiles.iter().enumerate() {
+                let sid_test = profile.id.clone();
+                let sid_toggle = profile.id.clone();
+                let sid_remove = profile.id.clone();
+                let status = self
+                    .snapshot
+                    .server_statuses
+                    .get(&profile.id)
+                    .cloned()
+                    .unwrap_or_else(|| profile.base_url.clone());
+                let subtitle = format!(
+                    "[{}] {} • {}",
+                    profile.kind.short_tag(),
+                    profile.base_url,
+                    status
+                );
+                let ctrl = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        Button::new(("set-srv-test", idx))
+                            .secondary()
+                            .small()
+                            .icon(IconName::RefreshCw)
+                            .label(s.test_connection)
+                            .on_click(cx.listener(move |this, _, _, _| {
+                                this.backend
+                                    .send(BackendCmd::TestServerProfile(sid_test.clone()));
+                            })),
+                    )
+                    .child(
+                        Switch::new(("set-srv-en", idx))
+                            .checked(profile.enabled)
+                            .on_change(cx.listener(move |this, _, _, _| {
+                                this.backend
+                                    .send(BackendCmd::ToggleServerEnabled(sid_toggle.clone()));
+                            })),
+                    )
+                    .child(
+                        Button::new(("set-srv-rm", idx))
+                            .ghost()
+                            .small()
+                            .icon(IconName::Trash)
+                            .on_click(cx.listener(move |this, _, _, _| {
+                                this.backend
+                                    .send(BackendCmd::RemoveServerProfile(sid_remove.clone()));
+                            })),
+                    )
+                    .into_any_element();
+                servers_section =
+                    servers_section.child(self.settings_row(profile.name.clone(), subtitle, ctrl));
+            }
+        }
+
         div()
             .flex()
             .flex_col()
             .gap(px(10.0))
             .child(self.settings_row(s.cache_budget, s.cache_budget_desc, cache_ctrl))
+            .child(self.settings_row(s.downloads_dir, s.downloads_dir_desc, dl_dir_ctrl))
+            .child(self.settings_row(s.downloads_limit, s.downloads_limit_desc, dl_limit_ctrl))
+            .child(self.settings_row(s.downloads_usage, "", dl_usage_ctrl))
             .child(
                 self.settings_row(
                     "Artwork Memory Budget",
@@ -522,20 +787,105 @@ impl SonataDesktopView {
                         .into_any_element(),
                 ),
             )
+            .child(servers_section)
             .into_any_element()
     }
 
-    fn render_settings_system(&self) -> AnyElement {
+    fn render_settings_system(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let s = strings(self.settings.language);
         let wm_mode = if self.decorated {
             "Server-side decorations (--decorated)"
         } else {
             "Frameless client chrome + edge resize"
         };
         let (cpu_pct, rss_mib) = read_sonata_process_metrics();
+        let discord_status_text = match &self.snapshot.discord_status {
+            DiscordRpcStatus::Disabled => "Off".to_string(),
+            DiscordRpcStatus::Disconnected => "Disconnected".to_string(),
+            DiscordRpcStatus::Connecting => "Connecting".to_string(),
+            DiscordRpcStatus::Connected { socket_path } => {
+                let name = socket_path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("IPC");
+                format!("Connected ({name})")
+            }
+            DiscordRpcStatus::Error(err) => format!("Error: {err}"),
+        };
+        let discord_ctrl = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(self.palette.secondary)
+                    .child(discord_status_text),
+            )
+            .child(
+                Switch::new("sw-discord-rpc")
+                    .checked(self.snapshot.config.discord_rpc_enabled)
+                    .on_change(cx.listener(|this, _, _, _| {
+                        this.backend.send(BackendCmd::ToggleDiscordRpc);
+                    })),
+            )
+            .into_any_element();
+
+        let discord_app_ctrl = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .child(
+                div()
+                    .w(px(190.0))
+                    .h(px(30.0))
+                    .px(px(8.0))
+                    .rounded(px(self.palette.radii.small))
+                    .bg(self.palette.surface)
+                    .border_1()
+                    .border_color(self.palette.outline)
+                    .flex()
+                    .items_center()
+                    .child(Input::new(&self.discord_app_id_input).appearance(false)),
+            )
+            .child(
+                Button::new("set-discord-save")
+                    .secondary()
+                    .small()
+                    .label(s.save)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let raw = this
+                            .discord_app_id_input
+                            .read(cx)
+                            .value()
+                            .trim()
+                            .to_string();
+                        let id = if raw.is_empty() { None } else { Some(raw) };
+                        this.backend.send(BackendCmd::SetDiscordAppId(id));
+                    })),
+            )
+            .child(
+                Button::new("set-discord-reset")
+                    .ghost()
+                    .small()
+                    .label(s.reset_default)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.discord_app_id_input.update(cx, |st, cx| {
+                            st.set_value("", window, cx);
+                        });
+                        this.backend.send(BackendCmd::SetDiscordAppId(None));
+                    })),
+            )
+            .into_any_element();
+
         div()
             .flex()
             .flex_col()
             .gap(px(10.0))
+            .child(self.settings_row(s.discord_rpc, s.discord_rpc_desc, discord_ctrl))
+            .child(self.settings_row(s.discord_app_id, s.discord_app_id_desc, discord_app_ctrl))
             .child(self.settings_row(
                 "Sonata Resource Usage",
                 "Live CPU & resident memory (RSS) used exclusively by this Sonata Desktop process",

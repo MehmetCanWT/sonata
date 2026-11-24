@@ -10,12 +10,14 @@ use crate::ui::components::popup_panel;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
+use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
     div, prelude::FluentBuilder as _, px, AnyElement, Context, FontWeight, InteractiveElement as _,
     IntoElement, MouseButton, ParentElement as _, SharedString, StatefulInteractiveElement as _,
     Styled as _, Window,
 };
+use sonata_core::providers::servers::ServerKind;
 
 impl SonataDesktopView {
     pub fn render_account_popover(
@@ -149,7 +151,10 @@ impl SonataDesktopView {
                 let tr_like = track.clone();
                 let tr_dis = track.clone();
                 let tr_add = track.clone();
+                let tr_dl = track.clone();
                 let liked = track.liked;
+                let is_downloaded = self.snapshot.is_track_downloaded(&track.id);
+                let is_downloading = self.snapshot.is_track_downloading(&track.id);
 
                 items.push(menu_item_row(
                     "ctx-play-next",
@@ -238,6 +243,39 @@ impl SonataDesktopView {
                     cx.listener(move |this, _, _, cx| {
                         this.context_menu = None;
                         this.modal = DesktopModal::AddToPlaylist(tr_add.clone());
+                        cx.notify();
+                    }),
+                ));
+                let dl_label = if is_downloading {
+                    s.downloading
+                } else if is_downloaded {
+                    s.remove_download
+                } else {
+                    s.download
+                };
+                items.push(menu_item_row(
+                    "ctx-dl",
+                    if is_downloaded {
+                        IconName::Trash
+                    } else {
+                        IconName::Download
+                    },
+                    dl_label,
+                    &self.palette,
+                    cx.listener(move |this, _, _, cx| {
+                        this.context_menu = None;
+                        if is_downloading {
+                            return;
+                        }
+                        if is_downloaded {
+                            this.backend
+                                .send(BackendCmd::RemoveDownloadedTrack(tr_dl.id.clone()));
+                        } else {
+                            this.backend.send(BackendCmd::DownloadTrack {
+                                track: tr_dl.clone(),
+                                collection: None,
+                            });
+                        }
                         cx.notify();
                     }),
                 ));
@@ -765,6 +803,193 @@ impl SonataDesktopView {
                     })
                     .into_any_element()
             }
+            DesktopModal::AddServer => {
+                let s = sonata_runtime::i18n::strings(self.settings.language);
+                let kind_idx = match self.server_modal_kind {
+                    ServerKind::Jellyfin => 0,
+                    ServerKind::Subsonic => 1,
+                    ServerKind::WebDav => 2,
+                };
+                let token_label = match self.server_modal_kind {
+                    ServerKind::Jellyfin => "API Key (optional if using password)",
+                    ServerKind::Subsonic => "API Key (optional)",
+                    ServerKind::WebDav => "Bearer Token (optional if using user/pass)",
+                };
+                let test_res = self.snapshot.server_test_result.clone();
+                let kind_cur = self.server_modal_kind;
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.0))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(18.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(s.add_server),
+                            )
+                            .child(
+                                Button::new("mdl-srv-close")
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::X)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.modal = DesktopModal::None;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(
+                        TabBar::new("mdl-srv-kind")
+                            .pill()
+                            .small()
+                            .selected_index(kind_idx)
+                            .on_click(cx.listener(|this, idx: &usize, _, cx| {
+                                this.server_modal_kind = match *idx {
+                                    1 => ServerKind::Subsonic,
+                                    2 => ServerKind::WebDav,
+                                    _ => ServerKind::Jellyfin,
+                                };
+                                cx.notify();
+                            }))
+                            .child(Tab::new().label("Jellyfin"))
+                            .child(Tab::new().label("Subsonic"))
+                            .child(Tab::new().label("WebDAV")),
+                    )
+                    .child(labeled_input(
+                        "Name",
+                        &self.server_name_input,
+                        &self.palette,
+                    ))
+                    .child(labeled_input(
+                        "Server URL",
+                        &self.server_url_input,
+                        &self.palette,
+                    ))
+                    .child(labeled_input(
+                        "Username",
+                        &self.server_user_input,
+                        &self.palette,
+                    ))
+                    .child(labeled_input(
+                        "Password",
+                        &self.server_pass_input,
+                        &self.palette,
+                    ))
+                    .when(self.server_modal_kind != ServerKind::Subsonic, |d| {
+                        d.child(labeled_input(
+                            token_label,
+                            &self.server_token_input,
+                            &self.palette,
+                        ))
+                    })
+                    .when_some(test_res, |d, res| {
+                        let (ok, msg) = match res {
+                            Ok(m) => (true, m),
+                            Err(e) => (false, e),
+                        };
+                        d.child(
+                            div()
+                                .p(px(8.0))
+                                .rounded(px(self.palette.radii.item))
+                                .bg(if ok {
+                                    self.palette.accent.opacity(0.15)
+                                } else {
+                                    self.palette.danger.opacity(0.15)
+                                })
+                                .text_size(px(12.0))
+                                .text_color(if ok {
+                                    self.palette.accent
+                                } else {
+                                    self.palette.danger
+                                })
+                                .child(msg),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .justify_end()
+                            .gap(px(8.0))
+                            .child(
+                                Button::new("mdl-srv-test")
+                                    .secondary()
+                                    .label(s.test_connection)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        let name =
+                                            this.server_name_input.read(cx).value().to_string();
+                                        let url =
+                                            this.server_url_input.read(cx).value().to_string();
+                                        let user =
+                                            this.server_user_input.read(cx).value().to_string();
+                                        let pass =
+                                            this.server_pass_input.read(cx).value().to_string();
+                                        let tok =
+                                            this.server_token_input.read(cx).value().to_string();
+                                        this.backend.send(BackendCmd::TestServerDraft {
+                                            name,
+                                            kind: kind_cur,
+                                            base_url: url,
+                                            username: Some(user),
+                                            password: Some(pass),
+                                            api_key: (kind_cur == ServerKind::Jellyfin)
+                                                .then(|| tok.clone()),
+                                            bearer_token: (kind_cur == ServerKind::WebDav)
+                                                .then_some(tok),
+                                        });
+                                    })),
+                            )
+                            .child(
+                                Button::new("mdl-srv-cancel")
+                                    .secondary()
+                                    .label(s.cancel)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.modal = DesktopModal::None;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("mdl-srv-save")
+                                    .primary()
+                                    .label(s.save)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        let name =
+                                            this.server_name_input.read(cx).value().to_string();
+                                        let url =
+                                            this.server_url_input.read(cx).value().to_string();
+                                        let user =
+                                            this.server_user_input.read(cx).value().to_string();
+                                        let pass =
+                                            this.server_pass_input.read(cx).value().to_string();
+                                        let tok =
+                                            this.server_token_input.read(cx).value().to_string();
+                                        if !url.trim().is_empty() {
+                                            this.backend.send(BackendCmd::SaveServerProfile {
+                                                id: None,
+                                                name,
+                                                kind: kind_cur,
+                                                base_url: url,
+                                                username: Some(user),
+                                                password: Some(pass),
+                                                api_key: (kind_cur == ServerKind::Jellyfin)
+                                                    .then(|| tok.clone()),
+                                                bearer_token: (kind_cur == ServerKind::WebDav)
+                                                    .then_some(tok),
+                                            });
+                                            this.modal = DesktopModal::None;
+                                            cx.notify();
+                                        }
+                                    })),
+                            ),
+                    )
+                    .into_any_element()
+            }
         };
 
         div()
@@ -823,4 +1048,53 @@ fn menu_item_row(
                 .child(label),
         )
         .into_any_element()
+}
+
+fn labeled_input(
+    label: &'static str,
+    input: &gpui_kit::Entity<gpui_kit::component::input::InputState>,
+    palette: &crate::theme::DesktopPalette,
+) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(4.0))
+        .child(
+            div()
+                .text_size(px(11.5))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(palette.secondary)
+                .child(label),
+        )
+        .child(
+            div()
+                .px(px(10.0))
+                .py(px(6.0))
+                .rounded(px(palette.radii.control))
+                .bg(palette.surface)
+                .border_1()
+                .border_color(palette.outline)
+                .child(Input::new(input).appearance(false)),
+        )
+        .into_any_element()
+}
+
+impl SonataDesktopView {
+    pub fn open_add_server_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.server_modal_kind = ServerKind::Jellyfin;
+        self.server_name_input
+            .update(cx, |st, cx| st.set_value("", window, cx));
+        self.server_url_input
+            .update(cx, |st, cx| st.set_value("", window, cx));
+        self.server_user_input
+            .update(cx, |st, cx| st.set_value("", window, cx));
+        self.server_pass_input
+            .update(cx, |st, cx| st.set_value("", window, cx));
+        self.server_token_input
+            .update(cx, |st, cx| st.set_value("", window, cx));
+        self.modal = DesktopModal::AddServer;
+        self.server_name_input
+            .update(cx, |st, cx| st.focus(window, cx));
+        cx.notify();
+    }
 }

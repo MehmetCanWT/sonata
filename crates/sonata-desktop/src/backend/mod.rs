@@ -25,10 +25,15 @@ use sonata_core::player::{PlaybackState, PlaybackTaskSet};
 use sonata_core::providers::hifi::{
     FastStartMode, ResolverProfile, StreamFallbackMode, UpgradeDelivery,
 };
+use sonata_core::providers::servers::{
+    load_server_profiles, ServerClient, ServerLibrary, ServerProfile,
+};
 use sonata_core::providers::ytmusic::{ArtistPage, HomeShelf, YtAccountProfile, YtMusicClient};
 use sonata_core::providers::{build_http_client, Playlist, Track};
 use sonata_runtime::auth::{list_supported_browsers, BrowserOption};
 use sonata_runtime::config::AppConfig;
+use sonata_runtime::discord::{DiscordRpcHandle, DiscordRpcStatus};
+use sonata_runtime::downloads::{DownloadStore, DownloadedCollection, DownloadedTrack};
 use sonata_runtime::hyprland;
 use sonata_runtime::media;
 use sonata_runtime::player::{
@@ -36,7 +41,7 @@ use sonata_runtime::player::{
     PlaybackSessionHandle, PlaybackStreamSource, SessionCommand, SessionPolicy,
 };
 use sonata_runtime::process::LinuxStreamResolver;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -78,6 +83,33 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
     let mut playback = PlaybackState::new(config.volume);
     playback.shuffle = config.shuffle;
     playback.repeat = config.repeat_mode;
+
+    let download_store = DownloadStore::open(config.effective_downloads_dir()).ok();
+    let (downloaded_tracks, downloaded_collections, downloads_total_bytes) =
+        if let Some(ref store) = download_store {
+            (
+                store.list_tracks().unwrap_or_default(),
+                store.list_collections().unwrap_or_default(),
+                store.total_bytes().unwrap_or(0),
+            )
+        } else {
+            (Vec::new(), Vec::new(), 0)
+        };
+    let downloaded_track_ids: HashSet<String> = downloaded_tracks
+        .iter()
+        .map(|t| t.track_id.clone())
+        .collect();
+    let server_profiles = load_server_profiles(&paths).unwrap_or_default();
+    let active_server_id = server_profiles
+        .iter()
+        .find(|p| p.enabled)
+        .or_else(|| server_profiles.first())
+        .map(|p| p.id.clone());
+    let initial_discord_status = if config.discord_rpc_enabled {
+        DiscordRpcStatus::Disconnected
+    } else {
+        DiscordRpcStatus::Disabled
+    };
 
     let initial_snapshot = Arc::new(DesktopSnapshot {
         config: config.clone(),
@@ -152,6 +184,23 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
         update_info: None,
         checking_updates: false,
         thumb_rev: 0,
+        downloaded_tracks: downloaded_tracks.clone(),
+        downloaded_collections: downloaded_collections.clone(),
+        downloaded_track_ids: downloaded_track_ids.clone(),
+        downloading_track_ids: HashSet::new(),
+        downloads_total_bytes,
+        discord_status: initial_discord_status,
+        server_profiles: server_profiles.clone(),
+        server_statuses: HashMap::new(),
+        active_server_id: active_server_id.clone(),
+        server_libraries: Vec::new(),
+        server_artists: Vec::new(),
+        server_albums: Vec::new(),
+        server_playlists: Vec::new(),
+        server_tracks: Vec::new(),
+        server_current_folder: None,
+        server_loading: false,
+        server_test_result: None,
     });
 
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -179,6 +228,13 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
                 initial_browser,
                 ytm_playlists,
                 playback,
+                download_store,
+                downloaded_tracks,
+                downloaded_collections,
+                downloaded_track_ids,
+                downloads_total_bytes,
+                server_profiles,
+                active_server_id,
                 cmd_tx_thread,
                 cmd_rx,
                 snap_tx,
@@ -297,6 +353,27 @@ struct BackendEngine {
     pub(super) thumbnail_slots: Arc<Semaphore>,
     pub(super) urgent_thumbnail_slots: Arc<Semaphore>,
     pub(super) thumb_rev: u64,
+    pub(super) playback_speed: f64,
+    pub(super) discord_rpc: DiscordRpcHandle,
+    pub(super) download_store: Option<DownloadStore>,
+    pub(super) downloaded_tracks: Vec<DownloadedTrack>,
+    pub(super) downloaded_collections: Vec<DownloadedCollection>,
+    pub(super) downloaded_track_ids: HashSet<String>,
+    pub(super) downloading_track_ids: HashSet<String>,
+    pub(super) downloads_total_bytes: u64,
+    pub(super) server_client: ServerClient,
+    pub(super) server_profiles: Vec<ServerProfile>,
+    pub(super) server_statuses: HashMap<String, String>,
+    pub(super) active_server_id: Option<String>,
+    pub(super) server_libraries: Vec<ServerLibrary>,
+    pub(super) server_artists: Vec<sonata_core::providers::ytmusic::HomeCard>,
+    pub(super) server_albums: Vec<sonata_core::providers::ytmusic::HomeCard>,
+    pub(super) server_playlists: Vec<Playlist>,
+    pub(super) server_tracks: Vec<Track>,
+    pub(super) server_current_folder: Option<String>,
+    pub(super) server_loading: bool,
+    pub(super) server_req_id: u64,
+    pub(super) server_test_result: Option<Result<String, String>>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -307,6 +384,13 @@ async fn run_backend_loop(
     initial_browser: Option<String>,
     ytm_playlists: Vec<Playlist>,
     playback: PlaybackState,
+    download_store: Option<DownloadStore>,
+    downloaded_tracks: Vec<DownloadedTrack>,
+    downloaded_collections: Vec<DownloadedCollection>,
+    downloaded_track_ids: HashSet<String>,
+    downloads_total_bytes: u64,
+    server_profiles: Vec<ServerProfile>,
+    active_server_id: Option<String>,
     cmd_tx: mpsc::UnboundedSender<BackendCmd>,
     mut cmd_rx: mpsc::UnboundedReceiver<BackendCmd>,
     snap_tx: watch::Sender<Arc<DesktopSnapshot>>,
@@ -328,7 +412,7 @@ async fn run_backend_loop(
     let cookies = ExtractedCookies::default();
     let initial_lang = crate::settings::DesktopSettings::load().language;
     let ytm = YtMusicClient::new(http.clone(), cookies.clone()).with_language(initial_lang.code());
-    let resolver = LinuxStreamResolver::with_profile(
+    let mut resolver = LinuxStreamResolver::with_profile(
         http.clone(),
         ytm.clone(),
         cookies.clone(),
@@ -336,6 +420,12 @@ async fn run_backend_loop(
         paths.clone(),
         linux_resolver_profile(&config),
     );
+    if let Some(ref store) = download_store {
+        resolver = resolver.with_downloads_store(store.clone());
+    }
+    let discord_rpc = DiscordRpcHandle::spawn(playback::discord_config_from(&config));
+    let mut discord_status_rx = discord_rpc.subscribe_status();
+    let server_client = ServerClient::new(http.clone());
     let warm_resolver = resolver.clone();
     tokio::spawn(async move {
         warm_resolver.warm().await;
@@ -477,7 +567,32 @@ async fn run_backend_loop(
         thumbnail_slots: Arc::new(Semaphore::new(8)),
         urgent_thumbnail_slots: Arc::new(Semaphore::new(12)),
         thumb_rev: 0,
+        playback_speed: 1.0,
+        discord_rpc,
+        download_store,
+        downloaded_tracks,
+        downloaded_collections,
+        downloaded_track_ids,
+        downloading_track_ids: HashSet::new(),
+        downloads_total_bytes,
+        server_client,
+        server_profiles,
+        server_statuses: HashMap::new(),
+        active_server_id: active_server_id.clone(),
+        server_libraries: Vec::new(),
+        server_artists: Vec::new(),
+        server_albums: Vec::new(),
+        server_playlists: Vec::new(),
+        server_tracks: Vec::new(),
+        server_current_folder: None,
+        server_loading: false,
+        server_req_id: 0,
+        server_test_result: None,
     };
+
+    if let Some(sid) = active_server_id {
+        engine.load_server_browse(sid, None, None);
+    }
 
     let cached_playlist_thumbs: Vec<String> = engine
         .ytm_playlists
@@ -513,7 +628,12 @@ async fn run_backend_loop(
                     let _ = engine
                         .progress_tx
                         .send((engine.playback.position_secs, engine.playback.duration_secs));
+                    engine.sync_discord_rpc();
                 }
+            }
+            Ok(()) = discord_status_rx.changed() => {
+                let _ = discord_status_rx.borrow_and_update();
+                engine.publish(false).await;
             }
             Some(cmd) = cmd_rx.recv() => {
                 if let BackendCmd::Shutdown(done) = cmd {
@@ -573,10 +693,21 @@ impl BackendEngine {
                     {
                         self.load_explore();
                     }
-                    NavTarget::Library
-                        if self.library_albums.is_empty() && !self.library_extras_loading =>
-                    {
-                        self.load_library_extras();
+                    NavTarget::Library => {
+                        self.refresh_downloads();
+                        if self.library_albums.is_empty() && !self.library_extras_loading {
+                            self.load_library_extras();
+                        }
+                        if self.active_server_id.is_some()
+                            && self.server_libraries.is_empty()
+                            && self.server_playlists.is_empty()
+                            && self.server_albums.is_empty()
+                            && !self.server_loading
+                        {
+                            if let Some(sid) = self.active_server_id.clone() {
+                                self.load_server_browse(sid, None, None);
+                            }
+                        }
                     }
                     NavTarget::History if self.history_tracks.is_empty() => {
                         self.load_listening_history();
@@ -676,6 +807,10 @@ impl BackendEngine {
             BackendCmd::RefreshLibrary => {
                 self.refresh_account();
                 self.load_library_extras();
+                self.refresh_downloads();
+                if let Some(sid) = self.active_server_id.clone() {
+                    self.load_server_browse(sid, None, self.server_current_folder.clone());
+                }
             }
             BackendCmd::RefreshHistory => {
                 self.load_listening_history();
@@ -1027,6 +1162,131 @@ impl BackendEngine {
             BackendCmd::CheckForUpdates => {
                 self.spawn_update_check();
             }
+            BackendCmd::RefreshDownloads => {
+                self.refresh_downloads();
+            }
+            BackendCmd::DownloadTrack { track, collection } => {
+                self.download_track(track, collection);
+            }
+            BackendCmd::RemoveDownloadedTrack(track_id) => {
+                self.remove_downloaded_track(track_id);
+            }
+            BackendCmd::DownloadCollection {
+                collection_id,
+                title,
+                source,
+                artwork_url,
+                tracks,
+            } => {
+                self.download_collection(collection_id, title, source, artwork_url, tracks);
+            }
+            BackendCmd::RemoveDownloadedCollection(collection_id) => {
+                self.remove_downloaded_collection(collection_id);
+            }
+            BackendCmd::SetDownloadsDir(dir) => {
+                self.set_downloads_dir(dir);
+            }
+            BackendCmd::StepDownloadsLimit(forward) => {
+                self.step_downloads_limit(forward);
+            }
+            BackendCmd::ClearAllDownloads => {
+                self.clear_all_downloads();
+            }
+            BackendCmd::ToggleDiscordRpc => {
+                self.config.discord_rpc_enabled = !self.config.discord_rpc_enabled;
+                let _ = self.config.save();
+                self.discord_rpc
+                    .try_update_config(playback::discord_config_from(&self.config));
+                self.sync_discord_rpc();
+                self.status_line = format!(
+                    "Discord Rich Presence: {}",
+                    if self.config.discord_rpc_enabled {
+                        "Enabled"
+                    } else {
+                        "Disabled"
+                    }
+                );
+            }
+            BackendCmd::SetDiscordAppId(app_id) => {
+                let normalized = app_id.and_then(|raw| {
+                    let t = raw.trim().to_string();
+                    if t.is_empty() {
+                        None
+                    } else {
+                        Some(t)
+                    }
+                });
+                self.config.discord_app_id = normalized;
+                let _ = self.config.save();
+                self.discord_rpc
+                    .try_update_config(playback::discord_config_from(&self.config));
+                self.sync_discord_rpc();
+                self.status_line = match &self.config.discord_app_id {
+                    Some(id) => format!("Discord Application ID updated ({id})"),
+                    None => "Discord Application ID reset to default".to_string(),
+                };
+            }
+            BackendCmd::RefreshServers => {
+                if let Some(sid) = self.active_server_id.clone() {
+                    self.load_server_browse(sid, None, None);
+                }
+            }
+            BackendCmd::SaveServerProfile {
+                id,
+                name,
+                kind,
+                base_url,
+                username,
+                password,
+                api_key,
+                bearer_token,
+            } => {
+                self.save_server_profile(
+                    id,
+                    name,
+                    kind,
+                    base_url,
+                    username,
+                    password,
+                    api_key,
+                    bearer_token,
+                );
+            }
+            BackendCmd::TestServerDraft {
+                name,
+                kind,
+                base_url,
+                username,
+                password,
+                api_key,
+                bearer_token,
+            } => {
+                self.test_server_draft(
+                    name,
+                    kind,
+                    base_url,
+                    username,
+                    password,
+                    api_key,
+                    bearer_token,
+                );
+            }
+            BackendCmd::TestServerProfile(server_id) => {
+                self.test_server_profile(server_id);
+            }
+            BackendCmd::ToggleServerEnabled(server_id) => {
+                self.toggle_server_enabled(server_id);
+            }
+            BackendCmd::RemoveServerProfile(server_id) => {
+                self.remove_server_profile(server_id);
+            }
+            BackendCmd::SelectServer {
+                server_id,
+                library_id,
+                folder_path,
+            } => {
+                self.load_server_browse(server_id, library_id, folder_path);
+            }
             BackendCmd::SetWindowAddress(addr) => {
                 self.hyprland_window = addr;
                 self.sync_hyprland_opacity(None);
@@ -1091,6 +1351,9 @@ impl BackendEngine {
                     linux_core_paths(),
                     linux_resolver_profile(&self.config),
                 );
+                if let Some(ref store) = self.download_store {
+                    self.resolver.set_downloads_store(Some(store.clone()));
+                }
                 let _ = self
                     .session
                     .send(SessionCommand::UpdateStreamSource(
@@ -1639,6 +1902,7 @@ impl BackendEngine {
                 {
                     self.art_path = art_path;
                     self.ambient_rgb = ambient_rgb;
+                    self.sync_discord_rpc();
                 }
             }
             InternalEvent::AnimatedArtworkReady {
@@ -1710,6 +1974,134 @@ impl BackendEngine {
             InternalEvent::UpdateCheckFailed(err) => {
                 self.checking_updates = false;
                 tracing::warn!(error = %err, "desktop update check failed");
+            }
+            InternalEvent::DownloadsLoaded {
+                tracks,
+                collections,
+                total_bytes,
+            } => {
+                let mut urls: Vec<String> = tracks
+                    .iter()
+                    .filter_map(|t| t.artwork_url.clone())
+                    .collect();
+                for c in &collections {
+                    if let Some(u) = &c.artwork_url {
+                        urls.push(u.clone());
+                    }
+                }
+                self.prefetch_thumbnails(urls);
+                self.downloaded_track_ids = tracks.iter().map(|t| t.track_id.clone()).collect();
+                self.downloaded_tracks = tracks;
+                self.downloaded_collections = collections;
+                self.downloads_total_bytes = total_bytes;
+                if self.playlist_id.as_deref() == Some("SONATA:DOWNLOADS") {
+                    self.playlist_tracks = self
+                        .downloaded_tracks
+                        .iter()
+                        .map(|d| d.to_track())
+                        .collect();
+                }
+            }
+            InternalEvent::TrackDownloadFinished {
+                track_id,
+                title,
+                result,
+            } => {
+                self.downloading_track_ids.remove(&track_id);
+                match result {
+                    Ok(()) => {
+                        self.status_line = format!("Downloaded \"{title}\" for offline playback");
+                        self.refresh_downloads();
+                    }
+                    Err(err) => {
+                        self.status_line = format!("Download failed for \"{title}\": {err}");
+                    }
+                }
+            }
+            InternalEvent::CollectionDownloadFinished {
+                title,
+                saved,
+                errors,
+            } => {
+                self.refresh_downloads();
+                self.status_line = if errors == 0 {
+                    format!("Downloaded {saved} tracks from \"{title}\"")
+                } else {
+                    format!("Downloaded {saved} tracks from \"{title}\" ({errors} failed)")
+                };
+            }
+            InternalEvent::ServerTested { server_id, result } => {
+                if let Some(sid) = server_id {
+                    let badge = match &result {
+                        Ok(msg) => msg.clone(),
+                        Err(err) => format!("Error: {err}"),
+                    };
+                    self.server_statuses.insert(sid, badge);
+                }
+                match &result {
+                    Ok(msg) => self.status_line = format!("Server OK: {msg}"),
+                    Err(err) => self.status_line = format!("Server connection failed: {err}"),
+                }
+                self.server_test_result = Some(result);
+            }
+            InternalEvent::ServerSaved {
+                profiles,
+                active_id,
+                message,
+            } => {
+                self.server_profiles = profiles;
+                self.active_server_id = Some(active_id.clone());
+                self.server_test_result = Some(Ok(message.clone()));
+                self.status_line = message;
+                self.load_server_browse(active_id, None, None);
+            }
+            InternalEvent::ServerBrowseLoaded {
+                req_id,
+                server_id,
+                folder_path,
+                libraries,
+                artists,
+                albums,
+                playlists,
+                tracks,
+                error,
+            } => {
+                if req_id != self.server_req_id {
+                    return;
+                }
+                self.server_loading = false;
+                self.active_server_id = Some(server_id.clone());
+                self.server_current_folder = folder_path;
+                if let Some(err) = error {
+                    self.server_statuses
+                        .insert(server_id, format!("Error: {err}"));
+                    self.status_line = format!("Server error: {err}");
+                    return;
+                }
+                self.server_statuses
+                    .insert(server_id, "Connected".to_string());
+                let mut urls = Vec::new();
+                for c in artists.iter().chain(albums.iter()) {
+                    if let Some(u) = &c.thumbnail_url {
+                        urls.push(u.clone());
+                    }
+                }
+                for p in &playlists {
+                    if let Some(u) = &p.thumbnail_url {
+                        urls.push(u.clone());
+                    }
+                }
+                for t in &tracks {
+                    if let Some(u) = &t.thumbnail_url {
+                        urls.push(u.clone());
+                    }
+                }
+                self.prefetch_thumbnails(urls);
+                self.server_libraries = libraries;
+                self.server_artists = artists;
+                self.server_albums = albums;
+                self.server_playlists = playlists;
+                self.server_tracks = tracks;
             }
             InternalEvent::StatusMessage(msg) => {
                 self.status_line = msg;
@@ -1824,6 +2216,23 @@ impl BackendEngine {
             update_info: self.update_info.clone(),
             checking_updates: self.checking_updates,
             thumb_rev: self.thumb_rev,
+            downloaded_tracks: self.downloaded_tracks.clone(),
+            downloaded_collections: self.downloaded_collections.clone(),
+            downloaded_track_ids: self.downloaded_track_ids.clone(),
+            downloading_track_ids: self.downloading_track_ids.clone(),
+            downloads_total_bytes: self.downloads_total_bytes,
+            discord_status: self.discord_rpc.status(),
+            server_profiles: self.server_profiles.clone(),
+            server_statuses: self.server_statuses.clone(),
+            active_server_id: self.active_server_id.clone(),
+            server_libraries: self.server_libraries.clone(),
+            server_artists: self.server_artists.clone(),
+            server_albums: self.server_albums.clone(),
+            server_playlists: self.server_playlists.clone(),
+            server_tracks: self.server_tracks.clone(),
+            server_current_folder: self.server_current_folder.clone(),
+            server_loading: self.server_loading,
+            server_test_result: self.server_test_result.clone(),
         });
 
         if self.window_visible {
@@ -1863,6 +2272,7 @@ impl BackendEngine {
         if !self.media_tasks.shutdown(Duration::from_secs(2)).await {
             tracing::warn!("desktop media tasks exceeded shutdown timeout and were aborted");
         }
+        self.discord_rpc.shutdown().await;
         let report = self.session.shutdown().await;
         if !report.tasks_joined_cleanly {
             tracing::warn!("playback session tasks exceeded shutdown timeout and were aborted");
@@ -1994,6 +2404,23 @@ mod tests {
             update_info: None,
             checking_updates: false,
             thumb_rev: 0,
+            downloaded_tracks: Vec::new(),
+            downloaded_collections: Vec::new(),
+            downloaded_track_ids: HashSet::new(),
+            downloading_track_ids: HashSet::new(),
+            downloads_total_bytes: 0,
+            discord_status: DiscordRpcStatus::Disconnected,
+            server_profiles: Vec::new(),
+            server_statuses: HashMap::new(),
+            active_server_id: None,
+            server_libraries: Vec::new(),
+            server_artists: Vec::new(),
+            server_albums: Vec::new(),
+            server_playlists: Vec::new(),
+            server_tracks: Vec::new(),
+            server_current_folder: None,
+            server_loading: false,
+            server_test_result: None,
         }));
         let (_progress_tx, progress_rx) = watch::channel((0.0_f64, 0.0_f64));
         let handle = BackendHandle {

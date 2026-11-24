@@ -8,6 +8,7 @@
 use sonata_core::auth::ExtractedCookies;
 use sonata_core::lyrics::{active_line_index, LyricsState};
 use sonata_core::player::RepeatMode;
+use sonata_core::providers::servers::{ServerKind, ServerLibrary, ServerProfile};
 use sonata_core::providers::ytmusic::{
     AlbumDetail, ArtistPage, HomeCard, HomeShelf, MoodCategoryTile, MoodChip, RichSearchResult,
     YtAccountProfile,
@@ -16,8 +17,11 @@ use sonata_core::providers::{Playlist, ProviderSource, Track};
 use sonata_core::updater::UpdateCheckResult;
 use sonata_runtime::auth::BrowserOption;
 use sonata_runtime::config::AppConfig;
+use sonata_runtime::discord::DiscordRpcStatus;
+use sonata_runtime::downloads::{DownloadCollectionRef, DownloadedCollection, DownloadedTrack};
 use sonata_runtime::i18n::AppLanguage;
 use sonata_runtime::motion::MotionCover;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -152,6 +156,53 @@ pub enum BackendCmd {
     RemoveTrackFromPlaylist(usize),
     ClickLinkSpotify,
     CheckForUpdates,
+    RefreshDownloads,
+    DownloadTrack {
+        track: Track,
+        collection: Option<DownloadCollectionRef>,
+    },
+    RemoveDownloadedTrack(String),
+    DownloadCollection {
+        collection_id: String,
+        title: String,
+        source: ProviderSource,
+        artwork_url: Option<String>,
+        tracks: Vec<Track>,
+    },
+    RemoveDownloadedCollection(String),
+    SetDownloadsDir(Option<PathBuf>),
+    StepDownloadsLimit(bool),
+    ClearAllDownloads,
+    ToggleDiscordRpc,
+    SetDiscordAppId(Option<String>),
+    RefreshServers,
+    SaveServerProfile {
+        id: Option<String>,
+        name: String,
+        kind: ServerKind,
+        base_url: String,
+        username: Option<String>,
+        password: Option<String>,
+        api_key: Option<String>,
+        bearer_token: Option<String>,
+    },
+    TestServerDraft {
+        name: String,
+        kind: ServerKind,
+        base_url: String,
+        username: Option<String>,
+        password: Option<String>,
+        api_key: Option<String>,
+        bearer_token: Option<String>,
+    },
+    TestServerProfile(String),
+    ToggleServerEnabled(String),
+    RemoveServerProfile(String),
+    SelectServer {
+        server_id: String,
+        library_id: Option<String>,
+        folder_path: Option<String>,
+    },
     SetWindowAddress(Option<String>),
     SetWindowVisible(bool),
     SetUiCompact(bool),
@@ -232,9 +283,39 @@ pub struct DesktopSnapshot {
     pub update_info: Option<UpdateCheckResult>,
     pub checking_updates: bool,
     pub thumb_rev: u64,
+    pub downloaded_tracks: Vec<DownloadedTrack>,
+    pub downloaded_collections: Vec<DownloadedCollection>,
+    pub downloaded_track_ids: HashSet<String>,
+    pub downloading_track_ids: HashSet<String>,
+    pub downloads_total_bytes: u64,
+    pub discord_status: DiscordRpcStatus,
+    pub server_profiles: Vec<ServerProfile>,
+    pub server_statuses: HashMap<String, String>,
+    pub active_server_id: Option<String>,
+    pub server_libraries: Vec<ServerLibrary>,
+    pub server_artists: Vec<HomeCard>,
+    pub server_albums: Vec<HomeCard>,
+    pub server_playlists: Vec<Playlist>,
+    pub server_tracks: Vec<Track>,
+    pub server_current_folder: Option<String>,
+    pub server_loading: bool,
+    pub server_test_result: Option<Result<String, String>>,
 }
 
 impl DesktopSnapshot {
+    pub fn is_track_downloaded(&self, track_id: &str) -> bool {
+        self.downloaded_track_ids.contains(track_id)
+    }
+
+    pub fn is_track_downloading(&self, track_id: &str) -> bool {
+        self.downloading_track_ids.contains(track_id)
+    }
+
+    pub fn is_collection_downloaded(&self, collection_id: &str) -> bool {
+        self.downloaded_collections
+            .iter()
+            .any(|c| c.collection_id == collection_id)
+    }
     pub fn is_track_liked(&self, track: &Track) -> bool {
         track.liked || self.liked_track_ids.contains(&track.id)
     }
@@ -416,6 +497,41 @@ pub(super) enum InternalEvent {
     },
     UpdateChecked(UpdateCheckResult),
     UpdateCheckFailed(String),
+    DownloadsLoaded {
+        tracks: Vec<DownloadedTrack>,
+        collections: Vec<DownloadedCollection>,
+        total_bytes: u64,
+    },
+    TrackDownloadFinished {
+        track_id: String,
+        title: String,
+        result: Result<(), String>,
+    },
+    CollectionDownloadFinished {
+        title: String,
+        saved: usize,
+        errors: usize,
+    },
+    ServerTested {
+        server_id: Option<String>,
+        result: Result<String, String>,
+    },
+    ServerSaved {
+        profiles: Vec<ServerProfile>,
+        active_id: String,
+        message: String,
+    },
+    ServerBrowseLoaded {
+        req_id: u64,
+        server_id: String,
+        folder_path: Option<String>,
+        libraries: Vec<ServerLibrary>,
+        artists: Vec<HomeCard>,
+        albums: Vec<HomeCard>,
+        playlists: Vec<Playlist>,
+        tracks: Vec<Track>,
+        error: Option<String>,
+    },
     StatusMessage(String),
 }
 

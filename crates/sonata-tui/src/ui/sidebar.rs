@@ -23,6 +23,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             let (prefix, color) = match entry {
                 SidebarEntry::Search => (" / ", app.theme.accent),
                 SidebarEntry::Queue => (" ≡ ", app.theme.fg),
+                SidebarEntry::Downloads => (" ↓ ", app.theme.accent),
+                SidebarEntry::Server(_) => (" ◈ ", app.theme.accent),
                 SidebarEntry::Playlist(p) => match p.source {
                     ProviderSource::YouTubeMusic => (" ▶ ", app.theme.error),
                     ProviderSource::Spotify => (" ● ", app.theme.success),
@@ -32,6 +34,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                 SidebarEntry::Search => Cow::Borrowed(s.search),
                 SidebarEntry::Queue => {
                     Cow::Owned(format!("{} ({})", s.queue, app.playback.queue.len()))
+                }
+                SidebarEntry::Downloads => {
+                    Cow::Owned(format!("{} ({})", s.downloads, app.downloaded_tracks.len()))
+                }
+                SidebarEntry::Server(srv) => {
+                    Cow::Owned(format!("{} [{}]", srv.name, srv.kind.short_tag()))
                 }
                 SidebarEntry::Playlist(p) => Cow::Borrowed(p.name.as_str()),
             };

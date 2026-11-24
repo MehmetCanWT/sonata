@@ -261,6 +261,34 @@ pub struct UiStrings {
     pub in_library: &'static str,
     pub add_to_library: &'static str,
     pub remove_from_library: &'static str,
+
+    // Offline Downloads, Discord Rich Presence & Self-Hosted Servers
+    pub downloads: &'static str,
+    pub download: &'static str,
+    pub downloaded: &'static str,
+    pub downloading: &'static str,
+    pub remove_download: &'static str,
+    pub downloads_dir: &'static str,
+    pub downloads_dir_desc: &'static str,
+    pub downloads_limit: &'static str,
+    pub downloads_limit_desc: &'static str,
+    pub downloads_usage: &'static str,
+    pub clear_downloads: &'static str,
+    pub no_downloads: &'static str,
+    pub discord_rpc: &'static str,
+    pub discord_rpc_desc: &'static str,
+    pub discord_app_id: &'static str,
+    pub discord_app_id_desc: &'static str,
+    pub servers: &'static str,
+    pub servers_desc: &'static str,
+    pub add_server: &'static str,
+    pub test_connection: &'static str,
+    pub remove_server: &'static str,
+    pub no_servers: &'static str,
+    pub connect_server_hint: &'static str,
+    pub unlimited: &'static str,
+    pub reset_default: &'static str,
+    pub save: &'static str,
 }
 
 /// Translates common YouTube Music mood and genre chip/tile titles into `Tr` / `Ru`.
@@ -615,6 +643,33 @@ pub const EN: UiStrings = UiStrings {
     in_library: "In Library",
     add_to_library: "Add to Library",
     remove_from_library: "Remove from Library",
+
+    downloads: "Downloads",
+    download: "Download",
+    downloaded: "Downloaded",
+    downloading: "Downloading...",
+    remove_download: "Remove download",
+    downloads_dir: "Downloads Folder",
+    downloads_dir_desc: "Shared offline audio folder used by Sonata Desktop & TUI.",
+    downloads_limit: "Offline Downloads Limit",
+    downloads_limit_desc: "Cap shared offline downloads storage (0 = Unlimited).",
+    downloads_usage: "Offline Storage Usage",
+    clear_downloads: "Clear all",
+    no_downloads: "No offline downloads yet",
+    discord_rpc: "Discord Rich Presence",
+    discord_rpc_desc: "Show currently playing track, timestamps, and speed on Discord.",
+    discord_app_id: "Discord Application ID",
+    discord_app_id_desc: "Optional custom Discord client ID (leave empty for default).",
+    servers: "Servers",
+    servers_desc: "Connect self-hosted Jellyfin, Subsonic/OpenSubsonic, and WebDAV servers.",
+    add_server: "Add server",
+    test_connection: "Test",
+    remove_server: "Remove",
+    no_servers: "No self-hosted music servers configured",
+    connect_server_hint: "Add a Jellyfin, Subsonic, or WebDAV server in Settings.",
+    unlimited: "Unlimited",
+    reset_default: "Reset",
+    save: "Save",
 };
 
 pub const TR: UiStrings = UiStrings {
@@ -809,6 +864,33 @@ pub const TR: UiStrings = UiStrings {
     in_library: "Kitaplıkta",
     add_to_library: "Kitaplığa ekle",
     remove_from_library: "Kitaplıktan çıkar",
+
+    downloads: "İndirilenler",
+    download: "İndir",
+    downloaded: "İndirildi",
+    downloading: "İndiriliyor...",
+    remove_download: "İndirmeyi kaldır",
+    downloads_dir: "İndirilenler Klasörü",
+    downloads_dir_desc: "Sonata Masaüstü ve TUI tarafından paylaşılan çevrimdışı ses klasörü.",
+    downloads_limit: "Çevrimdışı İndirme Sınırı",
+    downloads_limit_desc: "Paylaşılan çevrimdışı indirme depolama sınırını ayarla (0 = Sınırsız).",
+    downloads_usage: "Çevrimdışı Depolama Kullanımı",
+    clear_downloads: "Tümünü temizle",
+    no_downloads: "Henüz çevrimdışı indirme yok",
+    discord_rpc: "Discord Rich Presence",
+    discord_rpc_desc: "Çalan parçayı, zaman damgalarını ve hızı Discord'da göster.",
+    discord_app_id: "Discord Uygulama Kimliği",
+    discord_app_id_desc: "İsteğe bağlı özel Discord istemci kimliği (varsayılan için boş bırak).",
+    servers: "Sunucular",
+    servers_desc: "Kendi barındırdığın Jellyfin, Subsonic/OpenSubsonic ve WebDAV sunucularını bağla.",
+    add_server: "Sunucu ekle",
+    test_connection: "Test et",
+    remove_server: "Kaldır",
+    no_servers: "Yapılandırılmış sunucu yok",
+    connect_server_hint: "Ayarlar'dan bir Jellyfin, Subsonic veya WebDAV sunucusu ekle.",
+    unlimited: "Sınırsız",
+    reset_default: "Sıfırla",
+    save: "Kaydet",
 };
 
 pub const RU: UiStrings = UiStrings {
@@ -1004,6 +1086,33 @@ pub const RU: UiStrings = UiStrings {
     in_library: "В медиатеке",
     add_to_library: "Добавить в медиатеку",
     remove_from_library: "Убрать из медиатеки",
+
+    downloads: "Загрузки",
+    download: "Скачать",
+    downloaded: "Скачано",
+    downloading: "Загрузка...",
+    remove_download: "Удалить загрузку",
+    downloads_dir: "Папка загрузок",
+    downloads_dir_desc: "Общая папка офлайн-аудио для Sonata Desktop и TUI.",
+    downloads_limit: "Лимит офлайн-загрузок",
+    downloads_limit_desc: "Ограничить размер хранилища загрузок (0 = Без лимита).",
+    downloads_usage: "Использование хранилища",
+    clear_downloads: "Очистить всё",
+    no_downloads: "Пока нет офлайн-загрузок",
+    discord_rpc: "Discord Rich Presence",
+    discord_rpc_desc: "Показывать текущий трек, время и скорость в Discord.",
+    discord_app_id: "ID приложения Discord",
+    discord_app_id_desc: "Необязательный свой ID клиента Discord (пусто — по умолчанию).",
+    servers: "Серверы",
+    servers_desc: "Подключите свои серверы Jellyfin, Subsonic/OpenSubsonic и WebDAV.",
+    add_server: "Добавить сервер",
+    test_connection: "Проверить",
+    remove_server: "Удалить",
+    no_servers: "Нет настроенных серверов",
+    connect_server_hint: "Добавьте сервер Jellyfin, Subsonic или WebDAV в настройках.",
+    unlimited: "Без лимита",
+    reset_default: "Сбросить",
+    save: "Сохранить",
 };
 
 #[cfg(test)]
@@ -1066,5 +1175,11 @@ mod tests {
         assert_eq!(localize_mood_title(AppLanguage::Tr, "Workout"), "Antrenman");
         assert_eq!(localize_mood_title(AppLanguage::Ru, "Focus"), "Фокус");
         assert_eq!(localize_mood_title(AppLanguage::En, "Chill"), "Chill");
+        assert_eq!(strings(AppLanguage::En).downloads, "Downloads");
+        assert_eq!(strings(AppLanguage::Tr).downloads, "İndirilenler");
+        assert_eq!(strings(AppLanguage::Ru).downloads, "Загрузки");
+        assert_eq!(strings(AppLanguage::En).servers, "Servers");
+        assert_eq!(strings(AppLanguage::Tr).servers, "Sunucular");
+        assert_eq!(strings(AppLanguage::Ru).servers, "Серверы");
     }
 }

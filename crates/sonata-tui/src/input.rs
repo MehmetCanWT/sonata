@@ -91,8 +91,37 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                         7 => app.toggle_transparent_bg(),
                         8 => app.cycle_hyprland_opacity(true),
                         9 => app.step_cache_limit(true),
-                        10 => app.refresh_account(),
-                        11 => app.check_for_updates(),
+                        10 => app.step_downloads_limit(true),
+                        11 => {
+                            let s = sonata_runtime::i18n::strings(app.config.language);
+                            let buf = app
+                                .config
+                                .downloads_dir
+                                .as_ref()
+                                .map(|p| p.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            app.modal = ActiveModal::TextInput {
+                                title: s.downloads_dir.to_string(),
+                                prompt: "Path (leave empty for default folder):".to_string(),
+                                buf,
+                                target: crate::app::TextInputTarget::DownloadsDir,
+                            };
+                        }
+                        12 => app.clear_all_downloads(),
+                        13 => app.modal = ActiveModal::ServerManager(0),
+                        14 => app.toggle_discord_rpc(),
+                        15 => {
+                            let s = sonata_runtime::i18n::strings(app.config.language);
+                            let buf = app.config.discord_app_id.clone().unwrap_or_default();
+                            app.modal = ActiveModal::TextInput {
+                                title: s.discord_app_id.to_string(),
+                                prompt: "Application ID (empty for Sonata default):".to_string(),
+                                buf,
+                                target: crate::app::TextInputTarget::DiscordAppId,
+                            };
+                        }
+                        16 => app.refresh_account(),
+                        17 => app.check_for_updates(),
                         _ => {}
                     }
                 }
@@ -107,6 +136,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                     7 => app.toggle_transparent_bg(),
                     8 => app.cycle_hyprland_opacity(false),
                     9 => app.step_cache_limit(false),
+                    10 => app.step_downloads_limit(false),
+                    14 => app.toggle_discord_rpc(),
                     _ => {}
                 },
                 _ => {}
@@ -159,6 +190,193 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                     app.create_ytm_playlist(&title);
                 }
                 KeyCode::Char(c) => buf.push(c),
+                _ => {}
+            }
+            return;
+        }
+        ActiveModal::TextInput { buf, target, .. } => {
+            let target = *target;
+            match key.code {
+                KeyCode::Esc => {
+                    let back = match target {
+                        crate::app::TextInputTarget::DownloadsDir => 11,
+                        crate::app::TextInputTarget::DiscordAppId => 15,
+                    };
+                    app.modal = ActiveModal::Settings(back);
+                }
+                KeyCode::Backspace => {
+                    buf.pop();
+                }
+                KeyCode::Enter => {
+                    let val = buf.trim().to_string();
+                    let back = match target {
+                        crate::app::TextInputTarget::DownloadsDir => {
+                            let dir = if val.is_empty() {
+                                None
+                            } else {
+                                Some(std::path::PathBuf::from(val))
+                            };
+                            app.set_downloads_dir(dir);
+                            11
+                        }
+                        crate::app::TextInputTarget::DiscordAppId => {
+                            let id = if val.is_empty() { None } else { Some(val) };
+                            app.set_discord_app_id(id);
+                            15
+                        }
+                    };
+                    app.modal = ActiveModal::Settings(back);
+                }
+                KeyCode::Char(c) => buf.push(c),
+                _ => {}
+            }
+            return;
+        }
+        ActiveModal::ServerManager(sel) => {
+            let count = app.server_profiles.len();
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => app.modal = ActiveModal::Settings(13),
+                KeyCode::Down | KeyCode::Char('j') if count > 0 => *sel = (*sel + 1) % count,
+                KeyCode::Up | KeyCode::Char('k') if count > 0 => *sel = (*sel + count - 1) % count,
+                KeyCode::Char('a') => {
+                    app.modal = ActiveModal::AddServer(crate::app::ServerFormState::default());
+                }
+                KeyCode::Char('t') if count > 0 => {
+                    let idx = (*sel).min(count - 1);
+                    let id = app.server_profiles[idx].id.clone();
+                    app.test_server_profile(&id);
+                }
+                KeyCode::Enter | KeyCode::Char(' ') if count > 0 => {
+                    let idx = (*sel).min(count - 1);
+                    let id = app.server_profiles[idx].id.clone();
+                    app.toggle_server_enabled(&id);
+                }
+                KeyCode::Char('b') if count > 0 => {
+                    let idx = (*sel).min(count - 1);
+                    let profile = app.server_profiles[idx].clone();
+                    app.open_server_browser(profile);
+                }
+                KeyCode::Char('d') | KeyCode::Char('x') | KeyCode::Delete if count > 0 => {
+                    let idx = (*sel).min(count - 1);
+                    let id = app.server_profiles[idx].id.clone();
+                    app.remove_server_profile(&id);
+                    let next_len = app.server_profiles.len();
+                    app.modal = ActiveModal::ServerManager(if next_len == 0 {
+                        0
+                    } else {
+                        idx.min(next_len - 1)
+                    });
+                }
+                _ => {}
+            }
+            return;
+        }
+        ActiveModal::AddServer(form) => {
+            use crate::app::ServerFormField;
+            use sonata_core::providers::servers::ServerKind;
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('t') {
+                let snapshot = form.clone();
+                app.test_server_form(&snapshot);
+                return;
+            }
+            match key.code {
+                KeyCode::Esc => app.modal = ActiveModal::ServerManager(0),
+                KeyCode::Tab | KeyCode::Down => form.focused = form.focused.next(),
+                KeyCode::BackTab | KeyCode::Up => form.focused = form.focused.prev(),
+                KeyCode::Left | KeyCode::Right if form.focused == ServerFormField::Kind => {
+                    form.kind = match (form.kind, key.code == KeyCode::Right) {
+                        (ServerKind::Jellyfin, true) => ServerKind::Subsonic,
+                        (ServerKind::Subsonic, true) => ServerKind::WebDav,
+                        (ServerKind::WebDav, true) => ServerKind::Jellyfin,
+                        (ServerKind::Jellyfin, false) => ServerKind::WebDav,
+                        (ServerKind::Subsonic, false) => ServerKind::Jellyfin,
+                        (ServerKind::WebDav, false) => ServerKind::Subsonic,
+                    };
+                }
+                KeyCode::Enter => {
+                    if form.focused == ServerFormField::Kind {
+                        form.kind = match form.kind {
+                            ServerKind::Jellyfin => ServerKind::Subsonic,
+                            ServerKind::Subsonic => ServerKind::WebDav,
+                            ServerKind::WebDav => ServerKind::Jellyfin,
+                        };
+                    } else {
+                        let snapshot = form.clone();
+                        app.modal = ActiveModal::ServerManager(0);
+                        app.save_server_form(&snapshot);
+                    }
+                }
+                KeyCode::Backspace => match form.focused {
+                    ServerFormField::Kind => {}
+                    ServerFormField::Name => {
+                        form.name.pop();
+                    }
+                    ServerFormField::BaseUrl => {
+                        form.base_url.pop();
+                    }
+                    ServerFormField::Username => {
+                        form.username.pop();
+                    }
+                    ServerFormField::Password => {
+                        form.password.pop();
+                    }
+                    ServerFormField::Token => {
+                        form.token.pop();
+                    }
+                },
+                KeyCode::Char(c) => match form.focused {
+                    ServerFormField::Kind => {}
+                    ServerFormField::Name => form.name.push(c),
+                    ServerFormField::BaseUrl => form.base_url.push(c),
+                    ServerFormField::Username => form.username.push(c),
+                    ServerFormField::Password => form.password.push(c),
+                    ServerFormField::Token => form.token.push(c),
+                },
+                _ => {}
+            }
+            return;
+        }
+        ActiveModal::ServerBrowser(st) => {
+            use crate::app::ServerBrowserTab;
+            let len = match st.tab {
+                ServerBrowserTab::Tracks => app.server_tracks.len(),
+                ServerBrowserTab::Playlists => app.server_playlists.len(),
+                ServerBrowserTab::Albums => app.server_albums.len(),
+                ServerBrowserTab::Artists => app.server_artists.len(),
+                ServerBrowserTab::Libraries => app.server_libraries.len(),
+            };
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => app.modal = ActiveModal::None,
+                KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
+                    st.tab = st.tab.next();
+                    st.selected = 0;
+                }
+                KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
+                    st.tab = st.tab.prev();
+                    st.selected = 0;
+                }
+                KeyCode::Down | KeyCode::Char('j') if len > 0 => {
+                    st.selected = (st.selected + 1) % len;
+                }
+                KeyCode::Up | KeyCode::Char('k') if len > 0 => {
+                    st.selected = (st.selected + len - 1) % len;
+                }
+                KeyCode::Char('r') => {
+                    let sid = st.server_id.clone();
+                    let folder = st.folder_path.clone();
+                    app.load_server_browse(sid, None, folder);
+                }
+                KeyCode::Backspace => {
+                    let sid = st.server_id.clone();
+                    let parent = st.folder_path.as_deref().and_then(|p| {
+                        let trimmed = p.trim_end_matches('/');
+                        trimmed.rsplit_once('/').map(|(a, _)| a.to_string())
+                    });
+                    app.load_server_browse(sid, None, parent);
+                }
+                KeyCode::Enter => {
+                    app.activate_server_browser_item();
+                }
                 _ => {}
             }
             return;
@@ -241,6 +459,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             app.modal = ActiveModal::ThemePicker(cur_idx, app.theme.name.clone());
         }
         KeyCode::Char('i') => app.modal = ActiveModal::SpotifyImport(String::new()),
+        KeyCode::Char('d') => app.toggle_download_selected_track(),
+        KeyCode::Char('D') => app.toggle_download_visible_collection(),
         KeyCode::Char('y') => app.toggle_like_selected(),
         KeyCode::Char('a') => app.open_add_to_playlist_modal(),
         KeyCode::Char('x') | KeyCode::Delete => app.remove_selected_from_playlist(),

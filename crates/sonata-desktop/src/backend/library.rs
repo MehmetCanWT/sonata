@@ -6,10 +6,18 @@
 
 use super::types::{InternalEvent, NavTarget};
 use super::BackendEngine;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use sonata_core::auth::ExtractedCookies;
-use sonata_core::providers::ytmusic::{HomeShelf, MoodChip, YtMusicClient};
+use sonata_core::providers::hifi::extract_badge_kbps;
+use sonata_core::providers::servers::{
+    jellyfin, parse_server_item_id, save_server_profiles, webdav, ServerClient, ServerKind,
+    ServerProfile,
+};
+use sonata_core::providers::ytmusic::{ArtistPage, HomeShelf, MoodChip, YtMusicClient};
 use sonata_core::providers::{Playlist, ProviderSource, Track};
 use sonata_runtime::auth::extract_ytm_cookies_from_browser;
+use sonata_runtime::config::AppConfig;
+use sonata_runtime::downloads::{DownloadCollectionRef, DownloadStore, DownloadTrackInput};
 use sonata_runtime::hyprland;
 use sonata_runtime::media;
 use sonata_runtime::process::LinuxStreamResolver;
@@ -285,6 +293,9 @@ impl BackendEngine {
             super::linux_core_paths(),
             super::linux_resolver_profile(&self.config),
         );
+        if let Some(ref store) = self.download_store {
+            self.resolver.set_downloads_store(Some(store.clone()));
+        }
         let _ = self
             .session
             .send(sonata_runtime::player::SessionCommand::UpdateStreamSource(
@@ -543,6 +554,73 @@ impl BackendEngine {
         self.artist_page = None;
         self.artist_banner_url = None;
         self.status_line = "Loading artist...".to_string();
+
+        if let Some(item_ref) = parse_server_item_id(&browse_id) {
+            if let Some(profile) = self
+                .server_profiles
+                .iter()
+                .find(|p| p.id == item_ref.server_id)
+                .cloned()
+            {
+                let client = self.server_client.clone();
+                let int_tx = self.int_tx.clone();
+                let fallback_name = self
+                    .server_artists
+                    .iter()
+                    .find(|a| a.id == browse_id)
+                    .map(|a| (a.title.clone(), a.thumbnail_url.clone()));
+                tokio::spawn(async move {
+                    match client
+                        .list_albums(&profile, None, Some(&item_ref.item_id))
+                        .await
+                    {
+                        Ok(albums) => {
+                            let (name, thumb) = fallback_name.unwrap_or_else(|| {
+                                (
+                                    albums
+                                        .first()
+                                        .map(|a| a.subtitle.clone())
+                                        .filter(|s| !s.is_empty())
+                                        .unwrap_or_else(|| profile.name.clone()),
+                                    albums.first().and_then(|a| a.thumbnail_url.clone()),
+                                )
+                            });
+                            let page = ArtistPage {
+                                id: browse_id,
+                                name,
+                                subtitle: profile.kind.display_name().to_string(),
+                                description: None,
+                                subscribers: None,
+                                monthly_listeners: None,
+                                thumbnail_url: thumb,
+                                shuffle_playlist_id: None,
+                                radio_playlist_id: None,
+                                latest_release: albums.first().cloned(),
+                                popular_tracks: Vec::new(),
+                                releases: albums,
+                                related_artists: Vec::new(),
+                            };
+                            let _ = int_tx.send(InternalEvent::ArtistLoaded {
+                                req_id,
+                                artist: Some(page),
+                                banner_url: None,
+                                error: None,
+                            });
+                        }
+                        Err(err) => {
+                            let _ = int_tx.send(InternalEvent::ArtistLoaded {
+                                req_id,
+                                artist: None,
+                                banner_url: None,
+                                error: Some(err.to_string()),
+                            });
+                        }
+                    }
+                });
+                return;
+            }
+        }
+
         let ytm = self.ytm.clone();
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
@@ -637,6 +715,58 @@ impl BackendEngine {
         artist: String,
         thumbnail_url: Option<String>,
     ) {
+        if let Some(id) = album_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| parse_server_item_id(id).is_some())
+            .map(str::to_string)
+        {
+            if let Some(item_ref) = parse_server_item_id(&id) {
+                if let Some(profile) = self
+                    .server_profiles
+                    .iter()
+                    .find(|p| p.id == item_ref.server_id)
+                    .cloned()
+                {
+                    self.album_req_id = self.album_req_id.wrapping_add(1);
+                    let req_id = self.album_req_id;
+                    self.active_nav = NavTarget::Album(id.clone());
+                    self.album_loading = true;
+                    self.album_error = None;
+                    self.album_detail = None;
+                    self.status_line = format!(
+                        "Loading {}...",
+                        if title.trim().is_empty() {
+                            "album"
+                        } else {
+                            title.trim()
+                        }
+                    );
+                    let client = self.server_client.clone();
+                    let int_tx = self.int_tx.clone();
+                    tokio::spawn(async move {
+                        match client.get_album(&profile, &id).await {
+                            Ok(album) => {
+                                let _ = int_tx.send(InternalEvent::AlbumDetailLoaded {
+                                    req_id,
+                                    album: Some(album),
+                                    error: None,
+                                });
+                            }
+                            Err(err) => {
+                                let _ = int_tx.send(InternalEvent::AlbumDetailLoaded {
+                                    req_id,
+                                    album: None,
+                                    error: Some(err.to_string()),
+                                });
+                            }
+                        }
+                    });
+                    return;
+                }
+            }
+        }
+
         if let Some(id) = album_id
             .as_deref()
             .map(str::trim)
@@ -844,6 +974,58 @@ impl BackendEngine {
 
         self.playlist_req_id = self.playlist_req_id.wrapping_add(1);
         let req_id = self.playlist_req_id;
+
+        if id == "SONATA:DOWNLOADS" {
+            self.playlist_tracks = self
+                .downloaded_tracks
+                .iter()
+                .map(|d| d.to_track())
+                .collect();
+            self.playlist_loading = false;
+            self.refresh_downloads();
+            return;
+        }
+
+        if let Some(item_ref) = parse_server_item_id(&id) {
+            if let Some(profile) = self
+                .server_profiles
+                .iter()
+                .find(|p| p.id == item_ref.server_id)
+                .cloned()
+            {
+                self.playlist_tracks.clear();
+                self.playlist_loading = true;
+                let client = self.server_client.clone();
+                let int_tx = self.int_tx.clone();
+                tokio::spawn(async move {
+                    match client.get_playlist_tracks(&profile, &id).await {
+                        Ok(tracks) => {
+                            let _ = int_tx.send(InternalEvent::CollectionLoaded {
+                                req_id,
+                                id,
+                                heading: title,
+                                tracks,
+                                silent_replace: false,
+                            });
+                        }
+                        Err(err) => {
+                            let _ = int_tx.send(InternalEvent::CollectionLoaded {
+                                req_id,
+                                id,
+                                heading: title,
+                                tracks: Vec::new(),
+                                silent_replace: false,
+                            });
+                            let _ = int_tx.send(InternalEvent::StatusMessage(format!(
+                                "Failed to load server tracks: {err}"
+                            )));
+                        }
+                    }
+                });
+                return;
+            }
+        }
+
         let cache_key = format!("YTM:{id}");
 
         let mut had_cached = false;
@@ -987,6 +1169,13 @@ impl BackendEngine {
 
         let ytm = self.ytm.clone();
         let http = self.http.clone();
+        let server_client = self.server_client.clone();
+        let enabled_servers: Vec<ServerProfile> = self
+            .server_profiles
+            .iter()
+            .filter(|p| p.enabled)
+            .cloned()
+            .collect();
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
             let jio_fut = async {
@@ -996,14 +1185,50 @@ impl BackendEngine {
                     Vec::new()
                 }
             };
-            let (ytm_res, rich_res, jio_tracks) =
-                tokio::join!(ytm.search_songs(&q), ytm.search_rich(&q), jio_fut);
+            let servers_fut = async {
+                let mut set = tokio::task::JoinSet::new();
+                for profile in &enabled_servers {
+                    let client = server_client.clone();
+                    let profile = profile.clone();
+                    let q = q.clone();
+                    set.spawn(async move { client.search(&profile, &q, 20).await.ok() });
+                }
+                let mut out = Vec::new();
+                while let Some(res) = set.join_next().await {
+                    if let Ok(item) = res {
+                        out.push(item);
+                    }
+                }
+                out
+            };
+            let (ytm_res, rich_res, jio_tracks, server_results) = tokio::join!(
+                ytm.search_songs(&q),
+                ytm.search_rich(&q),
+                jio_fut,
+                servers_fut
+            );
             let mut rich = rich_res.unwrap_or_default();
+            let mut server_tracks = Vec::new();
+            for sr in server_results.into_iter().flatten() {
+                server_tracks.extend(sr.tracks);
+                rich.albums.extend(sr.albums);
+                rich.artists.extend(sr.artists);
+                rich.playlists.extend(sr.playlists);
+            }
             match ytm_res {
                 Ok(mut tracks) => {
                     tracks.extend(jio_tracks);
+                    tracks.extend(server_tracks);
                     if rich.songs.is_empty() {
                         rich.songs = tracks.clone();
+                    } else {
+                        for st in &tracks {
+                            if (st.is_jiosaavn() || st.is_self_hosted())
+                                && !rich.songs.iter().any(|existing| existing.id == st.id)
+                            {
+                                rich.songs.push(st.clone());
+                            }
+                        }
                     }
                     let _ = int_tx.send(InternalEvent::SearchLoaded {
                         req_id,
@@ -1013,13 +1238,15 @@ impl BackendEngine {
                     });
                 }
                 Err(e) => {
-                    if !jio_tracks.is_empty() {
+                    let mut fallback_tracks = jio_tracks;
+                    fallback_tracks.extend(server_tracks);
+                    if !fallback_tracks.is_empty() {
                         if rich.songs.is_empty() {
-                            rich.songs = jio_tracks.clone();
+                            rich.songs = fallback_tracks.clone();
                         }
                         let _ = int_tx.send(InternalEvent::SearchLoaded {
                             req_id,
-                            tracks: jio_tracks,
+                            tracks: fallback_tracks,
                             rich,
                             error: None,
                         });
@@ -1203,7 +1430,10 @@ impl BackendEngine {
         let cache_db = self.cache_db.clone();
         let title = track.title.clone();
         tokio::spawn(async move {
-            let vid = if track.source == ProviderSource::YouTubeMusic && !track.is_jiosaavn() {
+            let vid = if track.source == ProviderSource::YouTubeMusic
+                && !track.is_jiosaavn()
+                && !track.is_self_hosted()
+            {
                 Some(track.id)
             } else {
                 let q = format!("{} {}", track.artist, track.title);
@@ -1359,7 +1589,10 @@ impl BackendEngine {
         let int_tx = self.int_tx.clone();
         self.status_line = format!("Adding \"{}\" to {}...", track.title, playlist_name);
         tokio::spawn(async move {
-            let vid = if track.source == ProviderSource::YouTubeMusic && !track.is_jiosaavn() {
+            let vid = if track.source == ProviderSource::YouTubeMusic
+                && !track.is_jiosaavn()
+                && !track.is_self_hosted()
+            {
                 Some(track.id)
             } else {
                 let q = format!("{} {}", track.artist, track.title);
@@ -1431,4 +1664,804 @@ impl BackendEngine {
             }
         });
     }
+
+    pub(super) fn refresh_downloads(&mut self) {
+        let Some(store) = self.download_store.clone() else {
+            return;
+        };
+        let int_tx = self.int_tx.clone();
+        tokio::spawn(async move {
+            let (tracks_res, cols_res, bytes_res) = tokio::join!(
+                store.list_tracks_async(),
+                store.list_collections_async(),
+                store.total_bytes_async(),
+            );
+            let _ = int_tx.send(InternalEvent::DownloadsLoaded {
+                tracks: tracks_res.unwrap_or_default(),
+                collections: cols_res.unwrap_or_default(),
+                total_bytes: bytes_res.unwrap_or(0),
+            });
+        });
+    }
+
+    fn ensure_download_store(&mut self) -> Option<DownloadStore> {
+        if self.download_store.is_none() {
+            if let Ok(store) = DownloadStore::open(self.config.effective_downloads_dir()) {
+                self.resolver.set_downloads_store(Some(store.clone()));
+                self.download_store = Some(store);
+            }
+        }
+        self.download_store.clone()
+    }
+
+    pub(super) fn download_track(
+        &mut self,
+        track: Track,
+        collection: Option<DownloadCollectionRef>,
+    ) {
+        let Some(store) = self.ensure_download_store() else {
+            self.status_line = "Failed to open offline downloads store".to_string();
+            return;
+        };
+        let track_id = track.id.clone();
+        let title = track.title.clone();
+        self.downloading_track_ids.insert(track_id.clone());
+        self.status_line = format!("Downloading \"{title}\"...");
+
+        let resolver = self.resolver.clone();
+        let http = self.http.clone();
+        let cache_db = self.cache_db.clone();
+        let hifi = self.config.hifi_substitution;
+        let limit_bytes = self.config.downloads_limit_bytes();
+        let int_tx = self.int_tx.clone();
+        tokio::spawn(async move {
+            let result = download_one_track_into_store(
+                &store,
+                &resolver,
+                &http,
+                cache_db.as_ref(),
+                &track,
+                collection,
+                hifi,
+                limit_bytes,
+            )
+            .await
+            .map_err(|err| err.to_string());
+            let _ = int_tx.send(InternalEvent::TrackDownloadFinished {
+                track_id,
+                title,
+                result,
+            });
+        });
+    }
+
+    pub(super) fn remove_downloaded_track(&mut self, track_id: String) {
+        let Some(store) = self.download_store.clone() else {
+            return;
+        };
+        let int_tx = self.int_tx.clone();
+        tokio::spawn(async move {
+            match store.delete_track_async(track_id).await {
+                Ok(true) => {
+                    let _ = int_tx.send(InternalEvent::StatusMessage(
+                        "Removed track from offline downloads".to_string(),
+                    ));
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    let _ = int_tx.send(InternalEvent::StatusMessage(format!(
+                        "Failed to remove download: {err}"
+                    )));
+                }
+            }
+            let (tracks_res, cols_res, bytes_res) = tokio::join!(
+                store.list_tracks_async(),
+                store.list_collections_async(),
+                store.total_bytes_async(),
+            );
+            let _ = int_tx.send(InternalEvent::DownloadsLoaded {
+                tracks: tracks_res.unwrap_or_default(),
+                collections: cols_res.unwrap_or_default(),
+                total_bytes: bytes_res.unwrap_or(0),
+            });
+        });
+    }
+
+    pub(super) fn download_collection(
+        &mut self,
+        collection_id: String,
+        title: String,
+        source: ProviderSource,
+        artwork_url: Option<String>,
+        tracks: Vec<Track>,
+    ) {
+        if tracks.is_empty() {
+            return;
+        }
+        let Some(store) = self.ensure_download_store() else {
+            self.status_line = "Failed to open offline downloads store".to_string();
+            return;
+        };
+        for t in &tracks {
+            self.downloading_track_ids.insert(t.id.clone());
+        }
+        self.status_line = format!("Downloading {} tracks from \"{title}\"...", tracks.len());
+
+        let resolver = self.resolver.clone();
+        let http = self.http.clone();
+        let cache_db = self.cache_db.clone();
+        let hifi = self.config.hifi_substitution;
+        let limit_bytes = self.config.downloads_limit_bytes();
+        let int_tx = self.int_tx.clone();
+        tokio::spawn(async move {
+            let mut saved = 0usize;
+            let mut errors = 0usize;
+            for (pos, track) in tracks.into_iter().enumerate() {
+                let col_ref = DownloadCollectionRef {
+                    collection_id: collection_id.clone(),
+                    title: title.clone(),
+                    source,
+                    artwork_url: artwork_url.clone(),
+                    position: pos,
+                };
+                let track_id = track.id.clone();
+                let track_title = track.title.clone();
+                let res = download_one_track_into_store(
+                    &store,
+                    &resolver,
+                    &http,
+                    cache_db.as_ref(),
+                    &track,
+                    Some(col_ref),
+                    hifi,
+                    limit_bytes,
+                )
+                .await
+                .map_err(|err| err.to_string());
+                match res {
+                    Ok(()) => saved += 1,
+                    Err(_) => errors += 1,
+                }
+                let _ = int_tx.send(InternalEvent::TrackDownloadFinished {
+                    track_id,
+                    title: track_title,
+                    result: res,
+                });
+            }
+            let _ = int_tx.send(InternalEvent::CollectionDownloadFinished {
+                title,
+                saved,
+                errors,
+            });
+        });
+    }
+
+    pub(super) fn remove_downloaded_collection(&mut self, collection_id: String) {
+        let Some(store) = self.download_store.clone() else {
+            return;
+        };
+        let int_tx = self.int_tx.clone();
+        tokio::spawn(async move {
+            let removed = store
+                .delete_collection_async(collection_id, true)
+                .await
+                .unwrap_or(0);
+            let _ = int_tx.send(InternalEvent::StatusMessage(format!(
+                "Removed collection ({removed} tracks freed)"
+            )));
+            let (tracks_res, cols_res, bytes_res) = tokio::join!(
+                store.list_tracks_async(),
+                store.list_collections_async(),
+                store.total_bytes_async(),
+            );
+            let _ = int_tx.send(InternalEvent::DownloadsLoaded {
+                tracks: tracks_res.unwrap_or_default(),
+                collections: cols_res.unwrap_or_default(),
+                total_bytes: bytes_res.unwrap_or(0),
+            });
+        });
+    }
+
+    pub(super) fn clear_all_downloads(&mut self) {
+        let Some(store) = self.download_store.clone() else {
+            return;
+        };
+        let int_tx = self.int_tx.clone();
+        self.status_line = "Clearing offline downloads...".to_string();
+        tokio::spawn(async move {
+            let report = store.prune_to_limit_async(0).await.unwrap_or_default();
+            let _ = int_tx.send(InternalEvent::StatusMessage(format!(
+                "Cleared {} offline tracks",
+                report.removed_tracks
+            )));
+            let (tracks_res, cols_res, bytes_res) = tokio::join!(
+                store.list_tracks_async(),
+                store.list_collections_async(),
+                store.total_bytes_async(),
+            );
+            let _ = int_tx.send(InternalEvent::DownloadsLoaded {
+                tracks: tracks_res.unwrap_or_default(),
+                collections: cols_res.unwrap_or_default(),
+                total_bytes: bytes_res.unwrap_or(0),
+            });
+        });
+    }
+
+    pub(super) fn set_downloads_dir(&mut self, dir: Option<PathBuf>) {
+        let normalized = dir.and_then(|p| {
+            let s = p.to_string_lossy().trim().to_string();
+            if s.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(s))
+            }
+        });
+        self.config.downloads_dir = normalized;
+        let _ = self.config.save();
+        let target_dir = self.config.effective_downloads_dir();
+        match DownloadStore::open(&target_dir) {
+            Ok(store) => {
+                self.resolver.set_downloads_store(Some(store.clone()));
+                self.download_store = Some(store);
+                self.status_line = format!("Downloads folder: {}", target_dir.display());
+                self.refresh_downloads();
+            }
+            Err(err) => {
+                self.status_line = format!("Invalid downloads folder: {err}");
+            }
+        }
+    }
+
+    pub(super) fn step_downloads_limit(&mut self, forward: bool) {
+        const STEPS: &[u8] = &[0, 1, 2, 5, 10, 20, 50, 100];
+        let cur = self.config.downloads_limit_gb;
+        let idx = STEPS
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, v)| v.abs_diff(cur))
+            .map(|(i, _)| i)
+            .unwrap_or(4);
+        let next = if forward {
+            (idx + 1) % STEPS.len()
+        } else {
+            (idx + STEPS.len() - 1) % STEPS.len()
+        };
+        self.config.downloads_limit_gb = STEPS[next];
+        let _ = self.config.save();
+        if let (Some(limit), Some(store)) = (
+            self.config.downloads_limit_bytes(),
+            self.download_store.clone(),
+        ) {
+            let int_tx = self.int_tx.clone();
+            tokio::spawn(async move {
+                let _ = store.prune_to_limit_async(limit).await;
+                let (tracks_res, cols_res, bytes_res) = tokio::join!(
+                    store.list_tracks_async(),
+                    store.list_collections_async(),
+                    store.total_bytes_async(),
+                );
+                let _ = int_tx.send(InternalEvent::DownloadsLoaded {
+                    tracks: tracks_res.unwrap_or_default(),
+                    collections: cols_res.unwrap_or_default(),
+                    total_bytes: bytes_res.unwrap_or(0),
+                });
+            });
+        }
+        self.status_line = format!(
+            "Offline downloads limit: {}",
+            AppConfig::downloads_limit_label(self.config.downloads_limit_gb)
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn test_server_draft(
+        &mut self,
+        name: String,
+        kind: ServerKind,
+        base_url: String,
+        username: Option<String>,
+        password: Option<String>,
+        api_key: Option<String>,
+        bearer_token: Option<String>,
+    ) {
+        self.server_test_result = None;
+        let http = self.http.clone();
+        let int_tx = self.int_tx.clone();
+        tokio::spawn(async move {
+            let mut profile = build_server_profile(
+                None,
+                &name,
+                kind,
+                &base_url,
+                username,
+                password,
+                api_key,
+                bearer_token,
+            );
+            let res = prepare_and_ping_server(&http, &mut profile).await;
+            let _ = int_tx.send(InternalEvent::ServerTested {
+                server_id: None,
+                result: res,
+            });
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn save_server_profile(
+        &mut self,
+        id: Option<String>,
+        name: String,
+        kind: ServerKind,
+        base_url: String,
+        username: Option<String>,
+        password: Option<String>,
+        api_key: Option<String>,
+        bearer_token: Option<String>,
+    ) {
+        let mut profiles = self.server_profiles.clone();
+        let paths = self.paths.clone();
+        let http = self.http.clone();
+        let int_tx = self.int_tx.clone();
+        tokio::spawn(async move {
+            let mut profile = build_server_profile(
+                id.as_deref(),
+                &name,
+                kind,
+                &base_url,
+                username,
+                password,
+                api_key,
+                bearer_token,
+            );
+            let ping_res = prepare_and_ping_server(&http, &mut profile).await;
+            let active_id = profile.id.clone();
+            if let Some(existing) = profiles.iter_mut().find(|p| p.id == profile.id) {
+                *existing = profile.clone();
+            } else {
+                profiles.push(profile.clone());
+            }
+            let save_paths = paths.clone();
+            let save_list = profiles.clone();
+            let save_res =
+                tokio::task::spawn_blocking(move || save_server_profiles(&save_paths, &save_list))
+                    .await
+                    .unwrap_or_else(|e| {
+                        Err(sonata_core::error::CoreError::internal(e.to_string()))
+                    });
+            match save_res {
+                Ok(()) => {
+                    let message = match ping_res {
+                        Ok(msg) => format!("Saved {} ({msg})", profile.name),
+                        Err(err) => format!("Saved {} (warning: {err})", profile.name),
+                    };
+                    let _ = int_tx.send(InternalEvent::ServerSaved {
+                        profiles,
+                        active_id,
+                        message,
+                    });
+                }
+                Err(err) => {
+                    let _ = int_tx.send(InternalEvent::ServerTested {
+                        server_id: None,
+                        result: Err(format!("Failed to save server: {err}")),
+                    });
+                }
+            }
+        });
+    }
+
+    pub(super) fn test_server_profile(&mut self, server_id: String) {
+        let Some(mut profile) = self
+            .server_profiles
+            .iter()
+            .find(|p| p.id == server_id)
+            .cloned()
+        else {
+            return;
+        };
+        let http = self.http.clone();
+        let int_tx = self.int_tx.clone();
+        tokio::spawn(async move {
+            let res = prepare_and_ping_server(&http, &mut profile).await;
+            let _ = int_tx.send(InternalEvent::ServerTested {
+                server_id: Some(server_id),
+                result: res,
+            });
+        });
+    }
+
+    pub(super) fn toggle_server_enabled(&mut self, server_id: String) {
+        if let Some(profile) = self.server_profiles.iter_mut().find(|p| p.id == server_id) {
+            profile.enabled = !profile.enabled;
+        } else {
+            return;
+        }
+        let profiles = self.server_profiles.clone();
+        let paths = self.paths.clone();
+        tokio::spawn(async move {
+            let _ =
+                tokio::task::spawn_blocking(move || save_server_profiles(&paths, &profiles)).await;
+        });
+    }
+
+    pub(super) fn remove_server_profile(&mut self, server_id: String) {
+        self.server_profiles.retain(|p| p.id != server_id);
+        self.server_statuses.remove(&server_id);
+        if self.active_server_id.as_deref() == Some(server_id.as_str()) {
+            self.active_server_id = self.server_profiles.first().map(|p| p.id.clone());
+            self.server_libraries.clear();
+            self.server_artists.clear();
+            self.server_albums.clear();
+            self.server_playlists.clear();
+            self.server_tracks.clear();
+            self.server_current_folder = None;
+            if let Some(next_id) = self.active_server_id.clone() {
+                self.load_server_browse(next_id, None, None);
+            }
+        }
+        let profiles = self.server_profiles.clone();
+        let paths = self.paths.clone();
+        tokio::spawn(async move {
+            let _ =
+                tokio::task::spawn_blocking(move || save_server_profiles(&paths, &profiles)).await;
+        });
+        self.status_line = "Removed server profile".to_string();
+    }
+
+    pub(super) fn load_server_browse(
+        &mut self,
+        server_id: String,
+        library_id: Option<String>,
+        folder_path: Option<String>,
+    ) {
+        let Some(profile) = self
+            .server_profiles
+            .iter()
+            .find(|p| p.id == server_id)
+            .cloned()
+        else {
+            return;
+        };
+        self.server_req_id = self.server_req_id.wrapping_add(1);
+        let req_id = self.server_req_id;
+        self.active_server_id = Some(server_id.clone());
+        self.server_loading = true;
+        let client = self.server_client.clone();
+        let http = self.http.clone();
+        let int_tx = self.int_tx.clone();
+        tokio::spawn(async move {
+            if profile.kind == ServerKind::WebDav {
+                let raw_folder = folder_path.as_deref().map(|raw| {
+                    parse_server_item_id(raw)
+                        .map(|r| r.item_id)
+                        .unwrap_or_else(|| raw.to_string())
+                });
+                match webdav::browse_folder(&http, &profile, raw_folder.as_deref()).await {
+                    Ok(listing) => {
+                        let libs = listing
+                            .folders
+                            .into_iter()
+                            .map(|f| sonata_core::providers::servers::ServerLibrary {
+                                id: sonata_core::providers::servers::encode_server_item_id(
+                                    ServerKind::WebDav,
+                                    &profile.id,
+                                    &f.path,
+                                ),
+                                name: f.name,
+                                kind: "folder".to_string(),
+                            })
+                            .collect();
+                        let _ = int_tx.send(InternalEvent::ServerBrowseLoaded {
+                            req_id,
+                            server_id,
+                            folder_path: raw_folder,
+                            libraries: libs,
+                            artists: Vec::new(),
+                            albums: Vec::new(),
+                            playlists: Vec::new(),
+                            tracks: listing.tracks,
+                            error: None,
+                        });
+                    }
+                    Err(err) => {
+                        let _ = int_tx.send(InternalEvent::ServerBrowseLoaded {
+                            req_id,
+                            server_id,
+                            folder_path,
+                            libraries: Vec::new(),
+                            artists: Vec::new(),
+                            albums: Vec::new(),
+                            playlists: Vec::new(),
+                            tracks: Vec::new(),
+                            error: Some(err.to_string()),
+                        });
+                    }
+                }
+                return;
+            }
+
+            let lib_arg = library_id.as_deref();
+            let (libs_res, artists_res, albums_res, playlists_res) = tokio::join!(
+                client.list_libraries(&profile),
+                client.list_artists(&profile, lib_arg),
+                client.list_albums(&profile, lib_arg, None),
+                client.list_playlists(&profile),
+            );
+            let error = libs_res
+                .as_ref()
+                .err()
+                .or(albums_res.as_ref().err())
+                .or(playlists_res.as_ref().err())
+                .map(|e| e.to_string());
+            let _ = int_tx.send(InternalEvent::ServerBrowseLoaded {
+                req_id,
+                server_id,
+                folder_path: None,
+                libraries: libs_res.unwrap_or_default(),
+                artists: artists_res.unwrap_or_default(),
+                albums: albums_res.unwrap_or_default(),
+                playlists: playlists_res.unwrap_or_default(),
+                tracks: Vec::new(),
+                error,
+            });
+        });
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_server_profile(
+    existing_id: Option<&str>,
+    name: &str,
+    kind: ServerKind,
+    base_url: &str,
+    username: Option<String>,
+    password: Option<String>,
+    api_key: Option<String>,
+    bearer_token: Option<String>,
+) -> ServerProfile {
+    let clean_name = if name.trim().is_empty() {
+        kind.display_name().to_string()
+    } else {
+        name.trim().to_string()
+    };
+    let id = existing_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            let slug: String = clean_name
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .map(|c| c.to_ascii_lowercase())
+                .take(12)
+                .collect();
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() % 100_000)
+                .unwrap_or(0);
+            format!("{}-{slug}-{nanos}", kind.short_tag().to_ascii_lowercase())
+        });
+    let opt = |v: Option<String>| {
+        v.and_then(|s| {
+            let t = s.trim().to_string();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
+        })
+    };
+    let mut profile = ServerProfile::new(id, clean_name, kind, base_url.trim());
+    profile.username = opt(username);
+    profile.password = opt(password);
+    profile.api_key = opt(api_key);
+    profile.bearer_token = opt(bearer_token);
+    profile
+}
+
+async fn prepare_and_ping_server(
+    http: &reqwest::Client,
+    profile: &mut ServerProfile,
+) -> Result<String, String> {
+    if profile.normalized_base_url().is_empty() {
+        return Err("Server URL is required".to_string());
+    }
+    if profile.kind == ServerKind::Jellyfin
+        && profile
+            .api_key
+            .as_deref()
+            .is_none_or(|s| s.trim().is_empty())
+        && profile
+            .access_token
+            .as_deref()
+            .is_none_or(|s| s.trim().is_empty())
+    {
+        let user = profile.username.as_deref().unwrap_or("").trim();
+        let pass = profile.password.as_deref().unwrap_or("");
+        if !user.is_empty() {
+            let auth = jellyfin::authenticate_by_name(
+                http,
+                &profile.normalized_base_url(),
+                user,
+                pass,
+                &profile.id,
+            )
+            .await
+            .map_err(|err| err.to_string())?;
+            profile.access_token = Some(auth.access_token);
+            profile.user_id = Some(auth.user_id);
+        }
+    }
+    let client = ServerClient::new(http.clone());
+    client.ping(profile).await.map_err(|err| err.to_string())
+}
+
+fn infer_container(url: &str, content_type: Option<&str>, badge: &str) -> String {
+    if let Some(ct) = content_type {
+        let lower = ct.to_ascii_lowercase();
+        if lower.contains("flac") {
+            return "flac".to_string();
+        }
+        if lower.contains("opus") || lower.contains("ogg") {
+            return "opus".to_string();
+        }
+        if lower.contains("webm") {
+            return "webm".to_string();
+        }
+        if lower.contains("mpeg") || lower.contains("mp3") {
+            return "mp3".to_string();
+        }
+        if lower.contains("mp4") || lower.contains("aac") || lower.contains("m4a") {
+            return "m4a".to_string();
+        }
+        if lower.contains("wav") {
+            return "wav".to_string();
+        }
+    }
+    let path_part = url.split('?').next().unwrap_or(url);
+    if let Some(ext) = path_part.rsplit('.').next() {
+        let lower = ext.to_ascii_lowercase();
+        if matches!(
+            lower.as_str(),
+            "flac" | "opus" | "ogg" | "webm" | "m4a" | "mp3" | "aac" | "wav"
+        ) {
+            return lower;
+        }
+    }
+    let badge_lower = badge.to_ascii_lowercase();
+    if badge_lower.contains("flac") {
+        "flac".to_string()
+    } else if badge_lower.contains("opus") {
+        "opus".to_string()
+    } else if badge_lower.contains("mp3") {
+        "mp3".to_string()
+    } else {
+        "m4a".to_string()
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn download_one_track_into_store(
+    store: &DownloadStore,
+    resolver: &LinuxStreamResolver,
+    http: &reqwest::Client,
+    cache_db: Option<&sonata_core::cache::CacheDb>,
+    track: &Track,
+    collection: Option<DownloadCollectionRef>,
+    hifi: bool,
+    limit_bytes: Option<u64>,
+) -> anyhow::Result<()> {
+    if store.get_track_async(track.id.clone()).await?.is_some() {
+        if let Some(col) = collection {
+            store
+                .attach_track_to_collection_async(track.id.clone(), col)
+                .await?;
+        }
+        return Ok(());
+    }
+
+    let mut resolved = resolver.resolve_fast(track).await?;
+    if !track.is_self_hosted() && hifi {
+        if let Some(upgraded) = resolver.resolve_hifi_upgrade(track, &resolved, true).await {
+            resolved = upgraded;
+        }
+    }
+
+    let artwork_url = match track
+        .thumbnail_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| !u.is_empty())
+    {
+        Some(url) => Some(media::upscale_artwork_url(url)),
+        None => media::resolve_track_cover(http, cache_db, track)
+            .await
+            .map(|(url, _)| url),
+    };
+
+    let artwork_bytes = if let Some(ref art_url) = artwork_url {
+        let mut req = http.get(art_url);
+        for (k, v) in &resolved.headers {
+            if let (Ok(name), Ok(val)) = (
+                HeaderName::from_bytes(k.as_bytes()),
+                HeaderValue::from_str(v),
+            ) {
+                req = req.header(name, val);
+            }
+        }
+        match req.send().await {
+            Ok(resp) if resp.status().is_success() => resp.bytes().await.ok().map(|b| b.to_vec()),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    let badge = if resolved.badge.trim().is_empty() {
+        track
+            .audio_badge
+            .clone()
+            .unwrap_or_else(|| "Audio".to_string())
+    } else {
+        resolved.badge.clone()
+    };
+    let bitrate_kbps = extract_badge_kbps(&badge);
+
+    if resolved.url.starts_with("http://") || resolved.url.starts_with("https://") {
+        let mut header_map = HeaderMap::new();
+        for (k, v) in &resolved.headers {
+            if let (Ok(name), Ok(val)) = (
+                HeaderName::from_bytes(k.as_bytes()),
+                HeaderValue::from_str(v),
+            ) {
+                header_map.insert(name, val);
+            }
+        }
+        let resp = http
+            .get(&resolved.url)
+            .headers(header_map)
+            .timeout(std::time::Duration::from_secs(180))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("HTTP {}", resp.status().as_u16());
+        }
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let container = infer_container(&resolved.url, content_type.as_deref(), &badge);
+        let audio_bytes = resp.bytes().await?.to_vec();
+        let input = DownloadTrackInput {
+            track: track.clone(),
+            audio_badge: badge,
+            bitrate_kbps,
+            container,
+            artwork_url,
+            collection,
+        };
+        store
+            .save_track_bytes_async(input, audio_bytes, artwork_bytes)
+            .await?;
+    } else {
+        let source_path = PathBuf::from(&resolved.url);
+        let container = infer_container(&resolved.url, None, &badge);
+        let input = DownloadTrackInput {
+            track: track.clone(),
+            audio_badge: badge,
+            bitrate_kbps,
+            container,
+            artwork_url,
+            collection,
+        };
+        store
+            .save_track_from_file_async(input, source_path, artwork_bytes)
+            .await?;
+    }
+
+    if let Some(limit) = limit_bytes {
+        let _ = store.prune_to_limit_async(limit).await;
+    }
+    Ok(())
 }

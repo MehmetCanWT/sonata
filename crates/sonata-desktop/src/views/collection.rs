@@ -256,6 +256,50 @@ impl SonataDesktopView {
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.toggle_pin_collection(pin_item.clone(), cx);
                                     }))
+                            })
+                            .when(!tracks.is_empty(), |row| {
+                                let s = sonata_runtime::i18n::strings(self.settings.language);
+                                let alb_id = alb.id.clone();
+                                let alb_title = alb.title.clone();
+                                let alb_cover = alb.cover_url.clone();
+                                let tracks_dl = tracks.clone();
+                                let all_dl = tracks_dl
+                                    .iter()
+                                    .all(|t| self.snapshot.is_track_downloaded(&t.id));
+                                let is_col_dl =
+                                    all_dl || self.snapshot.is_collection_downloaded(&alb_id);
+                                row.child(
+                                    Button::new("alb-dl")
+                                        .secondary()
+                                        .icon(if is_col_dl {
+                                            IconName::Trash
+                                        } else {
+                                            IconName::Download
+                                        })
+                                        .label(if is_col_dl {
+                                            s.remove_download
+                                        } else {
+                                            s.download
+                                        })
+                                        .on_click(cx.listener(move |this, _, _, _| {
+                                            if is_col_dl {
+                                                this.backend.send(
+                                                    BackendCmd::RemoveDownloadedCollection(
+                                                        alb_id.clone(),
+                                                    ),
+                                                );
+                                            } else {
+                                                this.backend.send(BackendCmd::DownloadCollection {
+                                                    collection_id: alb_id.clone(),
+                                                    title: alb_title.clone(),
+                                                    source:
+                                                        sonata_core::providers::ProviderSource::YouTubeMusic,
+                                                    artwork_url: alb_cover.clone(),
+                                                    tracks: tracks_dl.clone(),
+                                                });
+                                            }
+                                        })),
+                                )
                             }),
                     ),
             );
@@ -582,6 +626,65 @@ impl SonataDesktopView {
                                         .tooltip(if is_pinned { s.unpin } else { s.pin })
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.toggle_pin_collection(pin_item.clone(), cx);
+                                        })),
+                                )
+                            })
+                            .when(self.snapshot.playlist_id.as_deref() != Some("SONATA:DOWNLOADS") && !tracks.is_empty(), |row| {
+                                let s = sonata_runtime::i18n::strings(self.settings.language);
+                                let pid = self.snapshot.playlist_id.clone().unwrap_or_default();
+                                let ptitle = self.snapshot.playlist_heading.clone();
+                                let pcover = self.snapshot.playlist_cover_url.clone();
+                                let tracks_dl = tracks.clone();
+                                let all_dl = tracks_dl
+                                    .iter()
+                                    .all(|t| self.snapshot.is_track_downloaded(&t.id));
+                                let is_col_dl =
+                                    all_dl || self.snapshot.is_collection_downloaded(&pid);
+                                row.child(
+                                    Button::new("pl-dl")
+                                        .secondary()
+                                        .icon(if is_col_dl {
+                                            IconName::Trash
+                                        } else {
+                                            IconName::Download
+                                        })
+                                        .label(if is_col_dl {
+                                            s.remove_download
+                                        } else {
+                                            s.download
+                                        })
+                                        .on_click(cx.listener(move |this, _, _, _| {
+                                            if pid.is_empty() {
+                                                return;
+                                            }
+                                            if is_col_dl {
+                                                this.backend.send(
+                                                    BackendCmd::RemoveDownloadedCollection(
+                                                        pid.clone(),
+                                                    ),
+                                                );
+                                            } else {
+                                                this.backend.send(BackendCmd::DownloadCollection {
+                                                    collection_id: pid.clone(),
+                                                    title: ptitle.clone(),
+                                                    source:
+                                                        sonata_core::providers::ProviderSource::YouTubeMusic,
+                                                    artwork_url: pcover.clone(),
+                                                    tracks: tracks_dl.clone(),
+                                                });
+                                            }
+                                        })),
+                                )
+                            })
+                            .when(self.snapshot.playlist_id.as_deref() == Some("SONATA:DOWNLOADS") && !tracks.is_empty(), |row| {
+                                let s = sonata_runtime::i18n::strings(self.settings.language);
+                                row.child(
+                                    Button::new("pl-dl-clear")
+                                        .secondary()
+                                        .icon(IconName::Trash)
+                                        .label(s.clear_downloads)
+                                        .on_click(cx.listener(|this, _, _, _| {
+                                            this.backend.send(BackendCmd::ClearAllDownloads);
                                         })),
                                 )
                             })

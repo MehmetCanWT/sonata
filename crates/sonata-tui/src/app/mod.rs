@@ -130,6 +130,25 @@ pub struct App {
     pub config_dirty: bool,
     pub last_exported_state: Option<ExportFingerprint>,
     pub fx: UiEffects,
+    pub download_store: Option<sonata_runtime::downloads::DownloadStore>,
+    pub downloaded_tracks: Vec<sonata_runtime::downloads::DownloadedTrack>,
+    pub downloaded_collections: Vec<sonata_runtime::downloads::DownloadedCollection>,
+    pub downloaded_track_ids: std::collections::HashSet<String>,
+    pub downloading_track_ids: std::collections::HashSet<String>,
+    pub downloads_total_bytes: u64,
+    pub discord_rpc: sonata_runtime::discord::DiscordRpcHandle,
+    pub playback_speed: f64,
+    pub server_client: sonata_core::providers::servers::ServerClient,
+    pub server_profiles: Vec<sonata_core::providers::servers::ServerProfile>,
+    pub server_statuses: std::collections::HashMap<String, String>,
+    pub server_libraries: Vec<sonata_core::providers::servers::ServerLibrary>,
+    pub server_artists: Vec<sonata_core::providers::ytmusic::HomeCard>,
+    pub server_albums: Vec<sonata_core::providers::ytmusic::HomeCard>,
+    pub server_playlists: Vec<Playlist>,
+    pub server_tracks: Vec<Track>,
+    pub server_folders: Vec<String>,
+    pub server_loading: bool,
+    pub server_error: Option<String>,
 }
 
 impl App {
@@ -161,6 +180,13 @@ impl App {
         let cache_limit_bytes = Arc::new(AtomicU64::new(config.cache_limit_bytes()));
         let cookies = ExtractedCookies::default();
         let cache_db = CacheDb::open_with_paths(&paths, config.cache_limit_gb > 0);
+        let download_store =
+            sonata_runtime::downloads::DownloadStore::open(config.effective_downloads_dir()).ok();
+        let discord_rpc =
+            sonata_runtime::discord::DiscordRpcHandle::spawn(Self::discord_config_from(&config));
+        let server_client = sonata_core::providers::servers::ServerClient::new(http.clone());
+        let server_profiles =
+            sonata_core::providers::servers::load_server_profiles(&paths).unwrap_or_default();
         let ytm =
             YtMusicClient::new(http.clone(), cookies.clone()).with_language(config.language.code());
         let spotify = SpotifyClient::with_paths(http.clone(), None, paths.clone());
@@ -172,6 +198,9 @@ impl App {
             paths.clone(),
             linux_resolver_profile(&config),
         );
+        if let Some(ref store) = download_store {
+            resolver.set_downloads_store(Some(store.clone()));
+        }
         let mut playback = PlaybackState::new(config.volume);
         playback.shuffle = config.shuffle;
         playback.repeat = config.repeat_mode;
@@ -284,8 +313,28 @@ impl App {
             cover_started_play_seq: None,
             config_dirty: false,
             last_exported_state: None,
+            download_store,
+            downloaded_tracks: Vec::new(),
+            downloaded_collections: Vec::new(),
+            downloaded_track_ids: std::collections::HashSet::new(),
+            downloading_track_ids: std::collections::HashSet::new(),
+            downloads_total_bytes: 0,
+            discord_rpc,
+            playback_speed: 1.0,
+            server_client,
+            server_profiles,
+            server_statuses: std::collections::HashMap::new(),
+            server_libraries: Vec::new(),
+            server_artists: Vec::new(),
+            server_albums: Vec::new(),
+            server_playlists: Vec::new(),
+            server_tracks: Vec::new(),
+            server_folders: Vec::new(),
+            server_loading: false,
+            server_error: None,
         };
         app.rebuild_sidebar();
+        app.refresh_downloads();
         app.sync_appearance();
         (app, session_rx)
     }
@@ -392,7 +441,7 @@ impl App {
                     self.cookies.spotify_sp_dc.clone(),
                     self.paths.clone(),
                 );
-                self.resolver = LinuxStreamResolver::with_profile(
+                let resolver = LinuxStreamResolver::with_profile(
                     self.http.clone(),
                     self.ytm.clone(),
                     self.cookies.clone(),
@@ -400,6 +449,10 @@ impl App {
                     self.paths.clone(),
                     linux_resolver_profile(&self.config),
                 );
+                if let Some(ref store) = self.download_store {
+                    resolver.set_downloads_store(Some(store.clone()));
+                }
+                self.resolver = resolver;
                 self.enqueue_session_cmd(SessionCommand::UpdateStreamSource(Arc::new(
                     self.resolver.clone(),
                 )
@@ -523,6 +576,7 @@ impl App {
                     track_id: track_id.clone(),
                     url,
                 });
+                self.sync_discord_rpc();
                 if self
                     .playback
                     .current_track()
@@ -615,6 +669,111 @@ impl App {
             }
             AppEvent::StatusMessage(msg) => {
                 self.status_line = msg;
+            }
+            AppEvent::DownloadsLoaded {
+                tracks,
+                collections,
+                total_bytes,
+            } => {
+                self.downloaded_track_ids = tracks.iter().map(|t| t.track_id.clone()).collect();
+                self.downloaded_tracks = tracks;
+                self.downloaded_collections = collections;
+                self.downloads_total_bytes = total_bytes;
+                if matches!(
+                    self.sidebar_items.get(self.sidebar_idx),
+                    Some(SidebarEntry::Downloads)
+                ) && self.tracks_heading.starts_with("Downloads")
+                {
+                    self.visible_tracks = self
+                        .downloaded_tracks
+                        .iter()
+                        .map(|d| d.to_track())
+                        .collect();
+                }
+                self.rebuild_sidebar();
+            }
+            AppEvent::TrackDownloadFinished {
+                track_id,
+                title,
+                result,
+            } => {
+                self.downloading_track_ids.remove(&track_id);
+                match result {
+                    Ok(()) => {
+                        self.status_line = format!("Downloaded \"{title}\" for offline playback");
+                        self.refresh_downloads();
+                    }
+                    Err(err) => {
+                        self.status_line = format!("Download failed for \"{title}\": {err}");
+                    }
+                }
+            }
+            AppEvent::CollectionDownloadFinished {
+                title,
+                saved,
+                errors,
+            } => {
+                self.downloading_track_ids.clear();
+                self.status_line = if errors == 0 {
+                    format!("Downloaded {saved} tracks from \"{title}\"")
+                } else {
+                    format!("Downloaded {saved} tracks from \"{title}\" ({errors} failed)")
+                };
+                self.refresh_downloads();
+            }
+            AppEvent::ServerTested { server_id, result } => {
+                match result {
+                    Ok(summary) => {
+                        self.server_statuses.insert(server_id, summary.clone());
+                        self.status_line = format!("Server connected: {summary}");
+                    }
+                    Err(err) => {
+                        self.server_statuses
+                            .insert(server_id, format!("Error: {err}"));
+                        self.status_line = format!("Server connection failed: {err}");
+                    }
+                }
+                if let ActiveModal::AddServer(ref mut form) = self.modal {
+                    form.status = Some(self.status_line.clone());
+                }
+            }
+            AppEvent::ServerSaved { profiles, message } => {
+                self.server_profiles = profiles;
+                self.rebuild_sidebar();
+                self.status_line = message;
+            }
+            AppEvent::ServerBrowseLoaded {
+                server_id,
+                folder_path,
+                libraries,
+                artists,
+                albums,
+                playlists,
+                tracks,
+                folders,
+                error,
+            } => {
+                if let ActiveModal::ServerBrowser(ref mut st) = self.modal {
+                    if st.server_id != server_id {
+                        return;
+                    }
+                    st.folder_path = folder_path;
+                    st.selected = 0;
+                }
+                self.server_loading = false;
+                self.server_error = error.clone();
+                self.server_libraries = libraries;
+                self.server_artists = artists;
+                self.server_albums = albums;
+                self.server_playlists = playlists;
+                self.server_tracks = tracks.clone();
+                self.server_folders = folders;
+                if let Some(err) = error {
+                    self.status_line = format!("Server error: {err}");
+                } else if !tracks.is_empty() {
+                    self.visible_tracks = tracks;
+                    self.track_table_state.select(Some(0));
+                }
             }
         }
     }
@@ -724,5 +883,6 @@ impl App {
         if !report.tasks_joined_cleanly {
             tracing::warn!("playback session tasks exceeded shutdown timeout and were aborted");
         }
+        self.discord_rpc.shutdown().await;
     }
 }
