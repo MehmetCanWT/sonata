@@ -119,6 +119,7 @@ data class LocalMusicLibrary(
     val tracks: List<LocalAudioTrack> = emptyList(),
     val albums: List<LocalAlbumGroup> = emptyList(),
     val folders: List<LocalFolderGroup> = emptyList(),
+    val availableFolders: List<String> = emptyList(),
     val permissionGranted: Boolean = true,
 )
 
@@ -129,7 +130,132 @@ object LocalMusicScanner {
     const val LOCAL_ID_PREFIX = "local:"
     const val ALBUM_ART_URI_PREFIX = "content://media/external/audio/albumart/"
     const val DEFAULT_MIN_DURATION_MS = 1_000L
+    const val DEFAULT_FILTERED_MIN_DURATION_MS = 30_000L
     const val DEFAULT_FOLDER_NAME = "Music"
+
+    private val EXCLUDED_SEGMENT_NAMES = setOf(
+        "whatsapp",
+        "whatsapp audio",
+        "whatsapp voice notes",
+        "telegram",
+        "telegram audio",
+        "recordings",
+        "voice recorder",
+        "sound_recorder",
+        "soundrecorder",
+        "call",
+        "call recordings",
+        "callrecordings",
+        "record",
+        "voice",
+        "voicemail",
+        "notifications",
+        "ringtones",
+        "alarms",
+        "ui",
+        "podcasts",
+        "audiobooks",
+        "messenger",
+        "viber",
+        "signal",
+        "wechat",
+        "snapchat",
+        "instagram",
+        "tiktok",
+        "dcim",
+        "movies",
+        "screenrecords",
+        "screenrecordings",
+        "samsung",
+    )
+
+    private val EXCLUDED_TITLE_REGEXES = listOf(
+        Regex("""^aud-\d{6,8}-wa\d+"""),
+        Regex("""^ptt-\d{6,8}-wa\d+"""),
+        Regex("""^voice[\s_-]?\d+"""),
+        Regex("""^recording[\s_-]?\d+"""),
+        Regex("""^call[\s_-]?\d+"""),
+        Regex("""^rec[\s_-]?\d+"""),
+    )
+
+    /** Normalizes a relative folder path using forward slashes without leading/trailing slashes. */
+    fun normalizeFolderPath(raw: String): String = raw.trim()
+        .replace('\\', '/')
+        .replace(Regex("/+"), "/")
+        .trim('/')
+
+    /**
+     * Extracts a MediaStore-compatible relative folder path from a Storage Access Framework
+     * tree document ID (e.g. `"primary:Music/FLAC"` -> `"Music/FLAC"`), or `null` for root/blank.
+     */
+    fun folderPathFromTreeDocumentId(documentId: String?): String? {
+        val raw = documentId?.trim().orEmpty()
+        if (raw.isEmpty()) return null
+        val afterVolume = if (':' in raw) raw.substringAfter(':') else raw
+        return normalizeFolderPath(afterVolume).takeIf { it.isNotEmpty() }
+    }
+
+    /**
+     * Returns `true` when an audio entry appears to be a voice note, call recording, notification/ringtone,
+     * app cache audio, or short sound clip rather than music.
+     */
+    fun isExcludedNonMusicAudio(
+        title: String,
+        relativePath: String,
+        folderName: String,
+        durationMs: Long,
+        minDurationMs: Long = DEFAULT_FILTERED_MIN_DURATION_MS,
+    ): Boolean {
+        if (minDurationMs > 0L && durationMs in 1L until minDurationMs) {
+            return true
+        }
+        val normalizedPath = normalizeFolderPath(relativePath).lowercase(Locale.ROOT)
+        if (normalizedPath == "android/media" ||
+            normalizedPath.startsWith("android/media/") ||
+            normalizedPath == "android/data" ||
+            normalizedPath.startsWith("android/data/")
+        ) {
+            return true
+        }
+        val pathSegments = buildList {
+            if (normalizedPath.isNotEmpty()) {
+                addAll(normalizedPath.split('/').filter { it.isNotBlank() })
+            }
+            val normFolder = normalizeFolderPath(folderName).lowercase(Locale.ROOT)
+            if (normFolder.isNotEmpty()) {
+                addAll(normFolder.split('/').filter { it.isNotBlank() })
+            }
+        }
+        if (pathSegments.any { it in EXCLUDED_SEGMENT_NAMES }) {
+            return true
+        }
+        val normalizedTitle = title.trim().lowercase(Locale.ROOT)
+        if (normalizedTitle == "over the horizon") {
+            return true
+        }
+        return EXCLUDED_TITLE_REGEXES.any { it.containsMatchIn(normalizedTitle) }
+    }
+
+    /**
+     * Returns `true` when [selectedFolders] is empty (all music folders included) or when
+     * the track's folder matches any selected folder or subfolder prefix (case-insensitive).
+     */
+    fun matchesSelectedFolders(
+        relativePath: String,
+        folderName: String,
+        selectedFolders: Set<String>,
+    ): Boolean {
+        val normalizedTargets = selectedFolders
+            .map { normalizeFolderPath(it).lowercase(Locale.ROOT) }
+            .filter { it.isNotEmpty() }
+        if (normalizedTargets.isEmpty()) return true
+        val candidate = normalizeFolderPath(relativePath).lowercase(Locale.ROOT)
+            .ifEmpty { normalizeFolderPath(folderName).lowercase(Locale.ROOT) }
+        if (candidate.isEmpty()) return false
+        return normalizedTargets.any { target ->
+            candidate == target || candidate.startsWith("$target/")
+        }
+    }
 
     /**
      * Returns the runtime storage/audio permission required for the given Android [sdkInt].
@@ -242,12 +368,24 @@ object LocalMusicScanner {
     fun groupLocalMusicLibrary(
         tracks: List<LocalAudioTrack>,
         permissionGranted: Boolean = true,
-    ): LocalMusicLibrary = LocalMusicLibrary(
-        tracks = tracks,
-        albums = groupLocalAlbums(tracks),
-        folders = groupLocalFolders(tracks),
-        permissionGranted = permissionGranted,
-    )
+        availableFolders: List<String> = emptyList(),
+    ): LocalMusicLibrary {
+        val groupedFolders = groupLocalFolders(tracks)
+        val discoveredFolders = if (availableFolders.isNotEmpty()) {
+            availableFolders
+        } else {
+            groupedFolders.map { folder ->
+                normalizeFolderPath(folder.relativePath).ifEmpty { normalizeFolderPath(folder.folderName) }
+            }.filter { it.isNotEmpty() }.distinctBy { it.lowercase(Locale.ROOT) }.sortedBy { it.lowercase(Locale.ROOT) }
+        }
+        return LocalMusicLibrary(
+            tracks = tracks,
+            albums = groupLocalAlbums(tracks),
+            folders = groupedFolders,
+            availableFolders = discoveredFolders,
+            permissionGranted = permissionGranted,
+        )
+    }
 
     /**
      * Queries [MediaStore.Audio.Media.EXTERNAL_CONTENT_URI] on the calling thread and returns
@@ -257,12 +395,20 @@ object LocalMusicScanner {
     fun scan(
         context: Context,
         minDurationMs: Long = DEFAULT_MIN_DURATION_MS,
+        excludeNonMusicAudio: Boolean = true,
+        selectedFolders: Set<String> = emptySet(),
     ): LocalMusicLibrary {
         if (!hasAudioReadPermission(context)) {
             return LocalMusicLibrary(permissionGranted = false)
         }
         val resolver = runCatching { context.contentResolver }.getOrNull()
             ?: return LocalMusicLibrary(permissionGranted = false)
+
+        val effectiveMinDurationMs = if (excludeNonMusicAudio) {
+            minDurationMs.coerceAtLeast(DEFAULT_FILTERED_MIN_DURATION_MS)
+        } else {
+            minDurationMs.coerceAtLeast(DEFAULT_MIN_DURATION_MS)
+        }
 
         val projection = arrayOf(
             MediaStore.Audio.Media._ID,
@@ -280,10 +426,11 @@ object LocalMusicScanner {
             MediaStore.Audio.Media.DATE_MODIFIED,
         )
         val selection = "${MediaStore.Audio.Media.IS_MUSIC} != 0 AND ${MediaStore.Audio.Media.DURATION} >= ?"
-        val selectionArgs = arrayOf(minDurationMs.coerceAtLeast(0L).toString())
+        val selectionArgs = arrayOf(DEFAULT_MIN_DURATION_MS.toString())
         val sortOrder = "${MediaStore.Audio.Media.TITLE} COLLATE NOCASE ASC"
 
         val scanned = ArrayList<LocalAudioTrack>()
+        val discoveredFoldersMap = LinkedHashMap<String, String>()
         val queryResult = runCatching {
             resolver.query(
                 MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
@@ -310,7 +457,8 @@ object LocalMusicScanner {
                 while (cursor.moveToNext()) {
                     val mediaId = cursor.getLong(idCol)
                     if (mediaId <= 0L) continue
-                    val title = if (titleCol >= 0) cursor.getString(titleCol).orEmpty().trim() else ""
+                    val rawTitle = if (titleCol >= 0) cursor.getString(titleCol).orEmpty().trim() else ""
+                    val title = rawTitle.ifEmpty { "Track $mediaId" }
                     val rawArtist = if (artistCol >= 0) cursor.getString(artistCol).orEmpty().trim() else ""
                     val artist = if (rawArtist.isEmpty() || rawArtist == "<unknown>") "Unknown Artist" else rawArtist
                     val rawAlbum = if (albumCol >= 0) cursor.getString(albumCol).orEmpty().trim() else ""
@@ -321,9 +469,37 @@ object LocalMusicScanner {
                     val reportedBitrateBps = if (bitrateCol >= 0) cursor.getInt(bitrateCol) else 0
                     val relativePath = if (relPathCol >= 0) cursor.getString(relPathCol).orEmpty().trim() else ""
                     val bucketDisplayName = if (bucketCol >= 0) cursor.getString(bucketCol) else null
+                    val folderName = extractFolderName(bucketDisplayName, relativePath)
                     val mimeType = if (mimeCol >= 0) cursor.getString(mimeCol).orEmpty().trim() else ""
                     val trackNum = if (trackCol >= 0) (cursor.getInt(trackCol) % 1000).coerceAtLeast(0) else 0
                     val dateModifiedSecs = if (dateCol >= 0) cursor.getLong(dateCol).coerceAtLeast(0L) else 0L
+
+                    if (excludeNonMusicAudio &&
+                        isExcludedNonMusicAudio(
+                            title = title,
+                            relativePath = relativePath,
+                            folderName = folderName,
+                            durationMs = durationMs,
+                            minDurationMs = effectiveMinDurationMs,
+                        )
+                    ) {
+                        continue
+                    }
+
+                    val normalizedFolder = normalizeFolderPath(relativePath)
+                        .ifEmpty { normalizeFolderPath(folderName) }
+                    if (normalizedFolder.isNotEmpty()) {
+                        discoveredFoldersMap.putIfAbsent(normalizedFolder.lowercase(Locale.ROOT), normalizedFolder)
+                    }
+
+                    if (!matchesSelectedFolders(
+                            relativePath = relativePath,
+                            folderName = folderName,
+                            selectedFolders = selectedFolders,
+                        )
+                    ) {
+                        continue
+                    }
 
                     val contentUri = ContentUris.withAppendedId(
                         MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
@@ -334,7 +510,7 @@ object LocalMusicScanner {
                         LocalAudioTrack(
                             mediaId = mediaId,
                             id = buildLocalTrackId(mediaId),
-                            title = title.ifEmpty { "Track $mediaId" },
+                            title = title,
                             artist = artist,
                             album = album,
                             albumId = albumId,
@@ -347,7 +523,7 @@ object LocalMusicScanner {
                                 fileSizeBytes = fileSizeBytes,
                                 durationMs = durationMs,
                             ),
-                            folderName = extractFolderName(bucketDisplayName, relativePath),
+                            folderName = folderName,
                             relativePath = relativePath,
                             mimeType = mimeType,
                             trackNumber = trackNum,
@@ -362,14 +538,26 @@ object LocalMusicScanner {
             val isSecurity = queryResult.exceptionOrNull() is SecurityException
             return LocalMusicLibrary(permissionGranted = !isSecurity)
         }
-        return groupLocalMusicLibrary(scanned, permissionGranted = true)
+        val availableFolders = discoveredFoldersMap.values.sortedBy { it.lowercase(Locale.ROOT) }
+        return groupLocalMusicLibrary(
+            tracks = scanned,
+            permissionGranted = true,
+            availableFolders = availableFolders,
+        )
     }
 
     /** Offloads [scan] onto [Dispatchers.IO]. */
     suspend fun scanAsync(
         context: Context,
         minDurationMs: Long = DEFAULT_MIN_DURATION_MS,
+        excludeNonMusicAudio: Boolean = true,
+        selectedFolders: Set<String> = emptySet(),
     ): LocalMusicLibrary = withContext(Dispatchers.IO) {
-        scan(context = context, minDurationMs = minDurationMs)
+        scan(
+            context = context,
+            minDurationMs = minDurationMs,
+            excludeNonMusicAudio = excludeNonMusicAudio,
+            selectedFolders = selectedFolders,
+        )
     }
 }

@@ -294,6 +294,7 @@ pub enum MpvEvent {
     AudioBitrate(Option<u64>),
     AudioCodec(Option<String>),
     AudioParams(Option<MpvAudioParams>),
+    FileSize(Option<u64>),
 }
 
 #[derive(Debug, Clone)]
@@ -477,6 +478,7 @@ impl MpvController {
             (4, "audio-bitrate"),
             (5, "audio-codec-name"),
             (6, "audio-params"),
+            (7, "file-size"),
         ] {
             let _ = cmd_tx.send(json!(["observe_property", id, prop]));
         }
@@ -487,6 +489,7 @@ impl MpvController {
             let mut last_bitrate_kbps: Option<Option<u32>> = None;
             let mut last_codec: Option<Option<String>> = None;
             let mut last_params: Option<Option<MpvAudioParams>> = None;
+            let mut last_file_size: Option<Option<u64>> = None;
             while let Ok(Some(line)) = lines.next_line().await {
                 if runtime_reader
                     .lock()
@@ -565,6 +568,21 @@ impl MpvController {
                                 if last_params.as_ref() != Some(&params) {
                                     last_params = Some(params.clone());
                                     let _ = event_tx.send(MpvEvent::AudioParams(params)).await;
+                                }
+                            }
+                            "file-size" => {
+                                let bytes = data
+                                    .and_then(|d| {
+                                        d.as_u64().or_else(|| {
+                                            d.as_f64()
+                                                .filter(|f| f.is_finite() && *f > 0.0)
+                                                .map(|f| f.round() as u64)
+                                        })
+                                    })
+                                    .filter(|&v| v > 0);
+                                if last_file_size != Some(bytes) {
+                                    last_file_size = Some(bytes);
+                                    let _ = event_tx.send(MpvEvent::FileSize(bytes)).await;
                                 }
                             }
                             _ => {}
@@ -877,6 +895,21 @@ mod tests {
         assert_eq!(
             compute_bitrate_kbps_from_bytes(16_200_000, 180.0),
             Some(720)
+        );
+        // 22,345,757 bytes over 201.28 seconds = 888 kbps lossless FLAC
+        assert_eq!(
+            compute_bitrate_kbps_from_bytes(22_345_757, 201.28),
+            Some(888)
+        );
+        assert_eq!(
+            format_measured_audio_badge(
+                Some("flac"),
+                compute_bitrate_kbps_from_bytes(22_345_757, 201.28),
+                Some(16),
+                Some(44100),
+                None,
+            ),
+            Some("FLAC · 888 kbps · 16-bit/44.1kHz".to_string())
         );
         assert_eq!(compute_bitrate_kbps_from_bytes(0, 180.0), None);
         assert_eq!(compute_bitrate_kbps_from_bytes(1024, 0.0), None);

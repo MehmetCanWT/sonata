@@ -1798,6 +1798,15 @@ impl SessionActor {
                 }
                 self.refresh_measured_audio_quality().await;
             }
+            MpvEvent::FileSize(bytes) => {
+                if self.playback.loading_track || self.playback.current_track().is_none() {
+                    return;
+                }
+                if self.audio_quality.local_file_bytes.is_none() && bytes.is_some() {
+                    self.audio_quality.local_file_bytes = bytes;
+                    self.refresh_measured_audio_quality().await;
+                }
+            }
         }
     }
 

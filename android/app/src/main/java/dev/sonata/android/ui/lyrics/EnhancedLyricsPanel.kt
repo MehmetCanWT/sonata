@@ -305,7 +305,12 @@ fun EnhancedLyricsPanel(
                         val nextStartMs = when {
                             isBackground -> {
                                 val naturalEnd = lineStartMs + (cleanText.length * 85L).coerceIn(1_400L, 3_600L)
-                                maxOf(wordMaxEndMs ?: 0L, naturalEnd)
+                                val computedEnd = maxOf(wordMaxEndMs ?: 0L, naturalEnd)
+                                if (wordMaxEndMs == null && baseNextStartMs > lineStartMs + 250L) {
+                                    minOf(computedEnd, baseNextStartMs)
+                                } else {
+                                    computedEnd
+                                }
                             }
                             wordMaxEndMs != null && wordMaxEndMs > lineStartMs ->
                                 maxOf(wordMaxEndMs, lineStartMs + 500L)
@@ -419,7 +424,7 @@ fun EnhancedLyricsPanel(
                                 .padding(vertical = 4.dp),
                             horizontalAlignment = if (isCounter) Alignment.End else Alignment.Start,
                         ) {
-                            if (prioritizeWordSync) {
+                            if (prioritizeWordSync && line.words.isNotEmpty()) {
                                 SweptKaraokeLyricText(
                                     text = cleanText,
                                     lineStartMs = lineStartMs,

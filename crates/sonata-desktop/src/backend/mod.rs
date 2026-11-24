@@ -1367,6 +1367,7 @@ impl BackendEngine {
                     })
                     .await;
                 if self.config.personal_only_mode {
+                    self.motion_cover = None;
                     self.home_loading = false;
                     self.explore_loading = false;
                     self.radio_loading = false;

@@ -387,14 +387,90 @@ pub fn stream_request(
         "{base}/Audio/{}/stream?static=true",
         urlencoding::encode(item_id)
     );
+    let bitrate_kbps = track
+        .audio_badge
+        .as_deref()
+        .and_then(crate::providers::hifi::extract_badge_kbps);
     Ok(ServerStream {
         url,
         headers,
         mime_type: None,
-        bitrate_kbps: None,
+        bitrate_kbps,
         codec: None,
         audio_badge: track.audio_badge.clone(),
     })
+}
+
+/// Fetches server-managed lyrics from Jellyfin (`GET /Audio/{item_id}/Lyrics`), returning LRC or plain text.
+pub async fn fetch_lyrics(
+    http: &Client,
+    profile: &ServerProfile,
+    item_id: &str,
+) -> Result<Option<String>, CoreError> {
+    let base = profile.normalized_base_url();
+    if base.is_empty() {
+        return Ok(None);
+    }
+    let url = format!("{base}/Audio/{}/Lyrics", urlencoding::encode(item_id));
+    let req = http.get(&url).timeout(default_http_timeout());
+    let req = apply_auth(req, profile)?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|err| CoreError::from_reqwest("jellyfin", &err))?;
+    let status = resp.status();
+    if status == reqwest::StatusCode::NOT_FOUND
+        || status == reqwest::StatusCode::NOT_IMPLEMENTED
+        || status == reqwest::StatusCode::NO_CONTENT
+    {
+        return Ok(None);
+    }
+    let body = resp
+        .text()
+        .await
+        .map_err(|err| CoreError::from_reqwest("jellyfin", &err))?;
+    if !status.is_success() {
+        return Err(map_http_status("jellyfin", status, &body));
+    }
+    let val: Value = serde_json::from_str(&body).map_err(|err| {
+        CoreError::invalid_response("jellyfin", format!("malformed lyrics JSON: {err}"))
+    })?;
+    Ok(parse_lyrics_json(&val))
+}
+
+/// Pure JSON parser converting Jellyfin 10.9+ `Lyrics` payload (`Lyrics[].{Start, Text}`) to LRC or plain text.
+pub fn parse_lyrics_json(val: &Value) -> Option<String> {
+    let items = val.get("Lyrics").and_then(Value::as_array)?;
+    if items.is_empty() {
+        return None;
+    }
+    let mut synced_lines = Vec::new();
+    let mut plain_lines = Vec::new();
+    for entry in items {
+        let Some(text) = entry.get("Text").and_then(Value::as_str) else {
+            continue;
+        };
+        let clean = text.trim();
+        if clean.is_empty() {
+            continue;
+        }
+        if let Some(start_ticks) = entry.get("Start").and_then(Value::as_u64) {
+            let total_ms = start_ticks / 10_000;
+            let mins = total_ms / 60_000;
+            let secs = (total_ms % 60_000) / 1000;
+            let centis = (total_ms % 1000) / 10;
+            synced_lines.push(format!("[{mins:02}:{secs:02}.{centis:02}] {clean}"));
+        } else {
+            plain_lines.push(clean.to_string());
+        }
+    }
+    if !synced_lines.is_empty() {
+        Some(synced_lines.join("\n"))
+    } else if !plain_lines.is_empty() {
+        Some(plain_lines.join("\n"))
+    } else {
+        None
+    }
 }
 
 /// Pure JSON parser for `POST /Users/AuthenticateByName` responses.
@@ -924,7 +1000,7 @@ mod tests {
         assert_eq!(t.id, "jellyfin:jf-home:trk-1");
         assert_eq!(t.source_tag(), "JFN");
         assert_eq!(t.duration_secs, Some(245));
-        assert_eq!(t.audio_badge.as_deref(), Some("FLAC · 980kbps"));
+        assert_eq!(t.audio_badge.as_deref(), Some("FLAC · 980 kbps"));
         assert_eq!(
             t.thumbnail_url.as_deref(),
             Some("https://jf.example.com/Items/alb-1/Images/Primary?maxWidth=800&quality=90&tag=img-tag-1")
@@ -968,5 +1044,31 @@ mod tests {
         assert_eq!(playlists.len(), 1);
         assert_eq!(playlists[0].id, "jellyfin:jf-home:pl-9");
         assert_eq!(playlists[0].track_count, Some(14));
+    }
+
+    #[test]
+    fn parses_jellyfin_synced_lyrics_json_into_lrc() {
+        let payload = json!({
+            "Metadata": { "Artist": "Eminem", "Title": "Guilty Conscience" },
+            "Lyrics": [
+                { "Start": 20_500_000_u64, "Text": "Meet Eddie, twenty-three years old" },
+                { "Start": 1_253_400_000_u64, "Text": "Alright, stop!" }
+            ]
+        });
+        assert_eq!(
+            parse_lyrics_json(&payload).as_deref(),
+            Some("[00:02.05] Meet Eddie, twenty-three years old\n[02:05.34] Alright, stop!")
+        );
+
+        let unsynced = json!({
+            "Lyrics": [
+                { "Text": "First line" },
+                { "Text": "Second line" }
+            ]
+        });
+        assert_eq!(
+            parse_lyrics_json(&unsynced).as_deref(),
+            Some("First line\nSecond line")
+        );
     }
 }

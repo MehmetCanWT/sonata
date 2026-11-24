@@ -253,6 +253,8 @@ class FakeSonataEngineGateway : SonataEngineGateway {
         throw ce
     }
 
+    override suspend fun fetchServerLyrics(track: AndroidTrack): List<AndroidLyricLine> = emptyList()
+
     override suspend fun clearLyricsCache() = Unit
 
     override suspend fun checkForUpdates(): AndroidUpdateInfo = checkForUpdatesForVersion("1.0.7")

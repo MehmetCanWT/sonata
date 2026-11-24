@@ -398,9 +398,7 @@ internal fun ExploreTabContent(
     val mergedSourceShelves = remember(state.exploreShelves, state.shelves) {
         state.exploreShelves + state.shelves
     }
-    if (state.personalOnlyMode && mergedSourceShelves.isEmpty()) {
-        val tokens = LocalLunariaColors.current
-        val srcStrings = remember(appLanguage) { dev.sonata.android.ui.i18n.sourcesStrings(appLanguage) }
+    if (state.personalOnlyMode) {
         LazyColumn(
             state = listState,
             modifier = modifier.fillMaxSize(),
@@ -416,29 +414,6 @@ internal fun ExploreTabContent(
                     color = MaterialTheme.colorScheme.onBackground,
                     modifier = Modifier.padding(horizontal = PAGE_GUTTER, vertical = 10.dp),
                 )
-            }
-            item(key = "explore_personal_only") {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = PAGE_GUTTER, vertical = 12.dp)
-                        .clip(RoundedCornerShape(18.dp))
-                        .background(tokens.eclipseSurface.copy(alpha = 0.72f))
-                        .border(0.75.dp, tokens.cardStroke, RoundedCornerShape(18.dp))
-                        .padding(18.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text(
-                        text = srcStrings.personalOnlyModeBadge,
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                        color = tokens.petalLavender,
-                    )
-                    Text(
-                        text = srcStrings.personalOnlyModeDescription,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = tokens.onSurfaceSecondary,
-                    )
-                }
             }
         }
         return

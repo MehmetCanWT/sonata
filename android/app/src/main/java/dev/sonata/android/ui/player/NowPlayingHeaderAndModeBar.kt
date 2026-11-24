@@ -296,15 +296,15 @@ internal fun NowPlayingProgressSection(
                 color = Color.White.copy(alpha = 0.58f),
             )
         }
-        val upgrading = isBuffering || isUpgradingQuality
-        if (upgrading || !hideSongStatus) {
+        val showStatusPulse = isBuffering || isUpgradingQuality
+        if (showStatusPulse || !hideSongStatus) {
             LosslessLabel(
-                label = if (upgrading) {
+                label = if (isUpgradingQuality) {
                     "Upgrading Quality"
                 } else {
                     streamBadge.ifBlank { "Lossless" }
                 },
-                pulsing = upgrading,
+                pulsing = showStatusPulse,
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .padding(top = 6.dp),
@@ -565,27 +565,40 @@ internal fun CurrentLyricStrip(
                             .removePrefix("v1:").removePrefix("V1:")
                             .removePrefix("bg:").removePrefix("BG:")
                             .trim()
-                        val lineStartMs = (activeLine.timeSecs * 1000.0).toLong().coerceAtLeast(0L)
-                        val lineEndMs = lyrics.getOrNull(idx + 1)
-                            ?.let { (it.timeSecs * 1000.0).toLong() }
-                            ?.coerceAtLeast(lineStartMs + 400L)
-                            ?: maxOf(durationMs, lineStartMs + 4_000L)
-                        SweptKaraokeLyricText(
-                            text = cleanStripText,
-                            lineStartMs = lineStartMs,
-                            lineEndMs = lineEndMs,
-                            words = activeLine.words,
-                            clockMs = clockMs,
-                            style = MaterialTheme.typography.titleSmall.copy(
-                                fontSize = 15.5.sp,
-                                fontWeight = FontWeight.Bold,
-                            ),
-                            color = Color.White,
-                            dimAlpha = 0.42f,
-                            uncommittedColor = Color(0xFF98989F).copy(alpha = 0.42f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                        if (activeLine.words.isNotEmpty()) {
+                            val lineStartMs = (activeLine.timeSecs * 1000.0).toLong().coerceAtLeast(0L)
+                            val lineEndMs = lyrics.getOrNull(idx + 1)
+                                ?.let { (it.timeSecs * 1000.0).toLong() }
+                                ?.coerceAtLeast(lineStartMs + 400L)
+                                ?: maxOf(durationMs, lineStartMs + 4_000L)
+                            SweptKaraokeLyricText(
+                                text = cleanStripText,
+                                lineStartMs = lineStartMs,
+                                lineEndMs = lineEndMs,
+                                words = activeLine.words,
+                                clockMs = clockMs,
+                                style = MaterialTheme.typography.titleSmall.copy(
+                                    fontSize = 15.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                ),
+                                color = Color.White,
+                                dimAlpha = 0.42f,
+                                uncommittedColor = Color(0xFF98989F).copy(alpha = 0.42f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        } else {
+                            Text(
+                                text = cleanStripText,
+                                style = MaterialTheme.typography.titleSmall.copy(
+                                    fontSize = 15.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                ),
+                                color = Color.White,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                     }
                 }
             }

@@ -400,20 +400,20 @@ pub(crate) fn map_http_status(provider: &str, status: StatusCode, body: &str) ->
     }
 }
 
-/// Formats a normalized audio badge string such as `"FLAC · 980kbps"` or `"OPUS · Jellyfin"`.
+/// Formats a normalized audio badge string without server protocol names (e.g. `"FLAC · 980 kbps"` or `"FLAC"`).
 pub(crate) fn format_audio_badge(
     codec: Option<&str>,
     bitrate_kbps: Option<u32>,
-    fallback_label: &str,
+    _fallback_label: &str,
 ) -> Option<String> {
     let clean_codec = codec
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_ascii_uppercase);
     match (clean_codec, bitrate_kbps.filter(|&b| b > 0)) {
-        (Some(c), Some(kbps)) => Some(format!("{c} · {kbps}kbps")),
-        (Some(c), None) => Some(format!("{c} · {fallback_label}")),
-        (None, Some(kbps)) => Some(format!("{kbps}kbps · {fallback_label}")),
+        (Some(c), Some(kbps)) => Some(format!("{c} · {kbps} kbps")),
+        (Some(c), None) => Some(c),
+        (None, Some(kbps)) => Some(format!("{kbps} kbps")),
         (None, None) => None,
     }
 }
@@ -426,11 +426,20 @@ pub(crate) fn default_http_timeout() -> Duration {
 #[derive(Clone)]
 pub struct ServerClient {
     http: Client,
+    cache_dir: Option<PathBuf>,
 }
 
 impl ServerClient {
     pub fn new(http: Client) -> Self {
-        Self { http }
+        Self {
+            http,
+            cache_dir: None,
+        }
+    }
+
+    pub fn with_cache_dir(mut self, cache_dir: PathBuf) -> Self {
+        self.cache_dir = Some(cache_dir);
+        self
     }
 
     pub async fn ping(&self, profile: &ServerProfile) -> Result<String, CoreError> {
@@ -685,7 +694,10 @@ impl ServerClient {
         match profile.kind {
             ServerKind::Jellyfin => jellyfin::get_artists(&self.http, profile, library_id).await,
             ServerKind::Subsonic => subsonic::get_artists(&self.http, profile, library_id).await,
-            ServerKind::WebDav => Ok(Vec::new()),
+            ServerKind::WebDav => {
+                webdav::list_artists(&self.http, profile, library_id, self.cache_dir.as_deref())
+                    .await
+            }
             ServerKind::Smb => {
                 let prof = profile.clone();
                 let lib = library_id.map(|id| unwrap_item_id(ServerKind::Smb, id).to_string());
@@ -713,7 +725,16 @@ impl ServerClient {
                     subsonic::get_album_list(&self.http, profile, "alphabeticalByName", 100).await
                 }
             }
-            ServerKind::WebDav => Ok(Vec::new()),
+            ServerKind::WebDav => {
+                webdav::list_albums(
+                    &self.http,
+                    profile,
+                    library_id,
+                    artist_id,
+                    self.cache_dir.as_deref(),
+                )
+                .await
+            }
             ServerKind::Smb => {
                 let prof = profile.clone();
                 let lib = library_id.map(|id| unwrap_item_id(ServerKind::Smb, id).to_string());
@@ -736,9 +757,10 @@ impl ServerClient {
         match profile.kind {
             ServerKind::Jellyfin => jellyfin::get_album_detail(&self.http, profile, raw_id).await,
             ServerKind::Subsonic => subsonic::get_album(&self.http, profile, raw_id).await,
-            ServerKind::WebDav => Err(CoreError::not_found(
-                "WebDAV servers expose folder listings rather than album IDs",
-            )),
+            ServerKind::WebDav => {
+                webdav::get_album_detail(&self.http, profile, raw_id, self.cache_dir.as_deref())
+                    .await
+            }
             ServerKind::Smb => {
                 let prof = profile.clone();
                 let raw = raw_id.to_string();
@@ -800,13 +822,7 @@ impl ServerClient {
         match profile.kind {
             ServerKind::Jellyfin => jellyfin::search(&self.http, profile, query, limit).await,
             ServerKind::Subsonic => subsonic::search3(&self.http, profile, query, limit).await,
-            ServerKind::WebDav => {
-                let tracks = webdav::search(&self.http, profile, query, limit).await?;
-                Ok(ServerSearchResult {
-                    tracks,
-                    ..Default::default()
-                })
-            }
+            ServerKind::WebDav => webdav::search(&self.http, profile, query, limit).await,
             ServerKind::Smb => {
                 let prof = profile.clone();
                 let q = query.to_string();

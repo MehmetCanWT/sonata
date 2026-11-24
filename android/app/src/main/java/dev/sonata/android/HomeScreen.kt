@@ -251,7 +251,9 @@ import dev.sonata.android.data.PlayerBackdropMode
 import dev.sonata.android.data.SonataSettingsState
 import dev.sonata.android.data.SonataThumbnailInterceptor
 import dev.sonata.android.data.ThemeMode
+import dev.sonata.android.data.isPersonalTrackId
 import dev.sonata.android.ui.components.AddToPlaylistSheet
+import dev.sonata.android.ui.components.PERSONAL_PLAYLIST_ID_PREFIX
 import dev.sonata.android.ui.components.HeldContextMenu
 import dev.sonata.android.ui.components.HeldContextTarget
 import dev.sonata.android.ui.components.ScrollActivityTracker
@@ -278,6 +280,7 @@ import dev.sonata.android.ui.screens.ArtistTrackItem
 import dev.sonata.android.ui.screens.DownloadsManagerSheet
 import dev.sonata.android.ui.screens.RadioMixesScreen
 import dev.sonata.android.ui.screens.SonataSettingsScreen
+import uniffi.sonata_android.AndroidServerKind
 import dev.sonata.android.ui.theme.SonataRadioWavesIcon
 import dev.sonata.android.ui.theme.SonataTabIconSize
 import dev.sonata.android.ui.trackColumnWidth
@@ -402,6 +405,7 @@ internal fun HomeTabContent(
     onPlayTrack: (AndroidTrack, List<AndroidTrack>) -> Unit,
     onTrackOptions: (AndroidTrack, Rect?) -> Unit = { _, _ -> },
     onTrackLongClick: (AndroidTrack, Rect?) -> Unit = { _, _ -> },
+    onLastPlayedTrackLongClick: (AndroidTrack, Rect?) -> Unit = onTrackLongClick,
     onCardLongClick: (AndroidHomeCard, String?, Boolean, Rect?) -> Unit = { _, _, _, _ -> },
     onPlaylistLongClick: (AndroidPlaylist, Rect?) -> Unit = { _, _ -> },
     onPinnedLongClick: (PinnedCollectionEntry, Rect?) -> Unit = { _, _ -> },
@@ -414,6 +418,7 @@ internal fun HomeTabContent(
     onShowAllMoods: () -> Unit,
     onStartPersonalStation: () -> Unit = {},
     onStartDiscoveryStation: () -> Unit = {},
+    onOpenServers: (String?) -> Unit = {},
 ) {
     val haptics = LocalHapticFeedback.current
     val visibleShelves = remember(state.shelves) {
@@ -566,11 +571,18 @@ internal fun HomeTabContent(
         }
     }
     val recentsColumns = remember(recentsTracks) { recentsTracks.chunked(4) }
-    val lastPlayedTracks = remember(state.lastPlayedTracks, recentsTracks, fallbackHomeTracks) {
-        state.lastPlayedTracks
-            .ifEmpty { recentsTracks.ifEmpty { fallbackHomeTracks } }
-            .distinctBy { it.id }
-            .take(14)
+    val lastPlayedTracks = remember(state.lastPlayedTracks, recentsTracks, fallbackHomeTracks, state.personalOnlyMode) {
+        if (state.personalOnlyMode) {
+            state.lastPlayedTracks
+                .filter { isPersonalTrackId(it.id) }
+                .distinctBy { it.id }
+                .take(14)
+        } else {
+            state.lastPlayedTracks
+                .ifEmpty { recentsTracks.ifEmpty { fallbackHomeTracks } }
+                .distinctBy { it.id }
+                .take(14)
+        }
     }
     val showSkeleton = state.loading && state.shelves.isEmpty()
     val tokens = LocalLunariaColors.current
@@ -603,6 +615,41 @@ internal fun HomeTabContent(
     val moodTileHeight = if (screenWidthDp >= 600) 144.dp else 134.dp
     val moodRowState = rememberLazyListState()
     val moodSnap = rememberSnapFlingBehavior(lazyListState = moodRowState)
+    val srcStrings = remember(settings.appLanguage) {
+        dev.sonata.android.ui.i18n.sourcesStrings(settings.appLanguage)
+    }
+    val personalServers = remember(state.servers, state.personalOnlyMode) {
+        if (state.personalOnlyMode) state.servers.filter { it.enabled } else emptyList()
+    }
+    val personalLocalTracks = remember(state.localMusicLibrary.tracks, settings.localMusicEnabled, state.personalOnlyMode) {
+        if (state.personalOnlyMode && settings.localMusicEnabled) {
+            state.localMusicLibrary.tracks.map { it.toAndroidTrack() }
+        } else {
+            emptyList()
+        }
+    }
+    val visiblePinned = remember(state.pinnedCollections, state.personalOnlyMode) {
+        if (state.personalOnlyMode) {
+            state.pinnedCollections.filter { entry ->
+                entry.id.startsWith(PERSONAL_PLAYLIST_ID_PREFIX) ||
+                    entry.id.startsWith(SonataViewModel.LOCAL_PLAYLIST_PREFIX) ||
+                    isSelfHostedId(entry.id)
+            }
+        } else {
+            state.pinnedCollections
+        }
+    }
+    val visibleHomePlaylists = remember(state.playlists, state.personalOnlyMode) {
+        if (state.personalOnlyMode) {
+            state.playlists.filter { pl ->
+                pl.id.startsWith(PERSONAL_PLAYLIST_ID_PREFIX) ||
+                    pl.id.startsWith(SonataViewModel.LOCAL_PLAYLIST_PREFIX) ||
+                    isSelfHostedId(pl.id)
+            }
+        } else {
+            state.playlists
+        }
+    }
 
     TrackScrollActivity(listState)
 
@@ -656,34 +703,106 @@ internal fun HomeTabContent(
                             )
                         }
                     }
-                    if (state.personalOnlyMode && state.shelves.isEmpty()) {
-                        item(key = "home_personal_only_notice", contentType = "personal_only_notice") {
-                            val srcStrings = dev.sonata.android.ui.i18n.sourcesStrings(settings.appLanguage)
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = PAGE_GUTTER, vertical = 20.dp)
-                                    .clip(RoundedCornerShape(18.dp))
-                                    .background(tokens.eclipseSurface.copy(alpha = 0.72f))
-                                    .border(0.75.dp, tokens.cardStroke, RoundedCornerShape(18.dp))
-                                    .padding(18.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                Text(
-                                    text = srcStrings.personalOnlyModeBadge,
-                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                    color = tokens.petalLavender,
-                                )
-                                Text(
-                                    text = srcStrings.personalOnlyModeDescription,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = tokens.onSurfaceSecondary,
-                                )
+                    if (state.personalOnlyMode) {
+                        if (personalServers.isNotEmpty()) {
+                            item(key = "home_personal_servers_shelf", contentType = "personal_servers_shelf") {
+                                Column(Modifier.padding(bottom = 24.dp)) {
+                                    SectionHeader(title = srcStrings.selfHostedServersTitle)
+                                    LazyRow(
+                                        contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    ) {
+                                        items(
+                                            items = personalServers,
+                                            key = { "home_srv_${it.id}" },
+                                        ) { srv ->
+                                            val kindLabel = when (srv.kind) {
+                                                AndroidServerKind.JELLYFIN -> srcStrings.protocolJellyfin
+                                                AndroidServerKind.SUBSONIC -> srcStrings.protocolSubsonic
+                                                AndroidServerKind.SMB -> srcStrings.protocolSmb
+                                                AndroidServerKind.WEB_DAV -> srcStrings.protocolWebDav
+                                            }
+                                            Column(
+                                                modifier = Modifier
+                                                    .width(180.dp)
+                                                    .clip(RoundedCornerShape(16.dp))
+                                                    .background(tokens.eclipseCard)
+                                                    .border(0.75.dp, tokens.cardStroke, RoundedCornerShape(16.dp))
+                                                    .clickable { onOpenServers(srv.id) }
+                                                    .padding(14.dp),
+                                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                                            ) {
+                                                Text(
+                                                    text = kindLabel,
+                                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                                    color = tokens.petalLavender,
+                                                )
+                                                Text(
+                                                    text = srv.name,
+                                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                                                    color = tokens.onSurfacePrimary,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (personalLocalTracks.isNotEmpty()) {
+                            item(key = "home_personal_local_shelf", contentType = "personal_local_shelf") {
+                                Column(Modifier.padding(bottom = 24.dp)) {
+                                    SectionHeader(title = srcStrings.localMusicTitle)
+                                    LazyRow(
+                                        contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    ) {
+                                        items(
+                                            items = personalLocalTracks.take(20),
+                                            key = { "home_loc_${it.id}" },
+                                        ) { track ->
+                                            val activeId = state.activeTrack?.id
+                                            SonataLastPlayedSquareCard(
+                                                title = track.title,
+                                                artworkUrl = track.thumbnailUrl,
+                                                isCurrent = activeId != null && track.id == activeId,
+                                                onClick = { onPlayTrack(track, personalLocalTracks) },
+                                                onLongClick = { bounds -> onTrackLongClick(track, bounds) },
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        } else if (personalServers.isEmpty()) {
+                            item(key = "home_personal_empty_sources") {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = PAGE_GUTTER, vertical = 18.dp)
+                                        .clip(RoundedCornerShape(16.dp))
+                                        .background(tokens.eclipseCard)
+                                        .border(0.75.dp, tokens.cardStroke, RoundedCornerShape(16.dp))
+                                        .clickable { onOpenServers(null) }
+                                        .padding(18.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    Text(
+                                        text = srcStrings.selfHostedServersTitle,
+                                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                        color = tokens.onSurfacePrimary,
+                                    )
+                                    Text(
+                                        text = srcStrings.selfHostedServersDescription,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = tokens.onSurfaceSecondary,
+                                    )
+                                }
                             }
                         }
                     }
 
-                    if (state.homeMoodChips.isNotEmpty()) {
+                    if (!state.personalOnlyMode && state.homeMoodChips.isNotEmpty()) {
                         item(key = "home_mood_chips", contentType = "home_mood_chips") {
                             val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
                             LazyRow(
@@ -733,8 +852,8 @@ internal fun HomeTabContent(
                         }
                     }
 
-                    // Shelf 1: Top Picks for You (exact-fit portrait cards, edge-to-edge scrolling)
-                    if (!settings.hideTopPicks) {
+                    // Shelf 1: Top Picks for You (hidden in Personal Only Mode)
+                    if (!settings.hideTopPicks && !state.personalOnlyMode) {
                         item(key = "top_picks_shelf", contentType = "top_picks_shelf") {
                         Column(Modifier.padding(bottom = 26.dp)) {
                             SectionHeader(title = dev.sonata.android.ui.i18n.LocalSonataStrings.current.topPicksForYou)
@@ -1055,7 +1174,7 @@ internal fun HomeTabContent(
                                             artworkUrl = track.thumbnailUrl,
                                             isCurrent = activeId != null && track.id == activeId,
                                             onClick = { onPlayTrack(track, lastPlayedTracks) },
-                                            onLongClick = { bounds -> onTrackLongClick(track, bounds) },
+                                            onLongClick = { bounds -> onLastPlayedTrackLongClick(track, bounds) },
                                         )
                                     }
                                 }
@@ -1064,7 +1183,7 @@ internal fun HomeTabContent(
                     }
 
                     // Shelf 2a-pin: Pinned playlists & collections directly beneath Last Played
-                    if (state.pinnedCollections.isNotEmpty()) {
+                    if (visiblePinned.isNotEmpty()) {
                         item(key = "home_pinned_shelf", contentType = "home_pinned_shelf") {
                             val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
                             val playlistCoverById = remember(state.playlists) {
@@ -1079,7 +1198,7 @@ internal fun HomeTabContent(
                                     horizontalArrangement = Arrangement.spacedBy(14.dp),
                                 ) {
                                     items(
-                                        items = state.pinnedCollections,
+                                        items = visiblePinned,
                                         key = { entry ->
                                             "home_pin_${dev.sonata.android.ui.components.normalizeCollectionId(entry.id)}"
                                         },
@@ -1103,8 +1222,8 @@ internal fun HomeTabContent(
                         }
                     }
 
-                    // Shelf 2b: Smooth Classic "Recently Played" 4-rows-per-column pager (theme-distinct framing)
-                    if (!settings.hideRecents && recentsShelf != null && recentsColumns.isNotEmpty()) {
+                    // Shelf 2b: Smooth Classic "Recently Played" 4-rows-per-column pager (hidden in Personal Only Mode)
+                    if (!state.personalOnlyMode && !settings.hideRecents && recentsShelf != null && recentsColumns.isNotEmpty()) {
                         item(key = "recents_shelf", contentType = "recents_shelf") {
                             val tokens = LocalLunariaColors.current
                             val activeId = state.activeTrack?.id
@@ -1167,8 +1286,8 @@ internal fun HomeTabContent(
                         }
                     }
 
-                    // Shelf 3: Find Your Mood (duotone sleeves in Basic; animated art in Violet/Moonflower)
-                    if (!settings.hideHomeMoods) {
+                    // Shelf 3: Find Your Mood (hidden in Personal Only Mode)
+                    if (!settings.hideHomeMoods && !state.personalOnlyMode) {
                     item(key = "find_your_mood_shelf", contentType = "mood_shelf") {
                         val isBasicTheme = LocalLunariaColors.current.isBasic
                         val homeArtPool = remember(state.shelves, state.tracks) {
@@ -1258,7 +1377,7 @@ internal fun HomeTabContent(
                     }
 
                     // Shelf 4: Personal Playlists
-                    if (state.playlists.isNotEmpty()) {
+                    if (visibleHomePlaylists.isNotEmpty()) {
                         item(key = "personal_playlists_shelf", contentType = "personal_playlists_shelf") {
                             Column(Modifier.padding(bottom = 26.dp)) {
                                 val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
@@ -1268,7 +1387,7 @@ internal fun HomeTabContent(
                                     horizontalArrangement = Arrangement.spacedBy(14.dp),
                                 ) {
                                     items(
-                                        items = state.playlists,
+                                        items = visibleHomePlaylists,
                                         key = { "home_pl_${it.id}" },
                                         contentType = { "playlist_card" },
                                     ) { playlist ->
@@ -1287,7 +1406,8 @@ internal fun HomeTabContent(
                         }
                     }
 
-                    // Remaining Shelves: clean 150.dp 1:1 square ShelfCards & 248.dp 16:9 VideoShelfCards
+                    // Remaining Shelves: clean 150.dp 1:1 square ShelfCards & 248.dp 16:9 VideoShelfCards (hidden in Personal Only Mode)
+                    if (!state.personalOnlyMode) {
                     items(
                         items = remainingShelves,
                         key = { shelf -> "shelf_${shelf.title}" },
@@ -1369,6 +1489,7 @@ internal fun HomeTabContent(
                                 }
                             }
                         }
+                    }
                     }
                 }
             }

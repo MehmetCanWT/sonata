@@ -234,6 +234,9 @@ data class SonataSettingsState(
     val jioSaavnEnabled: Boolean = false,
     val personalOnlyMode: Boolean = false,
     val localMusicEnabled: Boolean = true,
+    val excludeNonMusicAudio: Boolean = true,
+    val localMusicMinDurationSecs: Int = 30,
+    val localMusicFolders: Set<String> = emptySet(),
     val attributePersonalToYtm: Boolean = false,
 
     // Music Video Mode
@@ -659,6 +662,15 @@ class SonataPreferences(context: Context) {
                     jioSaavnEnabled = settingsObj.optBoolean(KEY_JIOSAAVN_ENABLED, defaults.jioSaavnEnabled),
                     personalOnlyMode = settingsObj.optBoolean(KEY_PERSONAL_ONLY_MODE, defaults.personalOnlyMode),
                     localMusicEnabled = settingsObj.optBoolean(KEY_LOCAL_MUSIC_ENABLED, defaults.localMusicEnabled),
+                    excludeNonMusicAudio = settingsObj.optBoolean(
+                        KEY_EXCLUDE_NON_MUSIC_AUDIO,
+                        defaults.excludeNonMusicAudio,
+                    ),
+                    localMusicMinDurationSecs = settingsObj.optInt(
+                        KEY_LOCAL_MUSIC_MIN_DURATION_SECS,
+                        defaults.localMusicMinDurationSecs,
+                    ),
+                    localMusicFolders = parseStringSet(settingsObj.optJSONArray(KEY_LOCAL_MUSIC_FOLDERS)),
                     attributePersonalToYtm = settingsObj.optBoolean(
                         KEY_ATTRIBUTE_PERSONAL_TO_YTM,
                         defaults.attributePersonalToYtm,
@@ -840,6 +852,15 @@ class SonataPreferences(context: Context) {
                 jioSaavnEnabled = prefs.getBoolean(KEY_JIOSAAVN_ENABLED, defaults.jioSaavnEnabled),
                 personalOnlyMode = prefs.getBoolean(KEY_PERSONAL_ONLY_MODE, defaults.personalOnlyMode),
                 localMusicEnabled = prefs.getBoolean(KEY_LOCAL_MUSIC_ENABLED, defaults.localMusicEnabled),
+                excludeNonMusicAudio = prefs.getBoolean(
+                    KEY_EXCLUDE_NON_MUSIC_AUDIO,
+                    defaults.excludeNonMusicAudio,
+                ),
+                localMusicMinDurationSecs = prefs.getInt(
+                    KEY_LOCAL_MUSIC_MIN_DURATION_SECS,
+                    defaults.localMusicMinDurationSecs,
+                ),
+                localMusicFolders = parseStringSet(prefs.getString(KEY_LOCAL_MUSIC_FOLDERS, null)),
                 attributePersonalToYtm = prefs.getBoolean(
                     KEY_ATTRIBUTE_PERSONAL_TO_YTM,
                     defaults.attributePersonalToYtm,
@@ -932,6 +953,9 @@ class SonataPreferences(context: Context) {
             .putBoolean(KEY_JIOSAAVN_ENABLED, state.jioSaavnEnabled)
             .putBoolean(KEY_PERSONAL_ONLY_MODE, state.personalOnlyMode)
             .putBoolean(KEY_LOCAL_MUSIC_ENABLED, state.localMusicEnabled)
+            .putBoolean(KEY_EXCLUDE_NON_MUSIC_AUDIO, state.excludeNonMusicAudio)
+            .putInt(KEY_LOCAL_MUSIC_MIN_DURATION_SECS, state.localMusicMinDurationSecs)
+            .putString(KEY_LOCAL_MUSIC_FOLDERS, encodeStringSet(state.localMusicFolders))
             .putBoolean(KEY_ATTRIBUTE_PERSONAL_TO_YTM, state.attributePersonalToYtm)
             .putBoolean(KEY_SUPPRESS_VIDEO_AUDIO_WARNING, state.suppressVideoAudioQualityWarning)
             .putString(KEY_VIDEO_QUALITY, state.videoQuality.name)
@@ -1038,9 +1062,40 @@ class SonataPreferences(context: Context) {
                 repeatMode = state.repeatMode.coerceIn(0, 2),
                 lyricsTranslationLang = state.lyricsTranslationLang.trim().lowercase().ifEmpty { "en" },
                 lyricsOffsetMs = state.lyricsOffsetMs.coerceIn(MIN_LYRIC_OFFSET_MS, MAX_LYRIC_OFFSET_MS),
+                localMusicMinDurationSecs = state.localMusicMinDurationSecs.coerceIn(0, MAX_LOCAL_MIN_DURATION_SEC),
+                localMusicFolders = normalizeLocalMusicFolders(state.localMusicFolders),
                 discordAppId = DiscordApplication.resolveAppId(state.discordAppId),
                 connectDeviceName = normalizeConnectDeviceName(state.connectDeviceName),
             )
+        }
+
+        internal fun normalizeLocalMusicFolders(folders: Set<String>): Set<String> {
+            val seen = LinkedHashMap<String, String>()
+            folders.forEach { raw ->
+                val clean = raw.trim().replace('\\', '/').replace(Regex("/+"), "/").trim('/')
+                if (clean.isNotEmpty()) {
+                    seen.putIfAbsent(clean.lowercase(), clean)
+                }
+            }
+            return seen.values.sortedBy { it.lowercase() }.toSet()
+        }
+
+        internal fun encodeStringSet(values: Set<String>): String =
+            JSONArray().apply { normalizeLocalMusicFolders(values).forEach { put(it) } }.toString()
+
+        internal fun parseStringSet(array: JSONArray?): Set<String> {
+            if (array == null) return emptySet()
+            val out = LinkedHashSet<String>()
+            for (i in 0 until array.length()) {
+                val item = array.optString(i, "")
+                if (item.isNotBlank()) out.add(item)
+            }
+            return normalizeLocalMusicFolders(out)
+        }
+
+        internal fun parseStringSet(raw: String?): Set<String> {
+            if (raw.isNullOrBlank()) return emptySet()
+            return runCatching { parseStringSet(JSONArray(raw)) }.getOrDefault(emptySet())
         }
 
         internal fun normalizeConnectDeviceName(raw: String?): String =
@@ -1079,6 +1134,7 @@ class SonataPreferences(context: Context) {
         private const val MAX_CROSSFADE_SEC = 12
         private const val MIN_LYRIC_OFFSET_MS = -30_000L
         private const val MAX_LYRIC_OFFSET_MS = 30_000L
+        private const val MAX_LOCAL_MIN_DURATION_SEC = 600
         internal const val DEFAULT_CONNECT_DEVICE_NAME = "Sonata Android"
 
         private const val BACKUP_APP_ID = "sonata"
@@ -1151,6 +1207,9 @@ class SonataPreferences(context: Context) {
         private const val KEY_JIOSAAVN_ENABLED = "jiosaavn_enabled"
         private const val KEY_PERSONAL_ONLY_MODE = "personal_only_mode"
         private const val KEY_LOCAL_MUSIC_ENABLED = "local_music_enabled"
+        private const val KEY_EXCLUDE_NON_MUSIC_AUDIO = "exclude_non_music_audio"
+        private const val KEY_LOCAL_MUSIC_MIN_DURATION_SECS = "local_music_min_duration_secs"
+        private const val KEY_LOCAL_MUSIC_FOLDERS = "local_music_folders"
         private const val KEY_ATTRIBUTE_PERSONAL_TO_YTM = "attribute_personal_to_ytm"
         private const val KEY_SUPPRESS_VIDEO_AUDIO_WARNING = "suppress_video_audio_warning"
         private const val KEY_VIDEO_QUALITY = "video_quality"
@@ -1237,6 +1296,9 @@ class SonataPreferences(context: Context) {
                 put(KEY_JIOSAAVN_ENABLED, current.jioSaavnEnabled)
                 put(KEY_PERSONAL_ONLY_MODE, current.personalOnlyMode)
                 put(KEY_LOCAL_MUSIC_ENABLED, current.localMusicEnabled)
+                put(KEY_EXCLUDE_NON_MUSIC_AUDIO, current.excludeNonMusicAudio)
+                put(KEY_LOCAL_MUSIC_MIN_DURATION_SECS, current.localMusicMinDurationSecs)
+                put(KEY_LOCAL_MUSIC_FOLDERS, JSONArray().apply { current.localMusicFolders.forEach { put(it) } })
                 put(KEY_ATTRIBUTE_PERSONAL_TO_YTM, current.attributePersonalToYtm)
                 put(KEY_SUPPRESS_VIDEO_AUDIO_WARNING, current.suppressVideoAudioQualityWarning)
                 put(KEY_VIDEO_QUALITY, current.videoQuality.name)

@@ -184,6 +184,17 @@ class AudioQualityBadgeTest {
     fun computeMeasuredBitrateKbpsFromContentBytesAndDurationMs() {
         assertEquals(720, computeMeasuredBitrateKbps(contentBytes = 18_000_000L, durationMs = 200_000L))
         assertEquals(880, computeMeasuredBitrateKbps(contentBytes = 22_000_000L, durationMs = 200_000L))
+        // Guilty Conscience.flac lossless benchmark: 22,345,757 bytes over 201,280 ms = 888 kbps
+        assertEquals(888, computeMeasuredBitrateKbps(contentBytes = 22_345_757L, durationMs = 201_280L))
+        assertEquals(
+            "FLAC · 888 kbps · 16-bit/44.1kHz",
+            formatMeasuredAudioBadge(
+                codec = "FLAC",
+                bitrateKbps = computeMeasuredBitrateKbps(22_345_757L, 201_280L),
+                sampleRateHz = 44_100,
+                bitDepthBits = 16,
+            ),
+        )
         assertEquals(2480, computeMeasuredBitrateKbps(contentBytes = 55_800_000L, durationMs = 180_000L))
         assertEquals(0, computeMeasuredBitrateKbps(contentBytes = 0L, durationMs = 200_000L))
         assertEquals(0, computeMeasuredBitrateKbps(contentBytes = 22_000_000L, durationMs = 0L))
@@ -284,9 +295,9 @@ class AudioQualityBadgeTest {
     }
 
     @Test
-    fun mergeStreamBadgeWithMeasurementPreservesServerAndHifiFacts() {
+    fun mergeStreamBadgeWithMeasurementPreservesHifiAndStripsServerNames() {
         assertEquals(
-            "FLAC · 880 kbps · 16-bit/44.1kHz · WebDAV",
+            "FLAC · 880 kbps · 16-bit/44.1kHz",
             mergeStreamBadgeWithMeasurement(
                 initialBadge = "FLAC · WebDAV",
                 measuredBadge = "FLAC · 880 kbps · 16-bit/44.1kHz",
@@ -294,7 +305,7 @@ class AudioQualityBadgeTest {
             ),
         )
         assertEquals(
-            "FLAC · 2480 kbps · 24-bit/96kHz · Jellyfin",
+            "FLAC · 2480 kbps · 24-bit/96kHz",
             mergeStreamBadgeWithMeasurement(
                 initialBadge = "FLAC · 980kbps",
                 measuredBadge = "FLAC · 2480 kbps · 24-bit/96kHz",
@@ -302,11 +313,19 @@ class AudioQualityBadgeTest {
             ),
         )
         assertEquals(
-            "FLAC · 720 kbps · 16-bit/44.1kHz · Subsonic",
+            "FLAC · 720 kbps · 16-bit/44.1kHz",
             mergeStreamBadgeWithMeasurement(
                 initialBadge = "Subsonic",
                 measuredBadge = "FLAC · 720 kbps · 16-bit/44.1kHz",
                 sourceLabel = "Subsonic",
+            ),
+        )
+        assertEquals(
+            "FLAC · 887 kbps · 16-bit/44.1kHz",
+            mergeStreamBadgeWithMeasurement(
+                initialBadge = "FLAC · SMB",
+                measuredBadge = "FLAC · 887 kbps · 16-bit/44.1kHz",
+                sourceLabel = "SMB",
             ),
         )
         assertEquals(
@@ -348,13 +367,13 @@ class AudioQualityBadgeTest {
         assertEquals(
             "FLAC · 980kbps",
             mergeStreamBadgeWithMeasurement(
-                initialBadge = "FLAC · 980kbps",
+                initialBadge = "FLAC · 980kbps · Jellyfin",
                 measuredBadge = "FLAC · 16-bit/44.1kHz",
                 sourceLabel = "Jellyfin",
             ),
         )
         assertEquals(
-            "FLAC · 880 kbps · 16-bit/44.1kHz · Jellyfin",
+            "FLAC · 880 kbps · 16-bit/44.1kHz",
             mergeStreamBadgeWithMeasurement(
                 initialBadge = "FLAC · 880 kbps · 16-bit/44.1kHz · Jellyfin",
                 measuredBadge = "FLAC · 880 kbps · 16-bit/44.1kHz",

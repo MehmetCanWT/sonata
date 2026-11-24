@@ -119,6 +119,7 @@ interface SonataEngineGateway {
     ): AndroidResolvedStream?
 
     suspend fun fetchLyrics(track: AndroidTrack): List<AndroidLyricLine>
+    suspend fun fetchServerLyrics(track: AndroidTrack): List<AndroidLyricLine>
     suspend fun clearLyricsCache()
     suspend fun checkForUpdates(): AndroidUpdateInfo
     suspend fun checkForUpdatesForVersion(currentVersion: String): AndroidUpdateInfo
@@ -320,6 +321,9 @@ class NativeSonataEngineGateway(
 
     override suspend fun fetchLyrics(track: AndroidTrack): List<AndroidLyricLine> =
         engine.fetchLyrics(track)
+
+    override suspend fun fetchServerLyrics(track: AndroidTrack): List<AndroidLyricLine> =
+        engine.fetchServerLyrics(track)
 
     override suspend fun clearLyricsCache() = engine.clearLyricsCache()
 

@@ -448,8 +448,7 @@ internal fun SonataViewModel.collectPersonalRadioPoolImpl(): List<AndroidTrack> 
     }
     val personalPlTracks = state.personalPlaylists.flatMap { it.tracks }
     val serverTracks = state.serverSourceSnapshots.values.flatMap { it.tracks }
-    val offline = downloads.value.map { downloadedRecordToAndroidTrack(it) }
-    return (local + personalPlTracks + serverTracks + offline).distinctBy { it.id }
+    return (local + personalPlTracks + serverTracks).distinctBy { it.id }
 }
 
 internal fun SonataViewModel.startQuickRadioImpl(seedTrack: AndroidTrack?) {
@@ -694,6 +693,7 @@ internal fun SonataViewModel.resolveCanvasForTrackImpl(
     val trackId = track.id
     requestedCanvasTrackId = trackId
     _currentCanvas.value = null
+    if (preferences.state.value.personalOnlyMode) return
     if (!settings.value.animatedArtwork) return
     if (!settings.value.animatedArtworkCellular) {
         val cm = getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE)
@@ -712,6 +712,7 @@ internal fun SonataViewModel.resolveCanvasForTrackImpl(
             )
         }.getOrNull()
         if (isActive &&
+            !preferences.state.value.personalOnlyMode &&
             settings.value.animatedArtwork &&
             requestedCanvasTrackId == trackId &&
             isGenerationActive(generation, trackId)
@@ -727,7 +728,11 @@ internal fun SonataViewModel.probeMusicVideoForTrackImpl(
 ) {
     musicVideoProbeJob?.cancel()
     val trackId = track.id.trim()
-    if (trackId.isBlank() || trackId.startsWith("local:") || isSelfHostedId(trackId)) {
+    if (preferences.state.value.personalOnlyMode ||
+        trackId.isBlank() ||
+        trackId.startsWith("local:") ||
+        isSelfHostedId(trackId)
+    ) {
         _uiState.update { state ->
             if (isGenerationActive(generation, track.id)) {
                 state.copy(musicVideoCandidate = null)

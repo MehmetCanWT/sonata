@@ -60,6 +60,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import dev.sonata.android.connect.ConnectUiState
+import dev.sonata.android.data.LocalAudioTrack
 import dev.sonata.android.data.SonataDownloadManager
 import dev.sonata.android.data.SonataSettingsState
 import dev.sonata.android.discord.DiscordConsentWarningDialog
@@ -105,6 +106,7 @@ import uniffi.sonata_android.AndroidListenBrainzConfig
 import uniffi.sonata_android.AndroidScrobbleConfig
 import uniffi.sonata_android.AndroidServerProfile
 import uniffi.sonata_android.AndroidStatsSummary
+import uniffi.sonata_android.AndroidTrack
 import uniffi.sonata_android.AndroidUpdateInfo
 
 enum class SettingsCategory(
@@ -174,6 +176,7 @@ fun SonataSettingsScreen(
     onRescanLocalMusic: () -> Unit = {},
     onProbeServerHealth: (String) -> Unit = {},
     onRunServerSpeedTest: (String) -> Unit = {},
+    onRescanServer: (String) -> Unit = {},
     onOpenServer: (String?) -> Unit = { onOpenServers() },
     scrobbleConfig: AndroidScrobbleConfig = AndroidScrobbleConfig(
         lastfm = AndroidLastFmConfig(false, "", "", "", ""),
@@ -184,6 +187,13 @@ fun SonataSettingsScreen(
     onOpenConnect: () -> Unit = {},
     statsSummary: AndroidStatsSummary? = null,
     onOpenStats: () -> Unit = {},
+    localTracks: List<LocalAudioTrack> = emptyList(),
+    onPlayLocalTrack: (AndroidTrack, List<AndroidTrack>) -> Unit = { _, _ -> },
+    localAvailableFolders: List<String> = emptyList(),
+    onToggleExcludeNonMusic: (Boolean) -> Unit = {},
+    onToggleLocalMusicFolder: (String) -> Unit = {},
+    onAddLocalMusicFolder: () -> Unit = {},
+    onClearLocalMusicFolders: () -> Unit = {},
 ) {
     val strings = LocalSonataStrings.current
     val srcStrings = remember(settings.appLanguage) { sourcesStrings(settings.appLanguage) }
@@ -482,34 +492,13 @@ fun SonataSettingsScreen(
                                     Spacer(Modifier.height(14.dp))
                                 }
 
-                                // Sources / Kaynaklar quick access row
+                                // Grouped Category List (single Sources / Kaynaklar entry)
                                 if (!search.active) {
                                     val sourcesValue = when {
                                         settings.personalOnlyMode -> srcStrings.personalOnlyModeBadge
                                         servers.isNotEmpty() -> strings.servers.enabledCountSummary(enabledServerCount, servers.size)
                                         else -> srcStrings.localTracksCount(localTrackCount)
                                     }
-                                    SettingsGroup(
-                                        cardBg = cardBg,
-                                        dividerColor = dividerColor,
-                                        header = srcStrings.sourcesTitle,
-                                        secondaryText = secondaryText,
-                                    ) {
-                                        SettingsRow(
-                                            icon = SonataIcons.Folder,
-                                            title = srcStrings.sourcesTitle,
-                                            subtitle = srcStrings.sourcesSubtitle,
-                                            value = sourcesValue,
-                                            primaryText = primaryText,
-                                            secondaryText = secondaryText,
-                                            onClick = { route = SettingsRoute.Category(SettingsCategory.SOURCES) },
-                                        )
-                                    }
-                                    Spacer(Modifier.height(14.dp))
-                                }
-
-                                // Grouped Category List
-                                if (!search.active) {
                                     SettingsGroup(
                                         cardBg = cardBg,
                                         dividerColor = dividerColor,
@@ -556,6 +545,7 @@ fun SonataSettingsScreen(
                                                 icon = cat.icon,
                                                 title = cat.localizedTitle(strings, srcStrings, ecoStrings),
                                                 subtitle = subtitle,
+                                                value = if (cat == SettingsCategory.SOURCES) sourcesValue else null,
                                                 primaryText = primaryText,
                                                 secondaryText = secondaryText,
                                                 onClick = { route = SettingsRoute.Category(cat) },
@@ -619,8 +609,16 @@ fun SonataSettingsScreen(
                                             onRescanLocalMusic = onRescanLocalMusic,
                                             onProbeServerHealth = onProbeServerHealth,
                                             onRunServerSpeedTest = onRunServerSpeedTest,
+                                            onRescanServer = onRescanServer,
                                             onOpenServers = onOpenServer,
                                             searchQuery = searchQuery,
+                                            localTracks = localTracks,
+                                            onPlayLocalTrack = onPlayLocalTrack,
+                                            localAvailableFolders = localAvailableFolders,
+                                            onToggleExcludeNonMusic = onToggleExcludeNonMusic,
+                                            onToggleLocalMusicFolder = onToggleLocalMusicFolder,
+                                            onAddLocalMusicFolder = onAddLocalMusicFolder,
+                                            onClearLocalMusicFolders = onClearLocalMusicFolders,
                                         )
                                         Spacer(Modifier.height(14.dp))
                                     }
@@ -990,7 +988,15 @@ fun SonataSettingsScreen(
                                         onRescanLocalMusic = onRescanLocalMusic,
                                         onProbeServerHealth = onProbeServerHealth,
                                         onRunServerSpeedTest = onRunServerSpeedTest,
+                                        onRescanServer = onRescanServer,
                                         onOpenServers = onOpenServer,
+                                        localTracks = localTracks,
+                                        onPlayLocalTrack = onPlayLocalTrack,
+                                        localAvailableFolders = localAvailableFolders,
+                                        onToggleExcludeNonMusic = onToggleExcludeNonMusic,
+                                        onToggleLocalMusicFolder = onToggleLocalMusicFolder,
+                                        onAddLocalMusicFolder = onAddLocalMusicFolder,
+                                        onClearLocalMusicFolders = onClearLocalMusicFolders,
                                     )
 
                                     SettingsCategory.DOWNLOADS -> DownloadsCategoryContent(

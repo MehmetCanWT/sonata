@@ -49,6 +49,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -257,11 +258,13 @@ fun UserMenuSheet(
                             )
                         }
 
+                        val signInBg = tokens.petalLavender
+                        val signInFg = if (signInBg.luminance() > 0.5f) Color.Black else Color.White
                         Box(
                             modifier = Modifier
                                 .clip(pillShape)
                                 .background(
-                                    if (signedIn) tokens.onSurfacePrimary.copy(alpha = 0.12f) else tokens.petalLavender,
+                                    if (signedIn) tokens.onSurfacePrimary.copy(alpha = 0.12f) else signInBg,
                                 )
                                 .clickable {
                                     onDismiss()
@@ -272,7 +275,7 @@ fun UserMenuSheet(
                             Text(
                                 text = if (signedIn) strings.signOut else strings.signIn,
                                 style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
-                                color = if (signedIn) tokens.onSurfacePrimary else Color.White,
+                                color = if (signedIn) tokens.onSurfacePrimary else signInFg,
                             )
                         }
                     }

@@ -85,10 +85,11 @@ private val LOSSLESS_CODECS = setOf(
     "DSD",
 )
 
-private val SERVER_LABELS = setOf(
-    "Jellyfin",
-    "Subsonic",
-    "WebDAV",
+private val SERVER_PROTOCOL_TAGS = setOf(
+    "smb",
+    "jellyfin",
+    "subsonic",
+    "webdav",
 )
 
 private val PRESERVED_QUALITY_AND_SOURCE_TAGS = mapOf(
@@ -98,15 +99,25 @@ private val PRESERVED_QUALITY_AND_SOURCE_TAGS = mapOf(
     "extreme" to "Extreme",
     "hq" to "HQ",
     "standard" to "Standard",
-    "jellyfin" to "Jellyfin",
-    "subsonic" to "Subsonic",
-    "webdav" to "WebDAV",
     "jiosaavn" to "JioSaavn",
     "tidal" to "Tidal",
     "qobuz" to "Qobuz",
     "deezer" to "Deezer",
     "cached" to "Cached",
 )
+
+/**
+ * Removes server protocol names (`SMB`, `Jellyfin`, `Subsonic`, `WebDAV`) from quality badges
+ * so users only see technical audio quality metrics (`FLAC · 880 kbps · 16-bit/44.1kHz`).
+ */
+fun stripServerLabelsFromBadge(badge: String): String {
+    val clean = badge.trim()
+    if (clean.isEmpty()) return ""
+    val filtered = clean.split('·')
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && it.lowercase(Locale.ROOT) !in SERVER_PROTOCOL_TAGS }
+    return filtered.joinToString(" · ")
+}
 
 /**
  * Maps a Media3 [C.PcmEncoding] constant to integer bit depth (`8`, `16`, `24`, `32`),
@@ -298,8 +309,8 @@ fun mergeStreamBadgeWithMeasurement(
     sourceLabel: String = "",
     measuredBitrateKbps: Int = 0,
 ): String {
-    val cleanInitial = initialBadge.trim()
-    val cleanMeasured = measuredBadge.trim()
+    val cleanInitial = stripServerLabelsFromBadge(initialBadge)
+    val cleanMeasured = stripServerLabelsFromBadge(measuredBadge)
     if (cleanMeasured.isBlank()) return cleanInitial
 
     val hasMeasuredBitrate = measuredBitrateKbps > 0 || BADGE_KBPS_REGEX.containsMatchIn(cleanMeasured)
@@ -321,9 +332,6 @@ fun mergeStreamBadgeWithMeasurement(
         val canonical = PRESERVED_QUALITY_AND_SOURCE_TAGS[token.lowercase(Locale.ROOT)] ?: continue
         if (canonical == "Cached" && isOffline) continue
         trailingFacts.add(canonical)
-    }
-    if (sourceLabel in SERVER_LABELS) {
-        trailingFacts.add(sourceLabel)
     }
 
     val parts = ArrayList<String>(4)

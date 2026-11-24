@@ -388,10 +388,10 @@ internal fun filterPlaylistsForSourceTab(
 }
 
 private fun serverTagForKind(kind: AndroidServerKind): String = when (kind) {
-    AndroidServerKind.JELLYFIN -> "JFN"
-    AndroidServerKind.SUBSONIC -> "SUB"
+    AndroidServerKind.JELLYFIN -> "Jellyfin"
+    AndroidServerKind.SUBSONIC -> "Subsonic"
     AndroidServerKind.SMB -> "SMB"
-    AndroidServerKind.WEB_DAV -> "DAV"
+    AndroidServerKind.WEB_DAV -> "WebDAV"
 }
 
 private fun serverKindForTab(tab: LibrarySourceTab): AndroidServerKind? = when (tab) {
@@ -481,7 +481,7 @@ internal fun LibraryTabContent(
         state.personalOnlyMode,
     ) {
         val baseById = LinkedHashMap<String, AndroidPlaylist>().apply {
-            if (!state.personalOnlyMode || selectedTab != LibrarySourceTab.YOUTUBE) {
+            if (!state.personalOnlyMode) {
                 put(normalizeCollectionId(downloadsPlaylist.id), downloadsPlaylist)
             }
             state.playlists.forEach { pl ->
@@ -620,6 +620,10 @@ internal fun LibraryTabContent(
         )
     }
 
+    val personalLocalQueue = remember(state.localMusicLibrary.tracks) {
+        state.localMusicLibrary.tracks.map { it.toAndroidTrack() }
+    }
+
     TrackScrollActivity(listState)
 
     LazyColumn(
@@ -719,35 +723,39 @@ internal fun LibraryTabContent(
                     horizontalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
                     item(key = "replay_card_tracks", contentType = "replay_card") {
+                        val isPersonalAll = state.personalOnlyMode && selectedTab == LibrarySourceTab.ALL
+                        val cardTracks = if (isPersonalAll) personalLocalQueue else visibleTracksForTab
                         ReplayCreditCard(
-                            label = if (state.personalOnlyMode && selectedTab == LibrarySourceTab.ALL) {
+                            label = if (isPersonalAll) {
                                 srcStrings.tabLocal
                             } else {
                                 strings.quickPicks
                             },
-                            value = strings.tracksCount(visibleTracksForTab.size),
+                            value = strings.tracksCount(cardTracks.size),
                             detail = state.activeTrack?.title ?: strings.playSongsToBuildHistory,
                             artworkUrl = replayArt.artworkAt(CARD_ART_PX),
                             holder = holderName,
                             cardIndex = 0,
                             onClick = {
-                                visibleTracksForTab.firstOrNull()?.let { onPlayTrack(it, visibleTracksForTab) }
+                                cardTracks.firstOrNull()?.let { onPlayTrack(it, cardTracks) }
                             },
                             modifier = Modifier.width(300.dp),
                         )
                     }
-                    item(key = "replay_card_playlists", contentType = "replay_card") {
-                        ReplayCreditCard(
-                            label = strings.offlineLabel,
-                            value = strings.savedCount(downloadsCount),
-                            detail = if (downloadsCount > 0) strings.downloaded else strings.noDownloadsHint,
-                            artworkUrl = latestDownloadCoverUrl?.artworkAt(CARD_ART_PX)
-                                ?: replayArt.artworkAt(CARD_ART_PX),
-                            holder = holderName,
-                            cardIndex = 1,
-                            onClick = onOpenDownloads,
-                            modifier = Modifier.width(300.dp),
-                        )
+                    if (!state.personalOnlyMode) {
+                        item(key = "replay_card_playlists", contentType = "replay_card") {
+                            ReplayCreditCard(
+                                label = strings.offlineLabel,
+                                value = strings.savedCount(downloadsCount),
+                                detail = if (downloadsCount > 0) strings.downloaded else strings.noDownloadsHint,
+                                artworkUrl = latestDownloadCoverUrl?.artworkAt(CARD_ART_PX)
+                                    ?: replayArt.artworkAt(CARD_ART_PX),
+                                holder = holderName,
+                                cardIndex = 1,
+                                onClick = onOpenDownloads,
+                                modifier = Modifier.width(300.dp),
+                            )
+                        }
                     }
                     item(key = "replay_card_stats", contentType = "replay_card") {
                         val playsCount = statsSummary?.totalPlays ?: 0uL
@@ -777,12 +785,14 @@ internal fun LibraryTabContent(
                 item(key = "library_device_rows", contentType = "device_rows") {
                     val enabledServers = remember(state.servers) { state.servers.filter { it.enabled } }
                     Column(modifier = Modifier.padding(horizontal = PAGE_GUTTER)) {
-                        LibraryNavRow(
-                            icon = SonataIcons.Download,
-                            label = strings.downloads,
-                            subtitle = if (downloadsCount > 0) strings.tracksCount(downloadsCount) else strings.offlineLabel,
-                            onClick = onOpenDownloads,
-                        )
+                        if (!state.personalOnlyMode) {
+                            LibraryNavRow(
+                                icon = SonataIcons.Download,
+                                label = strings.downloads,
+                                subtitle = if (downloadsCount > 0) strings.tracksCount(downloadsCount) else strings.offlineLabel,
+                                onClick = onOpenDownloads,
+                            )
+                        }
                         LibraryNavRow(
                             icon = SonataIcons.Sparkles,
                             label = ecoStrings.listeningStatsTitle,

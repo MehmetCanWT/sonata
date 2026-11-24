@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Self-hosted Jellyfin, Subsonic, and WebDAV servers often run over plain HTTP on LAN or private hosts. -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

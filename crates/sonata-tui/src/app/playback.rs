@@ -851,6 +851,9 @@ impl App {
     }
 
     fn start_cover_enrichment(&mut self) {
+        if self.config.personal_only_mode {
+            return;
+        }
         if self.cover_started_play_seq == Some(self.play_seq) {
             return;
         }
@@ -953,7 +956,10 @@ impl App {
         }
         self.start_cover_enrichment();
 
-        if self.config.motion_covers && !self.config.reduce_motion {
+        if !self.config.personal_only_mode
+            && self.config.motion_covers
+            && !self.config.reduce_motion
+        {
             let anim_tx = self.tx.clone();
             let anim_http = http;
             let anim_track = track;

@@ -64,6 +64,22 @@ data class SourcesStrings(
     val tabWebDav: String,
     val attributePersonalToYtmTitle: String,
     val attributePersonalToYtmDescription: String,
+    val viewLocalTracks: String = "View Local Tracks",
+    val hideLocalTracks: String = "Hide Local Tracks",
+    val excludeNonMusicTitle: String = "Exclude Voice Notes & Short Audio",
+    val excludeNonMusicDescription: String = "Skip WhatsApp/Telegram audio, call/voice recordings, ringtones, and clips under 30s",
+    val musicFoldersTitle: String = "Music Folders",
+    val allMusicFolders: String = "All Music Folders",
+    val selectedFoldersCount: (Int) -> String = { count -> if (count == 1) "1 folder selected" else "$count folders selected" },
+    val addFolder: String = "Add Folder",
+    val scanAllFolders: String = "Scan All",
+    val noFoldersDiscovered: String = "No music folders discovered yet. Tap Add Folder to pick one.",
+    val rescanningSource: String = "Rescanning...",
+    val rescanSummary: (Int, Int) -> String = { tracks, albums ->
+        val t = if (tracks == 1) "1 track" else "$tracks tracks"
+        val a = if (albums == 1) "1 album" else "$albums albums"
+        "$t · $a"
+    },
 )
 
 val EnglishSourcesStrings = SourcesStrings(
@@ -128,6 +144,22 @@ val EnglishSourcesStrings = SourcesStrings(
     tabWebDav = "WebDAV",
     attributePersonalToYtmTitle = "Report Personal Plays to YouTube Music",
     attributePersonalToYtmDescription = "Match local and server tracks against YouTube Music to update your listening history when signed in",
+    viewLocalTracks = "View Local Tracks",
+    hideLocalTracks = "Hide Local Tracks",
+    excludeNonMusicTitle = "Exclude Voice Notes & Short Audio",
+    excludeNonMusicDescription = "Skip WhatsApp/Telegram audio, call/voice recordings, ringtones, and clips under 30s",
+    musicFoldersTitle = "Music Folders",
+    allMusicFolders = "All Music Folders",
+    selectedFoldersCount = { count -> if (count == 1) "1 folder selected" else "$count folders selected" },
+    addFolder = "Add Folder",
+    scanAllFolders = "Scan All",
+    noFoldersDiscovered = "No music folders discovered yet. Tap Add Folder to pick one.",
+    rescanningSource = "Rescanning...",
+    rescanSummary = { tracks, albums ->
+        val t = if (tracks == 1) "1 track" else "$tracks tracks"
+        val a = if (albums == 1) "1 album" else "$albums albums"
+        "$t · $a"
+    },
 )
 
 val TurkishSourcesStrings = SourcesStrings(
@@ -192,6 +224,18 @@ val TurkishSourcesStrings = SourcesStrings(
     tabWebDav = "WebDAV",
     attributePersonalToYtmTitle = "Kişisel Çalmaları YouTube Music Geçmişine İşle",
     attributePersonalToYtmDescription = "Oturum açıkken yerel ve sunucu parçalarını YouTube Music ile eşleştirerek dinleme geçmişine ekle",
+    viewLocalTracks = "Yerel Parçaları Görüntüle",
+    hideLocalTracks = "Yerel Parçaları Gizle",
+    excludeNonMusicTitle = "Ses Kayıtlarını ve Kısa Sesleri Dışla",
+    excludeNonMusicDescription = "WhatsApp/Telegram seslerini, arama kayıtlarını, zil seslerini ve 30 sn altı klipleri atla",
+    musicFoldersTitle = "Müzik Klasörleri",
+    allMusicFolders = "Tüm Müzik Klasörleri",
+    selectedFoldersCount = { count -> "$count klasör seçili" },
+    addFolder = "Klasör Ekle",
+    scanAllFolders = "Tümünü Tara",
+    noFoldersDiscovered = "Henüz müzik klasörü bulunamadı. Seçmek için Klasör Ekle'ye dokun.",
+    rescanningSource = "Taranıyor...",
+    rescanSummary = { tracks, albums -> "$tracks parça · $albums albüm" },
 )
 
 val RussianSourcesStrings = SourcesStrings(
@@ -256,6 +300,18 @@ val RussianSourcesStrings = SourcesStrings(
     tabWebDav = "WebDAV",
     attributePersonalToYtmTitle = "Отмечать личные прослушивания в YouTube Music",
     attributePersonalToYtmDescription = "Сопоставлять локальные и серверные треки с YouTube Music для истории при входе в аккаунт",
+    viewLocalTracks = "Показать локальные треки",
+    hideLocalTracks = "Скрыть локальные треки",
+    excludeNonMusicTitle = "Исключать голосовые и короткие записи",
+    excludeNonMusicDescription = "Пропускать аудио WhatsApp/Telegram, записи звонков, рингтоны и клипы короче 30 сек",
+    musicFoldersTitle = "Папки с музыкой",
+    allMusicFolders = "Все папки с музыкой",
+    selectedFoldersCount = { count -> "Выбрано папок: $count" },
+    addFolder = "Добавить папку",
+    scanAllFolders = "Сканировать все",
+    noFoldersDiscovered = "Папки с музыкой ещё не найдены. Нажмите «Добавить папку».",
+    rescanningSource = "Сканирование...",
+    rescanSummary = { tracks, albums -> "$tracks треков · $albums альбомов" },
 )
 
 /**

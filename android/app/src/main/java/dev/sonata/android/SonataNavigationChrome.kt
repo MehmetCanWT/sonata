@@ -620,6 +620,7 @@ internal fun SonataGlassNavBar(
     onNext: () -> Unit,
     onPrevious: () -> Unit,
     onExpand: () -> Unit,
+    personalOnlyMode: Boolean = false,
 ) {
     val themeTokens = LocalLunariaColors.current
     val glassSupported = LocalLiquidGlassEnabled.current && isGlassSupported()
@@ -629,9 +630,18 @@ internal fun SonataGlassNavBar(
     val unselectedColor = contentColor.copy(alpha = 0.62f)
     val fallbackSurface = themeTokens.eclipseSurface
     val strings = LocalSonataStrings.current
-    val selectedIndex = PrimaryTabs.indexOfFirst { it.tab == selectedTab }.coerceAtLeast(0)
-    val tabClickCallbacks = remember(onTabSelected) {
-        PrimaryTabs.map { spec -> { onTabSelected(spec.tab) } }
+    val visibleTabs = remember(personalOnlyMode) {
+        if (personalOnlyMode) {
+            PrimaryTabs.filter {
+                it.tab == AndroidTab.Home || it.tab == AndroidTab.Library || it.tab == AndroidTab.Search
+            }
+        } else {
+            PrimaryTabs
+        }
+    }
+    val selectedIndex = visibleTabs.indexOfFirst { it.tab == selectedTab }.coerceAtLeast(0)
+    val tabClickCallbacks = remember(visibleTabs, onTabSelected) {
+        visibleTabs.map { spec -> { onTabSelected(spec.tab) } }
     }
     val navBarShape = themeTokens.navBarShape
     val miniPlayerShape = themeTokens.miniPlayerShape
@@ -731,11 +741,11 @@ internal fun SonataGlassNavBar(
                 bottom = 4.dp,
             ),
         ),
-        contentKey = remember(selectedIndex, contentColor, strings) {
-            listOf(selectedIndex, contentColor, strings)
+        contentKey = remember(selectedIndex, contentColor, strings, personalOnlyMode) {
+            listOf(selectedIndex, contentColor, strings, personalOnlyMode)
         },
     ) {
-        PrimaryTabs.forEachIndexed { index, spec ->
+        visibleTabs.forEachIndexed { index, spec ->
             val tabLabel = when (spec.tab) {
                 AndroidTab.Home -> strings.tabHome
                 AndroidTab.Explore -> strings.tabExplore
@@ -746,7 +756,7 @@ internal fun SonataGlassNavBar(
             val isSelected = index == selectedIndex
             val tint = if (isSelected) selectedColor else unselectedColor
             val onClick = tabClickCallbacks[index]
-            if (index == PrimaryTabs.lastIndex) {
+            if (index == visibleTabs.lastIndex) {
                 standaloneTab(
                     key = index,
                     icon = {

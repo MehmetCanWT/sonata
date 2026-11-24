@@ -135,17 +135,131 @@ fn parse_enhanced_words(stripped: &str, re_word: &Regex) -> Vec<LyricWord> {
     words
 }
 
+/// Splits trailing parenthesized background vocals (e.g. `Lead text (ad-lib)`) from
+/// line-synced LRC rows into separate nested `(...)` [`LyricLine`] entries.
+pub fn split_inline_background_vocals(mut lines: Vec<LyricLine>) -> Vec<LyricLine> {
+    if lines.is_empty() {
+        return lines;
+    }
+    lines.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
+    let mut out = Vec::with_capacity(lines.len() + 8);
+    for idx in 0..lines.len() {
+        let line = &lines[idx];
+        if !line.words.is_empty() {
+            out.push(line.clone());
+            continue;
+        }
+        let trimmed = line.text.trim();
+        if !trimmed.ends_with(')') {
+            out.push(line.clone());
+            continue;
+        }
+        let mut depth = 0i32;
+        let mut open_idx = None;
+        for (byte_idx, ch) in trimmed.char_indices().rev() {
+            match ch {
+                ')' => depth += 1,
+                '(' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        open_idx = Some(byte_idx);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(open) = open_idx else {
+            out.push(line.clone());
+            continue;
+        };
+        if open == 0 || !trimmed[..open].ends_with(char::is_whitespace) {
+            out.push(line.clone());
+            continue;
+        }
+        let lead = trimmed[..open].trim();
+        let inner = trimmed[open + 1..trimmed.len() - 1].trim();
+        if lead.is_empty() || inner.is_empty() {
+            out.push(line.clone());
+            continue;
+        }
+
+        let next_t = lines.get(idx + 1).map(|n| n.time_secs);
+        let bg_time = match next_t {
+            Some(nt) if nt > line.time_secs + 0.25 => {
+                let lead_chars = lead.chars().count() as f64;
+                let bg_chars = inner.chars().count() as f64;
+                let ratio = (lead_chars / (lead_chars + bg_chars).max(1.0)).clamp(0.45, 0.72);
+                line.time_secs + (nt - line.time_secs) * ratio
+            }
+            _ => line.time_secs + 1.2,
+        };
+
+        out.push(LyricLine {
+            time_secs: line.time_secs,
+            text: lead.to_string(),
+            words: Vec::new(),
+            voice: line.voice,
+        });
+        out.push(LyricLine {
+            time_secs: bg_time,
+            text: format!("({inner})"),
+            words: Vec::new(),
+            voice: line.voice,
+        });
+    }
+    out.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
+    out
+}
+
+/// Parses TTML XML, standard/Enhanced LRC (including `[offset:ms]`), or plain text lyrics.
+pub fn parse_lyrics_auto(raw: &str) -> LyricsState {
+    let cleaned = raw.trim().trim_start_matches('\u{FEFF}').trim();
+    if cleaned.is_empty() {
+        return LyricsState::NotFound;
+    }
+    if cleaned.starts_with('<') && cleaned.contains("<tt") {
+        if let Some(lines) = ttml::parse_ttml(cleaned) {
+            return LyricsState::Synced(lines);
+        }
+    }
+    let synced = parse_lrc(cleaned);
+    if !synced.is_empty() {
+        return LyricsState::Synced(synced);
+    }
+    let plain: Vec<String> = cleaned
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect();
+    if plain.is_empty() {
+        LyricsState::NotFound
+    } else {
+        LyricsState::Plain(plain)
+    }
+}
+
 /// Parses standard LRC `[mm:ss.xx]` and Enhanced A2 LRC `<mm:ss.xx>` content.
 pub fn parse_lrc(raw: &str) -> Vec<LyricLine> {
     static RE_LINE: OnceLock<Regex> = OnceLock::new();
     static RE_WORD_TAG: OnceLock<Regex> = OnceLock::new();
+    static RE_OFFSET: OnceLock<Regex> = OnceLock::new();
     let re_line =
         RE_LINE.get_or_init(|| Regex::new(r"\[(\d{1,3}):(\d{2})(?:\.(\d{1,3}))?\]").unwrap());
     let re_word =
         RE_WORD_TAG.get_or_init(|| Regex::new(r"<(\d{1,3}):(\d{2})(?:\.(\d{1,3}))?>").unwrap());
+    let re_offset =
+        RE_OFFSET.get_or_init(|| Regex::new(r"(?i)\[offset:\s*([+-]?\d+)\s*\]").unwrap());
 
+    let mut offset_ms = 0.0_f64;
     let mut lines = Vec::new();
     for raw_line in raw.lines() {
+        if let Some(cap) = re_offset.captures(raw_line) {
+            if let Ok(parsed_offset) = cap[1].parse::<f64>() {
+                offset_ms = parsed_offset;
+            }
+        }
         let mut timestamps = Vec::new();
         for cap in re_line.captures_iter(raw_line) {
             timestamps.push(parse_timestamp(
@@ -161,7 +275,15 @@ pub fn parse_lrc(raw: &str) -> Vec<LyricLine> {
 
         let stripped = re_line.replace_all(raw_line, "");
         let (voice, body) = strip_voice_prefix(&stripped);
-        let words = parse_enhanced_words(body, re_word);
+        let shift_secs = offset_ms / 1000.0;
+        let words: Vec<LyricWord> = parse_enhanced_words(body, re_word)
+            .into_iter()
+            .map(|mut w| {
+                w.start_secs = (w.start_secs - shift_secs).max(0.0);
+                w.end_secs = w.end_secs.map(|e| (e - shift_secs).max(w.start_secs));
+                w
+            })
+            .collect();
         let clean_text = re_word
             .replace_all(body, "")
             .split_whitespace()
@@ -169,7 +291,7 @@ pub fn parse_lrc(raw: &str) -> Vec<LyricLine> {
             .join(" ");
         for ts in timestamps {
             lines.push(LyricLine {
-                time_secs: ts,
+                time_secs: (ts - shift_secs).max(0.0),
                 text: clean_text.clone(),
                 words: words.clone(),
                 voice,
@@ -177,8 +299,7 @@ pub fn parse_lrc(raw: &str) -> Vec<LyricLine> {
         }
     }
 
-    lines.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
-    lines
+    split_inline_background_vocals(lines)
 }
 
 fn format_lrc_stamp(secs: f64) -> String {
@@ -674,5 +795,65 @@ mod tests {
             "Eminem, Big Sean, BabyTron",
             Some(285),
         ));
+    }
+
+    #[test]
+    fn splits_inline_background_vocals_and_keeps_standalone_and_plurals() {
+        let raw = "\
+[offset:500]
+[00:05.00] Fed up with life (damn, I'm goin' insane)
+[00:09.00] Next verse word(s)
+[00:12.00] (standalone echo)
+";
+        let parsed = parse_lrc(raw);
+        assert_eq!(parsed.len(), 4);
+
+        assert!((parsed[0].time_secs - 4.5).abs() < 0.01);
+        assert_eq!(parsed[0].text, "Fed up with life");
+
+        assert!(parsed[1].time_secs > 4.5 && parsed[1].time_secs < 8.5);
+        assert_eq!(parsed[1].text, "(damn, I'm goin' insane)");
+
+        assert!((parsed[2].time_secs - 8.5).abs() < 0.01);
+        assert_eq!(parsed[2].text, "Next verse word(s)");
+
+        assert!((parsed[3].time_secs - 11.5).abs() < 0.01);
+        assert_eq!(parsed[3].text, "(standalone echo)");
+    }
+
+    #[test]
+    fn parse_lyrics_auto_supports_ttml_lrc_and_plain() {
+        let ttml = r#"<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata">
+            <head><metadata><ttm:agent type="person" xml:id="v1"/></metadata></head>
+            <body><div>
+                <p begin="2.10" end="4.60" ttm:agent="v1"><span begin="2.10" end="2.60">Meet</span> <span begin="2.60" end="4.60">Eddie</span><span ttm:role="x-bg"><span begin="3.80" end="4.50">(who?)</span></span></p>
+            </div></body>
+        </tt>"#;
+        match parse_lyrics_auto(ttml) {
+            LyricsState::Synced(lines) => {
+                assert_eq!(lines.len(), 2);
+                assert_eq!(lines[0].text, "Meet Eddie");
+                assert_eq!(lines[0].words.len(), 2);
+                assert_eq!(lines[1].text, "(who?)");
+                assert!((lines[1].time_secs - 3.8).abs() < 0.01);
+            }
+            other => panic!("expected Synced TTML lines, got {other:?}"),
+        }
+
+        match parse_lyrics_auto("\u{FEFF}[00:01.00] One (two)\n[00:05.00] Three") {
+            LyricsState::Synced(lines) => {
+                assert_eq!(lines.len(), 3);
+                assert_eq!(lines[0].text, "One");
+                assert_eq!(lines[1].text, "(two)");
+            }
+            other => panic!("expected Synced LRC lines, got {other:?}"),
+        }
+
+        match parse_lyrics_auto("First line\nSecond line") {
+            LyricsState::Plain(lines) => {
+                assert_eq!(lines, vec!["First line", "Second line"]);
+            }
+            other => panic!("expected Plain lines, got {other:?}"),
+        }
     }
 }

@@ -50,6 +50,8 @@ import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import dev.sonata.android.data.AudioPipelineBus
 import dev.sonata.android.data.AppLanguage
+import dev.sonata.android.data.SmbAwareDataSourceFactory
+import dev.sonata.android.data.SmbDataSourceFactory
 import dev.sonata.android.data.formatMeasuredAudioBadge
 import dev.sonata.android.data.normalizeAudioCodecLabel
 import dev.sonata.android.data.parseHttpContentLength
@@ -472,8 +474,13 @@ class PlaybackService : MediaLibraryService() {
             }
         }
 
+        val mediaDataSourceFactory = SmbAwareDataSourceFactory(
+            smbFactory = SmbDataSourceFactory(),
+            fallbackFactory = cacheDataSourceFactory,
+        )
+
         val exoPlayer = ExoPlayer.Builder(this, renderersFactory)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(cacheDataSourceFactory))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(mediaDataSourceFactory))
             .setLoadControl(loadControl)
             .setAudioAttributes(
                 AudioAttributes.Builder()
@@ -1917,10 +1924,23 @@ class PlaybackService : MediaLibraryService() {
                 size > MAX_CONTENT_BYTES_ENTRIES
         }
 
-        private fun recordMeasuredContentBytes(uri: String, bytes: Long) {
+        internal fun recordMeasuredContentBytes(uri: String, bytes: Long) {
             if (uri.isBlank() || bytes <= 0L) return
             synchronized(contentBytesLock) {
                 measuredContentBytesByUri[uri] = bytes
+            }
+            if (AudioPipelineBus.info.value.bitrateKbps <= 0) {
+                PlaybackAudioBridge.activeService?.let { service ->
+                    service.postOnPlayer {
+                        val player = service.exoPlayerInstance
+                        if (player != null) {
+                            service.refreshFormatTelemetryIfPossible(
+                                exoPlayer = player,
+                                simpleCache = getOrCreateCache(service),
+                            )
+                        }
+                    }
+                }
             }
         }
 

@@ -11,6 +11,7 @@ import dev.sonata.android.PinnedCollectionEntry
 import dev.sonata.android.PlaybackService
 import dev.sonata.android.SavedExternalPlaylist
 import dev.sonata.android.SonataViewModel
+import dev.sonata.android.data.SmbClient
 import dev.sonata.android.data.SonataEngineGateway
 import dev.sonata.android.data.isPersonalTrackId
 import dev.sonata.android.data.runSuspendCatching
@@ -36,6 +37,7 @@ import uniffi.sonata_android.AndroidHomeCard
 import uniffi.sonata_android.AndroidHomeCardKind
 import uniffi.sonata_android.AndroidHomeShelf
 import uniffi.sonata_android.AndroidPlaylist
+import uniffi.sonata_android.AndroidServerKind
 import uniffi.sonata_android.AndroidTrack
 import kotlin.random.Random
 
@@ -520,6 +522,7 @@ internal fun SonataViewModel.buildRecentArtistCardsImpl(
 }
 
 internal fun SonataViewModel.ensureArtistCardEnrichedImpl(rawArtist: String) {
+    if (preferences.state.value.personalOnlyMode) return
     val primary = SonataViewModel.extractPrimaryArtistName(rawArtist)
     val key = primary.lowercase()
     if (key.isBlank()) return
@@ -544,9 +547,17 @@ internal fun SonataViewModel.ensureArtistCardEnrichedImpl(rawArtist: String) {
     }
 }
 
-internal fun SonataViewModel.loadLocalLastPlayedHistoryImpl(): List<AndroidTrack> = synchronized(historyLock) {
-    localHistoryCache?.let { return it }
-    val raw = historyPrefs.getString(SonataViewModel.LAST_PLAYED_KEY, null)
+internal fun SonataViewModel.activeHistoryPrefKey(signedInOverride: Boolean? = null): String {
+    val isSignedIn = signedInOverride ?: _uiState.value.signedIn
+    return if (isSignedIn) SonataViewModel.ACCOUNT_LAST_PLAYED_KEY else SonataViewModel.GUEST_LAST_PLAYED_KEY
+}
+
+internal fun SonataViewModel.loadLocalLastPlayedHistoryImpl(signedInOverride: Boolean? = null): List<AndroidTrack> = synchronized(historyLock) {
+    val key = activeHistoryPrefKey(signedInOverride)
+    if (localHistoryCacheKey == key) {
+        localHistoryCache?.let { return it }
+    }
+    val raw = historyPrefs.getString(key, null)
     val loaded = if (raw == null) {
         emptyList()
     } else {
@@ -576,12 +587,18 @@ internal fun SonataViewModel.loadLocalLastPlayedHistoryImpl(): List<AndroidTrack
             SonataViewModel.deduplicateTracks(parsed).take(SonataViewModel.MAX_LAST_PLAYED_HISTORY)
         }.getOrDefault(emptyList())
     }
+    localHistoryCacheKey = key
     localHistoryCache = loaded
     loaded
 }
 
-internal fun SonataViewModel.saveLocalLastPlayedHistoryImpl(tracks: List<AndroidTrack>) = synchronized(historyLock) {
+internal fun SonataViewModel.saveLocalLastPlayedHistoryImpl(
+    tracks: List<AndroidTrack>,
+    signedInOverride: Boolean? = null,
+) = synchronized(historyLock) {
+    val key = activeHistoryPrefKey(signedInOverride)
     val clean = SonataViewModel.deduplicateTracks(tracks).take(SonataViewModel.MAX_LAST_PLAYED_HISTORY)
+    localHistoryCacheKey = key
     localHistoryCache = clean
     val arr = JSONArray()
     clean.forEach { t ->
@@ -599,7 +616,27 @@ internal fun SonataViewModel.saveLocalLastPlayedHistoryImpl(tracks: List<Android
             }
         )
     }
-    historyPrefs.edit().putString(SonataViewModel.LAST_PLAYED_KEY, arr.toString()).apply()
+    historyPrefs.edit().putString(key, arr.toString()).apply()
+}
+
+internal fun SonataViewModel.clearGuestLastPlayedHistoryImpl() = synchronized(historyLock) {
+    if (localHistoryCacheKey != SonataViewModel.ACCOUNT_LAST_PLAYED_KEY) {
+        localHistoryCacheKey = null
+        localHistoryCache = null
+    }
+    historyPrefs.edit()
+        .remove(SonataViewModel.GUEST_LAST_PLAYED_KEY)
+        .remove(SonataViewModel.LAST_PLAYED_KEY)
+        .apply()
+}
+
+internal fun SonataViewModel.clearAccountLastPlayedHistoryImpl() = synchronized(historyLock) {
+    localHistoryCacheKey = null
+    localHistoryCache = null
+    historyPrefs.edit()
+        .remove(SonataViewModel.ACCOUNT_LAST_PLAYED_KEY)
+        .remove(SonataViewModel.LAST_PLAYED_KEY)
+        .apply()
 }
 
 internal fun SonataViewModel.recordLastPlayedImpl(track: AndroidTrack) {
@@ -627,11 +664,33 @@ internal fun SonataViewModel.recordLastPlayedImpl(track: AndroidTrack) {
     ensureArtistCardEnrichedImpl(track.artist)
 }
 
+internal fun SonataViewModel.removeFromLastPlayedImpl(track: AndroidTrack) {
+    if (track.id.isBlank()) return
+    val trackKey = SonataViewModel.canonicalTrackKey(track)
+    val updated = synchronized(historyLock) {
+        val currentLocal = loadLocalLastPlayedHistoryImpl()
+        val nextLocal = currentLocal.filterNot {
+            it.id == track.id || SonataViewModel.canonicalTrackKey(it) == trackKey
+        }
+        saveLocalLastPlayedHistoryImpl(nextLocal)
+        _lastPlayedTracks.value.filterNot {
+            it.id == track.id || SonataViewModel.canonicalTrackKey(it) == trackKey
+        }
+    }
+    _lastPlayedTracks.value = updated
+    val updatedArtists = buildRecentArtistCardsImpl(updated, _uiState.value.shelves)
+    _uiState.update { it.copy(lastPlayedTracks = updated, recentArtistCards = updatedArtists) }
+}
+
 internal fun SonataViewModel.mergeYtmListeningHistoryImpl(ytmHistory: List<AndroidTrack>) {
     if (ytmHistory.isEmpty()) return
+    if (preferences.state.value.personalOnlyMode || !_uiState.value.signedIn) return
     val merged = synchronized(historyLock) {
-        val local = loadLocalLastPlayedHistoryImpl()
-        SonataViewModel.deduplicateTracks(local + ytmHistory).take(SonataViewModel.MAX_LAST_PLAYED_HISTORY)
+        val accountLocal = loadLocalLastPlayedHistoryImpl(signedInOverride = true)
+        val combined = SonataViewModel.deduplicateTracks(ytmHistory + accountLocal)
+            .take(SonataViewModel.MAX_LAST_PLAYED_HISTORY)
+        saveLocalLastPlayedHistoryImpl(combined, signedInOverride = true)
+        combined
     }
     _lastPlayedTracks.value = merged
     val updatedArtists = buildRecentArtistCardsImpl(merged, _uiState.value.shelves)
@@ -639,6 +698,7 @@ internal fun SonataViewModel.mergeYtmListeningHistoryImpl(ytmHistory: List<Andro
 }
 
 internal fun SonataViewModel.refreshListeningHistoryImpl() {
+    if (preferences.state.value.personalOnlyMode) return
     if (listeningHistoryJob?.isActive == true) return
     listeningHistoryJob = viewModelScope.launch(Dispatchers.IO) {
         val engine = requireEngine()
@@ -1593,12 +1653,25 @@ internal fun SonataViewModel.openAlbumImpl(
 
 internal fun SonataViewModel.openArtistImpl(browseId: String, name: String = "") {
     val cleanBrowseId = browseId.trim()
-    val cleanName = name.trim()
-    if (cleanBrowseId.isBlank() && cleanName.isBlank()) return
+    val rawName = name.trim().ifBlank {
+        cleanBrowseId.substringAfter(":artist:", "").trim()
+    }
+    if (cleanBrowseId.isBlank() && rawName.isBlank()) return
     speculativePrefetchJob?.cancel()
 
-    val cached = (if (cleanBrowseId.startsWith("UC")) getCachedArtistPageImpl(cleanBrowseId) else null)
-        ?: cleanName.takeIf { it.isNotBlank() }?.let { getCachedArtistPageImpl("name:$it") }
+    val isPersonalOnly = preferences.state.value.personalOnlyMode
+    val isPersonalArtistRequest = isPersonalOnly ||
+        isPersonalTrackId(cleanBrowseId) ||
+        cleanBrowseId.startsWith("personal:artist:")
+    val preferPersonalFirst = isPersonalArtistRequest ||
+        (cleanBrowseId.isBlank() && _uiState.value.activeTrack?.id?.let { isPersonalTrackId(it) } == true)
+
+    val cached = if (!isPersonalArtistRequest) {
+        (if (cleanBrowseId.startsWith("UC")) getCachedArtistPageImpl(cleanBrowseId) else null)
+            ?: rawName.takeIf { it.isNotBlank() }?.let { getCachedArtistPageImpl("name:$it") }
+    } else {
+        null
+    }
     if (cached != null) {
         _uiState.update {
             it.copy(
@@ -1620,7 +1693,6 @@ internal fun SonataViewModel.openArtistImpl(browseId: String, name: String = "")
     val s = uiStrings()
     artistJob?.cancel()
     artistJob = viewModelScope.launch(Dispatchers.IO) {
-        val engine = requireEngine()
         _uiState.update {
             it.copy(
                 collectionBrowseId = null,
@@ -1632,7 +1704,7 @@ internal fun SonataViewModel.openArtistImpl(browseId: String, name: String = "")
                 artistLoading = true,
                 artistPage = AndroidArtistPage(
                     id = cleanBrowseId,
-                    name = cleanName.ifBlank { s.artistDefault },
+                    name = rawName.ifBlank { s.artistDefault },
                     subtitle = "",
                     description = null,
                     subscribers = null,
@@ -1645,19 +1717,46 @@ internal fun SonataViewModel.openArtistImpl(browseId: String, name: String = "")
                     releases = emptyList(),
                     relatedArtists = emptyList(),
                 ),
-                status = s.loadingNamedStatus(cleanName.ifBlank { s.artistDefault }),
+                status = s.loadingNamedStatus(rawName.ifBlank { s.artistDefault }),
             )
         }
+
+        if (preferPersonalFirst) {
+            val personalPage = runSuspendCatching {
+                buildPersonalArtistPageImpl(cleanBrowseId, rawName)
+            }.getOrNull()
+            if (personalPage != null) {
+                _uiState.update {
+                    it.copy(
+                        artistLoading = false,
+                        artistPage = personalPage,
+                        status = personalPage.name,
+                    )
+                }
+                return@launch
+            }
+            if (isPersonalOnly || isPersonalArtistRequest) {
+                _uiState.update {
+                    it.copy(
+                        artistLoading = false,
+                        artistPage = null,
+                    )
+                }
+                return@launch
+            }
+        }
+
+        val engine = requireEngine()
         val result = runSuspendCatching {
             if (cleanBrowseId.startsWith("UC")) {
                 engine.fetchArtistPage(cleanBrowseId)
             } else {
-                engine.fetchArtistByName(cleanName)
+                engine.fetchArtistByName(rawName)
             }
         }
         result
             .onSuccess { page ->
-                putCachedArtistPageImpl(page, cleanName)
+                putCachedArtistPageImpl(page, rawName)
                 _uiState.update {
                     it.copy(
                         artistLoading = false,
@@ -1668,14 +1767,25 @@ internal fun SonataViewModel.openArtistImpl(browseId: String, name: String = "")
                 prefetchStreams(page.popularTracks.take(2), delayMs = 1_200L)
             }
             .onFailure { err ->
-                if (!cleanBrowseId.startsWith("UC") && cleanName.isNotBlank()) {
+                val personalFallback = runSuspendCatching {
+                    buildPersonalArtistPageImpl(cleanBrowseId, rawName)
+                }.getOrNull()
+                if (personalFallback != null) {
+                    _uiState.update {
+                        it.copy(
+                            artistLoading = false,
+                            artistPage = personalFallback,
+                            status = personalFallback.name,
+                        )
+                    }
+                } else if (!cleanBrowseId.startsWith("UC") && rawName.isNotBlank()) {
                     _uiState.update {
                         it.copy(
                             artistLoading = false,
                             artistPage = null,
                         )
                     }
-                    search(cleanName)
+                    search(rawName)
                 } else {
                     _uiState.update {
                         it.copy(
@@ -1688,7 +1798,165 @@ internal fun SonataViewModel.openArtistImpl(browseId: String, name: String = "")
     }
 }
 
+internal suspend fun SonataViewModel.buildPersonalArtistPageImpl(
+    cleanBrowseId: String,
+    cleanName: String,
+): AndroidArtistPage? {
+    val targetName = cleanName.ifBlank { cleanBrowseId.substringAfter(":artist:", "") }.trim()
+    val preferredSrvId = if (cleanBrowseId.startsWith("smb:") ||
+        cleanBrowseId.startsWith("jellyfin:") ||
+        cleanBrowseId.startsWith("subsonic:") ||
+        cleanBrowseId.startsWith("webdav:")
+    ) {
+        cleanBrowseId.substringAfter(':').substringBefore(':')
+    } else {
+        null
+    }
+    if (targetName.isBlank() && preferredSrvId.isNullOrBlank()) return null
+
+    val stateSnapshot = _uiState.value
+    val srcStrings = sourcesStrings(preferences.state.value.appLanguage)
+    val enabledServers = stateSnapshot.servers
+        .filter { it.enabled }
+        .sortedByDescending { it.id == preferredSrvId }
+
+    var resolvedName = targetName
+    var metaAvatar: String? = null
+    var metaBio: String? = null
+    var metaSubtitle: String? = null
+    val collectedTracks = ArrayList<AndroidTrack>()
+    val collectedAlbums = ArrayList<AndroidHomeCard>()
+    val collectedRelated = ArrayList<AndroidHomeCard>()
+
+    // 1. SMB servers (rich artist folder image + artist.json/artist.nfo + albums/tracks)
+    for (srv in enabledServers.filter { it.kind == AndroidServerKind.SMB }) {
+        val profile = runSuspendCatching { SmbClient.fetchArtistProfile(srv, resolvedName) }.getOrNull() ?: continue
+        if (resolvedName.isBlank()) resolvedName = profile.name
+        if (metaAvatar == null) metaAvatar = profile.avatarUrl
+        if (metaBio == null) metaBio = profile.bio
+        if (metaSubtitle == null) metaSubtitle = profile.subtitle
+        collectedAlbums.addAll(profile.albums)
+        collectedTracks.addAll(profile.tracks)
+        collectedRelated.addAll(profile.relatedArtists)
+    }
+
+    // 2. Non-SMB self-hosted servers (Jellyfin, Subsonic, WebDAV)
+    val otherServers = enabledServers.filter { it.kind != AndroidServerKind.SMB }
+    if (otherServers.isNotEmpty()) {
+        val engine = runCatching { requireEngine() }.getOrNull()
+        if (engine != null && cleanBrowseId.startsWith("webdav:")) {
+            val webdavArtist = runSuspendCatching { engine.fetchArtistPage(cleanBrowseId) }.getOrNull()
+            if (webdavArtist != null) {
+                if (resolvedName.isBlank()) resolvedName = webdavArtist.name
+                if (metaAvatar == null) metaAvatar = webdavArtist.thumbnailUrl
+                if (metaBio == null) metaBio = webdavArtist.description
+                if (metaSubtitle == null && webdavArtist.subtitle.isNotBlank()) metaSubtitle = webdavArtist.subtitle
+                collectedAlbums.addAll(webdavArtist.releases)
+                collectedTracks.addAll(webdavArtist.popularTracks)
+                collectedRelated.addAll(webdavArtist.relatedArtists)
+            }
+        }
+        for (srv in otherServers) {
+            if (engine != null && srv.kind == AndroidServerKind.WEB_DAV && resolvedName.isNotBlank()) {
+                val webdavId = "webdav:${srv.id}:artist:$resolvedName"
+                if (webdavId != cleanBrowseId) {
+                    val webdavArtist = runSuspendCatching { engine.fetchArtistPage(webdavId) }.getOrNull()
+                    if (webdavArtist != null) {
+                        if (metaAvatar == null) metaAvatar = webdavArtist.thumbnailUrl
+                        if (metaBio == null) metaBio = webdavArtist.description
+                        if (metaSubtitle == null && webdavArtist.subtitle.isNotBlank()) metaSubtitle = webdavArtist.subtitle
+                        collectedAlbums.addAll(webdavArtist.releases)
+                        collectedTracks.addAll(webdavArtist.popularTracks)
+                        collectedRelated.addAll(webdavArtist.relatedArtists)
+                        continue
+                    }
+                }
+            }
+            val snap = stateSnapshot.serverSourceSnapshots[srv.id]
+            if (snap != null) {
+                collectedTracks.addAll(snap.tracks.filter { it.artist.equals(resolvedName, ignoreCase = true) })
+                collectedAlbums.addAll(
+                    snap.albums.filter {
+                        it.subtitle.equals(resolvedName, ignoreCase = true) ||
+                            it.title.equals(resolvedName, ignoreCase = true)
+                    },
+                )
+                val matchedArtistCard = snap.artists.firstOrNull {
+                    it.title.equals(resolvedName, ignoreCase = true) || it.id == cleanBrowseId
+                }
+                if (metaAvatar == null && !matchedArtistCard?.thumbnailUrl.isNullOrBlank()) {
+                    metaAvatar = matchedArtistCard?.thumbnailUrl
+                }
+                collectedRelated.addAll(snap.artists.filterNot { it.title.equals(resolvedName, ignoreCase = true) })
+            }
+            if (engine != null && srv.id == preferredSrvId && cleanBrowseId.isNotBlank()) {
+                val directAlbums = runSuspendCatching {
+                    engine.listServerAlbums(srv.id, null, cleanBrowseId)
+                }.getOrDefault(emptyList())
+                collectedAlbums.addAll(directAlbums)
+            }
+        }
+    }
+
+    // 3. Local device library
+    if (preferences.state.value.localMusicEnabled) {
+        val localTracks = stateSnapshot.localMusicLibrary.tracks
+            .filter { it.artist.equals(resolvedName, ignoreCase = true) }
+            .map { it.toAndroidTrack() }
+        collectedTracks.addAll(localTracks)
+        stateSnapshot.localMusicLibrary.albums
+            .filter {
+                it.artist.equals(resolvedName, ignoreCase = true) ||
+                    it.tracks.any { tr -> tr.artist.equals(resolvedName, ignoreCase = true) }
+            }
+            .forEach { alb ->
+                collectedAlbums += AndroidHomeCard(
+                    kind = AndroidHomeCardKind.ALBUM,
+                    id = alb.id,
+                    title = alb.title,
+                    subtitle = alb.artist,
+                    thumbnailUrl = alb.albumArtUri,
+                    track = alb.tracks.firstOrNull()?.toAndroidTrack(),
+                )
+            }
+    }
+
+    val distinctTracks = collectedTracks.distinctBy { it.id }
+    val distinctAlbums = collectedAlbums.distinctBy { it.id }
+    val distinctRelated = collectedRelated.distinctBy { it.title.lowercase() }.take(12)
+
+    if (distinctTracks.isEmpty() && distinctAlbums.isEmpty() && metaAvatar == null && metaBio == null) {
+        return null
+    }
+
+    val displayName = resolvedName.ifBlank { uiStrings().artistDefault }
+    val fallbackSubtitle = listOfNotNull(
+        distinctAlbums.size.takeIf { it > 0 }?.let { uiStrings().servers.serverAlbumsCount(it) },
+        distinctTracks.size.takeIf { it > 0 }?.let { srcStrings.localTracksCount(it) },
+    ).joinToString(" · ")
+    val heroArt = metaAvatar
+        ?: distinctAlbums.firstNotNullOfOrNull { it.thumbnailUrl }
+        ?: distinctTracks.firstNotNullOfOrNull { it.thumbnailUrl }
+
+    return AndroidArtistPage(
+        id = cleanBrowseId.ifBlank { "personal:artist:$displayName" },
+        name = displayName,
+        subtitle = metaSubtitle?.takeIf { it.isNotBlank() } ?: fallbackSubtitle,
+        description = metaBio,
+        subscribers = null,
+        monthlyListeners = null,
+        thumbnailUrl = heroArt,
+        shufflePlaylistId = null,
+        radioPlaylistId = null,
+        latestRelease = distinctAlbums.firstOrNull(),
+        popularTracks = distinctTracks,
+        releases = distinctAlbums,
+        relatedArtists = distinctRelated,
+    )
+}
+
 internal fun SonataViewModel.selectHomeMoodChipImpl(params: String?) {
+    if (preferences.state.value.personalOnlyMode) return
     val currentSelected = _uiState.value.selectedHomeMoodParams
     val nextParams = when {
         params.isNullOrBlank() -> null
@@ -1779,6 +2047,7 @@ internal fun SonataViewModel.selectHomeMoodChipImpl(params: String?) {
 }
 
 internal fun SonataViewModel.openMoodCategoryImpl(title: String, browseId: String = "", params: String = "") {
+    if (preferences.state.value.personalOnlyMode) return
     val cleanTitle = title.trim()
     if (cleanTitle.isBlank() && browseId.isBlank()) return
     speculativePrefetchJob?.cancel()
@@ -1995,6 +2264,34 @@ internal fun SonataViewModel.openCollectionByIdImpl(
         }
         return
     }
+    if (id.startsWith("local:album:")) {
+        val alb = _uiState.value.localMusicLibrary.albums.firstOrNull { it.id == id }
+        val albTracks = alb?.tracks?.map { it.toAndroidTrack() }
+            ?: _uiState.value.localMusicLibrary.tracks
+                .filter { it.toAndroidTrack().albumId == id }
+                .map { it.toAndroidTrack() }
+        val resolvedTitle = alb?.title ?: title
+        val resolvedCover = coverUrl ?: alb?.albumArtUri ?: albTracks.firstOrNull()?.thumbnailUrl
+        _uiState.update {
+            it.copy(
+                artistPage = null,
+                artistLoading = false,
+                moodCategoryTitle = null,
+                moodCategoryShelves = emptyList(),
+                moodCategoryLoading = false,
+                collectionBrowseId = id,
+                collectionTitle = resolvedTitle,
+                collectionCoverUrl = resolvedCover,
+                collectionSubtitle = subtitle ?: alb?.artist ?: s.albumLabel,
+                collectionKindLabel = kindLabel ?: s.albumLabel,
+                collectionYear = year,
+                collectionTracks = albTracks,
+                loading = false,
+                status = s.tracksInCollectionStatus(albTracks.size, resolvedTitle),
+            )
+        }
+        return
+    }
     collectionJob?.cancel()
     collectionJob = viewModelScope.launch(Dispatchers.IO) {
         val engine = requireEngine()
@@ -2017,7 +2314,12 @@ internal fun SonataViewModel.openCollectionByIdImpl(
             )
         }
         runSuspendCatching {
-            if (isSelfHostedId(id)) {
+            if (id.startsWith("smb:")) {
+                val srvId = id.removePrefix("smb:").substringBefore(':')
+                val srv = _uiState.value.servers.firstOrNull { it.id == srvId }
+                if (srv != null) dev.sonata.android.data.SmbClient.getAlbumTracks(srv, id)
+                else engine.getServerPlaylistTracks(id)
+            } else if (isSelfHostedId(id)) {
                 engine.getServerPlaylistTracks(id)
             } else {
                 engine.fetchCollectionTracksFresh(id)

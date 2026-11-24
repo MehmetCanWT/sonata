@@ -14,6 +14,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -41,11 +42,15 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -53,6 +58,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.sonata.android.data.LocalAudioTrack
+import dev.sonata.android.data.LocalMusicScanner
 import dev.sonata.android.data.SonataSettingsState
 import dev.sonata.android.ui.SonataIcons
 import dev.sonata.android.ui.i18n.SourcesStrings
@@ -60,10 +67,12 @@ import dev.sonata.android.ui.i18n.sourcesStrings
 import dev.sonata.android.ui.rememberSafeTopInset
 import dev.sonata.android.ui.theme.BasicPalette
 import dev.sonata.android.ui.theme.LocalLunariaColors
+import java.util.Locale
 import uniffi.sonata_android.AndroidServerHealthReport
 import uniffi.sonata_android.AndroidServerKind
 import uniffi.sonata_android.AndroidServerProfile
 import uniffi.sonata_android.AndroidServerSpeedTestReport
+import uniffi.sonata_android.AndroidTrack
 
 /**
  * Per-server live health check and download throughput benchmark state.
@@ -76,6 +85,9 @@ data class ServerDiagnosticState(
     val runningSpeedTest: Boolean = false,
     val speedTestReport: AndroidServerSpeedTestReport? = null,
     val speedTestError: String? = null,
+    val rescanning: Boolean = false,
+    val rescanSummary: String? = null,
+    val rescanError: String? = null,
 )
 
 private val SourcesGroupShape = RoundedCornerShape(14.dp)
@@ -103,6 +115,14 @@ fun SourcesScreen(
     onOpenServers: (String?) -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    localTracks: List<LocalAudioTrack> = emptyList(),
+    onPlayLocalTrack: (AndroidTrack, List<AndroidTrack>) -> Unit = { _, _ -> },
+    localAvailableFolders: List<String> = emptyList(),
+    onToggleExcludeNonMusic: (Boolean) -> Unit = {},
+    onToggleLocalMusicFolder: (String) -> Unit = {},
+    onAddLocalMusicFolder: () -> Unit = {},
+    onClearLocalMusicFolders: () -> Unit = {},
+    onRescanServer: (String) -> Unit = {},
 ) {
     val tokens = LocalLunariaColors.current
     val statusTop = rememberSafeTopInset()
@@ -193,6 +213,14 @@ fun SourcesScreen(
                     onProbeServerHealth = onProbeServerHealth,
                     onRunServerSpeedTest = onRunServerSpeedTest,
                     onOpenServers = onOpenServers,
+                    localTracks = localTracks,
+                    onPlayLocalTrack = onPlayLocalTrack,
+                    localAvailableFolders = localAvailableFolders,
+                    onToggleExcludeNonMusic = onToggleExcludeNonMusic,
+                    onToggleLocalMusicFolder = onToggleLocalMusicFolder,
+                    onAddLocalMusicFolder = onAddLocalMusicFolder,
+                    onClearLocalMusicFolders = onClearLocalMusicFolders,
+                    onRescanServer = onRescanServer,
                 )
             }
         }
@@ -224,7 +252,17 @@ fun SourcesHubContent(
     onRunServerSpeedTest: (String) -> Unit,
     onOpenServers: (String?) -> Unit,
     searchQuery: String = "",
+    localTracks: List<LocalAudioTrack> = emptyList(),
+    onPlayLocalTrack: (AndroidTrack, List<AndroidTrack>) -> Unit = { _, _ -> },
+    localAvailableFolders: List<String> = emptyList(),
+    onToggleExcludeNonMusic: (Boolean) -> Unit = {},
+    onToggleLocalMusicFolder: (String) -> Unit = {},
+    onAddLocalMusicFolder: () -> Unit = {},
+    onClearLocalMusicFolders: () -> Unit = {},
+    onRescanServer: (String) -> Unit = {},
 ) {
+    var localTracksExpanded by rememberSaveable { mutableStateOf(false) }
+    var localFoldersExpanded by rememberSaveable { mutableStateOf(false) }
     val src = remember(settings.appLanguage) { sourcesStrings(settings.appLanguage) }
     val terms = remember(searchQuery) {
         searchQuery.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
@@ -355,6 +393,275 @@ fun SourcesHubContent(
                         )
                     }
                 } else {
+                    val effectiveLocalCount = if (localTracks.isNotEmpty()) localTracks.size else localTrackCount
+                    if (localTracks.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { localTracksExpanded = !localTracksExpanded }
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                imageVector = SonataIcons.MusicNote,
+                                contentDescription = null,
+                                tint = primaryText,
+                                modifier = Modifier.size(20.dp),
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    text = if (localTracksExpanded) src.hideLocalTracks else src.viewLocalTracks,
+                                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
+                                    color = primaryText,
+                                )
+                                Text(
+                                    text = src.localTracksCount(effectiveLocalCount),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = secondaryText,
+                                )
+                            }
+                            Icon(
+                                imageVector = SonataIcons.ChevronRight,
+                                contentDescription = null,
+                                tint = secondaryText.copy(alpha = 0.7f),
+                                modifier = Modifier
+                                    .size(18.dp)
+                                    .rotate(if (localTracksExpanded) 90f else 0f),
+                            )
+                        }
+                        if (localTracksExpanded) {
+                            val localQueue = remember(localTracks) { localTracks.map { it.toAndroidTrack() } }
+                            localTracks.forEachIndexed { idx, localTrack ->
+                                HorizontalDivider(
+                                    thickness = 0.5.dp,
+                                    color = dividerColor,
+                                    modifier = Modifier.padding(start = 48.dp),
+                                )
+                                val folderLabel = localTrack.relativePath.ifBlank { localTrack.folderName }
+                                val detailParts = buildList {
+                                    if (localTrack.artist.isNotBlank()) add(localTrack.artist)
+                                    if (folderLabel.isNotBlank()) add(folderLabel)
+                                    if (localTrack.bitrateKbps > 0) add("${localTrack.bitrateKbps} kbps")
+                                }.joinToString(" · ")
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            onPlayLocalTrack(localQueue[idx], localQueue)
+                                        }
+                                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = SonataIcons.Play,
+                                        contentDescription = null,
+                                        tint = primaryText.copy(alpha = 0.8f),
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            text = localTrack.title,
+                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                            color = primaryText,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        if (detailParts.isNotBlank()) {
+                                            Text(
+                                                text = detailParts,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = secondaryText,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        }
+                                    }
+                                    val durationSecs = localTrack.durationMs / 1000L
+                                    if (durationSecs > 0L) {
+                                        val mins = durationSecs / 60L
+                                        val secs = durationSecs % 60L
+                                        Text(
+                                            text = "$mins:${secs.toString().padStart(2, '0')}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = secondaryText,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        HorizontalDivider(
+                            thickness = 0.5.dp,
+                            color = dividerColor,
+                            modifier = Modifier.padding(start = 16.dp),
+                        )
+                    }
+                    SourcesSwitchRow(
+                        title = src.excludeNonMusicTitle,
+                        subtitle = src.excludeNonMusicDescription,
+                        checked = settings.excludeNonMusicAudio,
+                        enabled = true,
+                        primaryText = primaryText,
+                        secondaryText = secondaryText,
+                        onCheckedChange = onToggleExcludeNonMusic,
+                    )
+                    HorizontalDivider(
+                        thickness = 0.5.dp,
+                        color = dividerColor,
+                        modifier = Modifier.padding(start = 16.dp),
+                    )
+                    val combinedFolders = remember(localAvailableFolders, settings.localMusicFolders) {
+                        val seen = LinkedHashMap<String, String>()
+                        (localAvailableFolders + settings.localMusicFolders).forEach { raw ->
+                            val clean = LocalMusicScanner.normalizeFolderPath(raw)
+                            if (clean.isNotEmpty()) {
+                                seen.putIfAbsent(clean.lowercase(Locale.ROOT), clean)
+                            }
+                        }
+                        seen.values.sortedBy { it.lowercase(Locale.ROOT) }
+                    }
+                    val selectedFolderKeys = remember(settings.localMusicFolders) {
+                        settings.localMusicFolders
+                            .map { LocalMusicScanner.normalizeFolderPath(it).lowercase(Locale.ROOT) }
+                            .toSet()
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { localFoldersExpanded = !localFoldersExpanded }
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = SonataIcons.Folder,
+                            contentDescription = null,
+                            tint = primaryText,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                text = src.musicFoldersTitle,
+                                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
+                                color = primaryText,
+                            )
+                            Text(
+                                text = if (settings.localMusicFolders.isEmpty()) {
+                                    src.allMusicFolders
+                                } else {
+                                    src.selectedFoldersCount(settings.localMusicFolders.size)
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = secondaryText,
+                            )
+                        }
+                        Icon(
+                            imageVector = SonataIcons.ChevronRight,
+                            contentDescription = null,
+                            tint = secondaryText.copy(alpha = 0.7f),
+                            modifier = Modifier
+                                .size(18.dp)
+                                .rotate(if (localFoldersExpanded) 90f else 0f),
+                        )
+                    }
+                    if (localFoldersExpanded) {
+                        if (combinedFolders.isEmpty()) {
+                            HorizontalDivider(
+                                thickness = 0.5.dp,
+                                color = dividerColor,
+                                modifier = Modifier.padding(start = 48.dp),
+                            )
+                            Text(
+                                text = src.noFoldersDiscovered,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = secondaryText,
+                                modifier = Modifier.padding(start = 48.dp, end = 16.dp, top = 10.dp, bottom = 10.dp),
+                            )
+                        } else {
+                            combinedFolders.forEach { folder ->
+                                val folderKey = folder.lowercase(Locale.ROOT)
+                                val checked = folderKey in selectedFolderKeys
+                                HorizontalDivider(
+                                    thickness = 0.5.dp,
+                                    color = dividerColor,
+                                    modifier = Modifier.padding(start = 48.dp),
+                                )
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { onToggleLocalMusicFolder(folder) }
+                                        .padding(start = 48.dp, end = 16.dp, top = 11.dp, bottom = 11.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                ) {
+                                    Text(
+                                        text = folder,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = primaryText,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .size(22.dp)
+                                            .clip(CircleShape)
+                                            .background(
+                                                if (checked) SourcesSwitchGreen else Color.Transparent,
+                                            )
+                                            .border(
+                                                width = 1.dp,
+                                                color = if (checked) SourcesSwitchGreen else secondaryText.copy(alpha = 0.45f),
+                                                shape = CircleShape,
+                                            ),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        if (checked) {
+                                            Icon(
+                                                imageVector = SonataIcons.Check,
+                                                contentDescription = null,
+                                                tint = Color.White,
+                                                modifier = Modifier.size(14.dp),
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        HorizontalDivider(
+                            thickness = 0.5.dp,
+                            color = dividerColor,
+                            modifier = Modifier.padding(start = 48.dp),
+                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 48.dp, end = 16.dp, top = 10.dp, bottom = 12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            SourcesPillButton(
+                                label = src.addFolder,
+                                containerColor = primaryText,
+                                contentColor = if (primaryText == Color.White) Color.Black else Color.White,
+                                onClick = onAddLocalMusicFolder,
+                            )
+                            if (settings.localMusicFolders.isNotEmpty()) {
+                                SourcesPillButton(
+                                    label = src.scanAllFolders,
+                                    containerColor = dividerColor.copy(alpha = 0.45f),
+                                    contentColor = primaryText,
+                                    onClick = onClearLocalMusicFolders,
+                                )
+                            }
+                        }
+                    }
+                    HorizontalDivider(
+                        thickness = 0.5.dp,
+                        color = dividerColor,
+                        modifier = Modifier.padding(start = 16.dp),
+                    )
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -376,8 +683,8 @@ fun SourcesHubContent(
                                 color = primaryText,
                             )
                             Text(
-                                text = if (localTrackCount > 0) {
-                                    src.localTracksCount(localTrackCount)
+                                text = if (effectiveLocalCount > 0) {
+                                    src.localTracksCount(effectiveLocalCount)
                                 } else {
                                     src.emptyLocalMusic
                                 },
@@ -425,6 +732,7 @@ fun SourcesHubContent(
                     onOpenServer = { onOpenServers(srv.id) },
                     onCheckHealth = { onProbeServerHealth(srv.id) },
                     onRunSpeedTest = { onRunServerSpeedTest(srv.id) },
+                    onRescan = { onRescanServer(srv.id) },
                 )
             }
             if (servers.isNotEmpty()) {
@@ -482,12 +790,13 @@ private fun SourceServerDiagnosticRow(
     onOpenServer: () -> Unit,
     onCheckHealth: () -> Unit,
     onRunSpeedTest: () -> Unit,
+    onRescan: () -> Unit,
 ) {
     val kindTag = when (server.kind) {
-        AndroidServerKind.JELLYFIN -> "JFN"
-        AndroidServerKind.SUBSONIC -> "SUB"
-        AndroidServerKind.WEB_DAV -> "DAV"
-        AndroidServerKind.SMB -> "SMB"
+        AndroidServerKind.JELLYFIN -> src.protocolJellyfin
+        AndroidServerKind.SUBSONIC -> src.protocolSubsonic
+        AndroidServerKind.WEB_DAV -> src.protocolWebDav
+        AndroidServerKind.SMB -> src.protocolSmb
     }
     val endpointLabel = server.baseUrl.takeIf { it.isNotBlank() }
         ?: server.localMountPath?.takeIf { it.isNotBlank() }
@@ -636,8 +945,28 @@ private fun SourceServerDiagnosticRow(
             )
         }
 
+        if (!diagnostic.rescanError.isNullOrBlank()) {
+            Text(
+                text = diagnostic.rescanError,
+                style = MaterialTheme.typography.bodySmall,
+                color = BasicPalette.AccentRed,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        } else if (!diagnostic.rescanSummary.isNullOrBlank()) {
+            Text(
+                text = "${src.rescanLocalMusic}: ${diagnostic.rescanSummary}",
+                style = MaterialTheme.typography.bodySmall,
+                color = SourcesSwitchGreen,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -654,6 +983,13 @@ private fun SourceServerDiagnosticRow(
                 contentColor = primaryText,
                 enabled = !diagnostic.runningSpeedTest,
                 onClick = onRunSpeedTest,
+            )
+            SourcesPillButton(
+                label = if (diagnostic.rescanning) src.rescanningSource else src.rescanLocalMusic,
+                containerColor = primaryText.copy(alpha = 0.12f),
+                contentColor = primaryText,
+                enabled = !diagnostic.rescanning,
+                onClick = onRescan,
             )
         }
     }

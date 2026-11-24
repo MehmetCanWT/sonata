@@ -129,6 +129,26 @@ fun RadioMixesScreen(
     appLanguage: dev.sonata.android.data.AppLanguage = dev.sonata.android.data.AppLanguage.SYSTEM,
 ) {
     val themeTokens = LocalLunariaColors.current
+    if (personalOnlyMode) {
+        LazyColumn(
+            state = listState,
+            modifier = modifier.fillMaxSize(),
+            contentPadding = contentPadding,
+        ) {
+            item(key = "radio_heading") {
+                Text(
+                    text = dev.sonata.android.ui.i18n.LocalSonataStrings.current.radioHeading,
+                    style = MaterialTheme.typography.displayLarge.copy(
+                        fontSize = 34.sp,
+                        fontWeight = FontWeight.Bold,
+                    ),
+                    color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.padding(horizontal = PAGE_GUTTER, vertical = 10.dp),
+                )
+            }
+        }
+        return
+    }
     val sourceShelves = remember(radioMixShelves, homeShelves) {
         val raw = if (radioMixShelves.isNotEmpty()) {
             radioMixShelves
@@ -285,35 +305,6 @@ fun RadioMixesScreen(
                                 )
                             }
                         }
-                    }
-                }
-            }
-
-            if (personalOnlyMode && homeShelves.isEmpty() && radioMixShelves.isEmpty()) {
-                item(key = "radio_personal_only_notice") {
-                    val srcStrings = remember(appLanguage) {
-                        dev.sonata.android.ui.i18n.sourcesStrings(appLanguage)
-                    }
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = PAGE_GUTTER)
-                            .clip(RoundedCornerShape(18.dp))
-                            .background(themeTokens.eclipseSurface.copy(alpha = 0.72f))
-                            .border(0.75.dp, themeTokens.cardStroke, RoundedCornerShape(18.dp))
-                            .padding(18.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Text(
-                            text = srcStrings.personalOnlyModeBadge,
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                            color = themeTokens.petalLavender,
-                        )
-                        Text(
-                            text = srcStrings.personalOnlyModeDescription,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = themeTokens.onSurfaceSecondary,
-                        )
                     }
                 }
             }

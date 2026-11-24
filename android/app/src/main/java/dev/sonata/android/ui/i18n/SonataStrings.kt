@@ -128,6 +128,7 @@ data class CommonStrings(
     val unpinnedStatus: (String) -> String,
     val addedToLibraryStatus: (String) -> String,
     val removedFromLibraryStatus: (String) -> String,
+    val removeFromLastPlayed: String = "Remove from Last Played",
 )
 
 data class FeedStrings(
@@ -762,6 +763,7 @@ data class SonataStrings(
     val unpinnedStatus: (String) -> String get() = common.unpinnedStatus
     val addedToLibraryStatus: (String) -> String get() = common.addedToLibraryStatus
     val removedFromLibraryStatus: (String) -> String get() = common.removedFromLibraryStatus
+    val removeFromLastPlayed: String get() = common.removeFromLastPlayed
 
     val topPicksForYou: String get() = feed.topPicksForYou
     val lastPlayed: String get() = feed.lastPlayed
@@ -1375,6 +1377,7 @@ val EnglishSonataStrings = SonataStrings(
         unpinnedStatus = { title -> "Unpinned \"$title\"" },
         addedToLibraryStatus = { title -> "Added \"$title\" to Library" },
         removedFromLibraryStatus = { title -> "Removed \"$title\" from Library" },
+        removeFromLastPlayed = "Remove from Last Played",
     ),
     feed = FeedStrings(
         topPicksForYou = "Top Picks for You",
@@ -1995,6 +1998,7 @@ val TurkishSonataStrings = SonataStrings(
         unpinnedStatus = { title -> "\"$title\" sabitlemesi kaldırıldı" },
         addedToLibraryStatus = { title -> "\"$title\" kitaplığa eklendi" },
         removedFromLibraryStatus = { title -> "\"$title\" kitaplıktan kaldırıldı" },
+        removeFromLastPlayed = "Son Çalınanlardan Kaldır",
     ),
     feed = FeedStrings(
         topPicksForYou = "Senin İçin Seçilenler",
@@ -2615,6 +2619,7 @@ val RussianSonataStrings = SonataStrings(
         unpinnedStatus = { title -> "Откреплено: «$title»" },
         addedToLibraryStatus = { title -> "Добавлено в медиатеку: «$title»" },
         removedFromLibraryStatus = { title -> "Удалено из медиатеки: «$title»" },
+        removeFromLastPlayed = "Удалить из недавних",
     ),
     feed = FeedStrings(
         topPicksForYou = "Рекомендации для вас",

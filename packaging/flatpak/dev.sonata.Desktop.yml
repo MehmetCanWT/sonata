@@ -26,7 +26,10 @@ finish-args:
   - --talk-name=org.kde.StatusNotifierWatcher
 
   # Local Discord Rich Presence IPC socket
-  - --filesystem=xdg-run/discord-ipc-*
+  - --filesystem=xdg-run/app/com.discordapp.Discord:create
+
+  # Read-only access to the user's Music folder for Local Music scanning
+  - --filesystem=xdg-music:ro
 
   # Ensure bundled runtime tools (mpv, ffmpeg, yt-dlp) in /app/bin are discoverable
   - --env=PATH=/app/bin:/usr/bin
@@ -81,8 +84,8 @@ modules:
       - install -Dm755 yt-dlp /app/bin/yt-dlp
     sources:
       - type: file
-        url: https://github.com/yt-dlp/yt-dlp/releases/download/2025.01.15/yt-dlp_linux
-        sha256: 0000000000000000000000000000000000000000000000000000000000000000
+        url: https://github.com/yt-dlp/yt-dlp/releases/download/2026.11.23/yt-dlp
+        sha256: e8665ed64d6b9172773e812f891fb707a0cb1ee8d9ef4fc1acb00cabee4c5256
         dest-filename: yt-dlp
 
   - name: sonata
@@ -97,6 +100,7 @@ modules:
       - install -Dm755 target/release/sonata /app/bin/sonata
       - install -Dm644 assets/sonata-desktop.desktop /app/share/applications/dev.sonata.Desktop.desktop
       - sed -i 's/^Icon=sonata-desktop$/Icon=dev.sonata.Desktop/' /app/share/applications/dev.sonata.Desktop.desktop
+      - install -Dm644 assets/sonata-icon.png /app/share/icons/hicolor/512x512/apps/dev.sonata.Desktop.png
       - install -Dm644 assets/sonata-desktop.svg /app/share/icons/hicolor/scalable/apps/dev.sonata.Desktop.svg
       - install -Dm644 packaging/flatpak/dev.sonata.Desktop.metainfo.xml /app/share/metainfo/dev.sonata.Desktop.metainfo.xml
       - install -Dm644 LICENSE /app/share/licenses/dev.sonata.Desktop/LICENSE

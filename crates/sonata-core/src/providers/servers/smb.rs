@@ -409,18 +409,14 @@ fn walk_smb_audio(
 
 fn meta_to_smb_track(profile: &ServerProfile, rel_path: &str, meta: &LocalAudioMetadata) -> Track {
     let badge = if meta.bitrate_kbps.is_some() || meta.bits_per_sample.is_some() {
-        format!(
-            "{} · SMB",
-            format_local_audio_badge(
-                &meta.codec,
-                meta.bitrate_kbps,
-                meta.bits_per_sample,
-                meta.sample_rate
-            )
-        )
+        Some(format_local_audio_badge(
+            &meta.codec,
+            meta.bitrate_kbps,
+            meta.bits_per_sample,
+            meta.sample_rate,
+        ))
     } else {
         format_audio_badge(Some(&meta.codec), meta.bitrate_kbps, "SMB")
-            .unwrap_or_else(|| "SMB".to_string())
     };
     Track {
         id: encode_server_item_id(ServerKind::Smb, &profile.id, rel_path),
@@ -433,7 +429,7 @@ fn meta_to_smb_track(profile: &ServerProfile, rel_path: &str, meta: &LocalAudioM
             .as_ref()
             .map(|p| p.to_string_lossy().into_owned()),
         source: ProviderSource::YouTubeMusic,
-        audio_badge: Some(badge),
+        audio_badge: badge,
         set_video_id: None,
         liked: false,
         album_id: None,
@@ -852,12 +848,7 @@ pub fn stream_request(
     });
     let audio_badge = meta
         .as_ref()
-        .map(|m| {
-            format!(
-                "{} · SMB",
-                format_local_audio_badge(&m.codec, bitrate_kbps, m.bits_per_sample, m.sample_rate)
-            )
-        })
+        .map(|m| format_local_audio_badge(&m.codec, bitrate_kbps, m.bits_per_sample, m.sample_rate))
         .or_else(|| track.audio_badge.clone());
 
     Ok(ServerStream {

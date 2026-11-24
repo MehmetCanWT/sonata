@@ -28,6 +28,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -36,6 +37,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -45,6 +47,7 @@ import dev.sonata.android.ui.i18n.LocalSonataStrings
 import dev.sonata.android.ui.i18n.RussianSonataStrings
 import dev.sonata.android.ui.i18n.SonataStrings
 import dev.sonata.android.ui.i18n.TurkishSonataStrings
+import dev.sonata.android.ui.sonataThemeAccent
 import dev.sonata.android.ui.theme.LocalLunariaColors
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -299,12 +302,14 @@ fun AudioControlsSheet(
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val accent = MaterialTheme.colorScheme.primary
+    val themeTokens = LocalLunariaColors.current
+    val accent = sonataThemeAccent()
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.96f),
+        containerColor = themeTokens.eclipseSurface,
+        contentColor = themeTokens.onSurfacePrimary,
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
     ) {
         Column(
@@ -319,6 +324,7 @@ fun AudioControlsSheet(
             Text(
                 text = strings.audioControls,
                 style = MaterialTheme.typography.titleLarge,
+                color = themeTokens.onSurfacePrimary,
                 fontWeight = FontWeight.Bold,
             )
 
@@ -327,10 +333,10 @@ fun AudioControlsSheet(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(18.dp))
-                    .background(MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.72f))
+                    .background(themeTokens.eclipseCard)
                     .border(
-                        width = 1.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                        width = 0.75.dp,
+                        color = themeTokens.cardStroke,
                         shape = RoundedCornerShape(18.dp),
                     )
                     .padding(14.dp),
@@ -342,8 +348,9 @@ fun AudioControlsSheet(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        text = dev.sonata.android.ui.i18n.LocalSonataStrings.current.playbackSpeed,
+                        text = strings.playbackSpeed,
                         style = MaterialTheme.typography.titleSmall,
+                        color = themeTokens.onSurfacePrimary,
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
@@ -364,6 +371,7 @@ fun AudioControlsSheet(
                     colors = SliderDefaults.colors(
                         thumbColor = accent,
                         activeTrackColor = accent,
+                        inactiveTrackColor = themeTokens.onSurfaceSecondary.copy(alpha = 0.28f),
                     ),
                 )
 
@@ -387,17 +395,17 @@ fun AudioControlsSheet(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(18.dp))
-                    .background(MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.72f))
+                    .background(themeTokens.eclipseCard)
                     .border(
-                        width = 1.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                        width = 0.75.dp,
+                        color = themeTokens.cardStroke,
                         shape = RoundedCornerShape(18.dp),
                     )
                     .padding(horizontal = 14.dp, vertical = 6.dp),
             ) {
                 ToggleRow(
-                    title = dev.sonata.android.ui.i18n.LocalSonataStrings.current.skipSilence,
-                    subtitle = dev.sonata.android.ui.i18n.LocalSonataStrings.current.skipSilenceDesc,
+                    title = strings.skipSilence,
+                    subtitle = strings.skipSilenceDesc,
                     checked = skipSilence,
                     onCheckedChange = onSkipSilenceToggle,
                 )
@@ -515,9 +523,10 @@ private fun SelectableGlassChip(
     accent: Color,
     onClick: () -> Unit,
 ) {
-    val bg = if (selected) accent.copy(alpha = 0.22f) else MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.65f)
-    val border = if (selected) accent.copy(alpha = 0.65f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
-    val fg = if (selected) accent else MaterialTheme.colorScheme.onSurface
+    val themeTokens = LocalLunariaColors.current
+    val bg = if (selected) accent.copy(alpha = 0.22f) else themeTokens.onSurfacePrimary.copy(alpha = 0.10f)
+    val border = if (selected) accent.copy(alpha = 0.70f) else themeTokens.cardStroke
+    val fg = if (selected) accent else themeTokens.onSurfacePrimary
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(999.dp))
@@ -542,6 +551,7 @@ private fun ToggleRow(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
 ) {
+    val themeTokens = LocalLunariaColors.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -554,15 +564,25 @@ private fun ToggleRow(
             Text(
                 text = title,
                 style = MaterialTheme.typography.bodyLarge,
+                color = themeTokens.onSurfacePrimary,
                 fontWeight = FontWeight.Medium,
             )
             Text(
                 text = subtitle,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = themeTokens.onSurfaceSecondary,
             )
         }
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.White,
+                checkedTrackColor = Color(0xFF34C759),
+                uncheckedThumbColor = Color.White,
+                uncheckedTrackColor = themeTokens.onSurfaceSecondary.copy(alpha = 0.35f),
+            ),
+        )
     }
 }
 

@@ -26,9 +26,14 @@ jobs:
       - name: Install native build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libdbus-1-dev libegl1-mesa-dev libfontconfig1-dev libwayland-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev pkg-config ripgrep
+          sudo apt-get install -y appstream desktop-file-utils libasound2-dev libdbus-1-dev libegl1-mesa-dev libfontconfig1-dev libwayland-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev pkg-config ripgrep
       - name: Architecture & dependency boundary checks
         run: ./scripts/check_boundaries.sh
+      - name: Validate Flatpak & desktop metadata
+        run: |
+          appstreamcli validate --pedantic packaging/flatpak/dev.sonata.Desktop.metainfo.xml
+          desktop-file-validate assets/sonata-desktop.desktop
+          ! grep -q "0000000000000000" packaging/flatpak/dev.sonata.Desktop.yml
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy

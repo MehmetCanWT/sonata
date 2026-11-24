@@ -907,6 +907,8 @@ internal open class UniffiVTableCallbackInterfaceAndroidJsCipherSolver(
 
 
 
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -977,6 +979,8 @@ fun uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_mood_categor
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_radio_mixes(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_radio_queue(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_server_lyrics(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_find_jiosaavn_upgrade(
 ): Short
@@ -1195,6 +1199,8 @@ fun uniffi_sonata_android_fn_method_sonataandroidengine_fetch_mood_category(`ptr
 fun uniffi_sonata_android_fn_method_sonataandroidengine_fetch_radio_mixes(`ptr`: Pointer,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_fetch_radio_queue(`ptr`: Pointer,`videoId`: RustBuffer.ByValue,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_fetch_server_lyrics(`ptr`: Pointer,`track`: RustBuffer.ByValue,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_find_jiosaavn_upgrade(`ptr`: Pointer,`track`: RustBuffer.ByValue,`currentBitrateKbps`: Int,
 ): Long
@@ -1466,7 +1472,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_artist_by_name() != 49479.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_artist_page() != 54376.toShort()) {
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_artist_page() != 44543.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_collection_tracks() != 13098.toShort()) {
@@ -1496,7 +1502,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_listening_history() != 10208.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_lyrics() != 13324.toShort()) {
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_lyrics() != 4648.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_mood_category() != 22019.toShort()) {
@@ -1506,6 +1512,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_radio_queue() != 11973.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_server_lyrics() != 52924.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_find_jiosaavn_upgrade() != 29038.toShort()) {
@@ -2221,7 +2230,7 @@ public interface SonataAndroidEngineInterface {
     suspend fun `fetchArtistByName`(`name`: kotlin.String): AndroidArtistPage
     
     /**
-     * Fetches a full YouTube Music artist page (hero, subscribers, top tracks, releases, similar artists).
+     * Fetches a full YouTube Music or WebDAV artist page (hero, metadata, albums, tracks, similar artists).
      */
     suspend fun `fetchArtistPage`(`browseId`: kotlin.String): AndroidArtistPage
     
@@ -2273,7 +2282,7 @@ public interface SonataAndroidEngineInterface {
     suspend fun `fetchListeningHistory`(): List<AndroidTrack>
     
     /**
-     * Fetches synced or plain lyrics lines for the active track.
+     * Fetches synced or plain lyrics lines for the active track (preferring self-hosted server lyrics first).
      */
     suspend fun `fetchLyrics`(`track`: AndroidTrack): List<AndroidLyricLine>
     
@@ -2291,6 +2300,11 @@ public interface SonataAndroidEngineInterface {
      * Fetches personalized radio / up-next tracks seeded by `video_id` (`RDAMVM<video_id>`).
      */
     suspend fun `fetchRadioQueue`(`videoId`: kotlin.String): List<AndroidTrack>
+    
+    /**
+     * Fetches lyrics hosted directly on a self-hosted server (WebDAV sidecar/FLAC or Jellyfin Lyrics) without online lookup.
+     */
+    suspend fun `fetchServerLyrics`(`track`: AndroidTrack): List<AndroidLyricLine>
     
     /**
      * Searches JioSaavn for a strict metadata match whose verified bitrate beats `current_bitrate_kbps`.
@@ -2979,7 +2993,7 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
 
     
     /**
-     * Fetches a full YouTube Music artist page (hero, subscribers, top tracks, releases, similar artists).
+     * Fetches a full YouTube Music or WebDAV artist page (hero, metadata, albums, tracks, similar artists).
      */
     @Throws(SonataAndroidException::class)
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
@@ -3221,7 +3235,7 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
 
     
     /**
-     * Fetches synced or plain lyrics lines for the active track.
+     * Fetches synced or plain lyrics lines for the active track (preferring self-hosted server lyrics first).
      */
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
     override suspend fun `fetchLyrics`(`track`: AndroidTrack) : List<AndroidLyricLine> {
@@ -3311,6 +3325,29 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
         { FfiConverterSequenceTypeAndroidTrack.lift(it) },
         // Error FFI converter
         SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Fetches lyrics hosted directly on a self-hosted server (WebDAV sidecar/FLAC or Jellyfin Lyrics) without online lookup.
+     */
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `fetchServerLyrics`(`track`: AndroidTrack) : List<AndroidLyricLine> {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_fetch_server_lyrics(
+                thisPtr,
+                FfiConverterTypeAndroidTrack.lower(`track`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterSequenceTypeAndroidLyricLine.lift(it) },
+        // Error FFI converter
+        UniffiNullRustCallStatusErrorHandler,
     )
     }
 

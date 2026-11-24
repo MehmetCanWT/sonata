@@ -379,35 +379,50 @@ internal fun SearchTabContent(
     }
 
     // Quick suggestion pills (recent searches + top artists from user's personalized feed)
-    val quickChips = remember(state.recentSearches, state.lastPlayedTracks, state.shelves, maxQuickChips) {
-        val fromArtists = (state.lastPlayedTracks.map { it.artist } +
-            state.shelves.flatMap { it.tracks }.map { it.artist })
-            .map { it.substringBefore(",").substringBefore("&").trim() }
-            .filter { it.length in 2..22 && !it.equals("Unknown Artist", ignoreCase = true) }
-        (state.recentSearches + fromArtists)
-            .distinctBy { it.lowercase() }
-            .take(maxQuickChips)
+    val quickChips = remember(state.recentSearches, state.lastPlayedTracks, state.shelves, state.personalOnlyMode, maxQuickChips) {
+        if (state.personalOnlyMode) {
+            state.recentSearches
+                .distinctBy { it.lowercase() }
+                .take(maxQuickChips)
+        } else {
+            val fromArtists = (state.lastPlayedTracks.map { it.artist } +
+                state.shelves.flatMap { it.tracks }.map { it.artist })
+                .map { it.substringBefore(",").substringBefore("&").trim() }
+                .filter { it.length in 2..22 && !it.equals("Unknown Artist", ignoreCase = true) }
+            (state.recentSearches + fromArtists)
+                .distinctBy { it.lowercase() }
+                .take(maxQuickChips)
+        }
     }
 
     // Recent visual square cards (exact fit to screen width — zero right-edge overflow)
-    val recentVisualTracks = remember(state.lastPlayedTracks, state.tracks, recentCols) {
-        (state.lastPlayedTracks + state.tracks)
+    val recentVisualTracks = remember(state.lastPlayedTracks, state.tracks, state.personalOnlyMode, recentCols) {
+        val pool = if (state.personalOnlyMode) {
+            state.lastPlayedTracks.filter { dev.sonata.android.data.isPersonalTrackId(it.id) }
+        } else {
+            state.lastPlayedTracks + state.tracks
+        }
+        pool
             .filter { !it.thumbnailUrl.isNullOrBlank() }
             .distinctBy { it.id }
             .take(recentCols)
     }
 
-    // Vertical Sample discovery grid (exact fit to screen width & fills Portrait vertically)
-    val sampleTracks = remember(state.shelves, state.tracks, state.lastPlayedTracks, sampleCols) {
-        val recentHeadIds = state.lastPlayedTracks.take(4).mapTo(HashSet()) { it.id }
-        val pool = state.shelves.flatMap { shelf ->
-            shelf.tracks + shelf.cards.mapNotNull { it.track }
-        } + state.tracks
-        val preferred = pool
-            .filter { !it.thumbnailUrl.isNullOrBlank() && it.id !in recentHeadIds }
-            .distinctBy { it.id }
-        (preferred.ifEmpty { pool.filter { !it.thumbnailUrl.isNullOrBlank() }.distinctBy { it.id } })
-            .take(sampleCols * sampleRowsCount)
+    // Vertical Sample discovery grid (hidden in Personal Only Mode)
+    val sampleTracks = remember(state.shelves, state.tracks, state.lastPlayedTracks, state.personalOnlyMode, sampleCols) {
+        if (state.personalOnlyMode) {
+            emptyList()
+        } else {
+            val recentHeadIds = state.lastPlayedTracks.take(4).mapTo(HashSet()) { it.id }
+            val pool = state.shelves.flatMap { shelf ->
+                shelf.tracks + shelf.cards.mapNotNull { it.track }
+            } + state.tracks
+            val preferred = pool
+                .filter { !it.thumbnailUrl.isNullOrBlank() && it.id !in recentHeadIds }
+                .distinctBy { it.id }
+            (preferred.ifEmpty { pool.filter { !it.thumbnailUrl.isNullOrBlank() }.distinctBy { it.id } })
+                .take(sampleCols * sampleRowsCount)
+        }
     }
     val sampleRows = remember(sampleTracks, sampleCols) { sampleTracks.chunked(sampleCols) }
     TrackScrollActivity(listState)

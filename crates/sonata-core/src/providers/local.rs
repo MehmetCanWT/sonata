@@ -143,6 +143,25 @@ struct ParsedTags {
     bitrate_kbps: Option<u32>,
     codec: Option<String>,
     is_lossless: bool,
+    lyrics: Option<String>,
+}
+
+/// Extracted metadata and audio stream parameters from an in-memory FLAC header slice.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct FlacHeaderTags {
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album_artist: Option<String>,
+    pub album: Option<String>,
+    pub track_number: Option<u32>,
+    pub disc_number: Option<u32>,
+    pub year: Option<String>,
+    pub duration_secs: Option<u64>,
+    pub sample_rate: Option<u32>,
+    pub bits_per_sample: Option<u16>,
+    pub channels: Option<u8>,
+    pub bitrate_kbps: Option<u32>,
+    pub lyrics: Option<String>,
 }
 
 /// Returns `true` when `path` has a supported local audio file extension.
@@ -638,6 +657,88 @@ fn clean_filename_title(stem: &str) -> String {
     trimmed.to_string()
 }
 
+/// Parses FLAC `STREAMINFO` and `VORBIS_COMMENT` metadata blocks from an initial header byte slice.
+pub(crate) fn parse_flac_header_bytes(
+    data: &[u8],
+    file_size_bytes: Option<u64>,
+) -> Option<FlacHeaderTags> {
+    if data.len() < 8 || &data[0..4] != b"fLaC" {
+        return None;
+    }
+    let mut parsed = ParsedTags {
+        codec: Some("FLAC".to_string()),
+        is_lossless: true,
+        ..ParsedTags::default()
+    };
+    let mut offset = 4usize;
+    for _ in 0..128 {
+        if offset + 4 > data.len() {
+            break;
+        }
+        let is_last = (data[offset] & 0x80) != 0;
+        let block_type = data[offset] & 0x7F;
+        let block_len = ((data[offset + 1] as usize) << 16)
+            | ((data[offset + 2] as usize) << 8)
+            | (data[offset + 3] as usize);
+        let block_start = offset + 4;
+        if block_start + block_len > data.len() {
+            break;
+        }
+        if block_type == 0 && (34..=1024).contains(&block_len) {
+            parse_flac_streaminfo_slice(&data[block_start..block_start + block_len], &mut parsed);
+        } else if block_type == 4 && block_len <= MAX_METADATA_READ_BYTES {
+            parse_vorbis_comment(&data[block_start..block_start + block_len], &mut parsed);
+        }
+        offset = block_start + block_len;
+        if is_last {
+            break;
+        }
+    }
+    let duration_secs = parsed
+        .duration_secs_f64
+        .filter(|d| d.is_finite() && *d > 0.0)
+        .map(|d| d.round().max(1.0) as u64);
+    let bitrate_kbps = file_size_bytes.filter(|&b| b > 0).and_then(|bytes| {
+        parsed
+            .duration_secs_f64
+            .and_then(|dur| compute_bitrate_kbps(bytes, dur))
+    });
+    Some(FlacHeaderTags {
+        title: parsed.title,
+        artist: parsed.artist,
+        album_artist: parsed.album_artist,
+        album: parsed.album,
+        track_number: parsed.track_number,
+        disc_number: parsed.disc_number,
+        year: parsed.year,
+        duration_secs,
+        sample_rate: parsed.sample_rate,
+        bits_per_sample: parsed.bits_per_sample,
+        channels: parsed.channels,
+        bitrate_kbps,
+        lyrics: parsed.lyrics,
+    })
+}
+
+fn parse_flac_streaminfo_slice(buf: &[u8], out: &mut ParsedTags) {
+    if buf.len() < 18 {
+        return;
+    }
+    let sample_rate = ((buf[10] as u32) << 12) | ((buf[11] as u32) << 4) | ((buf[12] as u32) >> 4);
+    let channels = ((buf[12] >> 1) & 0x07) + 1;
+    let bits_per_sample = (((buf[12] & 0x01) << 4) | (buf[13] >> 4)) + 1;
+    let total_samples = (((buf[13] & 0x0F) as u64) << 32)
+        | (u32::from_be_bytes([buf[14], buf[15], buf[16], buf[17]]) as u64);
+    if sample_rate > 0 {
+        out.sample_rate = Some(sample_rate);
+    }
+    out.channels = Some(channels);
+    out.bits_per_sample = Some(bits_per_sample as u16);
+    if sample_rate > 0 && total_samples > 0 {
+        out.duration_secs_f64 = Some(total_samples as f64 / sample_rate as f64);
+    }
+}
+
 fn parse_flac(file: &mut File, _file_size: u64, out: &mut ParsedTags) {
     out.codec = Some("FLAC".to_string());
     out.is_lossless = true;
@@ -659,20 +760,7 @@ fn parse_flac(file: &mut File, _file_size: u64, out: &mut ParsedTags) {
         if block_type == 0 && (34..=1024).contains(&block_len) {
             let mut buf = vec![0u8; block_len];
             if file.read_exact(&mut buf).is_ok() {
-                let sample_rate =
-                    ((buf[10] as u32) << 12) | ((buf[11] as u32) << 4) | ((buf[12] as u32) >> 4);
-                let channels = ((buf[12] >> 1) & 0x07) + 1;
-                let bits_per_sample = (((buf[12] & 0x01) << 4) | (buf[13] >> 4)) + 1;
-                let total_samples = (((buf[13] & 0x0F) as u64) << 32)
-                    | (u32::from_be_bytes([buf[14], buf[15], buf[16], buf[17]]) as u64);
-                if sample_rate > 0 {
-                    out.sample_rate = Some(sample_rate);
-                }
-                out.channels = Some(channels);
-                out.bits_per_sample = Some(bits_per_sample as u16);
-                if sample_rate > 0 && total_samples > 0 {
-                    out.duration_secs_f64 = Some(total_samples as f64 / sample_rate as f64);
-                }
+                parse_flac_streaminfo_slice(&buf, out);
             } else {
                 break;
             }
@@ -754,6 +842,9 @@ fn apply_tag_pair(key: &str, raw_val: &str, out: &mut ParsedTags) {
             if y.len() == 4 && y.chars().all(|c| c.is_ascii_digit()) {
                 out.year = Some(y);
             }
+        }
+        "LYRICS" | "UNSYNCEDLYRICS" => {
+            out.lyrics.get_or_insert_with(|| val.to_string());
         }
         _ => {}
     }

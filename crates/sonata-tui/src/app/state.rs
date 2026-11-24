@@ -913,6 +913,9 @@ impl App {
             trigger_upgrade: false,
         });
         if self.config.personal_only_mode {
+            self.anim_art_frames.clear();
+            self.anim_art_idx = 0;
+            self.clear_kitty_images();
             if let Some(cur) = self.playback.current_track() {
                 if !can_play_tui_track(cur, true, self.downloaded_track_ids.contains(&cur.id)) {
                     self.enqueue_session_cmd(SessionCommand::Stop);

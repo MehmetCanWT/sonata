@@ -29,6 +29,18 @@
 -dontwarn org.conscrypt.**
 -dontwarn org.bouncycastle.**
 -dontwarn org.openjsse.**
+-dontwarn org.slf4j.**
+-dontwarn javax.security.**
+-dontwarn java.lang.management.**
+
+# SMB2/SMB3 native client (smbj + mbassy + BouncyCastle)
+-keepattributes *Annotation*
+-keep class com.hierynomus.** { *; }
+-keep class net.engio.mbassy.** { *; }
+-keep class org.bouncycastle.crypto.** { *; }
+-dontwarn com.hierynomus.**
+-dontwarn net.engio.mbassy.**
+-dontwarn javax.el.**
 
 # Kotlin coroutines & runtime
 -keepnames class kotlinx.coroutines.internal.MainDispatcherFactory {}

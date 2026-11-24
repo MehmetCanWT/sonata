@@ -8,7 +8,9 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.StrictMode
+import android.provider.DocumentsContract
 import android.view.WindowManager
+import java.util.Locale
 import androidx.core.content.ContextCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -550,6 +552,22 @@ private fun SonataAppContent(
             dev.sonata.android.data.LocalMusicScanner.requiredReadAudioPermission(),
         )
     }
+    val addLocalFolderLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { treeUri ->
+        if (treeUri != null) {
+            val docId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull()
+            val folderPath = dev.sonata.android.data.LocalMusicScanner.folderPathFromTreeDocumentId(docId)
+            if (folderPath != null) {
+                vm.updateSettings { current ->
+                    val clean = dev.sonata.android.data.LocalMusicScanner.normalizeFolderPath(folderPath)
+                    val exists = current.localMusicFolders.any { it.equals(clean, ignoreCase = true) }
+                    val updated = if (exists) current.localMusicFolders else current.localMusicFolders + clean
+                    current.copy(localMusicFolders = updated)
+                }
+            }
+        }
+    }
 
     val homeListState = rememberLazyListState()
     val exploreListState = rememberLazyListState()
@@ -628,6 +646,12 @@ private fun SonataAppContent(
         state.showConnectSheet ||
         state.artistPage != null ||
         state.artistLoading
+
+    LaunchedEffect(state.personalOnlyMode, state.activeTab) {
+        if (state.personalOnlyMode && (state.activeTab == AndroidTab.Explore || state.activeTab == AndroidTab.Radio)) {
+            navigateToTab(AndroidTab.Home)
+        }
+    }
 
     LaunchedEffect(state.loading, state.collectionTracks, pendingAddToPlaylistBrowseId) {
         val pendingId = pendingAddToPlaylistBrowseId
@@ -995,7 +1019,15 @@ private fun SonataAppContent(
                     onPlayTrack = { track, queue -> vm.playTrack(track, queue) },
                     onShuffleAll = { tracks -> vm.toggleShuffleAndPlay(tracks) },
                     onTrackOptions = { track, bounds -> trackOptionsTarget = TrackMenuRequest(track, bounds) },
-                    onTrackLongClick = { track, idx, bounds -> openTrackHeldMenu(track, idx, bounds) },
+                    onTrackLongClick = { track, idx, bounds ->
+                        heldContextTarget = HeldContextTarget.TrackRow(
+                            track = track,
+                            trackNumber = idx,
+                            isExplicit = track.isExplicit,
+                            fromLastPlayed = true,
+                            anchorBounds = bounds,
+                        )
+                    },
                 )
 
                 else -> {
@@ -1013,6 +1045,15 @@ private fun SonataAppContent(
                                 onPlayTrack = { track, queue -> vm.playTrack(track, queue) },
                                 onTrackOptions = { track, bounds -> trackOptionsTarget = TrackMenuRequest(track, bounds) },
                                 onTrackLongClick = { track, bounds -> openTrackHeldMenu(track, null, bounds) },
+                                onLastPlayedTrackLongClick = { track, bounds ->
+                                    heldContextTarget = HeldContextTarget.TrackRow(
+                                        track = track,
+                                        trackNumber = null,
+                                        isExplicit = track.isExplicit,
+                                        fromLastPlayed = true,
+                                        anchorBounds = bounds,
+                                    )
+                                },
                                 onCardLongClick = openCardHeldMenu,
                                 onPlaylistLongClick = { playlist, bounds ->
                                     heldContextTarget = HeldContextTarget.AlbumOrPlaylistCard(
@@ -1047,6 +1088,7 @@ private fun SonataAppContent(
                                 onShowAllMoods = { showAllMoods = true },
                                 onStartPersonalStation = vm::startPersonalStation,
                                 onStartDiscoveryStation = vm::startDiscoveryStation,
+                                onOpenServers = { srvId -> vm.openServersScreen(srvId) },
                             )
 
                             AndroidTab.Explore -> ExploreTabContent(
@@ -1376,6 +1418,7 @@ private fun SonataAppContent(
                     onNext = vm::nextTrack,
                     onPrevious = vm::prevTrack,
                     onExpand = { showNowPlaying = true },
+                    personalOnlyMode = state.personalOnlyMode,
                 )
             }
         }
@@ -1482,6 +1525,7 @@ private fun SonataAppContent(
                 },
                 onOpenArtist = { t -> vm.openArtist("", t.artist) },
                 onSongInfo = { showAudioPipeline = true },
+                onRemoveFromLastPlayed = vm::removeFromLastPlayed,
                 onPlayCollection = { col ->
                     if (col.browseId == state.collectionBrowseId && state.collectionTracks.isNotEmpty()) {
                         state.collectionTracks.firstOrNull()?.let { vm.playTrack(it, state.collectionTracks) }
@@ -1688,6 +1732,7 @@ private fun SonataAppContent(
                 onRescanLocalMusic = vm::scanLocalMusic,
                 onProbeServerHealth = vm::probeServerHealth,
                 onRunServerSpeedTest = vm::runServerSpeedTest,
+                onRescanServer = vm::rescanServerSource,
                 onOpenServer = { srvId -> vm.openServersScreen(srvId) },
                 scrobbleConfig = state.scrobbleConfig,
                 onSaveScrobbleConfig = vm::saveScrobbleConfig,
@@ -1695,6 +1740,34 @@ private fun SonataAppContent(
                 onOpenConnect = vm::openConnectSheet,
                 statsSummary = state.statsSummary,
                 onOpenStats = vm::openStatsScreen,
+                localTracks = state.localMusicLibrary.tracks,
+                onPlayLocalTrack = vm::playTrack,
+                localAvailableFolders = state.localMusicLibrary.availableFolders,
+                onToggleExcludeNonMusic = { excluded ->
+                    vm.updateSettings { it.copy(excludeNonMusicAudio = excluded) }
+                },
+                onToggleLocalMusicFolder = { folder ->
+                    val normalizedTarget = dev.sonata.android.data.LocalMusicScanner.normalizeFolderPath(folder)
+                    val targetKey = normalizedTarget.lowercase(Locale.ROOT)
+                    vm.updateSettings { current ->
+                        val existing = current.localMusicFolders
+                        val updated = if (existing.any {
+                                dev.sonata.android.data.LocalMusicScanner.normalizeFolderPath(it).lowercase(Locale.ROOT) == targetKey
+                            }
+                        ) {
+                            existing.filterNot {
+                                dev.sonata.android.data.LocalMusicScanner.normalizeFolderPath(it).lowercase(Locale.ROOT) == targetKey
+                            }.toSet()
+                        } else {
+                            existing + normalizedTarget
+                        }
+                        current.copy(localMusicFolders = updated)
+                    }
+                },
+                onAddLocalMusicFolder = { addLocalFolderLauncher.launch(null) },
+                onClearLocalMusicFolders = {
+                    vm.updateSettings { it.copy(localMusicFolders = emptySet()) }
+                },
             )
         }
 
@@ -1770,6 +1843,7 @@ private fun SonataAppContent(
                 serverDiagnostics = state.serverDiagnostics,
                 onProbeServerHealth = vm::probeServerHealth,
                 onRunServerSpeedTest = vm::runServerSpeedTest,
+                onRescanServer = vm::rescanServerSource,
             )
         }
 

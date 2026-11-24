@@ -501,6 +501,7 @@ class PlaybackOrchestrationController(
         track: AndroidTrack,
         baseStream: AndroidResolvedStream,
     ) {
+        if (dev.sonata.android.data.isPersonalTrackId(track.id)) return
         upgradeJob?.cancel()
         _state.update {
             if (it.generation == generation && it.activeTrack?.id == track.id) {

@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -28,14 +29,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -50,19 +51,22 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import coil3.compose.AsyncImage
 import dev.sonata.android.ServerBrowserState
 import dev.sonata.android.data.AppLanguage
+import dev.sonata.android.data.SmbClient
 import dev.sonata.android.ui.CARD_ART_PX
 import dev.sonata.android.ui.PAGE_GUTTER
 import dev.sonata.android.ui.PillSegmentedControl
@@ -118,6 +122,7 @@ fun ServersScreen(
     serverDiagnostics: Map<String, ServerDiagnosticState> = emptyMap(),
     onProbeServerHealth: (String) -> Unit = {},
     onRunServerSpeedTest: (String) -> Unit = {},
+    onRescanServer: (String) -> Unit = {},
 ) {
     val strings = LocalSonataStrings.current
     val s = strings.servers
@@ -128,6 +133,7 @@ fun ServersScreen(
 
     var editingTarget by remember { mutableStateOf<AndroidServerProfile?>(null) }
     var showAddDialog by remember { mutableStateOf(false) }
+    var initialAddKind by remember { mutableStateOf(AndroidServerKind.JELLYFIN) }
     var pendingDeleteServer by remember { mutableStateOf<AndroidServerProfile?>(null) }
 
     val pageBg = if (tokens.isDark) BasicPalette.DarkBackground else BasicPalette.LightBackground
@@ -137,10 +143,18 @@ fun ServersScreen(
     val dividerColor = if (tokens.isDark) BasicPalette.DarkOutline else BasicPalette.LightOutline
 
     val activeServer = browserState.activeServer
+    val isEditorOpen = showAddDialog || editingTarget != null
 
     val handleBack: () -> Unit = {
         when {
-            activeServer != null && activeServer.kind == AndroidServerKind.WEB_DAV && onNavigateWebDavBack() -> Unit
+            isEditorOpen -> {
+                showAddDialog = false
+                editingTarget = null
+                onClearTestResult()
+            }
+            activeServer != null &&
+                (activeServer.kind == AndroidServerKind.WEB_DAV || activeServer.kind == AndroidServerKind.SMB) &&
+                onNavigateWebDavBack() -> Unit
             activeServer != null && browserState.selectedArtistName != null -> onCloseArtist()
             activeServer != null -> onCloseServerBrowser()
             else -> onBack()
@@ -175,36 +189,6 @@ fun ServersScreen(
         )
     }
 
-    if (showAddDialog || editingTarget != null) {
-        ServerEditorDialog(
-            initialProfile = editingTarget,
-            src = src,
-            testingConnection = browserState.testingConnection,
-            testResultMessage = browserState.testResultMessage,
-            testResultIsError = browserState.testResultIsError,
-            saving = browserState.saving,
-            saveError = browserState.error,
-            cardBg = cardBg,
-            dividerColor = dividerColor,
-            primaryText = primaryText,
-            secondaryText = secondaryText,
-            accent = accent,
-            onTestConnection = onTestConnection,
-            onSave = { profile ->
-                onSaveServer(profile) {
-                    showAddDialog = false
-                    editingTarget = null
-                    onClearTestResult()
-                }
-            },
-            onDismiss = {
-                showAddDialog = false
-                editingTarget = null
-                onClearTestResult()
-            },
-        )
-    }
-
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -213,6 +197,37 @@ fun ServersScreen(
             .navigationBarsPadding(),
         contentAlignment = Alignment.TopCenter,
     ) {
+        if (isEditorOpen) {
+            ServerEditorScreen(
+                initialProfile = editingTarget,
+                initialKind = initialAddKind,
+                src = src,
+                testingConnection = browserState.testingConnection,
+                testResultMessage = browserState.testResultMessage,
+                testResultIsError = browserState.testResultIsError,
+                saving = browserState.saving,
+                saveError = browserState.error,
+                cardBg = cardBg,
+                dividerColor = dividerColor,
+                primaryText = primaryText,
+                secondaryText = secondaryText,
+                accent = accent,
+                onTestConnection = onTestConnection,
+                onSave = { profile ->
+                    onSaveServer(profile) {
+                        showAddDialog = false
+                        editingTarget = null
+                        onClearTestResult()
+                    }
+                },
+                onCancel = {
+                    showAddDialog = false
+                    editingTarget = null
+                    onClearTestResult()
+                },
+            )
+            return@Box
+        }
         Column(
             modifier = Modifier
                 .widthIn(max = 720.dp)
@@ -278,6 +293,7 @@ fun ServersScreen(
                         )
                     }
                 } else {
+                    val addBtnFg = if (accent.luminance() > 0.5f) Color.Black else Color.White
                     Box(
                         modifier = Modifier
                             .size(40.dp)
@@ -286,6 +302,7 @@ fun ServersScreen(
                             .clickable {
                                 onClearTestResult()
                                 editingTarget = null
+                                initialAddKind = AndroidServerKind.JELLYFIN
                                 showAddDialog = true
                             },
                         contentAlignment = Alignment.Center,
@@ -293,7 +310,7 @@ fun ServersScreen(
                         Icon(
                             imageVector = SonataIcons.Add,
                             contentDescription = s.addServer,
-                            tint = Color.White,
+                            tint = addBtnFg,
                             modifier = Modifier.size(20.dp),
                         )
                     }
@@ -311,9 +328,10 @@ fun ServersScreen(
                     primaryText = primaryText,
                     secondaryText = secondaryText,
                     accent = accent,
-                    onAddServer = {
+                    onAddServer = { kind ->
                         onClearTestResult()
                         editingTarget = null
+                        initialAddKind = kind
                         showAddDialog = true
                     },
                     onOpenServer = onOpenServer,
@@ -325,6 +343,7 @@ fun ServersScreen(
                     onToggleEnabled = onSetServerEnabled,
                     onProbeHealth = onProbeServerHealth,
                     onRunSpeedTest = onRunServerSpeedTest,
+                    onRescanServer = onRescanServer,
                 )
             } else {
                 ServerBrowserContent(
@@ -362,13 +381,14 @@ private fun ServersListContent(
     primaryText: Color,
     secondaryText: Color,
     accent: Color,
-    onAddServer: () -> Unit,
+    onAddServer: (AndroidServerKind) -> Unit,
     onOpenServer: (AndroidServerProfile) -> Unit,
     onEditServer: (AndroidServerProfile) -> Unit,
     onDeleteServer: (AndroidServerProfile) -> Unit,
     onToggleEnabled: (String, Boolean) -> Unit,
     onProbeHealth: (String) -> Unit,
     onRunSpeedTest: (String) -> Unit,
+    onRescanServer: (String) -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -377,45 +397,103 @@ private fun ServersListContent(
     ) {
         if (servers.isEmpty()) {
             item(key = "servers_empty") {
+                val primaryBtnFg = if (accent.luminance() > 0.5f) Color.Black else Color.White
                 Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(18.dp))
-                        .background(cardBg)
-                        .border(0.75.dp, dividerColor, RoundedCornerShape(18.dp))
-                        .padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
-                    Icon(
-                        imageVector = SonataIcons.Folder,
-                        contentDescription = null,
-                        tint = accent,
-                        modifier = Modifier.size(36.dp),
-                    )
-                    Text(
-                        text = s.noServersTitle,
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                        color = primaryText,
-                    )
-                    Text(
-                        text = s.noServersSubtitle,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = secondaryText,
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Box(
+                    Column(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(22.dp))
-                            .background(accent)
-                            .clickable(onClick = onAddServer)
-                            .padding(horizontal = 20.dp, vertical = 10.dp),
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(cardBg)
+                            .border(0.75.dp, dividerColor, RoundedCornerShape(18.dp))
+                            .padding(22.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        Text(
-                            text = s.addServer,
-                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
-                            color = Color.White,
+                        Icon(
+                            imageVector = SonataIcons.Folder,
+                            contentDescription = null,
+                            tint = accent,
+                            modifier = Modifier.size(36.dp),
                         )
+                        Text(
+                            text = s.noServersTitle,
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = primaryText,
+                        )
+                        Text(
+                            text = s.noServersSubtitle,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = secondaryText,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(22.dp))
+                                .background(accent)
+                                .clickable { onAddServer(AndroidServerKind.JELLYFIN) }
+                                .padding(horizontal = 22.dp, vertical = 11.dp),
+                        ) {
+                            Text(
+                                text = s.addServer,
+                                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                                color = primaryBtnFg,
+                            )
+                        }
+                    }
+
+                    // Quick protocol cards with full protocol names
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(cardBg)
+                            .border(0.75.dp, dividerColor, RoundedCornerShape(18.dp)),
+                    ) {
+                        AndroidServerKind.entries.forEachIndexed { idx, protoKind ->
+                            if (idx > 0) {
+                                HorizontalDivider(
+                                    thickness = 0.5.dp,
+                                    color = dividerColor,
+                                    modifier = Modifier.padding(start = 16.dp),
+                                )
+                            }
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onAddServer(protoKind) }
+                                    .padding(horizontal = 16.dp, vertical = 13.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                Icon(
+                                    imageVector = SonataIcons.Add,
+                                    contentDescription = null,
+                                    tint = accent,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        text = serverKindShortTag(protoKind),
+                                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                                        color = primaryText,
+                                    )
+                                    Text(
+                                        text = serverKindSubtitle(protoKind),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = secondaryText,
+                                    )
+                                }
+                                Icon(
+                                    imageVector = SonataIcons.ChevronRight,
+                                    contentDescription = null,
+                                    tint = secondaryText.copy(alpha = 0.7f),
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -437,6 +515,7 @@ private fun ServersListContent(
                     onToggleEnabled = { enabled -> onToggleEnabled(server.id, enabled) },
                     onProbeHealth = { onProbeHealth(server.id) },
                     onRunSpeedTest = { onRunSpeedTest(server.id) },
+                    onRescanServer = { onRescanServer(server.id) },
                 )
             }
         }
@@ -469,6 +548,7 @@ private fun ServerProfileCard(
     onToggleEnabled: (Boolean) -> Unit,
     onProbeHealth: () -> Unit,
     onRunSpeedTest: () -> Unit,
+    onRescanServer: () -> Unit,
 ) {
     val strings = LocalSonataStrings.current
     val endpointSummary = remember(server) {
@@ -591,11 +671,30 @@ private fun ServerProfileCard(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+            if (!diagnostic.rescanError.isNullOrBlank()) {
+                Text(
+                    text = diagnostic.rescanError,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = BasicPalette.AccentRed,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            } else if (!diagnostic.rescanSummary.isNullOrBlank()) {
+                Text(
+                    text = diagnostic.rescanSummary,
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                    color = Color(0xFF34C759),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             Spacer(Modifier.weight(1f))
         }
 
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -623,6 +722,19 @@ private fun ServerProfileCard(
                     text = if (diagnostic.runningSpeedTest) src.runningSpeedTest else src.speedTest,
                     style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
                     color = accent,
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(dividerColor.copy(alpha = 0.35f))
+                    .clickable(enabled = !diagnostic.rescanning, onClick = onRescanServer)
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+            ) {
+                Text(
+                    text = if (diagnostic.rescanning) src.rescanningSource else src.rescanLocalMusic,
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                    color = primaryText,
                 )
             }
             Spacer(Modifier.weight(1f))
@@ -800,89 +912,6 @@ private fun ServerBrowserContent(
             return
         }
 
-        if (server.kind == AndroidServerKind.WEB_DAV) {
-            val breadcrumb = browserState.webdavPathStack.joinToString(" / ") { it.second }
-            if (breadcrumb.isNotBlank()) {
-                Text(
-                    text = breadcrumb,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = secondaryText,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(horizontal = PAGE_GUTTER, vertical = 6.dp),
-                )
-            }
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = PAGE_GUTTER, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                if (browserState.loading) {
-                    item(key = "dav_loading") {
-                        Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(color = accent, strokeWidth = 2.5.dp)
-                        }
-                    }
-                }
-                if (!browserState.loading && browserState.webdavFolders.isEmpty() && browserState.webdavTracks.isEmpty()) {
-                    item(key = "dav_empty") {
-                        Text(
-                            text = s.emptyFolder,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = secondaryText,
-                            modifier = Modifier.padding(vertical = 24.dp),
-                        )
-                    }
-                }
-                items(browserState.webdavFolders, key = { "dav_dir_${it.id}" }) { folder ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(cardBg)
-                            .clickable { onOpenWebDavFolder(folder.id, folder.name) }
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            imageVector = SonataIcons.Folder,
-                            contentDescription = null,
-                            tint = accent,
-                            modifier = Modifier.size(22.dp),
-                        )
-                        Spacer(Modifier.width(12.dp))
-                        Text(
-                            text = folder.name,
-                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Medium),
-                            color = primaryText,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Icon(
-                            imageVector = SonataIcons.ChevronRight,
-                            contentDescription = null,
-                            tint = secondaryText,
-                            modifier = Modifier.size(18.dp),
-                        )
-                    }
-                }
-                items(browserState.webdavTracks, key = { "dav_trk_${it.id}" }) { track ->
-                    ServerTrackRow(
-                        track = track,
-                        isCurrent = activeTrackId == track.id,
-                        isPlaying = activeTrackId == track.id && isPlaying,
-                        primaryText = primaryText,
-                        secondaryText = secondaryText,
-                        accent = accent,
-                        onClick = { onPlayTrack(track, browserState.webdavTracks) },
-                    )
-                }
-            }
-            return
-        }
-
-        // Jellyfin / Subsonic browse
         if (browserState.selectedArtistName != null) {
             Row(
                 modifier = Modifier
@@ -930,6 +959,179 @@ private fun ServerBrowserContent(
             }
             return
         }
+
+        if (server.kind == AndroidServerKind.SMB || server.kind == AndroidServerKind.WEB_DAV) {
+            var smbSegment by rememberSaveable(server.id) { mutableIntStateOf(0) }
+            val smbSegments = remember(s) { listOf(s.foldersTab, s.albumsTab, s.artistsTab) }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = PAGE_GUTTER, vertical = 8.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                PillSegmentedControl(
+                    options = smbSegments,
+                    selectedIndex = smbSegment,
+                    onSelect = { smbSegment = it },
+                )
+            }
+            when (smbSegment) {
+                0 -> {
+                    val breadcrumb = browserState.webdavPathStack.joinToString(" / ") { it.second }
+                    if (breadcrumb.isNotBlank()) {
+                        Text(
+                            text = breadcrumb,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = secondaryText,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(horizontal = PAGE_GUTTER, vertical = 6.dp),
+                        )
+                    }
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(horizontal = PAGE_GUTTER, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (browserState.loading) {
+                            item(key = "smb_loading") {
+                                Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                                    CircularProgressIndicator(color = accent, strokeWidth = 2.5.dp)
+                                }
+                            }
+                        }
+                        if (!browserState.loading && browserState.webdavFolders.isEmpty() && browserState.webdavTracks.isEmpty()) {
+                            item(key = "smb_empty") {
+                                Text(
+                                    text = s.emptyFolder,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = secondaryText,
+                                    modifier = Modifier.padding(vertical = 24.dp),
+                                )
+                            }
+                        }
+                        items(browserState.webdavFolders, key = { "smb_dir_${it.id}" }) { folder ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(cardBg)
+                                    .clickable { onOpenWebDavFolder(folder.id, folder.name) }
+                                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(
+                                    imageVector = SonataIcons.Folder,
+                                    contentDescription = null,
+                                    tint = accent,
+                                    modifier = Modifier.size(22.dp),
+                                )
+                                Spacer(Modifier.width(12.dp))
+                                Text(
+                                    text = folder.name,
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Medium),
+                                    color = primaryText,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Icon(
+                                    imageVector = SonataIcons.ChevronRight,
+                                    contentDescription = null,
+                                    tint = secondaryText,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
+                        }
+                        items(browserState.webdavTracks, key = { "smb_trk_${it.id}" }) { track ->
+                            ServerTrackRow(
+                                track = track,
+                                isCurrent = activeTrackId == track.id,
+                                isPlaying = activeTrackId == track.id && isPlaying,
+                                primaryText = primaryText,
+                                secondaryText = secondaryText,
+                                accent = accent,
+                                onClick = { onPlayTrack(track, browserState.webdavTracks) },
+                            )
+                        }
+                    }
+                }
+                1 -> {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(horizontal = PAGE_GUTTER, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (browserState.loading) {
+                            item(key = "smb_alb_loading") {
+                                Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                                    CircularProgressIndicator(color = accent, strokeWidth = 2.5.dp)
+                                }
+                            }
+                        }
+                        val albumRows = browserState.albums.chunked(2)
+                        if (!browserState.loading && albumRows.isEmpty()) {
+                            item(key = "smb_alb_empty") {
+                                Text(s.emptyServerSection, color = secondaryText, modifier = Modifier.padding(16.dp))
+                            }
+                        }
+                        items(albumRows, key = { row -> "smb_alb_row_${row.joinToString("_") { it.id }}" }) { pair ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                pair.forEach { card ->
+                                    ServerAlbumGridTile(
+                                        card = card,
+                                        cardBg = cardBg,
+                                        dividerColor = dividerColor,
+                                        primaryText = primaryText,
+                                        secondaryText = secondaryText,
+                                        onClick = { onOpenAlbum(card) },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                }
+                                if (pair.size == 1) {
+                                    Spacer(Modifier.weight(1f))
+                                }
+                            }
+                        }
+                    }
+                }
+                else -> {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(horizontal = PAGE_GUTTER, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (browserState.loading) {
+                            item(key = "smb_art_loading") {
+                                Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                                    CircularProgressIndicator(color = accent, strokeWidth = 2.5.dp)
+                                }
+                            }
+                        }
+                        if (!browserState.loading && browserState.artists.isEmpty()) {
+                            item(key = "smb_art_empty") {
+                                Text(s.emptyServerSection, color = secondaryText, modifier = Modifier.padding(16.dp))
+                            }
+                        }
+                        items(browserState.artists, key = { "smb_art_${it.id}" }) { artist ->
+                            ServerCardRow(
+                                card = artist,
+                                cardBg = cardBg,
+                                primaryText = primaryText,
+                                secondaryText = secondaryText,
+                                onClick = { onOpenArtist(artist) },
+                            )
+                        }
+                    }
+                }
+            }
+            return
+        }
+
+        // Jellyfin / Subsonic browse
 
         if (browserState.libraries.isNotEmpty()) {
             Row(
@@ -1232,10 +1434,10 @@ private fun ServerTrackRow(
     val req = rememberArtworkRequest(thumb, ROW_ART_PX, ROW_ART_PX)
     val tag = remember(track.id) {
         when {
-            track.id.startsWith("jellyfin:") -> "JFN"
-            track.id.startsWith("subsonic:") -> "SUB"
+            track.id.startsWith("jellyfin:") -> "Jellyfin"
+            track.id.startsWith("subsonic:") -> "Subsonic"
             track.id.startsWith("smb:") -> "SMB"
-            track.id.startsWith("webdav:") -> "DAV"
+            track.id.startsWith("webdav:") -> "WebDAV"
             else -> null
         }
     }
@@ -1320,9 +1522,12 @@ private fun ServerTrackRow(
     }
 }
 
+private val EditorGroupShape = RoundedCornerShape(14.dp)
+
 @Composable
-private fun ServerEditorDialog(
+private fun ServerEditorScreen(
     initialProfile: AndroidServerProfile?,
+    initialKind: AndroidServerKind = AndroidServerKind.JELLYFIN,
     src: SourcesStrings,
     testingConnection: Boolean,
     testResultMessage: String?,
@@ -1336,52 +1541,131 @@ private fun ServerEditorDialog(
     accent: Color,
     onTestConnection: (AndroidServerProfile) -> Unit,
     onSave: (AndroidServerProfile) -> Unit,
-    onDismiss: () -> Unit,
+    onCancel: () -> Unit,
 ) {
     val strings = LocalSonataStrings.current
     val s = strings.servers
     val isEditing = initialProfile != null
+    val accentFg = if (accent.luminance() > 0.5f) Color.Black else Color.White
+    val parsedSmb = remember(initialProfile?.id) {
+        if (initialProfile?.kind == AndroidServerKind.SMB) {
+            SmbClient.parseEndpoint(initialProfile).getOrNull()
+        } else {
+            null
+        }
+    }
 
     var name by rememberSaveable(initialProfile?.id) { mutableStateOf(initialProfile?.name.orEmpty()) }
-    var kind by rememberSaveable(initialProfile?.id) {
-        mutableStateOf(initialProfile?.kind ?: AndroidServerKind.JELLYFIN)
+    var kind by rememberSaveable(initialProfile?.id, initialKind) {
+        mutableStateOf(initialProfile?.kind ?: initialKind)
     }
     var baseUrl by rememberSaveable(initialProfile?.id) { mutableStateOf(initialProfile?.baseUrl.orEmpty()) }
+    var smbHost by rememberSaveable(initialProfile?.id) {
+        mutableStateOf(parsedSmb?.host ?: if (initialProfile?.kind == AndroidServerKind.SMB) initialProfile.baseUrl else "")
+    }
+    var smbPort by rememberSaveable(initialProfile?.id) {
+        mutableStateOf((parsedSmb?.port ?: SmbClient.DEFAULT_SMB_PORT).toString())
+    }
+    var smbShare by rememberSaveable(initialProfile?.id) {
+        mutableStateOf(parsedSmb?.share ?: initialProfile?.share.orEmpty())
+    }
+    var smbSubpath by rememberSaveable(initialProfile?.id) {
+        mutableStateOf(parsedSmb?.baseSubpath.orEmpty())
+    }
     var username by rememberSaveable(initialProfile?.id) { mutableStateOf(initialProfile?.username.orEmpty()) }
     var password by rememberSaveable(initialProfile?.id) { mutableStateOf("") }
+    var passwordVisible by rememberSaveable(initialProfile?.id) { mutableStateOf(false) }
     var apiKey by rememberSaveable(initialProfile?.id) { mutableStateOf("") }
     var accessToken by rememberSaveable(initialProfile?.id) { mutableStateOf("") }
     var userId by rememberSaveable(initialProfile?.id) { mutableStateOf(initialProfile?.userId.orEmpty()) }
     var bearerToken by rememberSaveable(initialProfile?.id) { mutableStateOf("") }
-    var smbShare by rememberSaveable(initialProfile?.id) { mutableStateOf(initialProfile?.share.orEmpty()) }
     var smbDomain by rememberSaveable(initialProfile?.id) { mutableStateOf(initialProfile?.domain.orEmpty()) }
-    var smbMountPath by rememberSaveable(initialProfile?.id) { mutableStateOf(initialProfile?.localMountPath.orEmpty()) }
     var enabled by rememberSaveable(initialProfile?.id) { mutableStateOf(initialProfile?.enabled ?: true) }
+    var showAdvanced by rememberSaveable(initialProfile?.id) {
+        mutableStateOf(
+            !initialProfile?.apiKey.isNullOrBlank() ||
+                !initialProfile?.accessToken.isNullOrBlank() ||
+                !initialProfile?.userId.isNullOrBlank() ||
+                !initialProfile?.bearerToken.isNullOrBlank() ||
+                !initialProfile?.domain.isNullOrBlank(),
+        )
+    }
     var validationError by remember { mutableStateOf<String?>(null) }
 
     fun buildCandidate(): AndroidServerProfile? {
         val cleanName = name.trim()
-        val cleanUrl = baseUrl.trim().trimEnd('/')
-        val cleanMount = smbMountPath.trim().takeIf { it.isNotEmpty() }
         if (cleanName.isBlank()) {
             validationError = s.validationNameRequired
             return null
         }
+
+        val resolvedBaseUrl: String
+        val resolvedShare: String?
         if (kind == AndroidServerKind.SMB) {
-            if (cleanUrl.isBlank() && cleanMount == null) {
+            val rawHostInput = smbHost.trim()
+            val cleanShareInput = smbShare.trim().trim('/', '\\')
+            if (rawHostInput.startsWith("smb://", ignoreCase = true) ||
+                rawHostInput.startsWith("\\\\") ||
+                rawHostInput.startsWith("//")
+            ) {
+                val probeProfile = AndroidServerProfile(
+                    id = initialProfile?.id.orEmpty(),
+                    name = cleanName,
+                    kind = AndroidServerKind.SMB,
+                    baseUrl = rawHostInput,
+                    enabled = enabled,
+                    username = null,
+                    password = null,
+                    apiKey = null,
+                    accessToken = null,
+                    userId = null,
+                    bearerToken = null,
+                    libraryIds = emptyList(),
+                    share = cleanShareInput.takeIf { it.isNotEmpty() },
+                    domain = null,
+                    localMountPath = null,
+                )
+                val parsed = SmbClient.parseEndpoint(probeProfile).getOrNull()
+                if (parsed == null) {
+                    validationError = s.validationUrlRequired
+                    return null
+                }
+                resolvedShare = cleanShareInput.ifEmpty { parsed.share }
+                resolvedBaseUrl = SmbClient.buildBaseUrl(
+                    host = parsed.host,
+                    portText = smbPort.trim().ifEmpty { parsed.port.toString() },
+                    share = resolvedShare,
+                    subpath = smbSubpath.trim().ifEmpty { parsed.baseSubpath },
+                )
+            } else {
+                if (rawHostInput.isBlank() || cleanShareInput.isBlank()) {
+                    validationError = s.validationUrlRequired
+                    return null
+                }
+                resolvedShare = cleanShareInput
+                resolvedBaseUrl = SmbClient.buildBaseUrl(
+                    host = rawHostInput,
+                    portText = smbPort,
+                    share = resolvedShare,
+                    subpath = smbSubpath,
+                )
+            }
+        } else {
+            val cleanUrl = baseUrl.trim().trimEnd('/')
+            if (!cleanUrl.startsWith("http://") && !cleanUrl.startsWith("https://")) {
                 validationError = s.validationUrlRequired
                 return null
             }
-        } else if (!cleanUrl.startsWith("http://") && !cleanUrl.startsWith("https://")) {
-            validationError = s.validationUrlRequired
-            return null
+            resolvedBaseUrl = cleanUrl
+            resolvedShare = null
         }
+
         validationError = null
         return AndroidServerProfile(
             id = initialProfile?.id.orEmpty(),
             name = cleanName,
             kind = kind,
-            baseUrl = cleanUrl,
+            baseUrl = resolvedBaseUrl,
             enabled = enabled,
             username = username.trim().takeIf { it.isNotEmpty() },
             password = password.takeIf { it.isNotEmpty() } ?: initialProfile?.password,
@@ -1390,230 +1674,405 @@ private fun ServerEditorDialog(
             userId = userId.trim().takeIf { it.isNotEmpty() },
             bearerToken = bearerToken.trim().takeIf { it.isNotEmpty() } ?: initialProfile?.bearerToken,
             libraryIds = initialProfile?.libraryIds.orEmpty(),
-            share = if (kind == AndroidServerKind.SMB) smbShare.trim().takeIf { it.isNotEmpty() } else null,
+            share = resolvedShare,
             domain = if (kind == AndroidServerKind.SMB) smbDomain.trim().takeIf { it.isNotEmpty() } else null,
-            localMountPath = if (kind == AndroidServerKind.SMB) cleanMount else null,
+            localMountPath = null,
         )
     }
 
-    val fieldColors = OutlinedTextFieldDefaults.colors(
-        focusedBorderColor = accent,
-        unfocusedBorderColor = dividerColor,
-        focusedTextColor = primaryText,
-        unfocusedTextColor = primaryText,
-        focusedLabelColor = accent,
-        unfocusedLabelColor = secondaryText,
-        cursorColor = accent,
-    )
+    val urlPlaceholder = when (kind) {
+        AndroidServerKind.JELLYFIN -> "https://jellyfin.example.com"
+        AndroidServerKind.SUBSONIC -> "https://navidrome.example.com"
+        AndroidServerKind.WEB_DAV -> "https://cloud.example.com/dav/music"
+        AndroidServerKind.SMB -> "smb://192.168.1.20/Music"
+    }
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false),
+    Column(
+        modifier = Modifier
+            .widthIn(max = 680.dp)
+            .fillMaxSize()
+            .imePadding(),
     ) {
-        Column(
+        // Inset-grouped header bar
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp)
-                .widthIn(max = 540.dp)
-                .clip(RoundedCornerShape(20.dp))
-                .background(cardBg)
-                .border(0.75.dp, dividerColor, RoundedCornerShape(20.dp))
-                .padding(20.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = if (isEditing) s.editServer else s.addServer,
-                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                color = primaryText,
-            )
-
-            // Protocol chips
-            Text(
-                text = s.serverKindLabel,
-                style = MaterialTheme.typography.labelMedium,
-                color = secondaryText,
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(cardBg)
+                    .clickable(onClick = onCancel),
+                contentAlignment = Alignment.Center,
             ) {
-                AndroidServerKind.entries.forEach { k ->
-                    val selected = kind == k
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(if (selected) accent else dividerColor.copy(alpha = 0.35f))
-                            .clickable(enabled = !isEditing) { kind = k }
-                            .padding(vertical = 8.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = serverKindShortTag(k),
-                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                            color = if (selected) Color.White else primaryText,
+                Icon(
+                    imageVector = SonataIcons.ChevronLeft,
+                    contentDescription = strings.back,
+                    tint = primaryText,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = if (isEditing) s.editServer else s.addServer,
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = primaryText,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = serverKindLabel(kind, s, src),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = secondaryText,
+                    maxLines = 1,
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(accent)
+                    .clickable(enabled = !saving) { buildCandidate()?.let(onSave) }
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+            ) {
+                Text(
+                    text = if (saving) s.savingServer else s.saveServer,
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                    color = accentFg,
+                    maxLines = 1,
+                )
+            }
+        }
+
+        // Scrollable Apple-Music / iOS inset-grouped sections
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp)
+                .padding(top = 6.dp, bottom = 36.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            // 1. Protocol Selector (full protocol names — never abbreviated)
+            Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                EditorSectionLabel(s.serverKindLabel, secondaryText)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(EditorGroupShape)
+                        .background(cardBg)
+                        .border(0.5.dp, dividerColor, EditorGroupShape)
+                        .padding(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    AndroidServerKind.entries.forEach { proto ->
+                        val selected = kind == proto
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (selected) accent else Color.Transparent)
+                                .clickable(enabled = !isEditing) { kind = proto }
+                                .padding(horizontal = 6.dp, vertical = 10.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = serverKindShortTag(proto),
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                ),
+                                color = if (selected) accentFg else primaryText,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 2. Connection Section
+            Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                EditorSectionLabel(s.connectionSection, secondaryText)
+                EditorInsetCard(cardBg = cardBg, dividerColor = dividerColor) {
+                    EditorTextFieldRow(
+                        label = s.serverNameLabel,
+                        value = name,
+                        onValueChange = { name = it },
+                        placeholder = s.serverNamePlaceholder,
+                        primaryText = primaryText,
+                        secondaryText = secondaryText,
+                        accent = accent,
+                    )
+                    if (kind == AndroidServerKind.SMB) {
+                        HorizontalDivider(
+                            thickness = 0.5.dp,
+                            color = dividerColor,
+                            modifier = Modifier.padding(start = 16.dp),
+                        )
+                        EditorTextFieldRow(
+                            label = s.smbHostLabel,
+                            value = smbHost,
+                            onValueChange = { smbHost = it },
+                            placeholder = s.smbHostPlaceholder,
+                            keyboardType = KeyboardType.Uri,
+                            primaryText = primaryText,
+                            secondaryText = secondaryText,
+                            accent = accent,
+                        )
+                        HorizontalDivider(
+                            thickness = 0.5.dp,
+                            color = dividerColor,
+                            modifier = Modifier.padding(start = 16.dp),
+                        )
+                        EditorTextFieldRow(
+                            label = s.smbPortLabel,
+                            value = smbPort,
+                            onValueChange = { smbPort = it.filter { ch -> ch.isDigit() }.take(5) },
+                            placeholder = "445",
+                            keyboardType = KeyboardType.Number,
+                            primaryText = primaryText,
+                            secondaryText = secondaryText,
+                            accent = accent,
+                        )
+                        HorizontalDivider(
+                            thickness = 0.5.dp,
+                            color = dividerColor,
+                            modifier = Modifier.padding(start = 16.dp),
+                        )
+                        EditorTextFieldRow(
+                            label = src.smbShareLabel,
+                            value = smbShare,
+                            onValueChange = { smbShare = it },
+                            placeholder = "Music",
+                            primaryText = primaryText,
+                            secondaryText = secondaryText,
+                            accent = accent,
+                        )
+                        HorizontalDivider(
+                            thickness = 0.5.dp,
+                            color = dividerColor,
+                            modifier = Modifier.padding(start = 16.dp),
+                        )
+                        EditorTextFieldRow(
+                            label = s.smbSubpathLabel,
+                            value = smbSubpath,
+                            onValueChange = { smbSubpath = it },
+                            placeholder = "FLAC",
+                            primaryText = primaryText,
+                            secondaryText = secondaryText,
+                            accent = accent,
+                        )
+                    } else {
+                        HorizontalDivider(
+                            thickness = 0.5.dp,
+                            color = dividerColor,
+                            modifier = Modifier.padding(start = 16.dp),
+                        )
+                        EditorTextFieldRow(
+                            label = s.serverBaseUrlLabel,
+                            value = baseUrl,
+                            onValueChange = { baseUrl = it },
+                            placeholder = urlPlaceholder,
+                            keyboardType = KeyboardType.Uri,
+                            primaryText = primaryText,
+                            secondaryText = secondaryText,
+                            accent = accent,
                         )
                     }
                 }
             }
-            Text(
-                text = serverKindLabel(kind, s, src),
-                style = MaterialTheme.typography.bodySmall,
-                color = secondaryText,
-            )
 
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it },
-                label = { Text(s.serverNameLabel) },
-                placeholder = { Text(s.serverNamePlaceholder) },
-                singleLine = true,
-                colors = fieldColors,
-                modifier = Modifier.fillMaxWidth(),
-            )
-
-            OutlinedTextField(
-                value = baseUrl,
-                onValueChange = { baseUrl = it },
-                label = { Text(s.serverBaseUrlLabel) },
-                placeholder = {
-                    Text(
-                        if (kind == AndroidServerKind.SMB) "smb://192.168.1.20/Music"
-                        else s.serverBaseUrlPlaceholder,
+            // 3. Authentication Section
+            Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                EditorSectionLabel(s.authSection, secondaryText)
+                EditorInsetCard(cardBg = cardBg, dividerColor = dividerColor) {
+                    EditorTextFieldRow(
+                        label = s.serverUsernameLabel,
+                        value = username,
+                        onValueChange = { username = it },
+                        placeholder = if (kind == AndroidServerKind.SMB) "guest" else "",
+                        primaryText = primaryText,
+                        secondaryText = secondaryText,
+                        accent = accent,
                     )
-                },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                colors = fieldColors,
-                modifier = Modifier.fillMaxWidth(),
-            )
-
-            OutlinedTextField(
-                value = username,
-                onValueChange = { username = it },
-                label = { Text(s.serverUsernameLabel) },
-                singleLine = true,
-                colors = fieldColors,
-                modifier = Modifier.fillMaxWidth(),
-            )
-
-            OutlinedTextField(
-                value = password,
-                onValueChange = { password = it },
-                label = { Text(s.serverPasswordLabel) },
-                placeholder = {
-                    if (isEditing && !initialProfile?.password.isNullOrEmpty()) {
-                        Text(s.serverPasswordKeepHint)
-                    }
-                },
-                singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                colors = fieldColors,
-                modifier = Modifier.fillMaxWidth(),
-            )
-
-            if (kind == AndroidServerKind.JELLYFIN) {
-                OutlinedTextField(
-                    value = apiKey,
-                    onValueChange = { apiKey = it },
-                    label = { Text(s.serverApiKeyLabel) },
-                    placeholder = {
-                        if (isEditing && !initialProfile?.apiKey.isNullOrEmpty()) {
-                            Text(s.serverPasswordKeepHint)
-                        }
-                    },
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    colors = fieldColors,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = accessToken,
-                    onValueChange = { accessToken = it },
-                    label = { Text(s.serverAccessTokenLabel) },
-                    placeholder = {
-                        if (isEditing && !initialProfile?.accessToken.isNullOrEmpty()) {
-                            Text(s.serverPasswordKeepHint)
-                        }
-                    },
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    colors = fieldColors,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = userId,
-                    onValueChange = { userId = it },
-                    label = { Text(s.serverUserIdLabel) },
-                    singleLine = true,
-                    colors = fieldColors,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            } else if (kind == AndroidServerKind.WEB_DAV) {
-                OutlinedTextField(
-                    value = bearerToken,
-                    onValueChange = { bearerToken = it },
-                    label = { Text(s.serverBearerTokenLabel) },
-                    placeholder = {
-                        if (isEditing && !initialProfile?.bearerToken.isNullOrEmpty()) {
-                            Text(s.serverPasswordKeepHint)
-                        }
-                    },
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    colors = fieldColors,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            } else if (kind == AndroidServerKind.SMB) {
-                OutlinedTextField(
-                    value = smbShare,
-                    onValueChange = { smbShare = it },
-                    label = { Text(src.smbShareLabel) },
-                    placeholder = { Text("Music") },
-                    singleLine = true,
-                    colors = fieldColors,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = smbDomain,
-                    onValueChange = { smbDomain = it },
-                    label = { Text(src.smbDomainLabel) },
-                    placeholder = { Text("WORKGROUP") },
-                    singleLine = true,
-                    colors = fieldColors,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = smbMountPath,
-                    onValueChange = { smbMountPath = it },
-                    label = { Text("Local Mount Path (optional)") },
-                    placeholder = { Text("/mnt/music") },
-                    singleLine = true,
-                    colors = fieldColors,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                    HorizontalDivider(
+                        thickness = 0.5.dp,
+                        color = dividerColor,
+                        modifier = Modifier.padding(start = 16.dp),
+                    )
+                    EditorTextFieldRow(
+                        label = s.serverPasswordLabel,
+                        value = password,
+                        onValueChange = { password = it },
+                        placeholder = if (isEditing && !initialProfile?.password.isNullOrEmpty()) s.serverPasswordKeepHint else "",
+                        isPassword = !passwordVisible,
+                        keyboardType = KeyboardType.Password,
+                        primaryText = primaryText,
+                        secondaryText = secondaryText,
+                        accent = accent,
+                        trailingActionLabel = if (passwordVisible) s.hideSecret else s.showSecret,
+                        onTrailingAction = { passwordVisible = !passwordVisible },
+                    )
+                }
             }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = s.serverEnabledLabel,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = primaryText,
-                    modifier = Modifier.weight(1f),
-                )
-                Switch(
-                    checked = enabled,
-                    onCheckedChange = { enabled = it },
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = Color.White,
-                        checkedTrackColor = Color(0xFF34C759),
-                    ),
-                )
+            // 4. Collapsible Protocol-Specific Advanced Options
+            if (kind != AndroidServerKind.SUBSONIC) {
+                EditorInsetCard(cardBg = cardBg, dividerColor = dividerColor) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showAdvanced = !showAdvanced }
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = s.advancedOptions,
+                            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
+                            color = primaryText,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Icon(
+                            imageVector = SonataIcons.ChevronRight,
+                            contentDescription = null,
+                            tint = secondaryText,
+                            modifier = Modifier
+                                .size(18.dp)
+                                .rotate(if (showAdvanced) 90f else 0f),
+                        )
+                    }
+                    if (showAdvanced) {
+                        HorizontalDivider(thickness = 0.5.dp, color = dividerColor)
+                        when (kind) {
+                            AndroidServerKind.JELLYFIN -> {
+                                EditorTextFieldRow(
+                                    label = s.serverApiKeyLabel,
+                                    value = apiKey,
+                                    onValueChange = { apiKey = it },
+                                    placeholder = if (isEditing && !initialProfile?.apiKey.isNullOrEmpty()) s.serverPasswordKeepHint else "",
+                                    isPassword = true,
+                                    primaryText = primaryText,
+                                    secondaryText = secondaryText,
+                                    accent = accent,
+                                )
+                                HorizontalDivider(
+                                    thickness = 0.5.dp,
+                                    color = dividerColor,
+                                    modifier = Modifier.padding(start = 16.dp),
+                                )
+                                EditorTextFieldRow(
+                                    label = s.serverAccessTokenLabel,
+                                    value = accessToken,
+                                    onValueChange = { accessToken = it },
+                                    placeholder = if (isEditing && !initialProfile?.accessToken.isNullOrEmpty()) s.serverPasswordKeepHint else "",
+                                    isPassword = true,
+                                    primaryText = primaryText,
+                                    secondaryText = secondaryText,
+                                    accent = accent,
+                                )
+                                HorizontalDivider(
+                                    thickness = 0.5.dp,
+                                    color = dividerColor,
+                                    modifier = Modifier.padding(start = 16.dp),
+                                )
+                                EditorTextFieldRow(
+                                    label = s.serverUserIdLabel,
+                                    value = userId,
+                                    onValueChange = { userId = it },
+                                    placeholder = "",
+                                    primaryText = primaryText,
+                                    secondaryText = secondaryText,
+                                    accent = accent,
+                                )
+                            }
+                            AndroidServerKind.WEB_DAV -> {
+                                EditorTextFieldRow(
+                                    label = s.serverBearerTokenLabel,
+                                    value = bearerToken,
+                                    onValueChange = { bearerToken = it },
+                                    placeholder = if (isEditing && !initialProfile?.bearerToken.isNullOrEmpty()) s.serverPasswordKeepHint else "",
+                                    isPassword = true,
+                                    primaryText = primaryText,
+                                    secondaryText = secondaryText,
+                                    accent = accent,
+                                )
+                            }
+                            AndroidServerKind.SMB -> {
+                                EditorTextFieldRow(
+                                    label = src.smbDomainLabel,
+                                    value = smbDomain,
+                                    onValueChange = { smbDomain = it },
+                                    placeholder = "WORKGROUP",
+                                    primaryText = primaryText,
+                                    secondaryText = secondaryText,
+                                    accent = accent,
+                                )
+                            }
+                            AndroidServerKind.SUBSONIC -> Unit
+                        }
+                    }
+                }
+            }
+
+            // 5. Options & Connection Test Section
+            Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                EditorSectionLabel(s.optionsSection, secondaryText)
+                EditorInsetCard(cardBg = cardBg, dividerColor = dividerColor) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { enabled = !enabled }
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = s.serverEnabledLabel,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = primaryText,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Switch(
+                            checked = enabled,
+                            onCheckedChange = { enabled = it },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = Color(0xFF34C759),
+                            ),
+                        )
+                    }
+                    HorizontalDivider(
+                        thickness = 0.5.dp,
+                        color = dividerColor,
+                        modifier = Modifier.padding(start = 16.dp),
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = !testingConnection && !saving) {
+                                buildCandidate()?.let(onTestConnection)
+                            }
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = if (testingConnection) s.testingConnection else s.testConnection,
+                            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
+                            color = accent,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (testingConnection) {
+                            CircularProgressIndicator(
+                                color = accent,
+                                strokeWidth = 2.dp,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    }
+                }
             }
 
             val errText = validationError ?: saveError
@@ -1622,6 +2081,7 @@ private fun ServerEditorDialog(
                     text = errText,
                     style = MaterialTheme.typography.bodySmall,
                     color = BasicPalette.AccentRed,
+                    modifier = Modifier.padding(horizontal = 4.dp),
                 )
             }
 
@@ -1629,12 +2089,12 @@ private fun ServerEditorDialog(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
+                        .clip(EditorGroupShape)
                         .background(
                             if (testResultIsError) BasicPalette.AccentRed.copy(alpha = 0.14f)
                             else Color(0xFF34C759).copy(alpha = 0.14f),
                         )
-                        .padding(10.dp),
+                        .padding(14.dp),
                 ) {
                     Text(
                         text = testResultMessage,
@@ -1644,51 +2104,133 @@ private fun ServerEditorDialog(
                 }
             }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
+            // Prominent Primary Action
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(EditorGroupShape)
+                    .background(accent)
+                    .clickable(enabled = !saving) { buildCandidate()?.let(onSave) }
+                    .padding(vertical = 14.dp),
+                contentAlignment = Alignment.Center,
             ) {
-                TextButton(
-                    enabled = !testingConnection && !saving,
-                    onClick = {
-                        buildCandidate()?.let(onTestConnection)
-                    },
-                ) {
+                Text(
+                    text = if (saving) s.savingServer else s.saveServer,
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                    color = accentFg,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun EditorSectionLabel(title: String, color: Color) {
+    Text(
+        text = title.uppercase(),
+        style = MaterialTheme.typography.labelSmall.copy(
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 0.6.sp,
+        ),
+        color = color,
+        modifier = Modifier.padding(horizontal = 12.dp),
+    )
+}
+
+@Composable
+private fun EditorInsetCard(
+    cardBg: Color,
+    dividerColor: Color,
+    content: @Composable () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(EditorGroupShape)
+            .background(cardBg)
+            .border(0.5.dp, dividerColor, EditorGroupShape),
+    ) {
+        content()
+    }
+}
+
+@Composable
+private fun EditorTextFieldRow(
+    label: String,
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String,
+    primaryText: Color,
+    secondaryText: Color,
+    accent: Color,
+    keyboardType: KeyboardType = KeyboardType.Text,
+    isPassword: Boolean = false,
+    trailingActionLabel: String? = null,
+    onTrailingAction: (() -> Unit)? = null,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 11.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+            color = secondaryText,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(modifier = Modifier.weight(1f)) {
+                if (value.isEmpty() && placeholder.isNotEmpty()) {
                     Text(
-                        text = if (testingConnection) s.testingConnection else s.testConnection,
-                        color = accent,
+                        text = placeholder,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = secondaryText.copy(alpha = 0.55f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
-                Spacer(Modifier.weight(1f))
-                TextButton(onClick = onDismiss) {
-                    Text(strings.cancel, color = secondaryText)
-                }
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(accent)
-                        .clickable(enabled = !saving) {
-                            buildCandidate()?.let(onSave)
-                        }
-                        .padding(horizontal = 16.dp, vertical = 10.dp),
-                ) {
-                    Text(
-                        text = if (saving) s.savingServer else s.saveServer,
-                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
-                        color = Color.White,
-                    )
-                }
+                BasicTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = primaryText),
+                    cursorBrush = SolidColor(accent),
+                    keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+                    visualTransformation = if (isPassword) PasswordVisualTransformation() else VisualTransformation.None,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            if (trailingActionLabel != null && onTrailingAction != null) {
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = trailingActionLabel,
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = accent,
+                    modifier = Modifier.clickable(onClick = onTrailingAction),
+                )
             }
         }
     }
 }
 
 private fun serverKindShortTag(kind: AndroidServerKind): String = when (kind) {
-    AndroidServerKind.JELLYFIN -> "JFN"
-    AndroidServerKind.SUBSONIC -> "SUB"
-    AndroidServerKind.WEB_DAV -> "DAV"
+    AndroidServerKind.JELLYFIN -> "Jellyfin"
+    AndroidServerKind.SUBSONIC -> "Subsonic"
+    AndroidServerKind.WEB_DAV -> "WebDAV"
     AndroidServerKind.SMB -> "SMB"
+}
+
+private fun serverKindSubtitle(kind: AndroidServerKind): String = when (kind) {
+    AndroidServerKind.JELLYFIN -> "Media Server"
+    AndroidServerKind.SUBSONIC -> "Navidrome / OpenSubsonic"
+    AndroidServerKind.WEB_DAV -> "HTTPS Web Directory"
+    AndroidServerKind.SMB -> "Samba / LAN Share"
 }
 
 private fun serverKindLabel(kind: AndroidServerKind, s: ServerStrings, src: SourcesStrings): String = when (kind) {

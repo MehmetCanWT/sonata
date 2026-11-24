@@ -90,6 +90,7 @@ sealed interface HeldContextTarget {
         val trackNumber: Int? = null,
         val durationText: String? = null,
         val isExplicit: Boolean = false,
+        val fromLastPlayed: Boolean = false,
         override val anchorBounds: Rect? = null,
     ) : HeldContextTarget
 
@@ -131,6 +132,7 @@ fun HeldContextMenu(
     onOpenAlbum: (AndroidTrack) -> Unit = {},
     onOpenArtist: (AndroidTrack) -> Unit = {},
     onSongInfo: (AndroidTrack) -> Unit = {},
+    onRemoveFromLastPlayed: ((AndroidTrack) -> Unit)? = null,
     // Album / Playlist actions
     onPlayCollection: (HeldContextTarget.AlbumOrPlaylistCard) -> Unit = {},
     onShuffleCollection: (HeldContextTarget.AlbumOrPlaylistCard) -> Unit = {},
@@ -248,6 +250,7 @@ fun HeldContextMenu(
                         onOpenAlbum = onOpenAlbum,
                         onOpenArtist = onOpenArtist,
                         onSongInfo = onSongInfo,
+                        onRemoveFromLastPlayed = onRemoveFromLastPlayed,
                         onPlayCollection = onPlayCollection,
                         onShuffleCollection = onShuffleCollection,
                         onAddCollectionToPlaylist = onAddCollectionToPlaylist,
@@ -284,6 +287,7 @@ fun HeldContextMenu(
                         onOpenAlbum = onOpenAlbum,
                         onOpenArtist = onOpenArtist,
                         onSongInfo = onSongInfo,
+                        onRemoveFromLastPlayed = onRemoveFromLastPlayed,
                         onPlayCollection = onPlayCollection,
                         onShuffleCollection = onShuffleCollection,
                         onAddCollectionToPlaylist = onAddCollectionToPlaylist,
@@ -585,6 +589,7 @@ private fun HeldActionMenuCard(
     onOpenAlbum: (AndroidTrack) -> Unit,
     onOpenArtist: (AndroidTrack) -> Unit,
     onSongInfo: (AndroidTrack) -> Unit,
+    onRemoveFromLastPlayed: ((AndroidTrack) -> Unit)? = null,
     onPlayCollection: (HeldContextTarget.AlbumOrPlaylistCard) -> Unit,
     onShuffleCollection: (HeldContextTarget.AlbumOrPlaylistCard) -> Unit,
     onAddCollectionToPlaylist: (HeldContextTarget.AlbumOrPlaylistCard) -> Unit,
@@ -779,6 +784,22 @@ private fun HeldActionMenuCard(
                         onSongInfo(track)
                     },
                 )
+                if (target.fromLastPlayed && onRemoveFromLastPlayed != null) {
+                    HorizontalDivider(
+                        color = TrackMenuDivider,
+                        thickness = 0.5.dp,
+                        modifier = Modifier.padding(vertical = 4.dp),
+                    )
+                    TrackMenuRow(
+                        icon = TrackTrashIcon,
+                        title = strings.removeFromLastPlayed,
+                        tint = Color(0xFFFF453A),
+                        onClick = {
+                            onDismiss()
+                            onRemoveFromLastPlayed(track)
+                        },
+                    )
+                }
             }
 
             is HeldContextTarget.AlbumOrPlaylistCard -> {

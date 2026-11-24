@@ -1348,7 +1348,59 @@ pub struct SonataAndroidEngine {
 
 impl SonataAndroidEngine {
     fn server_client(&self) -> ServerClient {
-        ServerClient::new(self.http.clone())
+        ServerClient::new(self.http.clone()).with_cache_dir(self.paths.cache_dir.clone())
+    }
+
+    async fn fetch_server_lyrics_internal(&self, track_id: &str) -> Vec<AndroidLyricLine> {
+        let Some(item_ref) = parse_server_item_id(track_id) else {
+            return Vec::new();
+        };
+        let Ok(profile) = self.find_server_profile(&item_ref.server_id).await else {
+            return Vec::new();
+        };
+        let raw_opt = match item_ref.kind {
+            ServerKind::WebDav => webdav::fetch_lyrics(&self.http, &profile, &item_ref.item_id)
+                .await
+                .ok()
+                .flatten(),
+            ServerKind::Jellyfin => jellyfin::fetch_lyrics(&self.http, &profile, &item_ref.item_id)
+                .await
+                .ok()
+                .flatten(),
+            ServerKind::Subsonic | ServerKind::Smb => None,
+        };
+        let Some(raw) = raw_opt else {
+            return Vec::new();
+        };
+        match sonata_core::lyrics::parse_lyrics_auto(&raw) {
+            LyricsState::Synced(lines) => lines
+                .into_iter()
+                .map(|l| AndroidLyricLine {
+                    time_secs: l.time_secs,
+                    text: l.text,
+                    words: l
+                        .words
+                        .into_iter()
+                        .map(|w| AndroidLyricWord {
+                            start_secs: w.start_secs,
+                            end_secs: w.end_secs,
+                            text: w.text,
+                        })
+                        .collect(),
+                    is_counter_voice: l.voice == sonata_core::lyrics::LyricVoice::Counter,
+                })
+                .collect(),
+            LyricsState::Plain(lines) => lines
+                .into_iter()
+                .map(|text| AndroidLyricLine {
+                    time_secs: -1.0,
+                    text,
+                    words: Vec::new(),
+                    is_counter_voice: false,
+                })
+                .collect(),
+            LyricsState::Idle | LyricsState::Loading | LyricsState::NotFound => Vec::new(),
+        }
     }
 
     async fn load_servers_internal(&self) -> Result<Vec<ServerProfile>, SonataAndroidError> {
@@ -1911,11 +1963,57 @@ impl SonataAndroidEngine {
         Ok(tracks.into_iter().map(AndroidTrack::from).collect())
     }
 
-    /// Fetches a full YouTube Music artist page (hero, subscribers, top tracks, releases, similar artists).
+    /// Fetches a full YouTube Music or WebDAV artist page (hero, metadata, albums, tracks, similar artists).
     pub async fn fetch_artist_page(
         &self,
         browse_id: String,
     ) -> Result<AndroidArtistPage, SonataAndroidError> {
+        if let Some(item_ref) = parse_server_item_id(&browse_id) {
+            if item_ref.kind == ServerKind::WebDav {
+                let profile = self.find_server_profile(&item_ref.server_id).await?;
+                if let Some(art) = webdav::fetch_artist_profile(
+                    &self.http,
+                    &profile,
+                    &item_ref.item_id,
+                    Some(&self.paths.cache_dir),
+                )
+                .await?
+                {
+                    let subtitle = art.subtitle.unwrap_or_else(|| {
+                        let mut parts = Vec::new();
+                        if !art.albums.is_empty() {
+                            parts.push(format!("{} albums", art.albums.len()));
+                        }
+                        if !art.tracks.is_empty() {
+                            parts.push(format!("{} tracks", art.tracks.len()));
+                        }
+                        parts.join(" · ")
+                    });
+                    return Ok(AndroidArtistPage {
+                        id: browse_id,
+                        name: art.name,
+                        subtitle,
+                        description: art.bio,
+                        subscribers: None,
+                        monthly_listeners: None,
+                        thumbnail_url: art.avatar_url,
+                        shuffle_playlist_id: None,
+                        radio_playlist_id: None,
+                        latest_release: art.albums.first().cloned().map(AndroidHomeCard::from),
+                        popular_tracks: art.tracks.into_iter().map(AndroidTrack::from).collect(),
+                        releases: art.albums.into_iter().map(AndroidHomeCard::from).collect(),
+                        related_artists: art
+                            .related_artists
+                            .into_iter()
+                            .map(AndroidHomeCard::from)
+                            .collect(),
+                    });
+                }
+                return Err(SonataAndroidError::NotFound {
+                    reason: format!("WebDAV artist `{browse_id}` was not found"),
+                });
+            }
+        }
         let ytm = self.current_ytm();
         let page = ytm.fetch_artist_page(&browse_id).await?;
         Ok(AndroidArtistPage::from(page))
@@ -2110,14 +2208,15 @@ impl SonataAndroidEngine {
         track: AndroidTrack,
     ) -> Result<AndroidResolvedStream, SonataAndroidError> {
         if parse_server_item_id(&track.id).is_some() {
-            let (profile, item_ref) = self.find_server_for_item(&track.id).await?;
+            let (profile, _item_ref) = self.find_server_for_item(&track.id).await?;
             let core_track: Track = track.into();
             let stream = self.server_client().resolve_stream(&profile, &core_track)?;
             let badge = stream
                 .audio_badge
                 .clone()
                 .filter(|b| !b.trim().is_empty())
-                .unwrap_or_else(|| item_ref.kind.display_name().to_string());
+                .or_else(|| stream.codec.clone().map(|c| c.to_ascii_uppercase()))
+                .unwrap_or_default();
             return Ok(AndroidResolvedStream {
                 url: stream.url,
                 badge,
@@ -2202,8 +2301,17 @@ impl SonataAndroidEngine {
         Ok(resolved.into())
     }
 
-    /// Fetches synced or plain lyrics lines for the active track.
+    /// Fetches lyrics hosted directly on a self-hosted server (WebDAV sidecar/FLAC or Jellyfin Lyrics) without online lookup.
+    pub async fn fetch_server_lyrics(&self, track: AndroidTrack) -> Vec<AndroidLyricLine> {
+        self.fetch_server_lyrics_internal(&track.id).await
+    }
+
+    /// Fetches synced or plain lyrics lines for the active track (preferring self-hosted server lyrics first).
     pub async fn fetch_lyrics(&self, track: AndroidTrack) -> Vec<AndroidLyricLine> {
+        let server_lyrics = self.fetch_server_lyrics_internal(&track.id).await;
+        if !server_lyrics.is_empty() {
+            return server_lyrics;
+        }
         let http = self.http.clone();
         let ytm = self.current_ytm();
         let cache = self.cache_db.clone();
@@ -2608,7 +2716,13 @@ impl SonataAndroidEngine {
                 .filter(|item| item.kind == ServerKind::WebDav)
                 .map_or_else(|| raw.to_string(), |item| item.item_id)
         });
-        let listing = webdav::browse_folder(&self.http, &profile, target.as_deref()).await?;
+        let listing = webdav::browse_folder_enriched(
+            &self.http,
+            &profile,
+            target.as_deref(),
+            Some(&self.paths.cache_dir),
+        )
+        .await?;
         let folders = listing
             .folders
             .into_iter()

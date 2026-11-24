@@ -6,15 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.8] - 2026-11-24
+
 ### Added
 
 - **Self-Hosted Music Servers & Diagnostics (`sonata-core`, `sonata-runtime`, `sonata-desktop`, `sonata-tui`, `sonata-android`, `android`)**:
-  - Added portable Jellyfin, Subsonic/Navidrome, SMB, and WebDAV server providers (`providers/servers/`), pure-Rust RFC 1321 MD5 Subsonic salting, `roxmltree` WebDAV `PROPFIND` parsing, `0o600`/`0o700` credential storage, automatic secret/credential redaction, and stream auth header injection across Linux and Android (`PlaybackService`).
-  - Added live **Alive / Reachability** (`ms`) status badges and real **`Mbps` Speed Test** probes (`probe_server_health`, `run_speed_test`) for configured servers across Android, Desktop, and TUI.
+  - Added portable Jellyfin, Subsonic/Navidrome, SMB, and WebDAV server providers (`providers/servers/`), native Android SMB2/SMB3 TCP streaming via `smbj` (`SmbClient`, seekable `SmbDataSource`), WebDAV HTTP `Range` FLAC tag/artwork/artist/lyrics enrichment, Jellyfin `/Audio/{id}/Lyrics`, sidecar `.ttml`/`.lrc`/`.txt` lyrics parsing (with inline background-vocal splitting), pure-Rust RFC 1321 MD5 Subsonic salting, `roxmltree` WebDAV `PROPFIND` parsing, `0o600`/`0o700` credential/cover storage, automatic secret/credential redaction, and stream auth header injection across Linux and Android (`PlaybackService`).
+  - Added an inset-grouped full-screen `ServerEditorScreen` with protocol-specific fields (including dedicated SMB Host/Port/Share/Subfolder), segmented `Folders | Albums | Artists` SMB/WebDAV browsing, per-source **Artist Pages** (`ArtistScreen` with `artist.json`/`artist.nfo`/`artist.jpg` support even in Personal Only Mode), live **Alive / Reachability** (`ms`) status badges, **`Mbps` Speed Test** probes (`probe_server_health`, `run_speed_test`), and per-source **Rescan** controls.
 
 - **Sources & Modules Hub, Personal Only Mode & Optional YTM Playback Attribution (`sonata-core`, `sonata-runtime`, `sonata-desktop`, `sonata-tui`, `sonata-android`, `android`)**:
-  - Added a dedicated **Sources & Modules** settings section grouping self-hosted servers, local music folders, and pluggable streaming modules (including **JioSaavn** under Modules).
-  - Added non-destructive **Personal Only Mode**, which hides/disables YouTube Music, Spotify, and JioSaavn while keeping all user credentials and module preferences intact for seamless re-enabling.
+  - Added a dedicated **Sources & Modules** settings section grouping self-hosted servers, local music folders (with Android junk audio exclusion filter and Storage Access Framework folder picker), and pluggable streaming modules (including **JioSaavn** under Modules).
+  - Added non-destructive **Personal Only Mode**, sealing Home, Explore, Radio, Search, Playback upgrades, Queue advance, Lyrics, and Guest vs. Account Listening History to device-local and personal server sources (with **Remove from Last Played** support), while keeping all user credentials and module preferences intact for seamless re-enabling.
   - Added optional **YouTube Music Playback Attribution** (`attribute_personal_track_to_ytm`) so personal, local, and self-hosted listens can optionally be matched and reported to YouTube Music listen history.
 
 - **Local Audio Library, Per-Source Library Tabs & Isolated Personal Playlists (`sonata-core`, `sonata-runtime`, `sonata-desktop`, `sonata-tui`, `sonata-android`, `android`)**:
@@ -29,8 +31,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - Added zero-dependency Linux local Discord IPC presence (`sonata-runtime::discord`) and native Android Gateway v10 WebSocket + WebView login + `/external-assets` artwork proxy (with auth state excluded from settings backups).
   - Configured official Sonata Discord Application ID (`1520387624861438002`) with live track/artist/album/artwork metadata and a **"Listen on Sonata"** profile button.
 
-- **Real-Time Measured Audio Quality Badges (`sonata-runtime`, `sonata-desktop`, `sonata-tui`, `android`)**:
-  - Measured real playback codec, bitrate (e.g. `FLAC · 720–880 kbps`), bit depth, and sample rate (`16-bit/44.1kHz`, `24-bit/96kHz`) via live `mpv` IPC properties and Android Media3 ExoPlayer `AudioPipelineState` with file-size / `Content-Length` fallback.
+- **Real-Time Measured Audio Quality Badges (`sonata-core`, `sonata-runtime`, `sonata-desktop`, `sonata-tui`, `android`)**:
+  - Measured real playback codec, bitrate (e.g. `FLAC · 888 kbps · 16-bit/44.1kHz`), bit depth, and sample rate via live `mpv` IPC (`audio-params` / `audio-bitrate` / `file-size`) and Android Media3 ExoPlayer `AudioPipelineState` with SMB file-size / HTTP `Content-Length` / `Content-Range` telemetry — cleanly stripping server protocol names from quality pills.
 
 - **Desktop Music Video Mode, Portable Lyrics Translation & Playback Enhancements (`sonata-core`, `sonata-runtime`, `sonata-desktop`, `sonata-tui`)**:
   - Added Desktop **Music / Video** mode toggle with selectable video quality, `segmentMap` / SponsorBlock timeline synchronization, and `SetVideoMode` integration.
@@ -50,9 +52,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Android Auto Support (`android`)**:
   - Upgraded `PlaybackService` to `MediaLibraryService` with `SonataAutoBrowser`, `SonataAutoDataProvider`, and `automotive_app_desc.xml` for in-car browsing and playback.
 
-- **Flatpak Packaging, Compose UI Tests & Cross-Platform Docs (`packaging`, `android`, `docs`)**:
-  - Added Flatpak manifest and AppStream metadata (`packaging/flatpak/dev.sonata.Desktop.{yml,metainfo.xml}`).
-  - Added Jetpack Compose UI instrumentation test suite (`SonataComposeUiTest.kt`) and cross-platform documentation (`docs/cross-platform.md`).
+- **Flatpak/Flathub Packaging, Compose UI Tests & Sources Documentation (`packaging`, `android`, `docs`)**:
+  - Finalized Flathub-ready Flatpak manifest (`dev.sonata.Desktop.yml`, `flathub.json`, `generate-flatpak-cargo-sources.sh`) and pedantic AppStream metadata (`dev.sonata.Desktop.metainfo.xml`).
+  - Added Jetpack Compose UI instrumentation test suite (`SonataComposeUiTest.kt`) plus comprehensive [docs/local-and-cloud-sources.md](docs/local-and-cloud-sources.md), [docs/flathub.md](docs/flathub.md), and [docs/cross-platform.md](docs/cross-platform.md) guides linked from `README.md`.
 
 ### Changed
 

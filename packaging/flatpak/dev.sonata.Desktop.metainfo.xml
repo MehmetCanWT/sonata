@@ -5,21 +5,22 @@
   <project_license>MIT</project_license>
 
   <name>Sonata</name>
-  <summary>High-fidelity music player for YouTube Music, Spotify, and JioSaavn</summary>
+  <summary>High-fidelity music player for Local Music, self-hosted servers, and streaming</summary>
 
   <description>
     <p>
       Sonata is a fast, native desktop and terminal music player built in Rust with
-      GPUI and Ratatui. It supports YouTube Music, Spotify metadata with Hi-Fi
-      upgrades, optional JioSaavn 320 kbps AAC matching, self-hosted music servers,
-      word-synced karaoke lyrics, animated album artwork, and LAN playback handoff
-      via Sonata Connect.
+      GPUI and Ratatui. It supports offline Local Music collections, self-hosted
+      Jellyfin, Subsonic/Navidrome, WebDAV, and SMB servers, YouTube Music and Spotify
+      metadata with Hi-Fi upgrades, word-synced karaoke lyrics, animated album
+      artwork, and LAN playback handoff via Sonata Connect.
     </p>
     <p>Features:</p>
     <ul>
-      <li>Bit-transparent playback powered by mpv with gapless transitions and 0–12 s crossfade</li>
+      <li>Bit-transparent playback powered by mpv with real-time codec/kbps measurement, gapless transitions, and 0–12 s crossfade</li>
+      <li>Local Music folder scanning plus self-hosted Jellyfin, Subsonic, WebDAV, and SMB sources with optional Personal Only Mode</li>
       <li>29 live-reloading CSS themes, compositor blur, and dual-hue ambient fullscreen backdrops</li>
-      <li>Multi-source word-synced lyrics with live translation and romanization</li>
+      <li>Multi-source word-synced lyrics (TTML, Enhanced LRC, LRCLIB) with live translation and romanization</li>
       <li>MPRIS2 media controls, system tray integration, Discord Rich Presence, and Last.fm / ListenBrainz scrobbling</li>
       <li>Includes both the GPUI desktop app (sonata-desktop) and the Ratatui terminal client (sonata)</li>
     </ul>
@@ -30,6 +31,12 @@
   <url type="homepage">https://github.com/MehmetCanWT/sonata</url>
   <url type="bugtracker">https://github.com/MehmetCanWT/sonata/issues</url>
   <url type="vcs-browser">https://github.com/MehmetCanWT/sonata</url>
+  <url type="contribute">https://github.com/MehmetCanWT/sonata</url>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#f4f4f6</color>
+    <color type="primary" scheme_preference="dark">#111116</color>
+  </branding>
 
   <developer id="io.github.mehmetcanwt">
     <name>MehmetCanWT</name>
@@ -46,6 +53,9 @@
     <keyword>player</keyword>
     <keyword>youtube</keyword>
     <keyword>spotify</keyword>
+    <keyword>jellyfin</keyword>
+    <keyword>subsonic</keyword>
+    <keyword>webdav</keyword>
     <keyword>lyrics</keyword>
     <keyword>flac</keyword>
     <keyword>hifi</keyword>
@@ -54,21 +64,22 @@
   <screenshots>
     <screenshot type="default">
       <caption>Sonata Wayland Desktop Client</caption>
-      <image>https://raw.githubusercontent.com/MehmetCanWT/sonata/main/assets/hyprland-glass-desktop.png</image>
+      <image type="source" width="1920" height="1080">https://raw.githubusercontent.com/MehmetCanWT/sonata/main/assets/hyprland-glass-desktop.png</image>
     </screenshot>
     <screenshot>
       <caption>Sonata Terminal TUI Client</caption>
-      <image>https://raw.githubusercontent.com/MehmetCanWT/sonata/main/assets/hyprland-glass.png</image>
+      <image type="source" width="1920" height="1080">https://raw.githubusercontent.com/MehmetCanWT/sonata/main/assets/hyprland-glass.png</image>
     </screenshot>
   </screenshots>
 
   <releases>
-    <release version="1.0.7" date="2026-11-24">
+    <release version="1.0.8" date="2026-11-24">
       <description>
         <p>
-          Added Sonata Connect LAN handoff with HMAC-SHA1 PIN pairing, gapless and
-          0–12 s crossfade transitions, Last.fm and ListenBrainz scrobbling, on-device
-          listening stats, Music/Video mode switching, playlist pinning, and full
+          Added self-hosted Jellyfin, Subsonic, WebDAV, and SMB music servers alongside
+          Local Music scanning and Personal Only Mode, Sonata Connect LAN handoff,
+          gapless and 0–12 s crossfade transitions, live bitrate measurement, Last.fm
+          and ListenBrainz scrobbling, Music/Video switching, playlist pinning, and
           English/Turkish/Russian localization.
         </p>
       </description>

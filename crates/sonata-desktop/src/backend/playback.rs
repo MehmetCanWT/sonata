@@ -1205,6 +1205,10 @@ impl BackendEngine {
     }
 
     pub(super) fn start_cover_enrichment(&mut self) {
+        if self.config.personal_only_mode {
+            self.motion_cover = None;
+            return;
+        }
         if !self.window_visible {
             self.deferred_media_play_seq = Some(self.play_seq);
             return;
@@ -1289,7 +1293,11 @@ impl BackendEngine {
             if !self.playback.loading_track {
                 self.start_cover_enrichment();
             }
-        } else if !self.ui_compact && self.config.motion_covers && self.motion_cover.is_none() {
+        } else if !self.config.personal_only_mode
+            && !self.ui_compact
+            && self.config.motion_covers
+            && self.motion_cover.is_none()
+        {
             self.cover_started_play_seq = None;
             self.start_cover_enrichment();
         }

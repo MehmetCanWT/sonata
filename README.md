@@ -17,7 +17,7 @@
 
 ### Aesthetic Cross-Platform Music Player — Android, Linux Desktop &amp; Terminal
 
-[**Download**](#download) · [**Screenshots**](#screenshots) · [**Features**](#features) · [**Build from Source**](#build-from-source) · [**Privacy**](PRIVACY.md) · [**Disclaimer**](#disclaimer)
+[**Download**](#download) · [**Screenshots**](#screenshots) · [**Features**](#features) · [**Local &amp; Cloud Sources**](docs/local-and-cloud-sources.md) · [**Docs**](#documentation) · [**Build from Source**](#build-from-source) · [**Privacy**](PRIVACY.md) · [**Disclaimer**](#disclaimer)
 
 <br/>
 
@@ -60,6 +60,7 @@
 #### Controls, Privacy &amp; Security
 - **Categorized Settings &amp; Audio Pipeline** — searchable 9-category settings menu, playback speed, silence skip, sleep timer with fade-out, 4-stage Audio Pipeline inspector, multilingual UI (`English`, `Turkish`, `Russian` — following system locale on Android), and one-tap WebView **Account Switching**.
 - **Zero Trackers &amp; 100% FOSS** — no ads, no analytics, no Firebase or Google Play Services, reproducible APKs (`dependenciesInfo` disabled; `REQUEST_INSTALL_PACKAGES` used solely for user-initiated GitHub Releases APK updates), and `0o600`/`0o700` private credential handling ([PRIVACY.md](PRIVACY.md)).
+- **Local &amp; Self-Hosted Sources + Personal Only Mode** — browse and stream directly from **Local Music** folders (with junk exclusion &amp; SAF folder picker), **Jellyfin**, **Subsonic / Navidrome**, **WebDAV**, and **SMB2/SMB3** (`smbj`) shares with embedded FLAC tags, `artist.json`/`artist.nfo`, folder cover art, sidecar `.lrc` lyrics, live `kbps` quality telemetry, and full offline/personal network isolation ([docs/local-and-cloud-sources.md](docs/local-and-cloud-sources.md)).
 - **Built-in Updates** — GitHub Releases update alerts across Android, Desktop, and Terminal, plus in-app arm64 APK auto-download &amp; `PackageInstaller` launch on Android.
 
     </td>
@@ -103,13 +104,13 @@
 
 #### Android (Mobile &amp; Tablet, `arm64-v8a`)
 - **Obtainium (Auto-Updates):** Add `https://github.com/MehmetCanWT/sonata` with APK filter `Sonata-.*-arm64\.apk$`.
-- **Direct APK:** Grab the latest signed **`Sonata-v1.0.7-arm64.apk`** from [GitHub Releases](https://github.com/MehmetCanWT/sonata/releases/latest).
+- **Direct APK:** Grab the latest signed **`Sonata-v1.0.8-arm64.apk`** from [GitHub Releases](https://github.com/MehmetCanWT/sonata/releases/latest).
 
     </td>
     <td width="50%" valign="top">
 
 #### Linux Desktop &amp; Terminal (`x86_64`)
-- **Packages &amp; AppImage:** Download **`.deb`**, **`.rpm`**, **`.tar.gz`**, or **`Sonata-v1.0.7-x86_64.AppImage`** from [GitHub Releases](https://github.com/MehmetCanWT/sonata/releases/latest) (`--tui` launches the terminal client).
+- **Packages &amp; AppImage:** Download **`.deb`**, **`.rpm`**, **`.tar.gz`**, or **`Sonata-v1.0.8-x86_64.AppImage`** from [GitHub Releases](https://github.com/MehmetCanWT/sonata/releases/latest) (`--tui` launches the terminal client).
 - **One-Line Installer:**
   ```sh
   # Terminal client (sonata)
@@ -118,7 +119,7 @@
   # Desktop GUI (sonata-desktop)
   curl -fsSL https://raw.githubusercontent.com/MehmetCanWT/sonata/main/install-desktop.sh | sh
   ```
-- **Arch Linux / NixOS:** `makepkg -si` (`PKGBUILD` / `PKGBUILD.desktop`) or `flake.nix`.
+- **Arch Linux / NixOS / Flatpak:** `makepkg -si` (`PKGBUILD` / `PKGBUILD.desktop`), `flake.nix`, or Flathub manifest ([docs/flathub.md](docs/flathub.md)).
 
     </td>
   </tr>
@@ -167,6 +168,22 @@ cd android && ./gradlew testDebugUnitTest --console=plain
 ```
 
 </details>
+
+---
+
+<div align="center">
+
+<h1><a id="documentation"></a>Documentation</h1>
+
+| Guide | Topic |
+|---|---|
+| [Local &amp; Cloud Sources](docs/local-and-cloud-sources.md) | Folder structure, Personal Only Mode, Jellyfin / Subsonic / WebDAV / SMB metadata, `artist.json`/`artist.nfo`, artwork, `.lrc` lyrics &amp; FLAC `kbps` / `itag` badges |
+| [Flatpak &amp; Flathub](docs/flathub.md) | `dev.sonata.Desktop` sandbox permissions, offline `cargo-sources.json` generation &amp; Flathub validation |
+| [Cross-Platform Feature Guide](docs/cross-platform.md) | Feature matrix across Android, Linux Desktop (`sonata-desktop`), and Terminal (`sonata`) |
+| [Architecture](docs/architecture.md) | Workspace crate boundaries, UniFFI bridge &amp; playback session internals |
+| [Privacy Policy](PRIVACY.md) | Local storage, `0o600`/`0o700` credentials &amp; zero-telemetry guarantees |
+
+</div>
 
 ---
 

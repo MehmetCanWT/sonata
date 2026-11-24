@@ -818,7 +818,7 @@ mod tests {
         let track = &parsed.tracks[0];
         assert_eq!(track.id, "subsonic:navi-1:s-1");
         assert_eq!(track.source_tag(), "SUB");
-        assert_eq!(track.audio_badge.as_deref(), Some("FLAC · 1024kbps"));
+        assert_eq!(track.audio_badge.as_deref(), Some("FLAC · 1024 kbps"));
         assert!(track
             .thumbnail_url
             .as_deref()
@@ -850,7 +850,7 @@ mod tests {
         assert_eq!(album.tracks.len(), 1);
         assert_eq!(
             album.tracks[0].audio_badge.as_deref(),
-            Some("OPUS · 160kbps")
+            Some("OPUS · 160 kbps")
         );
 
         let pl_inner = unwrap_subsonic_response(
