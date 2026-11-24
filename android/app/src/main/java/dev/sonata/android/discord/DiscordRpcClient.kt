@@ -817,16 +817,14 @@ class DiscordRpcClient(
                         )
                     }
                     if (config.showButtons) {
-                        val listenUrl = buildListenUrl(track.id)
-                        if (listenUrl != null) {
-                            put("buttons", JSONArray().put("Listen on YouTube Music"))
-                            put(
-                                "metadata",
-                                JSONObject().apply {
-                                    put("button_urls", JSONArray().put(listenUrl))
-                                },
-                            )
-                        }
+                        val buttonUrl = buildListenUrl(track.id) ?: DiscordApplication.PROJECT_URL
+                        put("buttons", JSONArray().put(DiscordApplication.DEFAULT_BUTTON_LABEL))
+                        put(
+                            "metadata",
+                            JSONObject().apply {
+                                put("button_urls", JSONArray().put(buttonUrl))
+                            },
+                        )
                     }
                 }
                 activities.put(activity)

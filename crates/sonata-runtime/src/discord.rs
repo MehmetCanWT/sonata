@@ -29,7 +29,13 @@ use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 
 /// Default Discord Application ID for Sonata Rich Presence.
-pub const DEFAULT_SONATA_DISCORD_APP_ID: &str = "1346240000000000000";
+pub const DEFAULT_SONATA_DISCORD_APP_ID: &str = "1520387624861438002";
+
+/// Default interactive button label shown on Discord Rich Presence profiles.
+pub const DEFAULT_SONATA_DISCORD_BUTTON_LABEL: &str = "Listen on Sonata";
+
+/// Project URL used as fallback target for the "Listen on Sonata" button when no track URL exists.
+pub const SONATA_PROJECT_URL: &str = "https://github.com/MehmetCanWT/sonata";
 
 /// Discord Rich Presence activity type for Listening (`type: 2`).
 pub const DISCORD_ACTIVITY_TYPE_LISTENING: u8 = 2;
@@ -185,7 +191,7 @@ pub struct DiscordConfig {
     /// When `true`, pausing playback sends a clean clear-activity update; when `false`,
     /// activity remains visible without progress timestamps.
     pub clear_on_pause: bool,
-    /// Whether interactive action buttons (e.g. "Listen on YouTube Music") are included.
+    /// Whether interactive action buttons (e.g. "Listen on Sonata") are included.
     pub show_buttons: bool,
     /// Whether non-1.0x playback speed badges (e.g. `[1.25x]`) are appended to `details`.
     pub show_playback_speed: bool,
@@ -273,22 +279,11 @@ impl DiscordTrackInfo {
             });
 
         let listen_url = derive_listen_url(track);
-        let buttons = listen_url
-            .as_ref()
-            .map(|url| {
-                let label = match track.source {
-                    ProviderSource::YouTubeMusic if !track.is_jiosaavn() => {
-                        "Listen on YouTube Music"
-                    }
-                    ProviderSource::Spotify if !track.is_jiosaavn() => "Listen on Spotify",
-                    _ => "Listen on Sonata",
-                };
-                vec![DiscordButton {
-                    label: label.to_string(),
-                    url: url.clone(),
-                }]
-            })
-            .unwrap_or_default();
+        let button_url = listen_url.as_deref().unwrap_or(SONATA_PROJECT_URL);
+        let buttons = vec![DiscordButton {
+            label: DEFAULT_SONATA_DISCORD_BUTTON_LABEL.to_string(),
+            url: button_url.to_string(),
+        }];
 
         let album = if track.album.trim().is_empty() {
             None
@@ -629,15 +624,23 @@ pub fn build_activity(
     };
 
     let buttons = if config.show_buttons {
-        if !track.buttons.is_empty() {
-            sanitize_buttons(&track.buttons)
-        } else if let Some(url) = track.listen_url.as_deref() {
-            sanitize_buttons(&[DiscordButton {
-                label: "Listen on Sonata".to_string(),
-                url: url.to_string(),
-            }])
-        } else {
+        let custom_buttons = if track.buttons.is_empty() {
             Vec::new()
+        } else {
+            sanitize_buttons(&track.buttons)
+        };
+        if !custom_buttons.is_empty() {
+            custom_buttons
+        } else {
+            let url = track
+                .listen_url
+                .as_deref()
+                .and_then(|u| sanitize_http_url(u, MAX_DISCORD_BUTTON_URL_CHARS))
+                .unwrap_or_else(|| SONATA_PROJECT_URL.to_string());
+            sanitize_buttons(&[DiscordButton {
+                label: DEFAULT_SONATA_DISCORD_BUTTON_LABEL.to_string(),
+                url,
+            }])
         }
     } else {
         Vec::new()
@@ -1255,7 +1258,7 @@ mod tests {
             listen_url: Some("https://music.youtube.com/watch?v=dX3k_QDnzHE".to_string()),
             duration_secs: Some(243.0),
             buttons: vec![DiscordButton {
-                label: "Listen on YouTube Music".to_string(),
+                label: DEFAULT_SONATA_DISCORD_BUTTON_LABEL.to_string(),
                 url: "https://music.youtube.com/watch?v=dX3k_QDnzHE".to_string(),
             }],
         }
@@ -1263,6 +1266,7 @@ mod tests {
 
     #[test]
     fn binary_ipc_packet_roundtrip_and_header_layout() {
+        assert_eq!(DEFAULT_SONATA_DISCORD_APP_ID, "1520387624861438002");
         let handshake = build_handshake_payload(DEFAULT_SONATA_DISCORD_APP_ID);
         let encoded = encode_ipc_packet(IpcOpcode::Handshake, &handshake).unwrap();
 
@@ -1277,7 +1281,7 @@ mod tests {
         assert_eq!(decoded.payload["v"], 1);
         assert_eq!(
             decoded.payload["client_id"],
-            Value::String(DEFAULT_SONATA_DISCORD_APP_ID.to_string())
+            Value::String("1520387624861438002".to_string())
         );
 
         let act = build_activity(
@@ -1296,6 +1300,10 @@ mod tests {
         assert_eq!(
             decoded_frame.payload["args"]["activity"]["type"],
             DISCORD_ACTIVITY_TYPE_LISTENING
+        );
+        assert_eq!(
+            decoded_frame.payload["args"]["activity"]["buttons"][0]["label"],
+            "Listen on Sonata"
         );
     }
 
@@ -1361,6 +1369,11 @@ mod tests {
             Some("https://lh3.googleusercontent.com/cover=w544-h544")
         );
         assert_eq!(playing_act.buttons.len(), 1);
+        assert_eq!(playing_act.buttons[0].label, "Listen on Sonata");
+        assert_eq!(
+            playing_act.buttons[0].url,
+            "https://music.youtube.com/watch?v=dX3k_QDnzHE"
+        );
 
         // Pausing with clear_on_pause = false keeps activity but omits timestamps.
         let paused_state = DiscordPlaybackState::paused(Some(sample_track()), 45.0, 1.25);
@@ -1383,10 +1396,7 @@ mod tests {
     #[test]
     fn config_app_id_override_and_track_conversion() {
         let default_cfg = DiscordConfig::default();
-        assert_eq!(
-            default_cfg.effective_app_id(),
-            DEFAULT_SONATA_DISCORD_APP_ID
-        );
+        assert_eq!(default_cfg.effective_app_id(), "1520387624861438002");
 
         let blank_override = DiscordConfig::default().with_app_id(Some("   ".to_string()));
         assert_eq!(
@@ -1420,7 +1430,67 @@ mod tests {
             .artwork_url
             .as_deref()
             .is_some_and(|u| u.starts_with("https://")));
-        assert_eq!(info.buttons.len(), 1);
+        assert_eq!(
+            info.buttons,
+            vec![DiscordButton {
+                label: "Listen on Sonata".to_string(),
+                url: "https://music.youtube.com/watch?v=abc123xyz".to_string(),
+            }]
+        );
+
+        let jio_track = Track {
+            id: "jiosaavn:12345".to_string(),
+            title: "Local Echo".to_string(),
+            artist: "Artist".to_string(),
+            album: "Album".to_string(),
+            duration_secs: Some(180),
+            thumbnail_url: None,
+            source: ProviderSource::YouTubeMusic,
+            audio_badge: None,
+            set_video_id: None,
+            liked: false,
+            album_id: None,
+            is_explicit: false,
+        };
+        let jio_info = DiscordTrackInfo::from_track(&jio_track);
+        assert_eq!(jio_info.listen_url, None);
+        assert_eq!(
+            jio_info.buttons,
+            vec![DiscordButton {
+                label: "Listen on Sonata".to_string(),
+                url: SONATA_PROJECT_URL.to_string(),
+            }]
+        );
+
+        // Even when callers clear track buttons/URLs (e.g. self-hosted tracks), build_activity
+        // defaults to the "Listen on Sonata" project button unless show_buttons is disabled.
+        let mut stripped_info = jio_info.clone();
+        stripped_info.buttons.clear();
+        let fallback_act = build_activity(
+            &DiscordPlaybackState::playing(stripped_info.clone(), 10.0, 1.0),
+            &DiscordConfig::default(),
+            1_700_000_000_000,
+        )
+        .unwrap();
+        assert_eq!(
+            fallback_act.buttons,
+            vec![DiscordButton {
+                label: "Listen on Sonata".to_string(),
+                url: SONATA_PROJECT_URL.to_string(),
+            }]
+        );
+
+        let no_buttons_cfg = DiscordConfig {
+            show_buttons: false,
+            ..DiscordConfig::default()
+        };
+        let no_buttons_act = build_activity(
+            &DiscordPlaybackState::playing(stripped_info, 10.0, 1.0),
+            &no_buttons_cfg,
+            1_700_000_000_000,
+        )
+        .unwrap();
+        assert!(no_buttons_act.buttons.is_empty());
     }
 
     #[test]

@@ -27,8 +27,8 @@ class DiscordRpcTest {
 
     @Test
     fun discordApplicationValidatesAndResolvesAppIdsAndAssets() {
-        assertEquals("1346240000000000000", DiscordApplication.DEFAULT_APP_ID)
-        assertTrue(DiscordApplication.isValidSnowflakeAppId("1346240000000000000"))
+        assertEquals("1520387624861438002", DiscordApplication.DEFAULT_APP_ID)
+        assertTrue(DiscordApplication.isValidSnowflakeAppId("1520387624861438002"))
         assertTrue(DiscordApplication.isValidSnowflakeAppId("  123456789012345678  "))
         assertFalse(DiscordApplication.isValidSnowflakeAppId(""))
         assertFalse(DiscordApplication.isValidSnowflakeAppId("12345"))
@@ -164,7 +164,7 @@ class DiscordRpcTest {
 
         val config = DiscordPresenceConfig(
             enabled = true,
-            appId = "1346240000000000000",
+            appId = "1520387624861438002",
             activityType = DiscordActivityType.LISTENING,
             showTimestamps = true,
             showArtwork = true,
@@ -194,13 +194,14 @@ class DiscordRpcTest {
         val act = activities.getJSONObject(0)
         assertEquals(2, act.getInt("type"))
         assertEquals("Sonata", act.getString("name"))
-        assertEquals("1346240000000000000", act.getString("application_id"))
+        assertEquals("1520387624861438002", act.getString("application_id"))
         assertEquals("Midnight City · 1.25x", act.getString("details"))
         assertEquals("M83", act.getString("state"))
         assertEquals(
             "mp:external/hash123/https/lh3.googleusercontent.com/art",
             act.getJSONObject("assets").getString("large_image"),
         )
+        assertEquals("Listen on Sonata", act.getJSONArray("buttons").getString(0))
         assertEquals(
             "https://music.youtube.com/watch?v=dQw4w9WgXcQ",
             act.getJSONObject("metadata").getJSONArray("button_urls").getString(0),
@@ -227,7 +228,7 @@ class DiscordRpcTest {
         )
         assertEquals(0, disabledPayload.getJSONObject("d").getJSONArray("activities").length())
 
-        // JioSaavn IDs do not emit invalid YouTube watch button URLs
+        // JioSaavn IDs fall back to the Sonata project URL instead of invalid YouTube watch links
         val jioPayload = DiscordRpcClient.buildPresencePayload(
             track = playingTrack.copy(id = "jiosaavn:12345"),
             config = config,
@@ -235,8 +236,22 @@ class DiscordRpcTest {
             nowMs = nowMs,
         )
         val jioAct = jioPayload.getJSONObject("d").getJSONArray("activities").getJSONObject(0)
-        assertFalse(jioAct.has("buttons"))
-        assertFalse(jioAct.has("metadata"))
+        assertEquals("Listen on Sonata", jioAct.getJSONArray("buttons").getString(0))
+        assertEquals(
+            DiscordApplication.PROJECT_URL,
+            jioAct.getJSONObject("metadata").getJSONArray("button_urls").getString(0),
+        )
+
+        // Disabling buttons omits both buttons and metadata
+        val noButtonsPayload = DiscordRpcClient.buildPresencePayload(
+            track = playingTrack,
+            config = config.copy(showButtons = false),
+            largeImageAsset = null,
+            nowMs = nowMs,
+        )
+        val noButtonsAct = noButtonsPayload.getJSONObject("d").getJSONArray("activities").getJSONObject(0)
+        assertFalse(noButtonsAct.has("buttons"))
+        assertFalse(noButtonsAct.has("metadata"))
     }
 
     @Test

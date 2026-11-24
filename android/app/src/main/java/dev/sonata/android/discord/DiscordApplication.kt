@@ -5,8 +5,10 @@ package dev.sonata.android.discord
  * for Sonata's BitChord-style mobile Rich Presence integration.
  */
 object DiscordApplication {
-    const val DEFAULT_APP_ID = "1346240000000000000"
+    const val DEFAULT_APP_ID = "1520387624861438002"
     const val DEFAULT_APP_NAME = "Sonata"
+    const val DEFAULT_BUTTON_LABEL = "Listen on Sonata"
+    const val PROJECT_URL = "https://github.com/MehmetCanWT/sonata"
     const val GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
     const val API_BASE_URL = "https://discord.com/api/v9"
 
