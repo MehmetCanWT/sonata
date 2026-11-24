@@ -1,11 +1,13 @@
 //! Shared music provider models, HTTP client builder, and submodule exports.
 //!
-//! 1. **Provider Modules**: `hifi` (stream resolution), `jiosaavn` (optional 320kbps AAC module), `spotify`, and `ytmusic`.
+//! 1. **Provider Modules**: `hifi` (stream resolution), `jiosaavn` (optional 320kbps AAC module),
+//!    `servers` (self-hosted Jellyfin, Subsonic, WebDAV), `spotify`, and `ytmusic`.
 //! 2. **Core Models**: `Track`, `Playlist`, and `ProviderSource` represent cross-provider items uniformly.
 
 pub mod hifi;
 pub mod jiosaavn;
 pub mod profile;
+pub mod servers;
 pub mod spotify;
 pub mod ytmusic;
 
@@ -57,10 +59,17 @@ impl Track {
         self.id.starts_with(jiosaavn::ID_PREFIX)
     }
 
-    /// Returns the short 3-letter source badge displayed in track lists (`YTM`, `SPF`, `JIO`).
+    /// Returns true when this track originates from a configured self-hosted server.
+    pub fn is_self_hosted(&self) -> bool {
+        servers::parse_server_item_id(&self.id).is_some()
+    }
+
+    /// Returns the short 3-letter source badge displayed in track lists (`YTM`, `SPF`, `JIO`, `JFN`, `SUB`, `DAV`).
     pub fn source_tag(&self) -> &'static str {
         if self.is_jiosaavn() {
             "JIO"
+        } else if let Some(item) = servers::parse_server_item_id(&self.id) {
+            item.kind.short_tag()
         } else {
             self.source.short_tag()
         }

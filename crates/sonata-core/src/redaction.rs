@@ -1,13 +1,37 @@
 //! Credential and signed-URL redaction helpers for Sonata logs and errors.
 //!
 //! 1. **URL Scrubbing**: `stream_url` strips query parameters, paths, and userinfo from HTTP(S) URLs.
-//! 2. **Text & JSON Scrubbing**: `sensitive_text` and `json_payload` redact cookies, auth tokens, and signed URLs.
+//! 2. **Text & JSON Scrubbing**: `sensitive_text` and `json_payload` redact cookies, auth tokens,
+//!    self-hosted server credentials (`X-Emby-Token`, `X-MediaBrowser-Token`, `api_key`, Subsonic
+//!    `t`/`p`, `Basic ` auth), and signed URLs.
 
+use regex::{Captures, Regex};
 use reqwest::Url;
 use serde_json::{json, Value};
+use std::sync::OnceLock;
 
 const REDACTED_STREAM: &str = "[redacted-stream-url]";
 const REDACTED_SECRET: &str = "[redacted-sensitive-value]";
+
+const FULL_LINE_MARKERS: [&str; 17] = [
+    "authorization:",
+    "authorization=",
+    "cookie:",
+    "cookie=",
+    "cookies=",
+    "sapisid:",
+    "sapisid=",
+    "sp_dc:",
+    "sp_dc=",
+    "x-emby-token:",
+    "x-emby-token=",
+    "x-emby-authorization:",
+    "x-emby-authorization=",
+    "x-mediabrowser-token:",
+    "x-mediabrowser-token=",
+    "api_key:",
+    "api_key=",
+];
 
 pub fn stream_url(input: &str) -> String {
     let Ok(url) = Url::parse(input) else {
@@ -33,22 +57,54 @@ pub fn sensitive_text(text: &str) -> String {
         .join(" | ")
 }
 
+fn basic_auth_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"(?i)\b(Basic)\s+([^\s"';,]+)"#).unwrap())
+}
+
+fn named_secret_param_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"(?i)(^|[?&\s;,])(api_key|x-emby-token|x-mediabrowser-token)=([^&\s"';,]+)"#)
+            .unwrap()
+    })
+}
+
+fn subsonic_param_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"(?i)(^|[?&\s;,])(t|p)=([^&\s"';,]+)"#).unwrap())
+}
+
+fn redact_inline_tokens(input: &str) -> String {
+    let pass1 = basic_auth_regex().replace_all(input, |caps: &Captures<'_>| {
+        format!("{} {REDACTED_SECRET}", &caps[1])
+    });
+    let pass2 = named_secret_param_regex().replace_all(&pass1, |caps: &Captures<'_>| {
+        format!("{}{}={REDACTED_SECRET}", &caps[1], &caps[2])
+    });
+    subsonic_param_regex()
+        .replace_all(&pass2, |caps: &Captures<'_>| {
+            format!("{}{}={REDACTED_SECRET}", &caps[1], &caps[2])
+        })
+        .into_owned()
+}
+
+fn contains_sensitive_marker(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    FULL_LINE_MARKERS
+        .iter()
+        .any(|marker| lower.contains(marker))
+        || basic_auth_regex().is_match(text)
+        || named_secret_param_regex().is_match(text)
+        || subsonic_param_regex().is_match(text)
+}
+
 fn redact_line(line: &str) -> String {
     let lower = line.to_ascii_lowercase();
-    let secret_at = [
-        "authorization:",
-        "authorization=",
-        "cookie:",
-        "cookie=",
-        "cookies=",
-        "sapisid:",
-        "sapisid=",
-        "sp_dc:",
-        "sp_dc=",
-    ]
-    .iter()
-    .filter_map(|marker| lower.find(marker))
-    .min();
+    let secret_at = FULL_LINE_MARKERS
+        .iter()
+        .filter_map(|marker| lower.find(marker))
+        .min();
     if let Some(position) = secret_at {
         return format!("{}{REDACTED_SECRET}", &line[..position]);
     }
@@ -59,13 +115,34 @@ fn redact_line(line: &str) -> String {
             output.push(' ');
         }
         if let Some(position) = part.find("https://").or_else(|| part.find("http://")) {
-            output.push_str(&part[..position]);
+            let prefix = redact_inline_tokens(&part[..position]);
+            output.push_str(&prefix);
             output.push_str(&stream_url(&part[position..]));
         } else {
-            output.push_str(part);
+            output.push_str(&redact_inline_tokens(part));
         }
     }
-    output
+    redact_inline_tokens(&output)
+}
+
+fn is_sensitive_json_key(lower: &str) -> bool {
+    lower.contains("authorization")
+        || lower.contains("cookie")
+        || lower.contains("http-header")
+        || lower.contains("x-emby-token")
+        || lower.contains("x-mediabrowser-token")
+        || lower.contains("api_key")
+        || matches!(
+            lower,
+            "apikey"
+                | "access_token"
+                | "accesstoken"
+                | "bearer_token"
+                | "password"
+                | "token"
+                | "t"
+                | "p"
+        )
 }
 
 pub fn json_payload(value: &Value) -> Value {
@@ -79,10 +156,7 @@ pub fn json_payload(value: &Value) -> Value {
                             .as_str()
                             .map(stream_url)
                             .map_or_else(|| json_payload(value), |safe| json!(safe))
-                    } else if lower.contains("authorization")
-                        || lower.contains("cookie")
-                        || lower.contains("http-header")
-                    {
+                    } else if is_sensitive_json_key(&lower) {
                         json!(REDACTED_SECRET)
                     } else {
                         json_payload(value)
@@ -94,6 +168,9 @@ pub fn json_payload(value: &Value) -> Value {
         Value::Array(values) => Value::Array(values.iter().map(json_payload).collect()),
         Value::String(text) if text.starts_with("http://") || text.starts_with("https://") => {
             json!(stream_url(text))
+        }
+        Value::String(text) if contains_sensitive_marker(text) => {
+            json!(sensitive_text(text))
         }
         _ => value.clone(),
     }
@@ -136,5 +213,69 @@ mod tests {
         for secret in ["url-secret", "cookie-secret", "auth-secret"] {
             assert!(!rendered.contains(secret));
         }
+    }
+
+    #[test]
+    fn redacts_self_hosted_server_tokens_params_and_basic_auth() {
+        let samples = [
+            "X-Emby-Token: jf-emby-secret",
+            "X-MediaBrowser-Token: jf-mb-secret",
+            "X-Emby-Authorization: MediaBrowser Client=\"Sonata\", Token=\"jf-hdr-secret\"",
+            "GET /Items?api_key=jf-api-secret&Recursive=true",
+            "GET /rest/stream.view?u=alice&t=sub-token-secret&s=salt123&p=sub-pass-secret&v=1.16.1",
+            "Authorization: Basic dXNlcjpwYXNzLXNlY3JldA==",
+            "header Basic dXNlcjpwYXNzLXNlY3JldA== rejected",
+            "https://alice:dav-pass-secret@dav.example.com/music/track.flac",
+        ];
+
+        let secrets = [
+            "jf-emby-secret",
+            "jf-mb-secret",
+            "jf-hdr-secret",
+            "jf-api-secret",
+            "sub-token-secret",
+            "sub-pass-secret",
+            "dXNlcjpwYXNzLXNlY3JldA==",
+            "dav-pass-secret",
+        ];
+
+        for sample in samples {
+            let safe = sensitive_text(sample);
+            for secret in secrets {
+                assert!(
+                    !safe.contains(secret),
+                    "sensitive_text leaked `{secret}` in `{safe}`"
+                );
+            }
+        }
+
+        let payload = json_payload(&json!({
+            "headers": [
+                "X-Emby-Token: jf-emby-secret",
+                "X-MediaBrowser-Token: jf-mb-secret",
+                "Authorization: Basic dXNlcjpwYXNzLXNlY3JldA=="
+            ],
+            "params": {
+                "api_key": "jf-api-secret",
+                "t": "sub-token-secret",
+                "p": "sub-pass-secret",
+                "u": "alice"
+            }
+        }));
+        let rendered = payload.to_string();
+        for secret in [
+            "jf-emby-secret",
+            "jf-mb-secret",
+            "dXNlcjpwYXNzLXNlY3JldA==",
+            "jf-api-secret",
+            "sub-token-secret",
+            "sub-pass-secret",
+        ] {
+            assert!(
+                !rendered.contains(secret),
+                "json_payload leaked `{secret}` in `{rendered}`"
+            );
+        }
+        assert!(rendered.contains("alice"));
     }
 }

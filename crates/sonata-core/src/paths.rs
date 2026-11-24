@@ -57,6 +57,11 @@ impl CorePaths {
         self.config_dir.join("config.toml")
     }
 
+    /// Path to the persistent self-hosted music server profiles configuration JSON (`0o600`).
+    pub fn servers_config_path(&self) -> PathBuf {
+        self.config_dir.join("servers.json")
+    }
+
     /// Path to the persisted YouTube Music WebView session cookie file.
     pub fn ytm_session_cookie_path(&self) -> PathBuf {
         self.config_dir.join("ytm_session.cookie")
@@ -125,6 +130,10 @@ mod tests {
         assert_eq!(
             paths.config_path(),
             PathBuf::from("/srv/files/sonata/config.toml")
+        );
+        assert_eq!(
+            paths.servers_config_path(),
+            PathBuf::from("/srv/files/sonata/servers.json")
         );
         assert_eq!(
             paths.ytm_session_cookie_path(),
