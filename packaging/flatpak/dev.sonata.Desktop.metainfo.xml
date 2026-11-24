@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.sonata.Desktop</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <name>Sonata</name>
+  <summary>High-fidelity music player for YouTube Music, Spotify, and JioSaavn</summary>
+
+  <description>
+    <p>
+      Sonata is a fast, native desktop and terminal music player built in Rust with
+      GPUI and Ratatui. It supports YouTube Music, Spotify metadata with Hi-Fi
+      upgrades, optional JioSaavn 320 kbps AAC matching, self-hosted music servers,
+      word-synced karaoke lyrics, animated album artwork, and LAN playback handoff
+      via Sonata Connect.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Bit-transparent playback powered by mpv with gapless transitions and 0–12 s crossfade</li>
+      <li>29 live-reloading CSS themes, compositor blur, and dual-hue ambient fullscreen backdrops</li>
+      <li>Multi-source word-synced lyrics with live translation and romanization</li>
+      <li>MPRIS2 media controls, system tray integration, Discord Rich Presence, and Last.fm / ListenBrainz scrobbling</li>
+      <li>Includes both the GPUI desktop app (sonata-desktop) and the Ratatui terminal client (sonata)</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">dev.sonata.Desktop.desktop</launchable>
+
+  <url type="homepage">https://github.com/MehmetCanWT/sonata</url>
+  <url type="bugtracker">https://github.com/MehmetCanWT/sonata/issues</url>
+  <url type="vcs-browser">https://github.com/MehmetCanWT/sonata</url>
+
+  <developer id="io.github.mehmetcanwt">
+    <name>MehmetCanWT</name>
+  </developer>
+
+  <categories>
+    <category>AudioVideo</category>
+    <category>Audio</category>
+    <category>Player</category>
+  </categories>
+
+  <keywords>
+    <keyword>music</keyword>
+    <keyword>player</keyword>
+    <keyword>youtube</keyword>
+    <keyword>spotify</keyword>
+    <keyword>lyrics</keyword>
+    <keyword>flac</keyword>
+    <keyword>hifi</keyword>
+  </keywords>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>Sonata Wayland Desktop Client</caption>
+      <image>https://raw.githubusercontent.com/MehmetCanWT/sonata/main/assets/hyprland-glass-desktop.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Sonata Terminal TUI Client</caption>
+      <image>https://raw.githubusercontent.com/MehmetCanWT/sonata/main/assets/hyprland-glass.png</image>
+    </screenshot>
+  </screenshots>
+
+  <releases>
+    <release version="1.0.7" date="2026-11-24">
+      <description>
+        <p>
+          Added Sonata Connect LAN handoff with HMAC-SHA1 PIN pairing, gapless and
+          0–12 s crossfade transitions, Last.fm and ListenBrainz scrobbling, on-device
+          listening stats, Music/Video mode switching, playlist pinning, and full
+          English/Turkish/Russian localization.
+        </p>
+      </description>
+    </release>
+  </releases>
+
+  <provides>
+    <binary>sonata-desktop</binary>
+    <binary>sonata</binary>
+  </provides>
+
+  <content_rating type="oars-1.1" />
+</component>

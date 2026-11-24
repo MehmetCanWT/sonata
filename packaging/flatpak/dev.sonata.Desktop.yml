@@ -1,0 +1,107 @@
+app-id: dev.sonata.Desktop
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: sonata-desktop
+
+finish-args:
+  # Display & GPU rendering (GPUI Wayland + X11 fallback + Vulkan/OpenGL)
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+
+  # Audio output (PulseAudio & native PipeWire socket)
+  - --socket=pulseaudio
+  - --filesystem=xdg-run/pipewire-0:ro
+
+  # Streaming, metadata, lyrics, scrobbling, and Sonata Connect LAN handoff
+  - --share=network
+
+  # MPRIS2 media controls & desktop notifications / system tray
+  - --own-name=org.mpris.MediaPlayer2.sonata
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.kde.StatusNotifierWatcher
+
+  # Local Discord Rich Presence IPC socket
+  - --filesystem=xdg-run/discord-ipc-*
+
+  # Ensure bundled runtime tools (mpv, ffmpeg, yt-dlp) in /app/bin are discoverable
+  - --env=PATH=/app/bin:/usr/bin
+
+add-extensions:
+  org.freedesktop.Platform.ffmpeg-full:
+    directory: lib/ffmpeg
+    version: '24.08'
+    add-ld-path: .
+    no-autodownload: false
+    autodelete: false
+
+modules:
+  - name: ffmpeg-compat
+    buildsystem: simple
+    build-commands:
+      - mkdir -p /app/lib/ffmpeg
+
+  - name: luajit
+    no-autogen: true
+    make-install-args:
+      - PREFIX=/app
+    sources:
+      - type: archive
+        url: https://github.com/LuaJIT/LuaJIT/archive/v2.1.0-beta3.tar.gz
+        sha256: 409f7fe570d3c16558e594421c47bddf99f45098e58191d6779270005745b9a2
+
+  - name: libass
+    config-opts:
+      - --disable-static
+    sources:
+      - type: archive
+        url: https://github.com/libass/libass/releases/download/0.17.3/libass-0.17.3.tar.xz
+        sha256: eae425da50f0015c21f7b3a9c7262a910f021fafa46aafb584b362a6485b42a4
+
+  - name: mpv
+    buildsystem: meson
+    config-opts:
+      - -Dlibmpv=true
+      - -Dcplayer=true
+      - -Dbuild-date=false
+      - -Dtests=false
+      - -Dlua=luajit
+    sources:
+      - type: archive
+        url: https://github.com/mpv-player/mpv/archive/refs/tags/v0.39.0.tar.gz
+        sha256: 2ca92437affb62c2b559b4419ea4785c70d023590500e8a52e95ea3ab4554683
+
+  - name: yt-dlp
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 yt-dlp /app/bin/yt-dlp
+    sources:
+      - type: file
+        url: https://github.com/yt-dlp/yt-dlp/releases/download/2025.01.15/yt-dlp_linux
+        sha256: 0000000000000000000000000000000000000000000000000000000000000000
+        dest-filename: yt-dlp
+
+  - name: sonata
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/sonata/cargo
+    build-commands:
+      - cargo --offline build --release --locked -p sonata-desktop -p sonata-tui
+      - install -Dm755 target/release/sonata-desktop /app/bin/sonata-desktop
+      - install -Dm755 target/release/sonata /app/bin/sonata
+      - install -Dm644 assets/sonata-desktop.desktop /app/share/applications/dev.sonata.Desktop.desktop
+      - sed -i 's/^Icon=sonata-desktop$/Icon=dev.sonata.Desktop/' /app/share/applications/dev.sonata.Desktop.desktop
+      - install -Dm644 assets/sonata-desktop.svg /app/share/icons/hicolor/scalable/apps/dev.sonata.Desktop.svg
+      - install -Dm644 packaging/flatpak/dev.sonata.Desktop.metainfo.xml /app/share/metainfo/dev.sonata.Desktop.metainfo.xml
+      - install -Dm644 LICENSE /app/share/licenses/dev.sonata.Desktop/LICENSE
+    sources:
+      - type: dir
+        path: ../..
+      # For offline Flathub submissions, generate cargo-sources.json with flatpak-cargo-generator.py
+      # and include it here alongside the release tarball source.
