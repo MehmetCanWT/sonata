@@ -1960,6 +1960,175 @@ impl YtMusicClient {
         }
         Ok(parsed)
     }
+
+    /// Attributes a local or self-hosted track play to YouTube Music listening history when
+    /// signed in and a high-confidence matching song is found (`<= 15s` duration difference).
+    pub async fn attribute_personal_track_to_ytm(&self, track: &Track) -> Result<Option<String>> {
+        if !self.is_authenticated() || track.title.trim().is_empty() {
+            return Ok(None);
+        }
+        let cleaned_title = crate::providers::hifi::clean_search_title(&track.title);
+        let title_part = if cleaned_title.trim().is_empty() {
+            track.title.trim()
+        } else {
+            cleaned_title.trim()
+        };
+        let artist_part = track.artist.trim();
+        let query = if artist_part.is_empty()
+            || artist_part.eq_ignore_ascii_case("Unknown Artist")
+            || artist_part.eq_ignore_ascii_case("Unknown")
+        {
+            title_part.to_string()
+        } else {
+            format!("{title_part} {artist_part}")
+        };
+
+        let candidates = self.search_songs(&query).await?;
+        let Some(matched) = select_best_ytm_attribution_match(track, &candidates) else {
+            return Ok(None);
+        };
+        self.report_playback(
+            &matched.id,
+            None,
+            track.duration_secs.or(matched.duration_secs),
+        )
+        .await?;
+        Ok(Some(matched.id.clone()))
+    }
+}
+
+/// Selects the strongest YouTube Music match for attributing a local/self-hosted track play.
+///
+/// Requires strong normalized title and artist agreement plus a duration difference of at most
+/// 15 seconds (or an unknown duration on either side).
+pub fn select_best_ytm_attribution_match<'a>(
+    target: &Track,
+    candidates: &'a [Track],
+) -> Option<&'a Track> {
+    let target_title =
+        normalize_attribution_text(&crate::providers::hifi::clean_search_title(&target.title));
+    let target_title_raw = normalize_attribution_text(&target.title);
+    let target_title_norm = if target_title.is_empty() {
+        target_title_raw
+    } else {
+        target_title
+    };
+    if target_title_norm.is_empty() {
+        return None;
+    }
+
+    let target_artist_norm = normalize_attribution_text(&target.artist);
+    let has_known_artist = !target_artist_norm.is_empty()
+        && target_artist_norm != "unknown artist"
+        && target_artist_norm != "unknown";
+
+    let mut best: Option<(i64, &'a Track)> = None;
+    for candidate in candidates {
+        if candidate.id.trim().is_empty()
+            || candidate.id.starts_with("local:")
+            || candidate.id.starts_with("jiosaavn:")
+        {
+            continue;
+        }
+        if let (Some(t_dur), Some(c_dur)) = (target.duration_secs, candidate.duration_secs) {
+            if t_dur.abs_diff(c_dur) > 15 {
+                continue;
+            }
+        }
+
+        let cand_title_cleaned = normalize_attribution_text(
+            &crate::providers::hifi::clean_search_title(&candidate.title),
+        );
+        let cand_title_raw = normalize_attribution_text(&candidate.title);
+        let cand_title_norm = if cand_title_cleaned.is_empty() {
+            cand_title_raw
+        } else {
+            cand_title_cleaned
+        };
+        let title_score = attribution_text_score(&target_title_norm, &cand_title_norm);
+        if title_score < 70 {
+            continue;
+        }
+
+        let artist_score = if has_known_artist {
+            let cand_artist_norm = normalize_attribution_text(&candidate.artist);
+            let score = attribution_artist_score(&target_artist_norm, &cand_artist_norm);
+            if score < 50 {
+                continue;
+            }
+            score
+        } else {
+            25
+        };
+
+        let duration_bonus = match (target.duration_secs, candidate.duration_secs) {
+            (Some(t_dur), Some(c_dur)) => 20i64.saturating_sub(t_dur.abs_diff(c_dur) as i64),
+            _ => 5,
+        };
+        let total = title_score + artist_score + duration_bonus;
+        if best.is_none_or(|(best_score, _)| total > best_score) {
+            best = Some((total, candidate));
+        }
+    }
+    best.map(|(_, track)| track)
+}
+
+fn normalize_attribution_text(input: &str) -> String {
+    input
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn attribution_text_score(a: &str, b: &str) -> i64 {
+    if a.is_empty() || b.is_empty() {
+        return 0;
+    }
+    if a == b {
+        return 100;
+    }
+    if (a.len() >= 4 && b.contains(a)) || (b.len() >= 4 && a.contains(b)) {
+        return 85;
+    }
+    let a_tokens: std::collections::HashSet<&str> = a.split_whitespace().collect();
+    let b_tokens: std::collections::HashSet<&str> = b.split_whitespace().collect();
+    let common = a_tokens.intersection(&b_tokens).count();
+    let union = a_tokens.union(&b_tokens).count().max(1);
+    let jaccard = (common * 100) / union;
+    if jaccard >= 70 {
+        return jaccard as i64;
+    }
+    0
+}
+
+fn attribution_artist_score(target: &str, candidate: &str) -> i64 {
+    if target.is_empty() || candidate.is_empty() {
+        return 0;
+    }
+    if target == candidate {
+        return 80;
+    }
+    if (target.len() >= 3 && candidate.contains(target))
+        || (candidate.len() >= 3 && target.contains(candidate))
+    {
+        return 65;
+    }
+    let t_tokens: std::collections::HashSet<&str> = target.split_whitespace().collect();
+    let c_tokens: std::collections::HashSet<&str> = candidate.split_whitespace().collect();
+    let common = t_tokens.intersection(&c_tokens).count();
+    if common > 0 && common * 2 >= t_tokens.len().min(c_tokens.len()) {
+        return 55;
+    }
+    0
 }
 
 fn find_selected_brand_scope(val: &Value) -> Option<ChannelScope> {
@@ -2469,7 +2638,8 @@ mod tests {
         accept_language_header, build_videostats_url, generate_cpn, is_manual_user_playlist_id,
         is_mix_playlist_id, normalize_endless_playlist_id, normalize_playback_playlist_id,
         prefer_explicit_order, primary_artist_query, rank_and_diversify_recommendations,
-        ArtistPage, Client, ExtractedCookies, Instant, YtMusicClient,
+        select_best_ytm_attribution_match, ArtistPage, Client, ExtractedCookies, Instant,
+        YtMusicClient,
     };
     use crate::providers::{ProviderSource, Track};
 
@@ -2688,5 +2858,52 @@ mod tests {
                 primary_artist_query(&pair[1].artist)
             );
         }
+    }
+
+    #[test]
+    fn selects_ytm_attribution_match_with_strict_title_artist_and_duration() {
+        let mut local_track = dummy(
+            "local:%2Fmusic%2Fmidnight.flac",
+            "Midnight City (Remastered)",
+            "M83",
+            false,
+        );
+        local_track.duration_secs = Some(243);
+
+        let mut wrong_artist = dummy("vid_wrong_art", "Midnight City", "Cover Band", false);
+        wrong_artist.duration_secs = Some(243);
+
+        let mut wrong_duration = dummy("vid_wrong_dur", "Midnight City", "M83", false);
+        wrong_duration.duration_secs = Some(320); // > 15s off
+
+        let mut near_duration_match = dummy("vid_good", "Midnight City", "M83", false);
+        near_duration_match.duration_secs = Some(250); // 7s off (<= 15s)
+
+        let candidates = [wrong_artist, wrong_duration, near_duration_match];
+        let matched = select_best_ytm_attribution_match(&local_track, &candidates)
+            .expect("should select close match");
+        assert_eq!(matched.id, "vid_good");
+
+        // Unknown candidate duration is allowed when title/artist match strongly.
+        let mut unknown_dur = dummy("vid_unknown", "Midnight City", "M83", false);
+        unknown_dur.duration_secs = None;
+        let unknown_candidates = [unknown_dur];
+        let matched_unknown = select_best_ytm_attribution_match(&local_track, &unknown_candidates)
+            .expect("unknown dur");
+        assert_eq!(matched_unknown.id, "vid_unknown");
+    }
+
+    #[tokio::test]
+    async fn attribute_personal_track_to_ytm_returns_none_when_unauthenticated() {
+        let client = YtMusicClient::new(
+            crate::providers::build_http_client(),
+            ExtractedCookies::default(),
+        );
+        let track = dummy("local:%2Fmusic%2Fsong.flac", "Song", "Artist", false);
+        let res = client
+            .attribute_personal_track_to_ytm(&track)
+            .await
+            .expect("unauthenticated attribution returns Ok(None)");
+        assert!(res.is_none());
     }
 }

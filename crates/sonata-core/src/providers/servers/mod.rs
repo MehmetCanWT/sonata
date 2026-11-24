@@ -3,12 +3,14 @@
 //! 1. **Configuration (`ServerProfile`, `ServerKind`)**: Unified server profile persistence in
 //!    `paths.servers_config_path()` using `0o700` directories and atomic `0o600` temp-file writes.
 //! 2. **Item Addressing (`ServerItemRef`)**: Prefixed ID encoding (`jellyfin:`, `subsonic:`,
-//!    `webdav:`) mapping self-hosted items into Sonata's `Track`, `Playlist`, `HomeCard`, and
-//!    `AlbumDetail` models without modifying `ProviderSource`.
-//! 3. **Protocol Clients (`jellyfin`, `subsonic`, `webdav`)**: Unified `ServerClient` dispatcher
-//!    for ping, libraries, artists, albums, playlists, search, and direct stream URLs/headers.
+//!    `webdav:`, `smb:`) mapping self-hosted items into Sonata's `Track`, `Playlist`, `HomeCard`,
+//!    and `AlbumDetail` models without modifying `ProviderSource`.
+//! 3. **Protocol Clients (`jellyfin`, `subsonic`, `webdav`, `smb`)**: Unified `ServerClient`
+//!    dispatcher for ping, health/speed diagnostics, libraries, artists, albums, playlists,
+//!    search, and direct stream URLs/headers.
 
 pub mod jellyfin;
+pub mod smb;
 pub mod subsonic;
 pub mod webdav;
 
@@ -22,16 +24,18 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs;
 use std::io::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const JELLYFIN_ID_PREFIX: &str = "jellyfin:";
 pub const SUBSONIC_ID_PREFIX: &str = "subsonic:";
 pub const WEBDAV_ID_PREFIX: &str = "webdav:";
+pub const SMB_ID_PREFIX: &str = "smb:";
 
 const CONFIG_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_HTTP_TIMEOUT: Duration = Duration::from_secs(12);
+const SPEED_TEST_MAX_BYTES: usize = 1024 * 1024;
 static TEMP_FILE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Supported self-hosted music server protocols.
@@ -41,15 +45,17 @@ pub enum ServerKind {
     Jellyfin,
     Subsonic,
     WebDav,
+    Smb,
 }
 
 impl ServerKind {
-    /// Returns the 3-letter badge tag shown alongside self-hosted tracks (`JFN`, `SUB`, `DAV`).
+    /// Returns the 3-letter badge tag shown alongside self-hosted tracks (`JFN`, `SUB`, `DAV`, `SMB`).
     pub const fn short_tag(self) -> &'static str {
         match self {
             Self::Jellyfin => "JFN",
             Self::Subsonic => "SUB",
             Self::WebDav => "DAV",
+            Self::Smb => "SMB",
         }
     }
 
@@ -59,15 +65,17 @@ impl ServerKind {
             Self::Jellyfin => "Jellyfin",
             Self::Subsonic => "Subsonic",
             Self::WebDav => "WebDAV",
+            Self::Smb => "SMB",
         }
     }
 
-    /// Returns the canonical ID prefix (`jellyfin:`, `subsonic:`, or `webdav:`).
+    /// Returns the canonical ID prefix (`jellyfin:`, `subsonic:`, `webdav:`, or `smb:`).
     pub const fn id_prefix(self) -> &'static str {
         match self {
             Self::Jellyfin => JELLYFIN_ID_PREFIX,
             Self::Subsonic => SUBSONIC_ID_PREFIX,
             Self::WebDav => WEBDAV_ID_PREFIX,
+            Self::Smb => SMB_ID_PREFIX,
         }
     }
 }
@@ -99,6 +107,12 @@ pub struct ServerProfile {
     pub bearer_token: Option<String>,
     #[serde(default)]
     pub library_ids: Vec<String>,
+    #[serde(default)]
+    pub share: Option<String>,
+    #[serde(default)]
+    pub domain: Option<String>,
+    #[serde(default)]
+    pub local_mount_path: Option<PathBuf>,
 }
 
 impl fmt::Debug for ServerProfile {
@@ -123,6 +137,9 @@ impl fmt::Debug for ServerProfile {
             .field("user_id", &self.user_id)
             .field("bearer_token", &redact(&self.bearer_token))
             .field("library_ids", &self.library_ids)
+            .field("share", &self.share)
+            .field("domain", &self.domain)
+            .field("local_mount_path", &self.local_mount_path)
             .finish()
     }
 }
@@ -148,6 +165,9 @@ impl ServerProfile {
             user_id: None,
             bearer_token: None,
             library_ids: Vec::new(),
+            share: None,
+            domain: None,
+            local_mount_path: None,
         }
     }
 
@@ -278,6 +298,8 @@ pub fn parse_server_item_id(encoded: &str) -> Option<ServerItemRef> {
         (ServerKind::Jellyfin, rest)
     } else if let Some(rest) = encoded.strip_prefix(SUBSONIC_ID_PREFIX) {
         (ServerKind::Subsonic, rest)
+    } else if let Some(rest) = encoded.strip_prefix(SMB_ID_PREFIX) {
+        (ServerKind::Smb, rest)
     } else {
         let rest = encoded.strip_prefix(WEBDAV_ID_PREFIX)?;
         (ServerKind::WebDav, rest)
@@ -325,6 +347,38 @@ pub struct ServerSearchResult {
     pub playlists: Vec<HomeCard>,
 }
 
+/// Reachability and latency report returned by [`ServerClient::probe_server_health`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerHealthReport {
+    pub alive: bool,
+    pub latency_ms: Option<u64>,
+    pub message: String,
+}
+
+/// Reachability, latency, and download throughput report returned by [`ServerClient::run_speed_test`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ServerSpeedTestReport {
+    pub alive: bool,
+    pub latency_ms: u64,
+    pub download_mbps: Option<f64>,
+    pub bytes_tested: u64,
+    pub sample_note: String,
+}
+
+/// Computes download throughput in megabits per second (`Mbps`) from tested bytes and duration.
+pub fn compute_download_mbps(bytes_tested: u64, elapsed: Duration) -> Option<f64> {
+    if bytes_tested == 0 {
+        return None;
+    }
+    let secs = elapsed.as_secs_f64();
+    if !secs.is_finite() || secs <= 0.0 {
+        return None;
+    }
+    let bits = (bytes_tested as f64) * 8.0;
+    let mbps = bits / (secs * 1_000_000.0);
+    mbps.is_finite().then_some(mbps)
+}
+
 /// Maps HTTP error status codes from self-hosted servers into redacted `CoreError` variants.
 pub(crate) fn map_http_status(provider: &str, status: StatusCode, body: &str) -> CoreError {
     let snippet = body.trim().chars().take(240).collect::<String>();
@@ -368,7 +422,7 @@ pub(crate) fn default_http_timeout() -> Duration {
     DEFAULT_HTTP_TIMEOUT
 }
 
-/// Unified async facade over Jellyfin, Subsonic, and WebDAV self-hosted servers.
+/// Unified async facade over Jellyfin, Subsonic, WebDAV, and SMB self-hosted servers.
 #[derive(Clone)]
 pub struct ServerClient {
     http: Client,
@@ -391,7 +445,208 @@ impl ServerClient {
                     listing.tracks.len()
                 ))
             }
+            ServerKind::Smb => smb::ping(profile).await,
         }
+    }
+
+    /// Probes server reachability and measures round-trip latency in milliseconds.
+    pub async fn probe_server_health(&self, profile: &ServerProfile) -> ServerHealthReport {
+        let start = Instant::now();
+        match self.ping(profile).await {
+            Ok(message) => ServerHealthReport {
+                alive: true,
+                latency_ms: Some(u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)),
+                message,
+            },
+            Err(err) => ServerHealthReport {
+                alive: false,
+                latency_ms: None,
+                message: err.to_string(),
+            },
+        }
+    }
+
+    /// Measures server ping latency and real download throughput (`Mbps`) across all server kinds.
+    pub async fn run_speed_test(&self, profile: &ServerProfile) -> ServerSpeedTestReport {
+        let ping_start = Instant::now();
+        let ping_res = self.ping(profile).await;
+        let latency_ms = u64::try_from(ping_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        if let Err(err) = ping_res {
+            return ServerSpeedTestReport {
+                alive: false,
+                latency_ms,
+                download_mbps: None,
+                bytes_tested: 0,
+                sample_note: err.to_string(),
+            };
+        }
+
+        if profile.kind == ServerKind::Smb {
+            let prof = profile.clone();
+            let smb_res = tokio::task::spawn_blocking(move || {
+                smb::read_speed_test_sample(&prof, SPEED_TEST_MAX_BYTES)
+            })
+            .await;
+            return match smb_res {
+                Ok(Ok((bytes_tested, elapsed, sample_note))) => ServerSpeedTestReport {
+                    alive: true,
+                    latency_ms,
+                    download_mbps: compute_download_mbps(bytes_tested, elapsed),
+                    bytes_tested,
+                    sample_note,
+                },
+                Ok(Err(err)) => ServerSpeedTestReport {
+                    alive: true,
+                    latency_ms,
+                    download_mbps: None,
+                    bytes_tested: 0,
+                    sample_note: err.to_string(),
+                },
+                Err(err) => ServerSpeedTestReport {
+                    alive: true,
+                    latency_ms,
+                    download_mbps: None,
+                    bytes_tested: 0,
+                    sample_note: format!("SMB benchmark task failed: {err}"),
+                },
+            };
+        }
+
+        let sample_track = match self.find_sample_track(profile).await {
+            Ok(Some(track)) => track,
+            Ok(None) => {
+                return ServerSpeedTestReport {
+                    alive: true,
+                    latency_ms,
+                    download_mbps: None,
+                    bytes_tested: 0,
+                    sample_note: "Server reachable; no sample track available for throughput test"
+                        .to_string(),
+                };
+            }
+            Err(err) => {
+                return ServerSpeedTestReport {
+                    alive: true,
+                    latency_ms,
+                    download_mbps: None,
+                    bytes_tested: 0,
+                    sample_note: format!("Server reachable; failed to locate sample track: {err}"),
+                };
+            }
+        };
+
+        let stream = match self.resolve_stream(profile, &sample_track) {
+            Ok(s) => s,
+            Err(err) => {
+                return ServerSpeedTestReport {
+                    alive: true,
+                    latency_ms,
+                    download_mbps: None,
+                    bytes_tested: 0,
+                    sample_note: format!("Server reachable; stream build failed: {err}"),
+                };
+            }
+        };
+
+        match self.benchmark_http_stream(&stream).await {
+            Ok((bytes_tested, elapsed)) => ServerSpeedTestReport {
+                alive: true,
+                latency_ms,
+                download_mbps: compute_download_mbps(bytes_tested, elapsed),
+                bytes_tested,
+                sample_note: format!(
+                    "Downloaded {bytes_tested} bytes from \"{}\" in {}ms",
+                    sample_track.title,
+                    elapsed.as_millis()
+                ),
+            },
+            Err(err) => ServerSpeedTestReport {
+                alive: true,
+                latency_ms,
+                download_mbps: None,
+                bytes_tested: 0,
+                sample_note: format!("Server reachable; sample download failed: {err}"),
+            },
+        }
+    }
+
+    async fn find_sample_track(&self, profile: &ServerProfile) -> Result<Option<Track>, CoreError> {
+        if profile.kind == ServerKind::WebDav {
+            let listing = webdav::browse_folder(&self.http, profile, None).await?;
+            if let Some(first) = listing.tracks.into_iter().next() {
+                return Ok(Some(first));
+            }
+            let crawled = webdav::crawl_audio(&self.http, profile, None, Some(2), Some(1)).await?;
+            return Ok(crawled.into_iter().next());
+        }
+
+        let albums = self.list_albums(profile, None, None).await?;
+        for album in albums.into_iter().take(3) {
+            if let Some(track) = album.track {
+                return Ok(Some(track));
+            }
+            if let Ok(detail) = self.get_album(profile, &album.id).await {
+                if let Some(track) = detail.tracks.into_iter().next() {
+                    return Ok(Some(track));
+                }
+            }
+        }
+
+        let playlists = self.list_playlists(profile).await?;
+        for pl in playlists.into_iter().take(2) {
+            if let Ok(tracks) = self.get_playlist_tracks(profile, &pl.id).await {
+                if let Some(track) = tracks.into_iter().next() {
+                    return Ok(Some(track));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    async fn benchmark_http_stream(
+        &self,
+        stream: &ServerStream,
+    ) -> Result<(u64, Duration), CoreError> {
+        let mut req = self
+            .http
+            .get(&stream.url)
+            .timeout(default_http_timeout())
+            .header(
+                reqwest::header::RANGE,
+                format!("bytes=0-{}", SPEED_TEST_MAX_BYTES - 1),
+            );
+        for (k, v) in &stream.headers {
+            req = req.header(k.as_str(), v.as_str());
+        }
+
+        let start = Instant::now();
+        let mut resp = req
+            .send()
+            .await
+            .map_err(|err| CoreError::from_reqwest("server-speed-test", &err))?;
+        let status = resp.status();
+        if !status.is_success() && status != StatusCode::PARTIAL_CONTENT {
+            return Err(map_http_status("server-speed-test", status, ""));
+        }
+
+        let mut bytes_tested = 0u64;
+        while bytes_tested < SPEED_TEST_MAX_BYTES as u64 {
+            match resp.chunk().await {
+                Ok(Some(chunk)) => {
+                    let remaining = (SPEED_TEST_MAX_BYTES as u64) - bytes_tested;
+                    bytes_tested += (chunk.len() as u64).min(remaining);
+                }
+                Ok(None) => break,
+                Err(err) => {
+                    if bytes_tested > 0 {
+                        break;
+                    }
+                    return Err(CoreError::from_reqwest("server-speed-test", &err));
+                }
+            }
+        }
+        Ok((bytes_tested, start.elapsed()))
     }
 
     pub async fn list_libraries(
@@ -413,6 +668,12 @@ impl ServerClient {
                     })
                     .collect())
             }
+            ServerKind::Smb => {
+                let prof = profile.clone();
+                tokio::task::spawn_blocking(move || smb::list_libraries(&prof))
+                    .await
+                    .map_err(|err| CoreError::internal(format!("SMB task panicked: {err}")))?
+            }
         }
     }
 
@@ -425,6 +686,13 @@ impl ServerClient {
             ServerKind::Jellyfin => jellyfin::get_artists(&self.http, profile, library_id).await,
             ServerKind::Subsonic => subsonic::get_artists(&self.http, profile, library_id).await,
             ServerKind::WebDav => Ok(Vec::new()),
+            ServerKind::Smb => {
+                let prof = profile.clone();
+                let lib = library_id.map(|id| unwrap_item_id(ServerKind::Smb, id).to_string());
+                tokio::task::spawn_blocking(move || smb::list_artists(&prof, lib.as_deref()))
+                    .await
+                    .map_err(|err| CoreError::internal(format!("SMB task panicked: {err}")))?
+            }
         }
     }
 
@@ -446,6 +714,16 @@ impl ServerClient {
                 }
             }
             ServerKind::WebDav => Ok(Vec::new()),
+            ServerKind::Smb => {
+                let prof = profile.clone();
+                let lib = library_id.map(|id| unwrap_item_id(ServerKind::Smb, id).to_string());
+                let art = artist_id.map(|id| unwrap_item_id(ServerKind::Smb, id).to_string());
+                tokio::task::spawn_blocking(move || {
+                    smb::list_albums(&prof, lib.as_deref(), art.as_deref())
+                })
+                .await
+                .map_err(|err| CoreError::internal(format!("SMB task panicked: {err}")))?
+            }
         }
     }
 
@@ -461,6 +739,13 @@ impl ServerClient {
             ServerKind::WebDav => Err(CoreError::not_found(
                 "WebDAV servers expose folder listings rather than album IDs",
             )),
+            ServerKind::Smb => {
+                let prof = profile.clone();
+                let raw = raw_id.to_string();
+                tokio::task::spawn_blocking(move || smb::get_album_detail(&prof, &raw))
+                    .await
+                    .map_err(|err| CoreError::internal(format!("SMB task panicked: {err}")))?
+            }
         }
     }
 
@@ -472,6 +757,12 @@ impl ServerClient {
             ServerKind::Jellyfin => jellyfin::get_playlists(&self.http, profile).await,
             ServerKind::Subsonic => subsonic::get_playlists(&self.http, profile).await,
             ServerKind::WebDav => Ok(Vec::new()),
+            ServerKind::Smb => {
+                let prof = profile.clone();
+                tokio::task::spawn_blocking(move || smb::list_playlists(&prof))
+                    .await
+                    .map_err(|err| CoreError::internal(format!("SMB task panicked: {err}")))?
+            }
         }
     }
 
@@ -489,6 +780,13 @@ impl ServerClient {
             ServerKind::WebDav => {
                 let listing = webdav::browse_folder(&self.http, profile, Some(raw_id)).await?;
                 Ok(listing.tracks)
+            }
+            ServerKind::Smb => {
+                let prof = profile.clone();
+                let raw = raw_id.to_string();
+                tokio::task::spawn_blocking(move || smb::get_playlist_tracks(&prof, &raw))
+                    .await
+                    .map_err(|err| CoreError::internal(format!("SMB task panicked: {err}")))?
             }
         }
     }
@@ -509,6 +807,13 @@ impl ServerClient {
                     ..Default::default()
                 })
             }
+            ServerKind::Smb => {
+                let prof = profile.clone();
+                let q = query.to_string();
+                tokio::task::spawn_blocking(move || smb::search(&prof, &q, limit))
+                    .await
+                    .map_err(|err| CoreError::internal(format!("SMB task panicked: {err}")))?
+            }
         }
     }
 
@@ -522,6 +827,7 @@ impl ServerClient {
             ServerKind::Jellyfin => jellyfin::stream_request(profile, raw_id, track),
             ServerKind::Subsonic => subsonic::stream_request(profile, raw_id, track),
             ServerKind::WebDav => webdav::stream_request(profile, raw_id, track),
+            ServerKind::Smb => smb::stream_request(profile, raw_id, track),
         }
     }
 }
@@ -607,9 +913,155 @@ mod tests {
         assert!(dav.is_self_hosted());
         assert_eq!(dav.source_tag(), "DAV");
 
+        let smb = make_track("smb:srv4:Album/track.flac");
+        assert!(smb.is_self_hosted());
+        assert_eq!(smb.source_tag(), "SMB");
+
         let ytm = make_track("dQw4w9WgXcQ");
         assert!(!ytm.is_self_hosted());
         assert_eq!(ytm.source_tag(), "YTM");
+    }
+
+    #[test]
+    fn backwards_compatible_server_profile_deserialization_and_throughput_math() {
+        let legacy_json = r#"{
+            "version": 1,
+            "servers": [{
+                "id": "jf-legacy",
+                "name": "Legacy JF",
+                "kind": "jellyfin",
+                "base_url": "https://jf.internal"
+            }]
+        }"#;
+        let root = unique_temp_root("legacy");
+        let path = root.join("servers.json");
+        fs::create_dir_all(&root).expect("mkdir");
+        fs::write(&path, legacy_json).expect("write legacy");
+        let loaded = load_server_profiles_from_path(&path).expect("load legacy");
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded[0].enabled);
+        assert!(loaded[0].share.is_none());
+        assert!(loaded[0].domain.is_none());
+        assert!(loaded[0].local_mount_path.is_none());
+        let _ = fs::remove_dir_all(&root);
+
+        // 1,000,000 bytes in 0.5 seconds = 16.0 Mbps
+        let mbps = compute_download_mbps(1_000_000, Duration::from_millis(500)).expect("mbps");
+        assert!((mbps - 16.0).abs() < 0.01, "mbps={mbps}");
+        assert!(compute_download_mbps(0, Duration::from_secs(1)).is_none());
+        assert!(compute_download_mbps(1024, Duration::ZERO).is_none());
+    }
+
+    #[tokio::test]
+    async fn probes_health_and_measures_http_download_speed_on_loopback() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback");
+        let addr = listener.local_addr().expect("addr");
+
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    if req.starts_with("PROPFIND ") {
+                        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<d:multistatus xmlns:d="DAV:">
+  <d:response>
+    <d:href>/Music/</d:href>
+    <d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+  </d:response>
+  <d:response>
+    <d:href>/Music/song.flac</d:href>
+    <d:propstat><d:prop><d:getcontenttype>audio/flac</d:getcontenttype><d:getcontentlength>131072</d:getcontentlength></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+  </d:response>
+</d:multistatus>"#;
+                        let resp = format!(
+                            "HTTP/1.1 207 Multi-Status\r\nContent-Type: application/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            xml.len(),
+                            xml
+                        );
+                        let _ = sock.write_all(resp.as_bytes()).await;
+                    } else if req.starts_with("GET /Music/song.flac") {
+                        let payload = vec![0x5Au8; 131_072];
+                        let hdr = format!(
+                            "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            payload.len()
+                        );
+                        let _ = sock.write_all(hdr.as_bytes()).await;
+                        let _ = sock.write_all(&payload).await;
+                    }
+                });
+            }
+        });
+
+        let client = ServerClient::new(crate::providers::build_http_client());
+        let dav_profile = ServerProfile::new(
+            "dav-loop",
+            "Loopback DAV",
+            ServerKind::WebDav,
+            format!("http://{addr}/Music"),
+        );
+
+        let health = client.probe_server_health(&dav_profile).await;
+        assert!(health.alive, "health={health:?}");
+        assert!(health.latency_ms.is_some());
+
+        let speed = client.run_speed_test(&dav_profile).await;
+        assert!(speed.alive, "speed={speed:?}");
+        assert_eq!(speed.bytes_tested, 131_072);
+        assert!(speed.download_mbps.is_some_and(|m| m > 0.0));
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn probes_smb_health_and_measures_mounted_speed_test() {
+        use tokio::net::TcpListener;
+
+        let root = unique_temp_root("smb_speed");
+        fs::create_dir_all(&root).expect("mkdir");
+        let sample_file = root.join("01 - Sample.flac");
+        fs::write(&sample_file, vec![0x42u8; 262_144]).expect("write sample");
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback");
+        let port = listener.local_addr().expect("addr").port();
+        let accept_task = tokio::spawn(async move {
+            loop {
+                if listener.accept().await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let mut smb_profile = ServerProfile::new(
+            "smb-loop",
+            "Loopback SMB",
+            ServerKind::Smb,
+            format!("smb://127.0.0.1:{port}/Music"),
+        );
+        smb_profile.local_mount_path = Some(root.clone());
+
+        let client = ServerClient::new(crate::providers::build_http_client());
+        let health = client.probe_server_health(&smb_profile).await;
+        assert!(health.alive, "health={health:?}");
+
+        let speed = client.run_speed_test(&smb_profile).await;
+        assert!(speed.alive, "speed={speed:?}");
+        assert_eq!(speed.bytes_tested, 262_144);
+        assert!(speed.download_mbps.is_some_and(|m| m > 0.0));
+
+        accept_task.abort();
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

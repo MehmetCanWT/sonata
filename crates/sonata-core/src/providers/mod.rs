@@ -1,11 +1,13 @@
 //! Shared music provider models, HTTP client builder, and submodule exports.
 //!
 //! 1. **Provider Modules**: `hifi` (stream resolution), `jiosaavn` (optional 320kbps AAC module),
-//!    `servers` (self-hosted Jellyfin, Subsonic, WebDAV), `spotify`, and `ytmusic`.
+//!    `local` (local audio scanner/tag parser), `servers` (self-hosted Jellyfin, Subsonic, WebDAV,
+//!    SMB), `spotify`, and `ytmusic`.
 //! 2. **Core Models**: `Track`, `Playlist`, and `ProviderSource` represent cross-provider items uniformly.
 
 pub mod hifi;
 pub mod jiosaavn;
+pub mod local;
 pub mod profile;
 pub mod servers;
 pub mod spotify;
@@ -59,15 +61,22 @@ impl Track {
         self.id.starts_with(jiosaavn::ID_PREFIX)
     }
 
+    /// Returns true when this track originates from the local filesystem scanner.
+    pub fn is_local(&self) -> bool {
+        self.id.starts_with(local::LOCAL_ID_PREFIX)
+    }
+
     /// Returns true when this track originates from a configured self-hosted server.
     pub fn is_self_hosted(&self) -> bool {
         servers::parse_server_item_id(&self.id).is_some()
     }
 
-    /// Returns the short 3-letter source badge displayed in track lists (`YTM`, `SPF`, `JIO`, `JFN`, `SUB`, `DAV`).
+    /// Returns the short 3-letter source badge displayed in track lists (`YTM`, `SPF`, `JIO`, `LOC`, `JFN`, `SUB`, `DAV`, `SMB`).
     pub fn source_tag(&self) -> &'static str {
         if self.is_jiosaavn() {
             "JIO"
+        } else if self.is_local() {
+            "LOC"
         } else if let Some(item) = servers::parse_server_item_id(&self.id) {
             item.kind.short_tag()
         } else {
