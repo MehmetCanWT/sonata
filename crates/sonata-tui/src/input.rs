@@ -85,14 +85,19 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                         1 => app.toggle_hifi_substitution(),
                         2 => app.toggle_jiosaavn(),
                         3 => app.toggle_autoplay(),
-                        4 => app.cycle_language(true),
-                        5 => app.cycle_theme(true),
-                        6 => app.toggle_motion_covers(),
-                        7 => app.toggle_transparent_bg(),
-                        8 => app.cycle_hyprland_opacity(true),
-                        9 => app.step_cache_limit(true),
-                        10 => app.step_downloads_limit(true),
-                        11 => {
+                        4 => app.step_playback_speed(true),
+                        5 => app.toggle_skip_silence(),
+                        6 => app.cycle_sleep_timer(true),
+                        7 => app.toggle_lyrics_translate(),
+                        8 => app.toggle_lyrics_romanize(),
+                        9 => app.cycle_language(true),
+                        10 => app.cycle_theme(true),
+                        11 => app.toggle_motion_covers(),
+                        12 => app.toggle_transparent_bg(),
+                        13 => app.cycle_hyprland_opacity(true),
+                        14 => app.step_cache_limit(true),
+                        15 => app.step_downloads_limit(true),
+                        16 => {
                             let s = sonata_runtime::i18n::strings(app.config.language);
                             let buf = app
                                 .config
@@ -107,10 +112,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                                 target: crate::app::TextInputTarget::DownloadsDir,
                             };
                         }
-                        12 => app.clear_all_downloads(),
-                        13 => app.modal = ActiveModal::ServerManager(0),
-                        14 => app.toggle_discord_rpc(),
-                        15 => {
+                        17 => app.clear_all_downloads(),
+                        18 => app.modal = ActiveModal::ServerManager(0),
+                        19 => app.toggle_discord_rpc(),
+                        20 => {
                             let s = sonata_runtime::i18n::strings(app.config.language);
                             let buf = app.config.discord_app_id.clone().unwrap_or_default();
                             app.modal = ActiveModal::TextInput {
@@ -120,8 +125,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                                 target: crate::app::TextInputTarget::DiscordAppId,
                             };
                         }
-                        16 => app.refresh_account(),
-                        17 => app.check_for_updates(),
+                        21 => app.refresh_account(),
+                        22 => app.check_for_updates(),
                         _ => {}
                     }
                 }
@@ -130,14 +135,19 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                     1 => app.toggle_hifi_substitution(),
                     2 => app.toggle_jiosaavn(),
                     3 => app.toggle_autoplay(),
-                    4 => app.cycle_language(false),
-                    5 => app.cycle_theme(false),
-                    6 => app.toggle_motion_covers(),
-                    7 => app.toggle_transparent_bg(),
-                    8 => app.cycle_hyprland_opacity(false),
-                    9 => app.step_cache_limit(false),
-                    10 => app.step_downloads_limit(false),
-                    14 => app.toggle_discord_rpc(),
+                    4 => app.step_playback_speed(false),
+                    5 => app.toggle_skip_silence(),
+                    6 => app.cycle_sleep_timer(false),
+                    7 => app.toggle_lyrics_translate(),
+                    8 => app.toggle_lyrics_romanize(),
+                    9 => app.cycle_language(false),
+                    10 => app.cycle_theme(false),
+                    11 => app.toggle_motion_covers(),
+                    12 => app.toggle_transparent_bg(),
+                    13 => app.cycle_hyprland_opacity(false),
+                    14 => app.step_cache_limit(false),
+                    15 => app.step_downloads_limit(false),
+                    19 => app.toggle_discord_rpc(),
                     _ => {}
                 },
                 _ => {}
@@ -199,8 +209,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             match key.code {
                 KeyCode::Esc => {
                     let back = match target {
-                        crate::app::TextInputTarget::DownloadsDir => 11,
-                        crate::app::TextInputTarget::DiscordAppId => 15,
+                        crate::app::TextInputTarget::DownloadsDir => 16,
+                        crate::app::TextInputTarget::DiscordAppId => 20,
                     };
                     app.modal = ActiveModal::Settings(back);
                 }
@@ -217,12 +227,12 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                                 Some(std::path::PathBuf::from(val))
                             };
                             app.set_downloads_dir(dir);
-                            11
+                            16
                         }
                         crate::app::TextInputTarget::DiscordAppId => {
                             let id = if val.is_empty() { None } else { Some(val) };
                             app.set_discord_app_id(id);
-                            15
+                            20
                         }
                     };
                     app.modal = ActiveModal::Settings(back);
@@ -235,7 +245,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         ActiveModal::ServerManager(sel) => {
             let count = app.server_profiles.len();
             match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => app.modal = ActiveModal::Settings(13),
+                KeyCode::Esc | KeyCode::Char('q') => app.modal = ActiveModal::Settings(18),
                 KeyCode::Down | KeyCode::Char('j') if count > 0 => *sel = (*sel + 1) % count,
                 KeyCode::Up | KeyCode::Char('k') if count > 0 => *sel = (*sel + count - 1) % count,
                 KeyCode::Char('a') => {
@@ -445,6 +455,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('p') => app.play_prev_track(),
         KeyCode::Char('>') | KeyCode::Char('.') => app.seek(5.0),
         KeyCode::Char('<') | KeyCode::Char(',') => app.seek(-5.0),
+        KeyCode::Char(']') => app.step_playback_speed(true),
+        KeyCode::Char('[') => app.step_playback_speed(false),
+        KeyCode::Char('T') => app.toggle_lyrics_translate(),
+        KeyCode::Char('O') => app.toggle_lyrics_romanize(),
         KeyCode::Char('+') | KeyCode::Char('=') => app.adjust_volume(5),
         KeyCode::Char('-') | KeyCode::Char('_') => app.adjust_volume(-5),
         KeyCode::Char('s') => app.toggle_shuffle(),

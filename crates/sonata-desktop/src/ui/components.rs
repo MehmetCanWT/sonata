@@ -928,6 +928,31 @@ pub fn resolve_active_lyrics(
     (Some(lead_idx), active_bg)
 }
 
+/// Resolves non-duplicate `(romanized, translated)` secondary lines for lyric index `idx`.
+pub fn secondary_lyric_slices<'a>(
+    idx: usize,
+    original: &str,
+    romanized: Option<&'a [String]>,
+    translated: Option<&'a [String]>,
+) -> (Option<&'a str>, Option<&'a str>) {
+    let orig_trim = original.trim();
+    let rom = romanized
+        .and_then(|lines| lines.get(idx))
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case(orig_trim));
+    let tr = translated
+        .and_then(|lines| lines.get(idx))
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|s| {
+            !s.is_empty()
+                && !s.eq_ignore_ascii_case(orig_trim)
+                && rom.is_none_or(|r| !s.eq_ignore_ascii_case(r))
+        });
+    (rom, tr)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -987,5 +1012,19 @@ mod tests {
         let (lead, bg) = resolve_active_lyrics(&lines, 12.8);
         assert_eq!(lead, Some(2));
         assert_eq!(bg, vec![1]);
+    }
+
+    #[test]
+    fn secondary_lyric_slices_skip_empty_and_identical_lines() {
+        let rom = vec!["annyeong".to_string(), "Same".to_string()];
+        let tr = vec!["hello".to_string(), "Same".to_string()];
+        assert_eq!(
+            secondary_lyric_slices(0, "안녕", Some(&rom), Some(&tr)),
+            (Some("annyeong"), Some("hello"))
+        );
+        assert_eq!(
+            secondary_lyric_slices(1, "same", Some(&rom), Some(&tr)),
+            (None, None)
+        );
     }
 }

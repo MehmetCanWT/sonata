@@ -289,6 +289,26 @@ pub struct UiStrings {
     pub unlimited: &'static str,
     pub reset_default: &'static str,
     pub save: &'static str,
+
+    // Playback Options, Lyrics Transforms & Music Video Mode
+    pub music: &'static str,
+    pub video: &'static str,
+    pub video_quality: &'static str,
+    pub video_quality_desc: &'static str,
+    pub translate_lyrics: &'static str,
+    pub translate_lyrics_desc: &'static str,
+    pub romanize_lyrics: &'static str,
+    pub romanize_lyrics_desc: &'static str,
+    pub playback_speed: &'static str,
+    pub playback_speed_desc: &'static str,
+    pub skip_silence: &'static str,
+    pub skip_silence_desc: &'static str,
+    pub sleep_timer: &'static str,
+    pub sleep_timer_desc: &'static str,
+    pub off: &'static str,
+    pub auto_label: &'static str,
+    pub loading_video: &'static str,
+    pub video_unavailable: &'static str,
 }
 
 /// Translates common YouTube Music mood and genre chip/tile titles into `Tr` / `Ru`.
@@ -670,6 +690,25 @@ pub const EN: UiStrings = UiStrings {
     unlimited: "Unlimited",
     reset_default: "Reset",
     save: "Save",
+
+    music: "Music",
+    video: "Video",
+    video_quality: "Video quality",
+    video_quality_desc: "Preferred resolution when switching to Music Video mode.",
+    translate_lyrics: "Translate lyrics",
+    translate_lyrics_desc: "Show line-by-line lyrics translation in your interface language.",
+    romanize_lyrics: "Romanize lyrics",
+    romanize_lyrics_desc: "Show Latin transliteration beneath non-Latin lyrics.",
+    playback_speed: "Playback speed",
+    playback_speed_desc: "Adjust playback tempo from 0.75x to 2.0x.",
+    skip_silence: "Skip silence",
+    skip_silence_desc: "Automatically skip silent gaps during audio-only playback.",
+    sleep_timer: "Sleep timer",
+    sleep_timer_desc: "Fade out and pause playback after a chosen duration.",
+    off: "Off",
+    auto_label: "Auto",
+    loading_video: "Loading video...",
+    video_unavailable: "Video unavailable",
 };
 
 pub const TR: UiStrings = UiStrings {
@@ -891,6 +930,25 @@ pub const TR: UiStrings = UiStrings {
     unlimited: "Sınırsız",
     reset_default: "Sıfırla",
     save: "Kaydet",
+
+    music: "Müzik",
+    video: "Video",
+    video_quality: "Video kalitesi",
+    video_quality_desc: "Müzik Videosu moduna geçildiğinde tercih edilen çözünürlük.",
+    translate_lyrics: "Sözleri çevir",
+    translate_lyrics_desc: "Şarkı sözlerini arayüz diline satır satır çevirerek göster.",
+    romanize_lyrics: "Sözleri Latinleştir",
+    romanize_lyrics_desc: "Latin alfabesi dışındaki şarkı sözlerinin altında okunuşu göster.",
+    playback_speed: "Oynatma hızı",
+    playback_speed_desc: "Oynatma hızını 0.75x ile 2.0x arasında ayarla.",
+    skip_silence: "Sessizliği atla",
+    skip_silence_desc: "Yalnızca ses çalarken sessiz boşlukları otomatik olarak atla.",
+    sleep_timer: "Uyku zamanlayıcısı",
+    sleep_timer_desc: "Seçilen sürenin sonunda sesi kısarak oynatmayı duraklat.",
+    off: "Kapalı",
+    auto_label: "Otomatik",
+    loading_video: "Video yükleniyor...",
+    video_unavailable: "Video kullanılamıyor",
 };
 
 pub const RU: UiStrings = UiStrings {
@@ -1113,6 +1171,25 @@ pub const RU: UiStrings = UiStrings {
     unlimited: "Без лимита",
     reset_default: "Сбросить",
     save: "Сохранить",
+
+    music: "Музыка",
+    video: "Видео",
+    video_quality: "Качество видео",
+    video_quality_desc: "Предпочитаемое разрешение в режиме музыкального видео.",
+    translate_lyrics: "Перевести текст",
+    translate_lyrics_desc: "Показывать построчный перевод текста на языке интерфейса.",
+    romanize_lyrics: "Транслитерация текста",
+    romanize_lyrics_desc: "Показывать латинскую транслитерацию под нелатинским текстом.",
+    playback_speed: "Скорость воспроизведения",
+    playback_speed_desc: "Настройка темпа воспроизведения от 0.75x до 2.0x.",
+    skip_silence: "Пропуск тишины",
+    skip_silence_desc: "Автоматически пропускать тихие паузы при воспроизведении аудио.",
+    sleep_timer: "Таймер сна",
+    sleep_timer_desc: "Плавно уменьшить громкость и поставить на паузу по таймеру.",
+    off: "Выкл",
+    auto_label: "Авто",
+    loading_video: "Загрузка видео...",
+    video_unavailable: "Видео недоступно",
 };
 
 #[cfg(test)]
@@ -1181,5 +1258,11 @@ mod tests {
         assert_eq!(strings(AppLanguage::En).servers, "Servers");
         assert_eq!(strings(AppLanguage::Tr).servers, "Sunucular");
         assert_eq!(strings(AppLanguage::Ru).servers, "Серверы");
+        assert_eq!(strings(AppLanguage::En).music, "Music");
+        assert_eq!(strings(AppLanguage::Tr).music, "Müzik");
+        assert_eq!(strings(AppLanguage::Ru).music, "Музыка");
+        assert_eq!(strings(AppLanguage::En).video_quality, "Video quality");
+        assert_eq!(strings(AppLanguage::Tr).translate_lyrics, "Sözleri çevir");
+        assert_eq!(strings(AppLanguage::Ru).sleep_timer, "Таймер сна");
     }
 }

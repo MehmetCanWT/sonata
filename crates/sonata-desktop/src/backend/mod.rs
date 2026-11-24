@@ -6,7 +6,7 @@
 //! 4. **Library (`library`)**: handles authentication, home/artist/collection feeds, search, playlist edits, themes, and thumbnail prefetching.
 
 mod library;
-mod playback;
+pub mod playback;
 mod types;
 
 pub use sonata_core::providers::ytmusic::{
@@ -23,12 +23,14 @@ use sonata_core::lyrics::LyricsState;
 use sonata_core::paths::CorePaths;
 use sonata_core::player::{PlaybackState, PlaybackTaskSet};
 use sonata_core::providers::hifi::{
-    FastStartMode, ResolverProfile, StreamFallbackMode, UpgradeDelivery,
+    FastStartMode, ResolvedMusicVideo, ResolverProfile, StreamFallbackMode, UpgradeDelivery,
 };
 use sonata_core::providers::servers::{
     load_server_profiles, ServerClient, ServerLibrary, ServerProfile,
 };
-use sonata_core::providers::ytmusic::{ArtistPage, HomeShelf, YtAccountProfile, YtMusicClient};
+use sonata_core::providers::ytmusic::{
+    ArtistPage, HomeShelf, MusicVideoCandidate, YtAccountProfile, YtMusicClient,
+};
 use sonata_core::providers::{build_http_client, Playlist, Track};
 use sonata_runtime::auth::{list_supported_browsers, BrowserOption};
 use sonata_runtime::config::AppConfig;
@@ -45,7 +47,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch, Semaphore};
 use types::{ExportFingerprint, InternalEvent};
 
@@ -176,7 +178,16 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
         stream_badge: "Idle".to_string(),
         upgrading_quality: false,
         loading_track: false,
+        playback_speed: config.playback_speed,
+        skip_silence: config.skip_silence,
+        sleep_timer_remaining_secs: None,
+        video_mode: false,
+        video_loading: false,
+        music_video_candidate: None,
+        available_video_qualities: Vec::new(),
         lyrics: LyricsState::Idle,
+        translated_lyrics: None,
+        romanized_lyrics: None,
         art_path: None,
         motion_cover: None,
         ambient_rgb: (110, 90, 170),
@@ -354,6 +365,15 @@ struct BackendEngine {
     pub(super) urgent_thumbnail_slots: Arc<Semaphore>,
     pub(super) thumb_rev: u64,
     pub(super) playback_speed: f64,
+    pub(super) skip_silence: bool,
+    pub(super) sleep_timer_deadline: Option<Instant>,
+    pub(super) video_mode: bool,
+    pub(super) video_loading: bool,
+    pub(super) music_video_candidate: Option<MusicVideoCandidate>,
+    pub(super) resolved_music_video: Option<ResolvedMusicVideo>,
+    pub(super) audio_stream_badge_backup: Option<String>,
+    pub(super) translated_lyrics: Option<Vec<String>>,
+    pub(super) romanized_lyrics: Option<Vec<String>>,
     pub(super) discord_rpc: DiscordRpcHandle,
     pub(super) download_store: Option<DownloadStore>,
     pub(super) downloaded_tracks: Vec<DownloadedTrack>,
@@ -465,6 +485,17 @@ async fn run_backend_loop(
         .map(|(_, tracks, _)| tracks.into_iter().map(|t| t.id).collect())
         .unwrap_or_default();
 
+    let initial_speed = sonata_runtime::config::sanitize_playback_speed(config.playback_speed);
+    let initial_skip_silence = config.skip_silence;
+    if (initial_speed - sonata_runtime::config::DEFAULT_PLAYBACK_SPEED).abs() > 1e-6 {
+        let _ = session
+            .send(SessionCommand::SetPlaybackSpeed(initial_speed))
+            .await;
+    }
+    if initial_skip_silence {
+        let _ = session.send(SessionCommand::SetSkipSilence(true)).await;
+    }
+
     let mut engine = BackendEngine {
         config,
         paths,
@@ -567,7 +598,16 @@ async fn run_backend_loop(
         thumbnail_slots: Arc::new(Semaphore::new(8)),
         urgent_thumbnail_slots: Arc::new(Semaphore::new(12)),
         thumb_rev: 0,
-        playback_speed: 1.0,
+        playback_speed: initial_speed,
+        skip_silence: initial_skip_silence,
+        sleep_timer_deadline: None,
+        video_mode: false,
+        video_loading: false,
+        music_video_candidate: None,
+        resolved_music_video: None,
+        audio_stream_badge_backup: None,
+        translated_lyrics: None,
+        romanized_lyrics: None,
         discord_rpc,
         download_store,
         downloaded_tracks,
@@ -616,6 +656,8 @@ async fn run_backend_loop(
 
     let mut smooth_tick = tokio::time::interval(Duration::from_millis(250));
     smooth_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut sleep_tick = tokio::time::interval(Duration::from_secs(1));
+    sleep_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         let active_play = !engine.playback.paused
@@ -630,6 +672,12 @@ async fn run_backend_loop(
                         .send((engine.playback.position_secs, engine.playback.duration_secs));
                     engine.sync_discord_rpc();
                 }
+            }
+            _ = sleep_tick.tick(), if engine.sleep_timer_deadline.is_some() => {
+                if engine.remaining_sleep_secs().is_none() {
+                    engine.sleep_timer_deadline = None;
+                }
+                engine.publish(false).await;
             }
             Ok(()) = discord_status_rx.changed() => {
                 let _ = discord_status_rx.borrow_and_update();
@@ -653,9 +701,9 @@ async fn run_backend_loop(
                 engine.publish(true).await;
             }
             Some(sev) = session_rx.recv() => {
-                engine.handle_session_event(sev);
+                engine.handle_session_event(sev).await;
                 while let Ok(more) = session_rx.try_recv() {
-                    engine.handle_session_event(more);
+                    engine.handle_session_event(more).await;
                 }
                 engine.publish(true).await;
             }
@@ -1111,10 +1159,96 @@ impl BackendEngine {
                     if let Some(db) = &self.cache_db {
                         db.invalidate_playlist(None);
                     }
+                    if self.config.lyrics_translate {
+                        self.translated_lyrics = None;
+                        self.refresh_lyrics_transforms();
+                    }
                     self.load_home_feed();
                     self.load_explore();
                     self.load_radio_mixes();
                 }
+            }
+            BackendCmd::SetPlaybackSpeed(speed) => {
+                let sanitized = sonata_runtime::config::sanitize_playback_speed(speed);
+                self.playback_speed = sanitized;
+                self.config.playback_speed = sanitized;
+                let _ = self.config.save();
+                let _ = self
+                    .session
+                    .send(SessionCommand::SetPlaybackSpeed(sanitized))
+                    .await;
+                self.sync_discord_rpc();
+                self.status_line = format!("Playback speed: {sanitized:.2}x");
+            }
+            BackendCmd::ToggleSkipSilence => {
+                self.config.skip_silence = !self.config.skip_silence;
+                self.skip_silence = self.config.skip_silence && !self.video_mode;
+                let _ = self.config.save();
+                let _ = self
+                    .session
+                    .send(SessionCommand::SetSkipSilence(self.config.skip_silence))
+                    .await;
+                self.status_line = format!(
+                    "Skip silence: {}",
+                    if self.config.skip_silence {
+                        "Enabled"
+                    } else {
+                        "Disabled"
+                    }
+                );
+            }
+            BackendCmd::SetSleepTimer(seconds) => {
+                self.sleep_timer_deadline = seconds
+                    .filter(|&s| s > 0)
+                    .map(|secs| Instant::now() + Duration::from_secs(secs));
+                let _ = self
+                    .session
+                    .send(SessionCommand::SetSleepTimer(seconds))
+                    .await;
+                self.status_line = match seconds {
+                    Some(secs) if secs > 0 => format!("Sleep timer set for {}m", secs / 60),
+                    _ => "Sleep timer off".to_string(),
+                };
+            }
+            BackendCmd::ToggleLyricsTranslate => {
+                self.config.lyrics_translate = !self.config.lyrics_translate;
+                let _ = self.config.save();
+                if !self.config.lyrics_translate {
+                    self.translated_lyrics = None;
+                } else {
+                    self.refresh_lyrics_transforms();
+                }
+                self.status_line = format!(
+                    "Translate lyrics: {}",
+                    if self.config.lyrics_translate {
+                        "Enabled"
+                    } else {
+                        "Disabled"
+                    }
+                );
+            }
+            BackendCmd::ToggleLyricsRomanize => {
+                self.config.lyrics_romanize = !self.config.lyrics_romanize;
+                let _ = self.config.save();
+                if !self.config.lyrics_romanize {
+                    self.romanized_lyrics = None;
+                } else {
+                    self.refresh_lyrics_transforms();
+                }
+                self.status_line = format!(
+                    "Romanize lyrics: {}",
+                    if self.config.lyrics_romanize {
+                        "Enabled"
+                    } else {
+                        "Disabled"
+                    }
+                );
+            }
+            BackendCmd::SetVideoMode(enabled) => {
+                self.set_video_mode_enabled(enabled).await;
+            }
+            BackendCmd::SetVideoQuality(quality) => {
+                self.apply_video_quality(quality).await;
             }
             BackendCmd::ToggleLike(track) => {
                 self.toggle_like_track(track);
@@ -1844,8 +1978,75 @@ impl BackendEngine {
                             }
                         }
                         self.lyrics = lyrics;
+                        self.translated_lyrics = None;
+                        self.romanized_lyrics = None;
+                        self.refresh_lyrics_transforms();
                     }
                 }
+            }
+            InternalEvent::LyricsTranslated {
+                play_seq,
+                track_id,
+                target_lang,
+                lines,
+            } => {
+                if play_seq == self.play_seq
+                    && self.config.lyrics_translate
+                    && self.ytm_language.code() == target_lang
+                    && self
+                        .playback
+                        .current_track()
+                        .is_some_and(|t| t.id == track_id)
+                {
+                    self.translated_lyrics = lines;
+                }
+            }
+            InternalEvent::LyricsRomanized {
+                play_seq,
+                track_id,
+                lines,
+            } => {
+                if play_seq == self.play_seq
+                    && self.config.lyrics_romanize
+                    && self
+                        .playback
+                        .current_track()
+                        .is_some_and(|t| t.id == track_id)
+                {
+                    self.romanized_lyrics = lines;
+                }
+            }
+            InternalEvent::MusicVideoCandidateReady {
+                play_seq,
+                track_id,
+                candidate,
+            } => {
+                if play_seq == self.play_seq
+                    && self
+                        .playback
+                        .current_track()
+                        .is_some_and(|t| t.id == track_id)
+                {
+                    self.music_video_candidate = candidate;
+                }
+            }
+            InternalEvent::MusicVideoStreamsReady {
+                play_seq,
+                track_id,
+                video_id,
+                result,
+            } => {
+                if play_seq != self.play_seq
+                    || self
+                        .playback
+                        .current_track()
+                        .is_none_or(|t| t.id != track_id)
+                {
+                    return;
+                }
+                self.video_loading = false;
+                self.handle_music_video_streams_ready(video_id, result)
+                    .await;
             }
             InternalEvent::ArtworkReady {
                 play_seq,
@@ -2208,7 +2409,20 @@ impl BackendEngine {
             stream_badge: self.playback.stream_badge.clone(),
             upgrading_quality: self.upgrading_quality,
             loading_track: self.playback.loading_track,
+            playback_speed: self.playback_speed,
+            skip_silence: self.skip_silence,
+            sleep_timer_remaining_secs: self.remaining_sleep_secs(),
+            video_mode: self.video_mode,
+            video_loading: self.video_loading,
+            music_video_candidate: self.music_video_candidate.clone(),
+            available_video_qualities: self
+                .resolved_music_video
+                .as_ref()
+                .map(|mv| mv.qualities.clone())
+                .unwrap_or_default(),
             lyrics: self.lyrics.clone(),
+            translated_lyrics: self.translated_lyrics.clone(),
+            romanized_lyrics: self.romanized_lyrics.clone(),
             art_path: self.art_path.clone(),
             motion_cover: self.motion_cover.clone(),
             ambient_rgb: self.ambient_rgb,
@@ -2396,7 +2610,16 @@ mod tests {
             stream_badge: String::new(),
             upgrading_quality: false,
             loading_track: false,
+            playback_speed: 1.0,
+            skip_silence: false,
+            sleep_timer_remaining_secs: None,
+            video_mode: false,
+            video_loading: false,
+            music_video_candidate: None,
+            available_video_qualities: Vec::new(),
             lyrics: LyricsState::Idle,
+            translated_lyrics: None,
+            romanized_lyrics: None,
             art_path: None,
             motion_cover: None,
             ambient_rgb: (0, 0, 0),

@@ -120,8 +120,24 @@ pub fn render_artwork(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 
 pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let s = sonata_runtime::i18n::strings(app.config.language);
+    let mut title_tags = Vec::new();
+    if app.config.lyrics_romanize {
+        title_tags.push("Rm");
+    }
+    if app.config.lyrics_translate {
+        title_tags.push("Tr");
+    }
+    let lyrics_title = if title_tags.is_empty() {
+        s.tui_lyrics_title.to_string()
+    } else {
+        format!(
+            " {} · {} ",
+            s.tui_lyrics_title.trim(),
+            title_tags.join(" · ")
+        )
+    };
     let block = Block::default()
-        .title(s.tui_lyrics_title)
+        .title(lyrics_title)
         .title_style(
             Style::default()
                 .fg(app.theme.fg)
@@ -164,7 +180,8 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             let start = ((max_scroll as f64) * progress).round() as usize;
             let end = (start + visible_rows.saturating_sub(1)).min(lines.len());
             let mut rendered: Vec<Line> = vec![Line::raw("")];
-            for line in &lines[start..end] {
+            for (rel_i, line) in lines[start..end].iter().enumerate() {
+                let idx = start + rel_i;
                 let is_header = line.starts_with('[') && line.ends_with(']');
                 let style = if is_header {
                     Style::default()
@@ -174,6 +191,28 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                     Style::default().fg(app.theme.fg)
                 };
                 rendered.push(Line::from(Span::styled(line.as_str(), style)));
+                if !is_header {
+                    let (rom, tr) = secondary_lyric_slices(
+                        idx,
+                        line,
+                        app.romanized_lyrics.as_deref(),
+                        app.translated_lyrics.as_deref(),
+                    );
+                    if let Some(rom_text) = rom {
+                        rendered.push(Line::from(Span::styled(
+                            rom_text,
+                            Style::default()
+                                .fg(app.theme.muted)
+                                .add_modifier(Modifier::ITALIC),
+                        )));
+                    }
+                    if let Some(tr_text) = tr {
+                        rendered.push(Line::from(Span::styled(
+                            tr_text,
+                            Style::default().fg(app.theme.lyrics_inactive),
+                        )));
+                    }
+                }
             }
             let p = Paragraph::new(rendered)
                 .alignment(Alignment::Center)
@@ -195,11 +234,24 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                 app.lyrics_changed_at = std::time::Instant::now();
             }
 
+            #[derive(Clone)]
+            enum TuiVisualRow {
+                Gap,
+                Primary {
+                    line_idx: usize,
+                    start: usize,
+                    end: usize,
+                },
+                Secondary {
+                    line_idx: usize,
+                    text: String,
+                },
+            }
+
             // Build invariant flattened visual rows (word-wrapped cleanly with uniform spacing so
             // rows never jump or reflow when a verse becomes active).
             let use_gaps = visible_rows >= 9;
-            let mut visual_rows: Vec<Option<(usize, usize, usize)>> =
-                Vec::with_capacity(lines.len() * 2);
+            let mut visual_rows: Vec<TuiVisualRow> = Vec::with_capacity(lines.len() * 3);
             let mut focus_start_row = 0usize;
             let mut focus_row_count = 1usize;
 
@@ -210,15 +262,39 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                     item.text.trim()
                 };
                 let ranges = wrap_char_ranges(text, inner.width);
-                if i == focus_idx {
-                    focus_start_row = visual_rows.len();
-                    focus_row_count = ranges.len().max(1);
-                }
+                let line_row_start = visual_rows.len();
                 for (cs, ce) in ranges {
-                    visual_rows.push(Some((i, cs, ce)));
+                    visual_rows.push(TuiVisualRow::Primary {
+                        line_idx: i,
+                        start: cs,
+                        end: ce,
+                    });
+                }
+                if !item.text.trim().is_empty() {
+                    let (rom, tr) = secondary_lyric_slices(
+                        i,
+                        text,
+                        app.romanized_lyrics.as_deref(),
+                        app.translated_lyrics.as_deref(),
+                    );
+                    for sec in [rom, tr].into_iter().flatten() {
+                        for (cs, ce) in wrap_char_ranges(sec, inner.width) {
+                            let slice = char_slice_bounds(sec, cs, ce).to_string();
+                            if !slice.is_empty() {
+                                visual_rows.push(TuiVisualRow::Secondary {
+                                    line_idx: i,
+                                    text: slice,
+                                });
+                            }
+                        }
+                    }
+                }
+                if i == focus_idx {
+                    focus_start_row = line_row_start;
+                    focus_row_count = visual_rows.len().saturating_sub(line_row_start).max(1);
                 }
                 if use_gaps && i + 1 < lines.len() {
-                    visual_rows.push(None);
+                    visual_rows.push(TuiVisualRow::Gap);
                 }
             }
 
@@ -271,9 +347,14 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                     rendered.push(Line::raw(""));
                     continue;
                 }
-                let Some((line_idx, row_c_start, row_c_end)) = visual_rows[doc_idx as usize] else {
-                    rendered.push(Line::raw(""));
-                    continue;
+                let row_item = &visual_rows[doc_idx as usize];
+                let line_idx = match row_item {
+                    TuiVisualRow::Gap => {
+                        rendered.push(Line::raw(""));
+                        continue;
+                    }
+                    TuiVisualRow::Primary { line_idx, .. }
+                    | TuiVisualRow::Secondary { line_idx, .. } => *line_idx,
                 };
 
                 let item = &lines[line_idx];
@@ -298,52 +379,91 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 
                 let is_active = active == Some(line_idx);
                 let is_active_bg = active_bg_indices.contains(&line_idx);
-                if is_active || is_active_bg {
-                    let next_time = Some(tui_line_end_secs(lines, line_idx));
-                    let active_fg = if is_active && arrive_eased < 1.0 {
-                        blend_color(
-                            app.theme.lyrics_inactive,
-                            app.theme.lyrics_active,
-                            0.45 + 0.55 * arrive_eased,
-                        )
-                    } else {
-                        app.theme.lyrics_active
-                    };
-                    rendered.push(render_active_tui_lyric_slice(
-                        item,
-                        next_time,
-                        pos,
-                        row_c_start,
-                        row_c_end,
-                        active_fg,
-                        app.theme.lyrics_inactive,
-                    ));
-                } else {
-                    let is_bg = is_tui_bg_line(text);
-                    let is_departing =
-                        app.lyrics_prev_active == Some(line_idx) && depart_eased < 1.0;
-                    let spotlight_fg =
-                        blend_color(app.theme.muted, app.theme.lyrics_inactive, center_glow);
-                    let base_fg = if is_departing {
-                        blend_color(app.theme.lyrics_active, spotlight_fg, depart_eased)
-                    } else {
-                        spotlight_fg
-                    };
-                    let fade = (edge_fade + (1.0 - edge_fade) * motion_veil).clamp(0.0, 0.88);
-                    let fg = if fade > 0.005 {
-                        blend_color(base_fg, app.theme.bg, fade)
-                    } else {
-                        base_fg
-                    };
-                    let mut style = Style::default().fg(fg);
-                    if center_glow < 0.20 && !is_departing {
-                        style = style.add_modifier(Modifier::DIM);
+                match row_item {
+                    TuiVisualRow::Gap => rendered.push(Line::raw("")),
+                    TuiVisualRow::Secondary { text: sec_text, .. } => {
+                        let base_fg = if is_active || is_active_bg {
+                            blend_color(app.theme.lyrics_inactive, app.theme.lyrics_active, 0.45)
+                        } else {
+                            blend_color(
+                                app.theme.muted,
+                                app.theme.lyrics_inactive,
+                                center_glow * 0.7,
+                            )
+                        };
+                        let fade = if is_active || is_active_bg {
+                            0.0
+                        } else {
+                            (edge_fade + (1.0 - edge_fade) * motion_veil).clamp(0.0, 0.88)
+                        };
+                        let fg = if fade > 0.005 {
+                            blend_color(base_fg, app.theme.bg, fade)
+                        } else {
+                            base_fg
+                        };
+                        let mut style = Style::default().fg(fg).add_modifier(Modifier::ITALIC);
+                        if !is_active && !is_active_bg {
+                            style = style.add_modifier(Modifier::DIM);
+                        }
+                        rendered.push(Line::from(Span::styled(sec_text.clone(), style)));
                     }
-                    if is_bg || item.voice == LyricVoice::Counter {
-                        style = style.add_modifier(Modifier::ITALIC);
+                    TuiVisualRow::Primary {
+                        start: row_c_start,
+                        end: row_c_end,
+                        ..
+                    } => {
+                        if is_active || is_active_bg {
+                            let next_time = Some(tui_line_end_secs(lines, line_idx));
+                            let active_fg = if is_active && arrive_eased < 1.0 {
+                                blend_color(
+                                    app.theme.lyrics_inactive,
+                                    app.theme.lyrics_active,
+                                    0.45 + 0.55 * arrive_eased,
+                                )
+                            } else {
+                                app.theme.lyrics_active
+                            };
+                            rendered.push(render_active_tui_lyric_slice(
+                                item,
+                                next_time,
+                                pos,
+                                *row_c_start,
+                                *row_c_end,
+                                active_fg,
+                                app.theme.lyrics_inactive,
+                            ));
+                        } else {
+                            let is_bg = is_tui_bg_line(text);
+                            let is_departing =
+                                app.lyrics_prev_active == Some(line_idx) && depart_eased < 1.0;
+                            let spotlight_fg = blend_color(
+                                app.theme.muted,
+                                app.theme.lyrics_inactive,
+                                center_glow,
+                            );
+                            let base_fg = if is_departing {
+                                blend_color(app.theme.lyrics_active, spotlight_fg, depart_eased)
+                            } else {
+                                spotlight_fg
+                            };
+                            let fade =
+                                (edge_fade + (1.0 - edge_fade) * motion_veil).clamp(0.0, 0.88);
+                            let fg = if fade > 0.005 {
+                                blend_color(base_fg, app.theme.bg, fade)
+                            } else {
+                                base_fg
+                            };
+                            let mut style = Style::default().fg(fg);
+                            if center_glow < 0.20 && !is_departing {
+                                style = style.add_modifier(Modifier::DIM);
+                            }
+                            if is_bg || item.voice == LyricVoice::Counter {
+                                style = style.add_modifier(Modifier::ITALIC);
+                            }
+                            let slice = char_slice_bounds(text, *row_c_start, *row_c_end);
+                            rendered.push(Line::from(Span::styled(slice, style)));
+                        }
                     }
-                    let slice = char_slice_bounds(text, row_c_start, row_c_end);
-                    rendered.push(Line::from(Span::styled(slice, style)));
                 }
             }
 
@@ -756,9 +876,34 @@ fn render_centered_message(frame: &mut Frame<'_>, inner: Rect, msg: &str, app: &
     frame.render_widget(p, inner);
 }
 
+/// Resolves non-duplicate `(romanized, translated)` secondary lines for lyric index `idx`.
+pub fn secondary_lyric_slices<'a>(
+    idx: usize,
+    original: &str,
+    romanized: Option<&'a [String]>,
+    translated: Option<&'a [String]>,
+) -> (Option<&'a str>, Option<&'a str>) {
+    let orig_trim = original.trim();
+    let rom = romanized
+        .and_then(|lines| lines.get(idx))
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case(orig_trim));
+    let tr = translated
+        .and_then(|lines| lines.get(idx))
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|s| {
+            !s.is_empty()
+                && !s.eq_ignore_ascii_case(orig_trim)
+                && rom.is_none_or(|r| !s.eq_ignore_ascii_case(r))
+        });
+    (rom, tr)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{render_active_tui_lyric_line, wrapped_rows};
+    use super::{render_active_tui_lyric_line, secondary_lyric_slices, wrapped_rows};
     use ratatui::style::{Color, Modifier};
     use sonata_core::lyrics::{LyricLine, LyricVoice, LyricWord};
 
@@ -797,5 +942,19 @@ mod tests {
         let done_texts: Vec<&str> = done.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(done_texts, vec!["around like no one knows"]);
         assert_eq!(wrapped_rows("hello world again", 12), 2);
+    }
+
+    #[test]
+    fn secondary_lyric_slices_suppress_blank_and_duplicate_lines() {
+        let rom = vec!["konnichiwa".to_string(), "Hello".to_string()];
+        let tr = vec!["hello".to_string(), "Hello".to_string()];
+        assert_eq!(
+            secondary_lyric_slices(0, "こんにちは", Some(&rom), Some(&tr)),
+            (Some("konnichiwa"), Some("hello"))
+        );
+        assert_eq!(
+            secondary_lyric_slices(1, "hello", Some(&rom), Some(&tr)),
+            (None, None)
+        );
     }
 }

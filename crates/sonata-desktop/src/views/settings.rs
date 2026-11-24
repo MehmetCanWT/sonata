@@ -391,12 +391,155 @@ impl SonataDesktopView {
     }
 
     fn render_settings_playback(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        use crate::backend::playback::{
+            format_sleep_countdown, PLAYBACK_SPEED_PRESETS, SLEEP_TIMER_PRESET_SECS,
+            VIDEO_QUALITY_OPTIONS,
+        };
         let s = strings(self.settings.language);
         let cfg = &self.snapshot.config;
+        let speed_idx = PLAYBACK_SPEED_PRESETS
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                ((*a - self.snapshot.playback_speed).abs())
+                    .partial_cmp(&((*b - self.snapshot.playback_speed).abs()))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(i, _)| i)
+            .unwrap_or(1);
+        let speed_control = TabBar::new("set-speed-tabs")
+            .pill()
+            .small()
+            .selected_index(speed_idx)
+            .on_click(cx.listener(|this, idx: &usize, _, _| {
+                if let Some(&spd) = PLAYBACK_SPEED_PRESETS.get(*idx) {
+                    this.backend.send(BackendCmd::SetPlaybackSpeed(spd));
+                }
+            }))
+            .child(Tab::new().label("0.75x"))
+            .child(Tab::new().label("1x"))
+            .child(Tab::new().label("1.25x"))
+            .child(Tab::new().label("1.5x"))
+            .child(Tab::new().label("1.75x"))
+            .child(Tab::new().label("2x"))
+            .into_any_element();
+
+        let sleep_rem = self.snapshot.sleep_timer_remaining_secs;
+        let sleep_idx = match sleep_rem {
+            None | Some(0) => 0,
+            Some(rem) => SLEEP_TIMER_PRESET_SECS
+                .iter()
+                .enumerate()
+                .skip(1)
+                .min_by_key(|(_, p)| p.unwrap_or(0).abs_diff(rem))
+                .map(|(i, _)| i)
+                .unwrap_or(1),
+        };
+        let sleep_tabs = TabBar::new("set-sleep-tabs")
+            .pill()
+            .small()
+            .selected_index(sleep_idx)
+            .on_click(cx.listener(|this, idx: &usize, _, _| {
+                if let Some(&preset) = SLEEP_TIMER_PRESET_SECS.get(*idx) {
+                    this.backend.send(BackendCmd::SetSleepTimer(preset));
+                }
+            }))
+            .child(Tab::new().label(s.off))
+            .child(Tab::new().label("15m"))
+            .child(Tab::new().label("30m"))
+            .child(Tab::new().label("45m"))
+            .child(Tab::new().label("60m"));
+        let sleep_control = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .when_some(sleep_rem, |row, rem| {
+                row.child(
+                    div()
+                        .px(px(8.0))
+                        .py(px(3.0))
+                        .rounded(px(self.palette.radii.small))
+                        .bg(self.palette.accent.opacity(0.16))
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(self.palette.accent)
+                        .child(format_sleep_countdown(rem)),
+                )
+            })
+            .child(sleep_tabs)
+            .into_any_element();
+
+        let vq_idx = VIDEO_QUALITY_OPTIONS
+            .iter()
+            .position(|opt| opt.eq_ignore_ascii_case(cfg.video_quality.trim()))
+            .unwrap_or(0);
+        let vq_control = TabBar::new("set-vq-tabs")
+            .pill()
+            .small()
+            .selected_index(vq_idx)
+            .on_click(cx.listener(|this, idx: &usize, _, _| {
+                if let Some(&opt) = VIDEO_QUALITY_OPTIONS.get(*idx) {
+                    this.backend
+                        .send(BackendCmd::SetVideoQuality(opt.to_string()));
+                }
+            }))
+            .child(Tab::new().label(s.auto_label))
+            .child(Tab::new().label("1080p"))
+            .child(Tab::new().label("720p"))
+            .child(Tab::new().label("480p"))
+            .child(Tab::new().label("360p"))
+            .into_any_element();
+
+        let skip_silence_desc = if self.snapshot.video_mode {
+            format!("{} ({})", s.skip_silence_desc, s.video)
+        } else {
+            s.skip_silence_desc.to_string()
+        };
+
         div()
             .flex()
             .flex_col()
             .gap(px(10.0))
+            .child(self.settings_row(s.playback_speed, s.playback_speed_desc, speed_control))
+            .child(
+                self.settings_row(
+                    s.skip_silence,
+                    skip_silence_desc,
+                    Switch::new("sw-skip-silence")
+                        .checked(cfg.skip_silence)
+                        .on_change(cx.listener(|this, _, _, _| {
+                            this.backend.send(BackendCmd::ToggleSkipSilence);
+                        }))
+                        .into_any_element(),
+                ),
+            )
+            .child(self.settings_row(s.sleep_timer, s.sleep_timer_desc, sleep_control))
+            .child(
+                self.settings_row(
+                    s.translate_lyrics,
+                    s.translate_lyrics_desc,
+                    Switch::new("sw-translate-lyrics")
+                        .checked(cfg.lyrics_translate)
+                        .on_change(cx.listener(|this, _, _, _| {
+                            this.backend.send(BackendCmd::ToggleLyricsTranslate);
+                        }))
+                        .into_any_element(),
+                ),
+            )
+            .child(
+                self.settings_row(
+                    s.romanize_lyrics,
+                    s.romanize_lyrics_desc,
+                    Switch::new("sw-romanize-lyrics")
+                        .checked(cfg.lyrics_romanize)
+                        .on_change(cx.listener(|this, _, _, _| {
+                            this.backend.send(BackendCmd::ToggleLyricsRomanize);
+                        }))
+                        .into_any_element(),
+                ),
+            )
+            .child(self.settings_row(s.video_quality, s.video_quality_desc, vq_control))
             .child(
                 self.settings_row(
                     s.autoplay,

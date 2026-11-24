@@ -9,7 +9,7 @@ use crate::backend::BackendCmd;
 use crate::settings::GUTTER;
 use crate::ui::components::{
     artist_links_row, card_panel, cover_art_tile, is_parenthetical_bg, lyric_line_end_secs,
-    resolve_active_lyrics, scroll_edge_fades,
+    resolve_active_lyrics, scroll_edge_fades, secondary_lyric_slices,
 };
 use crate::ui::lyrics::{
     anchored_lyrics_offset, is_counter_voice, render_fixed_rows, render_karaoke_rows,
@@ -409,6 +409,10 @@ impl SonataDesktopView {
 
     fn render_lyrics_card(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let lyrics = self.snapshot.lyrics.clone();
+        let translated_lyrics = self.snapshot.translated_lyrics.clone();
+        let romanized_lyrics = self.snapshot.romanized_lyrics.clone();
+        let tr_enabled = self.snapshot.config.lyrics_translate;
+        let rm_enabled = self.snapshot.config.lyrics_romanize;
         let scroll_fades = self.settings.scroll_fades;
         let scroll_bounds = self.lyrics_scroll.bounds();
         let view_h: f32 = scroll_bounds.size.height.into();
@@ -450,23 +454,64 @@ impl SonataDesktopView {
                 .text_color(self.palette.dim)
                 .child(s.no_lyrics_found)
                 .into_any_element(),
-            LyricsState::Plain(lines) => div()
-                .id("rp-lyrics-scroll")
-                .size_full()
-                .overflow_y_scroll()
-                .track_scroll(&self.lyrics_scroll)
-                .p(px(16.0))
-                .text_size(px(14.0))
-                .line_height(px(22.0))
-                .text_color(self.palette.secondary)
-                .child(lines.join("\n"))
-                .into_any_element(),
+            LyricsState::Plain(lines) => {
+                let mut col = div()
+                    .id("rp-lyrics-scroll")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.lyrics_scroll)
+                    .p(px(16.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.0));
+                for (i, line) in lines.iter().enumerate() {
+                    let (rom, tr) = secondary_lyric_slices(
+                        i,
+                        line,
+                        romanized_lyrics.as_deref(),
+                        translated_lyrics.as_deref(),
+                    );
+                    let mut entry = div()
+                        .w_full()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .child(
+                            div()
+                                .text_size(px(14.0))
+                                .line_height(px(20.0))
+                                .text_color(self.palette.secondary)
+                                .child(line.clone()),
+                        );
+                    if let Some(rom_text) = rom {
+                        entry = entry.child(
+                            div()
+                                .text_size(px(11.5))
+                                .line_height(px(16.0))
+                                .text_color(self.palette.dim)
+                                .child(rom_text.to_string()),
+                        );
+                    }
+                    if let Some(tr_text) = tr {
+                        entry = entry.child(
+                            div()
+                                .text_size(px(12.0))
+                                .line_height(px(16.0))
+                                .text_color(self.palette.secondary.opacity(0.75))
+                                .child(tr_text.to_string()),
+                        );
+                    }
+                    col = col.child(entry);
+                }
+                col.into_any_element()
+            }
             LyricsState::Synced(lines) => {
                 if !self.snapshot.paused && !self.snapshot.loading_track && !lines.is_empty() {
                     self.ensure_karaoke_pace(cx);
                 }
 
-                let pos = self.live_position_now();
+                let pos = self.snapshot.lyrics_position_secs(self.live_position_now());
                 let (active_idx, active_bg_indices) = resolve_active_lyrics(&lines, pos);
                 let pad_top = (effective_h * PANEL_LYRICS_PIN).max(48.0);
                 let pad_bottom = (effective_h * (1.0 - PANEL_LYRICS_PIN)).max(96.0);
@@ -620,6 +665,20 @@ impl SonataDesktopView {
                         }
                     };
 
+                    let (rom, tr) = secondary_lyric_slices(
+                        i,
+                        &line.text,
+                        romanized_lyrics.as_deref(),
+                        translated_lyrics.as_deref(),
+                    );
+                    let sec_color = if is_active {
+                        self.palette.secondary.opacity(0.86)
+                    } else if is_past {
+                        self.palette.dim.opacity(0.56)
+                    } else {
+                        self.palette.dim.opacity(0.74)
+                    };
+
                     col = col.child(
                         div()
                             .id(SharedString::from(format!("rp-lyr-{i}")))
@@ -635,10 +694,35 @@ impl SonataDesktopView {
                                 this.backend.send(BackendCmd::SeekAbsolute(seek_secs));
                             }))
                             .flex()
-                            .flex_row()
-                            .when(!is_counter, |d| d.justify_start())
-                            .when(is_counter, |d| d.justify_end())
-                            .child(content),
+                            .flex_col()
+                            .gap(px(2.0))
+                            .when(!is_counter, |d| d.items_start())
+                            .when(is_counter, |d| d.items_end())
+                            .child(content)
+                            .when_some(rom, |d, rom_text| {
+                                d.child(
+                                    div()
+                                        .w_full()
+                                        .min_w_0()
+                                        .text_size(px(11.5))
+                                        .line_height(px(15.5))
+                                        .text_color(sec_color)
+                                        .when(is_counter, |t| t.text_right())
+                                        .child(rom_text.to_string()),
+                                )
+                            })
+                            .when_some(tr, |d, tr_text| {
+                                d.child(
+                                    div()
+                                        .w_full()
+                                        .min_w_0()
+                                        .text_size(px(12.0))
+                                        .line_height(px(16.0))
+                                        .text_color(sec_color)
+                                        .when(is_counter, |t| t.text_right())
+                                        .child(tr_text.to_string()),
+                                )
+                            }),
                     );
                 }
                 col.child(div().flex_shrink_0().h(px(pad_bottom)))
@@ -684,15 +768,52 @@ impl SonataDesktopView {
                             ),
                     )
                     .child(
-                        Button::new("rp-lyr-close")
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::X)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.settings.show_lyrics_panel = false;
-                                this.settings.save();
-                                cx.notify();
-                            })),
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(4.0))
+                            .child(
+                                Button::new("rp-lyr-rm")
+                                    .ghost()
+                                    .xsmall()
+                                    .label("Rm")
+                                    .text_color(if rm_enabled {
+                                        self.palette.accent
+                                    } else {
+                                        self.palette.dim
+                                    })
+                                    .tooltip(s.romanize_lyrics)
+                                    .on_click(cx.listener(|this, _, _, _| {
+                                        this.backend.send(BackendCmd::ToggleLyricsRomanize);
+                                    })),
+                            )
+                            .child(
+                                Button::new("rp-lyr-tr")
+                                    .ghost()
+                                    .xsmall()
+                                    .label("Tr")
+                                    .text_color(if tr_enabled {
+                                        self.palette.accent
+                                    } else {
+                                        self.palette.dim
+                                    })
+                                    .tooltip(s.translate_lyrics)
+                                    .on_click(cx.listener(|this, _, _, _| {
+                                        this.backend.send(BackendCmd::ToggleLyricsTranslate);
+                                    })),
+                            )
+                            .child(
+                                Button::new("rp-lyr-close")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::X)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.settings.show_lyrics_panel = false;
+                                        this.settings.save();
+                                        cx.notify();
+                                    })),
+                            ),
                     ),
             )
             .child(

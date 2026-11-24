@@ -10,14 +10,102 @@
 use super::{ActiveModal, App, AppEvent, ExportFingerprint};
 use base64::Engine as _;
 use ratatui_image::picker::ProtocolType;
-use sonata_core::lyrics::{active_line_index, lrclib, LyricsState};
+use sonata_core::lyrics::{
+    active_line_index, lrclib, romanize_lyrics_state, translate_lyrics_state, LyricsState,
+};
 use sonata_core::player::RepeatMode;
 use sonata_core::providers::Track;
 use sonata_runtime::config::AppConfig;
 use sonata_runtime::media;
 use sonata_runtime::player::{SessionCommand, SessionEvent};
 use std::io::Write;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+pub const PLAYBACK_SPEED_PRESETS: &[f64] = &[0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
+pub const SLEEP_TIMER_PRESET_SECS: &[Option<u64>] = &[
+    None,
+    Some(15 * 60),
+    Some(30 * 60),
+    Some(45 * 60),
+    Some(60 * 60),
+];
+
+/// Preserves source context tags (e.g., `Cached`, `Offline`, `JioSaavn`, `Jellyfin`) when
+/// replacing an initial stream badge with live measured `mpv` codec/bitrate/bit-depth telemetry.
+pub fn merge_measured_audio_badge(existing_badge: &str, measured_badge: &str) -> String {
+    const SOURCE_TAGS: &[&str] = &[
+        "Cached", "Offline", "JioSaavn", "Jellyfin", "Subsonic", "WebDAV", "Video",
+    ];
+    let measured_trimmed = measured_badge.trim();
+    if measured_trimmed.is_empty() {
+        return existing_badge.to_string();
+    }
+    let mut parts: Vec<String> = vec![measured_trimmed.to_string()];
+    for token in existing_badge.split(" · ").map(str::trim) {
+        if SOURCE_TAGS
+            .iter()
+            .any(|tag| tag.eq_ignore_ascii_case(token))
+            && !parts
+                .iter()
+                .any(|p| p.to_ascii_lowercase().contains(&token.to_ascii_lowercase()))
+        {
+            parts.push(token.to_string());
+        }
+    }
+    parts.join(" · ")
+}
+
+/// Steps through the discrete playback speed presets (`0.75x..=2.0x`).
+pub fn step_speed_preset(current: f64, forward: bool) -> f64 {
+    let idx = PLAYBACK_SPEED_PRESETS
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| {
+            ((*a - current).abs())
+                .partial_cmp(&((*b - current).abs()))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(i, _)| i)
+        .unwrap_or(1);
+    let next = if forward {
+        (idx + 1) % PLAYBACK_SPEED_PRESETS.len()
+    } else {
+        (idx + PLAYBACK_SPEED_PRESETS.len() - 1) % PLAYBACK_SPEED_PRESETS.len()
+    };
+    PLAYBACK_SPEED_PRESETS[next]
+}
+
+/// Cycles through `Off`, `15m`, `30m`, `45m`, and `60m` sleep timer presets.
+pub fn next_sleep_preset(current_remaining_secs: Option<u64>, forward: bool) -> Option<u64> {
+    let idx = match current_remaining_secs {
+        None | Some(0) => 0,
+        Some(rem) => SLEEP_TIMER_PRESET_SECS
+            .iter()
+            .enumerate()
+            .skip(1)
+            .min_by_key(|(_, preset)| preset.unwrap_or(0).abs_diff(rem))
+            .map(|(i, _)| i)
+            .unwrap_or(1),
+    };
+    let next = if forward {
+        (idx + 1) % SLEEP_TIMER_PRESET_SECS.len()
+    } else {
+        (idx + SLEEP_TIMER_PRESET_SECS.len() - 1) % SLEEP_TIMER_PRESET_SECS.len()
+    };
+    SLEEP_TIMER_PRESET_SECS[next]
+}
+
+/// Formats remaining sleep-timer seconds as `MM:SS` (or `H:MM:SS` if >= 1 hour).
+pub fn format_sleep_countdown(secs: u64) -> String {
+    let hours = secs / 3600;
+    let mins = (secs % 3600) / 60;
+    let rem_secs = secs % 60;
+    if hours > 0 {
+        format!("{hours}:{mins:02}:{rem_secs:02}")
+    } else {
+        format!("{mins:02}:{rem_secs:02}")
+    }
+}
 
 impl App {
     pub fn handle_session_event(&mut self, event: SessionEvent) {
@@ -113,6 +201,25 @@ impl App {
                     }
                 }
                 self.start_cover_enrichment();
+            }
+            SessionEvent::AudioQualityUpdated {
+                generation,
+                track_id,
+                badge,
+                ..
+            } => {
+                if generation.value() != self.play_seq {
+                    return;
+                }
+                if self
+                    .playback
+                    .current_track()
+                    .is_some_and(|t| t.id != track_id)
+                {
+                    return;
+                }
+                self.playback.stream_badge =
+                    merge_measured_audio_badge(&self.playback.stream_badge, &badge);
             }
             SessionEvent::PausedChanged {
                 paused,
@@ -317,7 +424,168 @@ impl App {
                 self.playback.repeat = repeat;
                 self.playback.volume = volume;
             }
+            SessionEvent::PlaybackOptionsChanged {
+                playback_speed,
+                skip_silence,
+                video_mode,
+                sleep_timer_remaining_secs,
+            } => {
+                self.playback_speed = playback_speed;
+                self.skip_silence = skip_silence;
+                self.video_mode = video_mode;
+                self.sleep_timer_deadline = sleep_timer_remaining_secs
+                    .filter(|&s| s > 0)
+                    .map(|secs| Instant::now() + Duration::from_secs(secs));
+                self.sync_discord_rpc();
+            }
             SessionEvent::PrecacheUpdated { .. } => {}
+        }
+    }
+
+    pub fn sleep_timer_remaining_secs(&self) -> Option<u64> {
+        let deadline = self.sleep_timer_deadline?;
+        let rem = deadline.saturating_duration_since(Instant::now());
+        let secs = rem.as_secs() + u64::from(rem.subsec_nanos() > 0);
+        (secs > 0).then_some(secs)
+    }
+
+    pub fn set_playback_speed(&mut self, speed: f64) {
+        let sanitized = sonata_runtime::config::sanitize_playback_speed(speed);
+        self.playback_speed = sanitized;
+        self.config.playback_speed = sanitized;
+        let _ = self.config.save();
+        self.enqueue_session_cmd(SessionCommand::SetPlaybackSpeed(sanitized));
+        self.sync_discord_rpc();
+        let s = sonata_runtime::i18n::strings(self.config.language);
+        self.status_line = format!("{}: {:.2}x", s.playback_speed, sanitized);
+    }
+
+    pub fn step_playback_speed(&mut self, forward: bool) {
+        let next = step_speed_preset(self.playback_speed, forward);
+        self.set_playback_speed(next);
+    }
+
+    pub fn toggle_skip_silence(&mut self) {
+        self.config.skip_silence = !self.config.skip_silence;
+        self.skip_silence = self.config.skip_silence && !self.video_mode;
+        let _ = self.config.save();
+        self.enqueue_session_cmd(SessionCommand::SetSkipSilence(self.config.skip_silence));
+        let s = sonata_runtime::i18n::strings(self.config.language);
+        self.status_line = format!(
+            "{}: {}",
+            s.skip_silence,
+            if self.config.skip_silence {
+                s.enabled
+            } else {
+                s.disabled
+            }
+        );
+    }
+
+    pub fn cycle_sleep_timer(&mut self, forward: bool) {
+        let next = next_sleep_preset(self.sleep_timer_remaining_secs(), forward);
+        self.sleep_timer_deadline = next.map(|secs| Instant::now() + Duration::from_secs(secs));
+        self.enqueue_session_cmd(SessionCommand::SetSleepTimer(next));
+        let s = sonata_runtime::i18n::strings(self.config.language);
+        self.status_line = match next {
+            Some(secs) => format!("{}: {}m", s.sleep_timer, secs / 60),
+            None => format!("{}: {}", s.sleep_timer, s.off),
+        };
+    }
+
+    pub fn toggle_lyrics_translate(&mut self) {
+        self.config.lyrics_translate = !self.config.lyrics_translate;
+        let _ = self.config.save();
+        if !self.config.lyrics_translate {
+            self.translated_lyrics = None;
+        } else {
+            self.refresh_lyrics_transforms();
+        }
+        let s = sonata_runtime::i18n::strings(self.config.language);
+        self.status_line = format!(
+            "{}: {}",
+            s.translate_lyrics,
+            if self.config.lyrics_translate {
+                s.enabled
+            } else {
+                s.disabled
+            }
+        );
+    }
+
+    pub fn toggle_lyrics_romanize(&mut self) {
+        self.config.lyrics_romanize = !self.config.lyrics_romanize;
+        let _ = self.config.save();
+        if !self.config.lyrics_romanize {
+            self.romanized_lyrics = None;
+        } else {
+            self.refresh_lyrics_transforms();
+        }
+        let s = sonata_runtime::i18n::strings(self.config.language);
+        self.status_line = format!(
+            "{}: {}",
+            s.romanize_lyrics,
+            if self.config.lyrics_romanize {
+                s.enabled
+            } else {
+                s.disabled
+            }
+        );
+    }
+
+    pub fn refresh_lyrics_transforms(&mut self) {
+        if !self.config.lyrics_translate && !self.config.lyrics_romanize {
+            return;
+        }
+        let Some(track) = self.playback.current_track().cloned() else {
+            return;
+        };
+        if !matches!(
+            self.lyrics,
+            LyricsState::Synced(ref lines) if !lines.is_empty()
+        ) && !matches!(
+            self.lyrics,
+            LyricsState::Plain(ref lines) if !lines.is_empty()
+        ) {
+            return;
+        }
+        let play_seq = self.play_seq;
+        let lyrics_state = self.lyrics.clone();
+        let http = self.http.clone();
+        let paths = self.paths.clone();
+        let tx = self.tx.clone();
+
+        if self.config.lyrics_translate && self.translated_lyrics.is_none() {
+            let target_lang = self.config.language.code().to_string();
+            let track_id = track.id.clone();
+            let http_t = http.clone();
+            let paths_t = paths.clone();
+            let state_t = lyrics_state.clone();
+            let tx_t = tx.clone();
+            self.media_tasks.spawn(async move {
+                let res =
+                    translate_lyrics_state(&http_t, &paths_t, &track_id, &state_t, &target_lang)
+                        .await;
+                let lines = res.unwrap_or(None);
+                let _ = tx_t.send(AppEvent::LyricsTranslated {
+                    play_seq,
+                    track_id,
+                    target_lang,
+                    lines,
+                });
+            });
+        }
+        if self.config.lyrics_romanize && self.romanized_lyrics.is_none() {
+            let track_id = track.id;
+            self.media_tasks.spawn(async move {
+                let res = romanize_lyrics_state(&http, &paths, &track_id, &lyrics_state).await;
+                let lines = res.unwrap_or(None);
+                let _ = tx.send(AppEvent::LyricsRomanized {
+                    play_seq,
+                    track_id,
+                    lines,
+                });
+            });
         }
     }
 
@@ -379,6 +647,8 @@ impl App {
         self.clear_kitty_images();
         self.cover_started_play_seq = None;
         self.lyrics = LyricsState::Loading;
+        self.translated_lyrics = None;
+        self.romanized_lyrics = None;
         self.lyrics_scroll_init = false;
         self.lyrics_scroll_target = 0.0;
         self.lyrics_scroll_vel = 0.0;
@@ -896,5 +1166,41 @@ mod tests {
         let dc = App::discord_config_from(&cfg);
         assert!(dc.enabled);
         assert_eq!(dc.effective_app_id(), "123456789012345678");
+    }
+
+    #[test]
+    fn measured_audio_badge_preserves_source_context_tags() {
+        assert_eq!(
+            merge_measured_audio_badge("FLAC · Cached", "FLAC · 880 kbps · 16-bit/44.1kHz"),
+            "FLAC · 880 kbps · 16-bit/44.1kHz · Cached"
+        );
+        assert_eq!(
+            merge_measured_audio_badge("AAC 320kbps · JioSaavn", "AAC · 320 kbps"),
+            "AAC · 320 kbps · JioSaavn"
+        );
+        assert_eq!(
+            merge_measured_audio_badge("OPUS 160kbps · HQ", "OPUS · 158 kbps"),
+            "OPUS · 158 kbps"
+        );
+        assert_eq!(
+            merge_measured_audio_badge(
+                "FLAC · Jellyfin · Cached",
+                "FLAC · 2450 kbps · 24-bit/96kHz"
+            ),
+            "FLAC · 2450 kbps · 24-bit/96kHz · Jellyfin · Cached"
+        );
+    }
+
+    #[test]
+    fn playback_speed_and_sleep_presets_cycle_cleanly() {
+        assert_eq!(step_speed_preset(1.0, true), 1.25);
+        assert_eq!(step_speed_preset(2.0, true), 0.75);
+        assert_eq!(step_speed_preset(0.75, false), 2.0);
+        assert_eq!(next_sleep_preset(None, true), Some(900));
+        assert_eq!(next_sleep_preset(Some(900), true), Some(1800));
+        assert_eq!(next_sleep_preset(Some(3600), true), None);
+        assert_eq!(next_sleep_preset(None, false), Some(3600));
+        assert_eq!(format_sleep_countdown(905), "15:05");
+        assert_eq!(format_sleep_countdown(3661), "1:01:01");
     }
 }

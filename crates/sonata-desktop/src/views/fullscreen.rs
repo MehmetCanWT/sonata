@@ -8,7 +8,7 @@ use super::{FullscreenDrawerTab, SonataDesktopView};
 use crate::backend::BackendCmd;
 use crate::ui::components::{
     artist_links_row, cover_art_tile, is_parenthetical_bg, loading_ring, lyric_line_end_secs,
-    resolve_active_lyrics,
+    resolve_active_lyrics, secondary_lyric_slices,
 };
 use crate::ui::lyrics::{
     anchored_lyrics_offset, ease_out_expo, lag_row_spring, render_fixed_rows, render_karaoke_rows,
@@ -21,8 +21,9 @@ use gpui_kit::component::slider::Slider;
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
     div, img, point, prelude::FluentBuilder as _, px, AnyElement, BoxShadow, ClickEvent, Context,
-    FontWeight, InteractiveElement as _, IntoElement, ObjectFit, ParentElement as _, RenderImage,
-    SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window,
+    FontWeight, InteractiveElement as _, IntoElement, MouseButton, ObjectFit, ParentElement as _,
+    RenderImage, SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _,
+    Window,
 };
 use sonata_core::lyrics::{LyricLine, LyricVoice, LyricsState};
 use sonata_core::media::format_mm_ss;
@@ -845,7 +846,249 @@ impl SonataDesktopView {
                                                     })),
                                             ),
                                     ),
-                            ),
+                            )
+                            .child({
+                                use crate::backend::playback::{
+                                    format_sleep_countdown, next_sleep_preset, step_speed_preset,
+                                };
+                                let s = sonata_runtime::i18n::strings(self.settings.language);
+                                let has_mv = self.snapshot.music_video_candidate.is_some();
+                                let video_on = self.snapshot.video_mode;
+                                let video_loading = self.snapshot.video_loading;
+                                let cur_speed = self.snapshot.playback_speed;
+                                let speed_active = (cur_speed - 1.0).abs() > 0.01;
+                                let skip_on = self.snapshot.skip_silence;
+                                let sleep_rem = self.snapshot.sleep_timer_remaining_secs;
+                                let cur_vq = self.snapshot.config.video_quality.clone();
+                                let vq_options = available_video_quality_options(
+                                    &self.snapshot.available_video_qualities,
+                                );
+
+                                let pill_chip = |id: &'static str, label: String, active: bool| {
+                                    div()
+                                        .id(id)
+                                        .h(px(24.0))
+                                        .px(px(9.0))
+                                        .rounded_full()
+                                        .cursor_pointer()
+                                        .bg(if active {
+                                            gpui_kit::white().opacity(0.22)
+                                        } else {
+                                            gpui_kit::white().opacity(0.08)
+                                        })
+                                        .border_1()
+                                        .border_color(if active {
+                                            gpui_kit::white().opacity(0.45)
+                                        } else {
+                                            gpui_kit::white().opacity(0.12)
+                                        })
+                                        .hover(|st| st.bg(gpui_kit::white().opacity(0.18)))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(11.0))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(if active {
+                                            gpui_kit::white()
+                                        } else {
+                                            gpui_kit::white().opacity(0.76)
+                                        })
+                                        .child(label)
+                                };
+
+                                let speed_lbl = if (cur_speed - cur_speed.round()).abs() < 0.01 {
+                                    format!("{cur_speed:.0}x")
+                                } else {
+                                    format!("{cur_speed:.2}x")
+                                        .trim_end_matches('0')
+                                        .trim_end_matches('.')
+                                        .to_string()
+                                        + "x"
+                                };
+                                let sleep_lbl = match sleep_rem {
+                                    Some(rem) => format_sleep_countdown(rem),
+                                    None => s.sleep_timer.to_string(),
+                                };
+
+                                div()
+                                    .w_full()
+                                    .pt(px(2.0))
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .flex_wrap()
+                                            .items_center()
+                                            .justify_center()
+                                            .gap(px(6.0))
+                                            .when(has_mv, |row| {
+                                                row.child(
+                                                    div()
+                                                        .flex()
+                                                        .flex_row()
+                                                        .items_center()
+                                                        .gap(px(2.0))
+                                                        .p(px(2.0))
+                                                        .rounded_full()
+                                                        .bg(gpui_kit::black().opacity(0.32))
+                                                        .border_1()
+                                                        .border_color(
+                                                            gpui_kit::white().opacity(0.12),
+                                                        )
+                                                        .child(
+                                                            pill_chip(
+                                                                "fs-mode-music",
+                                                                s.music.to_string(),
+                                                                !video_on,
+                                                            )
+                                                            .on_click(cx.listener(
+                                                                |this, _, _, cx| {
+                                                                    this.backend.send(
+                                                                        BackendCmd::SetVideoMode(
+                                                                            false,
+                                                                        ),
+                                                                    );
+                                                                    this.stir_fullscreen(cx);
+                                                                },
+                                                            )),
+                                                        )
+                                                        .child(
+                                                            pill_chip(
+                                                                "fs-mode-video",
+                                                                if video_loading {
+                                                                    s.loading_video.to_string()
+                                                                } else {
+                                                                    s.video.to_string()
+                                                                },
+                                                                video_on,
+                                                            )
+                                                            .on_click(cx.listener(
+                                                                |this, _, _, cx| {
+                                                                    this.backend.send(
+                                                                        BackendCmd::SetVideoMode(
+                                                                            true,
+                                                                        ),
+                                                                    );
+                                                                    this.stir_fullscreen(cx);
+                                                                },
+                                                            )),
+                                                        ),
+                                                )
+                                            })
+                                            .child(
+                                                pill_chip("fs-speed", speed_lbl, speed_active)
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        let next =
+                                                            step_speed_preset(cur_speed, true);
+                                                        this.backend.send(
+                                                            BackendCmd::SetPlaybackSpeed(next),
+                                                        );
+                                                        this.stir_fullscreen(cx);
+                                                    }))
+                                                    .on_mouse_down(
+                                                        MouseButton::Right,
+                                                        cx.listener(|this, _, _, cx| {
+                                                            cx.stop_propagation();
+                                                            this.backend.send(
+                                                                BackendCmd::SetPlaybackSpeed(1.0),
+                                                            );
+                                                            this.stir_fullscreen(cx);
+                                                        }),
+                                                    ),
+                                            )
+                                            .child(
+                                                pill_chip(
+                                                    "fs-skip-silence",
+                                                    s.skip_silence.to_string(),
+                                                    skip_on,
+                                                )
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.backend
+                                                        .send(BackendCmd::ToggleSkipSilence);
+                                                    this.stir_fullscreen(cx);
+                                                })),
+                                            )
+                                            .child(
+                                                pill_chip(
+                                                    "fs-sleep-timer",
+                                                    sleep_lbl,
+                                                    sleep_rem.is_some(),
+                                                )
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    let next = next_sleep_preset(sleep_rem, true);
+                                                    this.backend
+                                                        .send(BackendCmd::SetSleepTimer(next));
+                                                    this.stir_fullscreen(cx);
+                                                })),
+                                            ),
+                                    )
+                                    .when(has_mv && video_on, |col| {
+                                        col.child(
+                                            div()
+                                                .flex()
+                                                .flex_row()
+                                                .items_center()
+                                                .justify_center()
+                                                .gap(px(4.0))
+                                                .children(vq_options.into_iter().map(|opt| {
+                                                    let opt_owned = opt.to_string();
+                                                    let active =
+                                                        cur_vq.eq_ignore_ascii_case(opt.trim());
+                                                    let label = if opt == "Auto" {
+                                                        s.auto_label.to_string()
+                                                    } else {
+                                                        opt.to_string()
+                                                    };
+                                                    div()
+                                                        .id(SharedString::from(format!(
+                                                            "fs-vq-{opt}"
+                                                        )))
+                                                        .h(px(22.0))
+                                                        .px(px(7.0))
+                                                        .rounded(px(6.0))
+                                                        .cursor_pointer()
+                                                        .bg(if active {
+                                                            gpui_kit::white().opacity(0.22)
+                                                        } else {
+                                                            gpui_kit::black().opacity(0.28)
+                                                        })
+                                                        .border_1()
+                                                        .border_color(if active {
+                                                            gpui_kit::white().opacity(0.45)
+                                                        } else {
+                                                            gpui_kit::white().opacity(0.10)
+                                                        })
+                                                        .hover(|st| {
+                                                            st.bg(gpui_kit::white().opacity(0.16))
+                                                        })
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .text_size(px(10.5))
+                                                        .text_color(if active {
+                                                            gpui_kit::white()
+                                                        } else {
+                                                            gpui_kit::white().opacity(0.68)
+                                                        })
+                                                        .on_click(cx.listener(
+                                                            move |this, _, _, cx| {
+                                                                this.backend.send(
+                                                                    BackendCmd::SetVideoQuality(
+                                                                        opt_owned.clone(),
+                                                                    ),
+                                                                );
+                                                                this.stir_fullscreen(cx);
+                                                            },
+                                                        ))
+                                                        .child(label)
+                                                })),
+                                        )
+                                    })
+                            }),
                     )
                 })
         } else {
@@ -979,6 +1222,82 @@ impl SonataDesktopView {
                             cx,
                         )),
                 )
+                .when(self.fullscreen_tab == FullscreenDrawerTab::Lyrics, |row| {
+                    let tr_on = self.snapshot.config.lyrics_translate;
+                    let rm_on = self.snapshot.config.lyrics_romanize;
+                    row.child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(2.0))
+                            .p(px(3.0))
+                            .rounded(px(11.0))
+                            .bg(gpui_kit::black().opacity(0.36))
+                            .border_1()
+                            .border_color(gpui_kit::white().opacity(0.10))
+                            .child(
+                                div()
+                                    .id("fs-lyr-rm")
+                                    .h(px(32.0))
+                                    .px(px(9.0))
+                                    .rounded(px(8.0))
+                                    .cursor_pointer()
+                                    .bg(if rm_on {
+                                        gpui_kit::white().opacity(0.18)
+                                    } else {
+                                        gpui_kit::transparent_black()
+                                    })
+                                    .hover(|s| s.bg(gpui_kit::white().opacity(0.12)))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(12.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(if rm_on {
+                                        gpui_kit::white()
+                                    } else {
+                                        gpui_kit::white().opacity(0.62)
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.backend.send(BackendCmd::ToggleLyricsRomanize);
+                                        this.stir_fullscreen(cx);
+                                    }))
+                                    .child("Rm"),
+                            )
+                            .child(
+                                div()
+                                    .id("fs-lyr-tr")
+                                    .h(px(32.0))
+                                    .px(px(9.0))
+                                    .rounded(px(8.0))
+                                    .cursor_pointer()
+                                    .bg(if tr_on {
+                                        gpui_kit::white().opacity(0.18)
+                                    } else {
+                                        gpui_kit::transparent_black()
+                                    })
+                                    .hover(|s| s.bg(gpui_kit::white().opacity(0.12)))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(12.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(if tr_on {
+                                        gpui_kit::white()
+                                    } else {
+                                        gpui_kit::white().opacity(0.62)
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.backend.send(BackendCmd::ToggleLyricsTranslate);
+                                        this.stir_fullscreen(cx);
+                                    }))
+                                    .child("Tr"),
+                            ),
+                    )
+                })
         });
 
         div()
@@ -1034,7 +1353,9 @@ impl SonataDesktopView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let lyrics = self.snapshot.lyrics.clone();
-        let pos = self.live_position_now();
+        let translated_lyrics = self.snapshot.translated_lyrics.clone();
+        let romanized_lyrics = self.snapshot.romanized_lyrics.clone();
+        let pos = self.snapshot.lyrics_position_secs(self.live_position_now());
         let frame_scale = (vp_w / LYRICS_FRAME_W)
             .min(vp_h / LYRICS_FRAME_H)
             .clamp(1.0, 1.75);
@@ -1495,6 +1816,22 @@ impl SonataDesktopView {
                                 }
                             };
 
+                            let (rom, tr) = secondary_lyric_slices(
+                                *line_idx,
+                                &line.text,
+                                romanized_lyrics.as_deref(),
+                                translated_lyrics.as_deref(),
+                            );
+                            let sec_alpha = if is_active || is_active_bg {
+                                0.72 * arrive_t.max(0.5)
+                            } else if hovered {
+                                0.72 * edge_alpha.max(0.35)
+                            } else {
+                                (0.48 * (1.0 - 0.30 * haze) * edge_alpha).clamp(0.0, 1.0)
+                            };
+                            let sec_size = (verse_size * 0.56).clamp(13.0, 20.0);
+                            let sec_lh = sec_size * 1.32;
+
                             let el = div()
                                 .id(SharedString::from(format!("fs-lyr-{row_i}")))
                                 .w_full()
@@ -1515,10 +1852,35 @@ impl SonataDesktopView {
                                     this.backend.send(BackendCmd::SeekAbsolute(seek));
                                 }))
                                 .flex()
-                                .flex_row()
-                                .when(!is_counter, |el| el.justify_start())
-                                .when(is_counter, |el| el.justify_end())
+                                .flex_col()
+                                .gap(px(4.0))
+                                .when(!is_counter, |el| el.items_start())
+                                .when(is_counter, |el| el.items_end())
                                 .child(content)
+                                .when_some(rom, |el, rom_text| {
+                                    el.child(
+                                        div()
+                                            .w_full()
+                                            .min_w_0()
+                                            .text_size(px(sec_size))
+                                            .line_height(px(sec_lh))
+                                            .text_color(gpui_kit::white().opacity(sec_alpha))
+                                            .when(is_counter, |t| t.text_right())
+                                            .child(rom_text.to_string()),
+                                    )
+                                })
+                                .when_some(tr, |el, tr_text| {
+                                    el.child(
+                                        div()
+                                            .w_full()
+                                            .min_w_0()
+                                            .text_size(px(sec_size))
+                                            .line_height(px(sec_lh))
+                                            .text_color(gpui_kit::white().opacity(sec_alpha))
+                                            .when(is_counter, |t| t.text_right())
+                                            .child(tr_text.to_string()),
+                                    )
+                                })
                                 .into_any_element();
                             col = col.child(wrap_with_drift(el, row_drift_y));
                         }
@@ -1532,19 +1894,60 @@ impl SonataDesktopView {
                 col.child(div().flex_shrink_0().h(px(pad_bottom)))
                     .into_any_element()
             }
-            LyricsState::Plain(lines) => div()
-                .id("fs-lyr-plain-scroll")
-                .size_full()
-                .overflow_y_scroll()
-                .track_scroll(&self.fullscreen_lyrics_scroll)
-                .px(px(24.0))
-                .py(px(pad_top * 0.5))
-                .text_size(px(22.0))
-                .line_height(px(line_height))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(gpui_kit::white().opacity(0.84))
-                .child(lines.join("\n"))
-                .into_any_element(),
+            LyricsState::Plain(lines) => {
+                let mut col = div()
+                    .id("fs-lyr-plain-scroll")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.fullscreen_lyrics_scroll)
+                    .px(px(24.0))
+                    .py(px(pad_top * 0.5))
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.0));
+                for (i, line) in lines.iter().enumerate() {
+                    let (rom, tr) = secondary_lyric_slices(
+                        i,
+                        line,
+                        romanized_lyrics.as_deref(),
+                        translated_lyrics.as_deref(),
+                    );
+                    let mut entry = div()
+                        .w_full()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .child(
+                            div()
+                                .text_size(px(22.0))
+                                .line_height(px(line_height))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(gpui_kit::white().opacity(0.84))
+                                .child(line.clone()),
+                        );
+                    if let Some(rom_text) = rom {
+                        entry = entry.child(
+                            div()
+                                .text_size(px(14.5))
+                                .line_height(px(20.0))
+                                .text_color(gpui_kit::white().opacity(0.58))
+                                .child(rom_text.to_string()),
+                        );
+                    }
+                    if let Some(tr_text) = tr {
+                        entry = entry.child(
+                            div()
+                                .text_size(px(15.0))
+                                .line_height(px(20.0))
+                                .text_color(gpui_kit::white().opacity(0.66))
+                                .child(tr_text.to_string()),
+                        );
+                    }
+                    col = col.child(entry);
+                }
+                col.into_any_element()
+            }
             LyricsState::Loading => div()
                 .size_full()
                 .flex()
@@ -1774,6 +2177,34 @@ impl SonataDesktopView {
     }
 }
 
+/// Filters [`crate::backend::playback::VIDEO_QUALITY_OPTIONS`] against resolved stream heights,
+/// preserving `"Auto"` and falling back to all presets until streams finish loading.
+fn available_video_quality_options(
+    streams: &[sonata_core::providers::hifi::VideoQualityStream],
+) -> Vec<&'static str> {
+    use crate::backend::playback::VIDEO_QUALITY_OPTIONS;
+    if streams.is_empty() {
+        return VIDEO_QUALITY_OPTIONS.to_vec();
+    }
+    let filtered: Vec<&'static str> = VIDEO_QUALITY_OPTIONS
+        .iter()
+        .copied()
+        .filter(|opt| {
+            *opt == "Auto"
+                || opt
+                    .trim_end_matches('p')
+                    .parse::<u32>()
+                    .ok()
+                    .is_some_and(|h| streams.iter().any(|s| s.height == h))
+        })
+        .collect();
+    if filtered.len() <= 1 {
+        VIDEO_QUALITY_OPTIONS.to_vec()
+    } else {
+        filtered
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1858,6 +2289,41 @@ mod tests {
         assert!(
             max_luma.saturating_sub(min_luma) >= 20,
             "ambient wave field should exhibit visible tonal contrast, got min={min_luma} max={max_luma}"
+        );
+    }
+
+    #[test]
+    fn available_video_quality_options_filters_to_discovered_heights() {
+        use sonata_core::providers::hifi::VideoQualityStream;
+
+        assert_eq!(
+            available_video_quality_options(&[]),
+            vec!["Auto", "1080p", "720p", "480p", "360p"]
+        );
+
+        let streams = vec![
+            VideoQualityStream {
+                quality_label: "720p".to_string(),
+                height: 720,
+                fps: 30,
+                video_url: "https://example.invalid/720".to_string(),
+                mime_type: "video/mp4".to_string(),
+                bitrate_bps: 1_500_000,
+                is_muxed: false,
+            },
+            VideoQualityStream {
+                quality_label: "360p".to_string(),
+                height: 360,
+                fps: 30,
+                video_url: "https://example.invalid/360".to_string(),
+                mime_type: "video/mp4".to_string(),
+                bitrate_bps: 500_000,
+                is_muxed: true,
+            },
+        ];
+        assert_eq!(
+            available_video_quality_options(&streams),
+            vec!["Auto", "720p", "360p"]
         );
     }
 }

@@ -138,6 +138,11 @@ pub struct App {
     pub downloads_total_bytes: u64,
     pub discord_rpc: sonata_runtime::discord::DiscordRpcHandle,
     pub playback_speed: f64,
+    pub skip_silence: bool,
+    pub video_mode: bool,
+    pub sleep_timer_deadline: Option<Instant>,
+    pub translated_lyrics: Option<Vec<String>>,
+    pub romanized_lyrics: Option<Vec<String>>,
     pub server_client: sonata_core::providers::servers::ServerClient,
     pub server_profiles: Vec<sonata_core::providers::servers::ServerProfile>,
     pub server_statuses: std::collections::HashMap<String, String>,
@@ -243,6 +248,8 @@ impl App {
             .and_then(|db| db.get_library("imported"))
             .unwrap_or_default();
 
+        let initial_speed = sonata_runtime::config::sanitize_playback_speed(config.playback_speed);
+        let initial_skip_silence = config.skip_silence;
         let mut app = Self {
             config,
             themes,
@@ -320,7 +327,12 @@ impl App {
             downloading_track_ids: std::collections::HashSet::new(),
             downloads_total_bytes: 0,
             discord_rpc,
-            playback_speed: 1.0,
+            playback_speed: initial_speed,
+            skip_silence: initial_skip_silence,
+            video_mode: false,
+            sleep_timer_deadline: None,
+            translated_lyrics: None,
+            romanized_lyrics: None,
             server_client,
             server_profiles,
             server_statuses: std::collections::HashMap::new(),
@@ -336,6 +348,12 @@ impl App {
         app.rebuild_sidebar();
         app.refresh_downloads();
         app.sync_appearance();
+        if (initial_speed - sonata_runtime::config::DEFAULT_PLAYBACK_SPEED).abs() > 1e-6 {
+            app.enqueue_session_cmd(SessionCommand::SetPlaybackSpeed(initial_speed));
+        }
+        if initial_skip_silence {
+            app.enqueue_session_cmd(SessionCommand::SetSkipSilence(true));
+        }
         (app, session_rx)
     }
 
@@ -525,11 +543,46 @@ impl App {
                         }
                     }
                     self.lyrics = lyrics;
+                    self.translated_lyrics = None;
+                    self.romanized_lyrics = None;
                     self.lyrics_scroll_init = false;
                     self.lyrics_scroll_target = 0.0;
                     self.lyrics_scroll_vel = 0.0;
                     self.lyrics_prev_active = None;
                     self.lyrics_cur_active = None;
+                    self.refresh_lyrics_transforms();
+                }
+            }
+            AppEvent::LyricsTranslated {
+                play_seq,
+                track_id,
+                target_lang,
+                lines,
+            } => {
+                if play_seq == self.play_seq
+                    && self.config.lyrics_translate
+                    && self.config.language.code() == target_lang
+                    && self
+                        .playback
+                        .current_track()
+                        .is_some_and(|t| t.id == track_id)
+                {
+                    self.translated_lyrics = lines;
+                }
+            }
+            AppEvent::LyricsRomanized {
+                play_seq,
+                track_id,
+                lines,
+            } => {
+                if play_seq == self.play_seq
+                    && self.config.lyrics_romanize
+                    && self
+                        .playback
+                        .current_track()
+                        .is_some_and(|t| t.id == track_id)
+                {
+                    self.romanized_lyrics = lines;
                 }
             }
             AppEvent::ArtworkReady {
@@ -836,6 +889,10 @@ impl App {
         });
         if let Some(db) = &self.cache_db {
             db.invalidate_playlist(None);
+        }
+        if self.config.lyrics_translate {
+            self.translated_lyrics = None;
+            self.refresh_lyrics_transforms();
         }
         self.status_line = format!(
             "{}: {}",

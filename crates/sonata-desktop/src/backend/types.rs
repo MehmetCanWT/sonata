@@ -8,10 +8,11 @@
 use sonata_core::auth::ExtractedCookies;
 use sonata_core::lyrics::{active_line_index, LyricsState};
 use sonata_core::player::RepeatMode;
+use sonata_core::providers::hifi::{ResolvedMusicVideo, VideoQualityStream};
 use sonata_core::providers::servers::{ServerKind, ServerLibrary, ServerProfile};
 use sonata_core::providers::ytmusic::{
-    AlbumDetail, ArtistPage, HomeCard, HomeShelf, MoodCategoryTile, MoodChip, RichSearchResult,
-    YtAccountProfile,
+    AlbumDetail, ArtistPage, HomeCard, HomeShelf, MoodCategoryTile, MoodChip, MusicVideoCandidate,
+    RichSearchResult, YtAccountProfile,
 };
 use sonata_core::providers::{Playlist, ProviderSource, Track};
 use sonata_core::updater::UpdateCheckResult;
@@ -133,6 +134,13 @@ pub enum BackendCmd {
     ToggleMotionCovers,
     ToggleReduceMotion,
     SetLanguage(AppLanguage),
+    SetPlaybackSpeed(f64),
+    ToggleSkipSilence,
+    SetSleepTimer(Option<u64>),
+    ToggleLyricsTranslate,
+    ToggleLyricsRomanize,
+    SetVideoMode(bool),
+    SetVideoQuality(String),
     ToggleLike(Track),
     DislikeTrack(Track),
     ToggleSaveAlbum,
@@ -275,7 +283,16 @@ pub struct DesktopSnapshot {
     pub stream_badge: String,
     pub upgrading_quality: bool,
     pub loading_track: bool,
+    pub playback_speed: f64,
+    pub skip_silence: bool,
+    pub sleep_timer_remaining_secs: Option<u64>,
+    pub video_mode: bool,
+    pub video_loading: bool,
+    pub music_video_candidate: Option<MusicVideoCandidate>,
+    pub available_video_qualities: Vec<VideoQualityStream>,
     pub lyrics: LyricsState,
+    pub translated_lyrics: Option<Vec<String>>,
+    pub romanized_lyrics: Option<Vec<String>>,
     pub art_path: Option<PathBuf>,
     pub motion_cover: Option<Arc<MotionCover>>,
     pub ambient_rgb: (u8, u8, u8),
@@ -328,9 +345,20 @@ impl DesktopSnapshot {
         self.signed_in_browser.is_some()
     }
 
+    pub fn lyrics_position_secs(&self, raw_pos_secs: f64) -> f64 {
+        if !self.video_mode {
+            return raw_pos_secs;
+        }
+        let Some(ref cand) = self.music_video_candidate else {
+            return raw_pos_secs;
+        };
+        super::playback::map_video_to_music_secs(raw_pos_secs, &cand.sync_segments)
+    }
+
     pub fn active_lyric_index_at(&self, position_secs: f64) -> Option<usize> {
+        let mapped = self.lyrics_position_secs(position_secs);
         match &self.lyrics {
-            LyricsState::Synced(lines) => active_line_index(lines, position_secs),
+            LyricsState::Synced(lines) => active_line_index(lines, mapped),
             _ => None,
         }
     }
@@ -468,6 +496,28 @@ pub(super) enum InternalEvent {
         play_seq: u64,
         track_id: String,
         lyrics: LyricsState,
+    },
+    LyricsTranslated {
+        play_seq: u64,
+        track_id: String,
+        target_lang: String,
+        lines: Option<Vec<String>>,
+    },
+    LyricsRomanized {
+        play_seq: u64,
+        track_id: String,
+        lines: Option<Vec<String>>,
+    },
+    MusicVideoCandidateReady {
+        play_seq: u64,
+        track_id: String,
+        candidate: Option<MusicVideoCandidate>,
+    },
+    MusicVideoStreamsReady {
+        play_seq: u64,
+        track_id: String,
+        video_id: String,
+        result: Result<ResolvedMusicVideo, String>,
     },
     ArtworkReady {
         play_seq: u64,

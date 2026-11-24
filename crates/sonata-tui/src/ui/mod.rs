@@ -512,8 +512,8 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         Style::default().fg(app.theme.muted)
     };
 
-    let modes_line = if bot_cols[1].width >= 33 {
-        Line::from(vec![
+    let mut mode_spans = if bot_cols[1].width >= 33 {
+        vec![
             Span::styled(
                 if app.playback.shuffle {
                     format!("⇄ {}", s.shuffle_on)
@@ -522,7 +522,7 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                 },
                 shuffle_style,
             ),
-            Span::styled("   ·   ", Style::default().fg(app.theme.border)),
+            Span::styled(" · ", Style::default().fg(app.theme.border)),
             Span::styled(
                 match app.playback.repeat {
                     RepeatMode::Off => format!("↻ {}", s.repeat_off),
@@ -531,7 +531,7 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                 },
                 repeat_style,
             ),
-            Span::styled("   ·   ", Style::default().fg(app.theme.border)),
+            Span::styled(" · ", Style::default().fg(app.theme.border)),
             Span::styled(
                 if app.config.autoplay { "∞" } else { "∞·" },
                 if app.config.autoplay {
@@ -542,9 +542,9 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                     Style::default().fg(app.theme.muted)
                 },
             ),
-        ])
+        ]
     } else {
-        Line::from(vec![
+        vec![
             Span::styled(
                 if app.playback.shuffle {
                     "⇄ On"
@@ -555,8 +555,36 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             ),
             Span::styled(" · ", Style::default().fg(app.theme.border)),
             Span::styled(format!("↻ {}", app.playback.repeat.label()), repeat_style),
-        ])
+        ]
     };
+    if (app.playback_speed - 1.0).abs() > 0.01 {
+        mode_spans.push(Span::styled(" · ", Style::default().fg(app.theme.border)));
+        mode_spans.push(Span::styled(
+            format!("{:.2}x", app.playback_speed),
+            Style::default()
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    if app.skip_silence {
+        mode_spans.push(Span::styled(" · ", Style::default().fg(app.theme.border)));
+        mode_spans.push(Span::styled(
+            "Skip",
+            Style::default()
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    if let Some(rem) = app.sleep_timer_remaining_secs() {
+        mode_spans.push(Span::styled(" · ", Style::default().fg(app.theme.border)));
+        mode_spans.push(Span::styled(
+            format!("⏲ {}", crate::app::playback::format_sleep_countdown(rem)),
+            Style::default()
+                .fg(app.theme.warning)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    let modes_line = Line::from(mode_spans);
     frame.render_widget(
         Paragraph::new(modes_line).alignment(Alignment::Center),
         bot_cols[1],

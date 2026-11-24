@@ -52,7 +52,7 @@ pub fn sized_popup(min_w: u16, max_w: u16, target_h: u16, area: Rect) -> Rect {
     }
 }
 
-pub const SETTINGS_ROW_COUNT: usize = 18;
+pub const SETTINGS_ROW_COUNT: usize = 23;
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn settings_popup_rect(area: Rect, row_count: usize) -> Rect {
@@ -344,6 +344,44 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
             label: s.autoplay,
             description: s.autoplay_desc,
             value: SettingValueKind::Toggle(app.config.autoplay, s.enabled, s.disabled),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: None,
+            label: s.playback_speed,
+            description: s.playback_speed_desc,
+            value: SettingValueKind::Text(format!("{:.2}x", app.playback_speed)),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: None,
+            label: s.skip_silence,
+            description: s.skip_silence_desc,
+            value: SettingValueKind::Toggle(app.config.skip_silence, s.enabled, s.disabled),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: None,
+            label: s.sleep_timer,
+            description: s.sleep_timer_desc,
+            value: SettingValueKind::Text(match app.sleep_timer_remaining_secs() {
+                Some(secs) => crate::app::playback::format_sleep_countdown(secs),
+                None => s.off.to_string(),
+            }),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: None,
+            label: s.translate_lyrics,
+            description: s.translate_lyrics_desc,
+            value: SettingValueKind::Toggle(app.config.lyrics_translate, s.enabled, s.disabled),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: None,
+            label: s.romanize_lyrics,
+            description: s.romanize_lyrics_desc,
+            value: SettingValueKind::Toggle(app.config.lyrics_romanize, s.enabled, s.disabled),
             adjustable: true,
         },
         SettingEntry {
@@ -744,7 +782,8 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
         "Resize:      H / L         Resize pane  |  Mouse Drag Drag pane borders",
         "Search:      /             Search       |  Enter     Play",
         "Playback:    Space         Play/Pause   |  n / p     Next / Prev",
-        "Seek/Vol:    < / >         Seek ±5s     |  - / +     Volume ±5%",
+        "Speed/Seek:  [ / ]         Speed ±step  |  < / >     Seek ±5s",
+        "Volume:      - / +         Volume ±5%   |  T / O     Translate / Romanize",
         "Queue Modes: s             Shuffle      |  r         Repeat (Off/All/One)",
         "YTM Sync:    y             Like / Unlike on YouTube Music account",
         "             a / x (Del)   Add to / Remove from YTM playlist",

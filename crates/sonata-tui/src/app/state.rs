@@ -214,6 +214,17 @@ pub enum AppEvent {
         track_id: String,
         lyrics: LyricsState,
     },
+    LyricsTranslated {
+        play_seq: u64,
+        track_id: String,
+        target_lang: String,
+        lines: Option<Vec<String>>,
+    },
+    LyricsRomanized {
+        play_seq: u64,
+        track_id: String,
+        lines: Option<Vec<String>>,
+    },
     ArtworkReady {
         play_seq: u64,
         track_id: String,

@@ -218,8 +218,9 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-            _ = calm_tick.tick(), if playing && !needs_fast_tick => {
-                if app.tick_playback() {
+            _ = calm_tick.tick(), if (playing || app.sleep_timer_deadline.is_some()) && !needs_fast_tick => {
+                let tick_dirty = if playing { app.tick_playback() } else { false };
+                if tick_dirty || app.sleep_timer_deadline.is_some() {
                     terminal.draw(|f| ui::render(f, &mut app))?;
                     app.sync_kitty_artwork();
                     app.export_now_playing();
