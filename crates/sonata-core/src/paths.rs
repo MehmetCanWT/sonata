@@ -67,6 +67,21 @@ impl CorePaths {
         self.config_dir.join("personal_playlists.json")
     }
 
+    /// Path to the persistent Last.fm and ListenBrainz scrobbling configuration JSON (`0o600`).
+    pub fn scrobble_config_path(&self) -> PathBuf {
+        self.config_dir.join("scrobble.json")
+    }
+
+    /// Path to the persistent Sonata Connect paired device tokens JSON (`0o600`).
+    pub fn connect_paired_path(&self) -> PathBuf {
+        self.config_dir.join("connect_paired.json")
+    }
+
+    /// Path to the local on-device listening statistics SQLite database (`0o600`).
+    pub fn stats_db_path(&self) -> PathBuf {
+        self.config_dir.join("stats.db")
+    }
+
     /// Path to the persisted YouTube Music WebView session cookie file.
     pub fn ytm_session_cookie_path(&self) -> PathBuf {
         self.config_dir.join("ytm_session.cookie")
@@ -143,6 +158,18 @@ mod tests {
         assert_eq!(
             paths.personal_playlists_path(),
             PathBuf::from("/srv/files/sonata/personal_playlists.json")
+        );
+        assert_eq!(
+            paths.scrobble_config_path(),
+            PathBuf::from("/srv/files/sonata/scrobble.json")
+        );
+        assert_eq!(
+            paths.connect_paired_path(),
+            PathBuf::from("/srv/files/sonata/connect_paired.json")
+        );
+        assert_eq!(
+            paths.stats_db_path(),
+            PathBuf::from("/srv/files/sonata/stats.db")
         );
         assert_eq!(
             paths.ytm_session_cookie_path(),

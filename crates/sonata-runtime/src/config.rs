@@ -22,6 +22,8 @@ pub const MIN_PLAYBACK_SPEED: f64 = 0.5;
 pub const MAX_PLAYBACK_SPEED: f64 = 2.0;
 pub const DEFAULT_PLAYBACK_SPEED: f64 = 1.0;
 pub const DEFAULT_VIDEO_QUALITY: &str = "Auto";
+pub const MAX_CROSSFADE_SECS: u8 = 12;
+pub const DEFAULT_CONNECT_DEVICE_NAME: &str = "Sonata Linux";
 
 fn default_true() -> bool {
     true
@@ -37,6 +39,15 @@ fn default_playback_speed() -> f64 {
 
 fn default_video_quality() -> String {
     DEFAULT_VIDEO_QUALITY.to_string()
+}
+
+fn default_connect_device_name() -> String {
+    DEFAULT_CONNECT_DEVICE_NAME.to_string()
+}
+
+/// Clamps crossfade duration into the supported `[0, 12]` seconds range.
+pub fn sanitize_crossfade_secs(secs: u8) -> u8 {
+    secs.min(MAX_CROSSFADE_SECS)
 }
 
 /// Clamps playback speed into the supported `[0.5, 2.0]` range, falling back to `1.0` for non-finite inputs.
@@ -206,6 +217,18 @@ pub struct AppConfig {
     /// Custom local music directories to scan (empty falls back to the user's audio directory).
     #[serde(default)]
     pub local_music_dirs: Vec<PathBuf>,
+    /// Whether gapless audio transition mode is enabled in `mpv`.
+    #[serde(default = "default_true")]
+    pub gapless_enabled: bool,
+    /// Track transition crossfade duration in seconds (`0..=12`, `0` disables crossfade).
+    #[serde(default)]
+    pub crossfade_secs: u8,
+    /// Whether the Sonata Connect LAN discovery and remote control server is enabled.
+    #[serde(default)]
+    pub connect_enabled: bool,
+    /// Display name advertised by this Linux instance over Sonata Connect.
+    #[serde(default = "default_connect_device_name")]
+    pub connect_device_name: String,
 }
 
 impl Default for AppConfig {
@@ -247,6 +270,10 @@ impl Default for AppConfig {
             personal_only_mode: false,
             local_music_enabled: true,
             local_music_dirs: Vec::new(),
+            gapless_enabled: true,
+            crossfade_secs: 0,
+            connect_enabled: false,
+            connect_device_name: DEFAULT_CONNECT_DEVICE_NAME.to_string(),
         }
     }
 }
@@ -265,6 +292,16 @@ impl AppConfig {
     /// Returns whether local/server playback should be attributed to YouTube Music history.
     pub fn effective_attribute_personal_to_ytm(&self) -> bool {
         !self.personal_only_mode && self.scrobble_servers_to_ytm
+    }
+
+    /// Returns the configured Sonata Connect device name or `"Sonata Linux"` when blank.
+    pub fn effective_connect_device_name(&self) -> &str {
+        let trimmed = self.connect_device_name.trim();
+        if trimmed.is_empty() {
+            DEFAULT_CONNECT_DEVICE_NAME
+        } else {
+            trimmed
+        }
     }
 
     /// Returns active local music directories, falling back to `dirs::audio_dir()` when enabled and empty.
@@ -435,8 +472,12 @@ error = "#f38ba8"
             if let Ok(mut cfg) = toml::from_str::<Self>(&raw) {
                 cfg.cache_limit_gb = cfg.cache_limit_gb.min(MAX_CACHE_LIMIT_GB);
                 cfg.playback_speed = sanitize_playback_speed(cfg.playback_speed);
+                cfg.crossfade_secs = sanitize_crossfade_secs(cfg.crossfade_secs);
                 if cfg.video_quality.trim().is_empty() {
                     cfg.video_quality = default_video_quality();
+                }
+                if cfg.connect_device_name.trim().is_empty() {
+                    cfg.connect_device_name = default_connect_device_name();
                 }
                 return cfg;
             }
@@ -458,8 +499,12 @@ error = "#f38ba8"
         let mut persisted = self.clone();
         persisted.cache_limit_gb = persisted.cache_limit_gb.min(MAX_CACHE_LIMIT_GB);
         persisted.playback_speed = sanitize_playback_speed(persisted.playback_speed);
+        persisted.crossfade_secs = sanitize_crossfade_secs(persisted.crossfade_secs);
         if persisted.video_quality.trim().is_empty() {
             persisted.video_quality = default_video_quality();
+        }
+        if persisted.connect_device_name.trim().is_empty() {
+            persisted.connect_device_name = default_connect_device_name();
         }
         let body = toml::to_string_pretty(&persisted)?;
         let tmp = path.with_extension("toml.tmp");
@@ -725,5 +770,42 @@ mod tests {
             .expect("attribute_personal_to_ytm alias should parse");
         assert!(aliased.scrobble_servers_to_ytm);
         assert!(aliased.effective_attribute_personal_to_ytm());
+    }
+
+    #[test]
+    fn gapless_crossfade_and_connect_defaults_clamp_and_roundtrip() {
+        let default_cfg = AppConfig::default();
+        assert!(default_cfg.gapless_enabled);
+        assert_eq!(default_cfg.crossfade_secs, 0);
+        assert!(!default_cfg.connect_enabled);
+        assert_eq!(default_cfg.connect_device_name, "Sonata Linux");
+
+        let legacy: AppConfig = toml::from_str("").expect("legacy empty config should parse");
+        assert!(legacy.gapless_enabled);
+        assert_eq!(legacy.crossfade_secs, 0);
+        assert!(!legacy.connect_enabled);
+        assert_eq!(legacy.connect_device_name, "Sonata Linux");
+
+        let dir = TempTestDir::new("cfg_ecosystem");
+        let cfg_path = dir.path().join("config.toml");
+        let custom = AppConfig {
+            gapless_enabled: false,
+            crossfade_secs: 25,
+            connect_enabled: true,
+            connect_device_name: "Studio Desk".to_string(),
+            ..AppConfig::default()
+        };
+        custom.save_to(&cfg_path).expect("save ecosystem config");
+        let reloaded = AppConfig::load_from(&cfg_path);
+        assert!(!reloaded.gapless_enabled);
+        assert_eq!(reloaded.crossfade_secs, 12);
+        assert!(reloaded.connect_enabled);
+        assert_eq!(reloaded.connect_device_name, "Studio Desk");
+
+        let blank_name_path = dir.path().join("blank_connect.toml");
+        std::fs::write(&blank_name_path, "connect_device_name = \"   \"\n")
+            .expect("write blank connect_device_name");
+        let fallback = AppConfig::load_from(&blank_name_path);
+        assert_eq!(fallback.connect_device_name, "Sonata Linux");
     }
 }

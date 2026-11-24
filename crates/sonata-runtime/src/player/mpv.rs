@@ -227,7 +227,7 @@ pub fn format_measured_audio_badge(
     Some(parts.join(" · "))
 }
 
-/// Builds the `mpv` CLI argument list for spawning an IPC-controlled player instance.
+/// Builds the `mpv` CLI argument list for spawning an IPC-controlled player instance with gapless enabled.
 pub fn build_mpv_spawn_args(
     volume: u8,
     speed: f64,
@@ -235,12 +235,25 @@ pub fn build_mpv_spawn_args(
     video_mode: bool,
     sock_path: &Path,
 ) -> Vec<String> {
+    build_mpv_spawn_args_with_gapless(volume, speed, skip_silence, video_mode, true, sock_path)
+}
+
+/// Builds the `mpv` CLI argument list with explicit gapless-audio mode (`yes` or `no`).
+pub fn build_mpv_spawn_args_with_gapless(
+    volume: u8,
+    speed: f64,
+    skip_silence: bool,
+    video_mode: bool,
+    gapless_enabled: bool,
+    sock_path: &Path,
+) -> Vec<String> {
     let clamped_speed = clamp_playback_speed(speed);
+    let gapless_flag = if gapless_enabled { "yes" } else { "no" };
     let mut args = vec![
         "--no-config".to_string(),
         "--idle=yes".to_string(),
         "--really-quiet".to_string(),
-        "--gapless-audio=yes".to_string(),
+        format!("--gapless-audio={gapless_flag}"),
         "--ao=pipewire,pulse,alsa".to_string(),
         "--audio-client-name=Sonata".to_string(),
         "--aid=auto".to_string(),
@@ -288,6 +301,7 @@ struct MpvRuntimeState {
     volume: u8,
     speed: f64,
     skip_silence: bool,
+    gapless_enabled: bool,
     video_mode: bool,
     last_url: Option<String>,
     last_headers: Vec<(String, String)>,
@@ -325,6 +339,7 @@ impl MpvController {
             volume: volume.min(100),
             speed: 1.0,
             skip_silence: false,
+            gapless_enabled: true,
             video_mode: false,
             last_url: None,
             last_headers: Vec::new(),
@@ -349,18 +364,26 @@ impl MpvController {
         ipc_generation: u64,
     ) -> Result<SpawnedMpvProcess> {
         let _ = std::fs::remove_file(sock_path);
-        let (volume, speed, skip_silence, video_mode) = {
+        let (volume, speed, skip_silence, gapless_enabled, video_mode) = {
             let guard = runtime.lock().expect("mpv runtime lock");
             (
                 guard.volume,
                 guard.speed,
                 guard.skip_silence,
+                guard.gapless_enabled,
                 guard.video_mode,
             )
         };
 
         let mpv_bin = crate::config::resolve_distro_binary("mpv");
-        let args = build_mpv_spawn_args(volume, speed, skip_silence, video_mode, sock_path);
+        let args = build_mpv_spawn_args_with_gapless(
+            volume,
+            speed,
+            skip_silence,
+            video_mode,
+            gapless_enabled,
+            sock_path,
+        );
         let mut cmd = Command::new(&mpv_bin);
         cmd.args(&args);
         cmd.stdin(Stdio::null())
@@ -689,6 +712,18 @@ impl MpvController {
         self.send(json!(["set_property", "af", filter]));
     }
 
+    /// Toggles `mpv`'s `gapless-audio` property (`"yes"` or `"no"`).
+    pub fn set_gapless(&self, enabled: bool) {
+        if let Ok(mut guard) = self.runtime.lock() {
+            guard.gapless_enabled = enabled;
+        }
+        self.send(json!([
+            "set_property",
+            "gapless-audio",
+            if enabled { "yes" } else { "no" }
+        ]));
+    }
+
     /// Reloads the `mpv` child process with `--vid=auto` or `--no-video`, preserving playback position and headers.
     pub async fn set_video_mode(
         &self,
@@ -784,8 +819,8 @@ impl Drop for MpvController {
 #[cfg(test)]
 mod tests {
     use super::{
-        bit_depth_from_mpv_format, build_mpv_spawn_args, clamp_playback_speed,
-        compute_bitrate_kbps_from_bytes, compute_local_file_bitrate_kbps,
+        bit_depth_from_mpv_format, build_mpv_spawn_args, build_mpv_spawn_args_with_gapless,
+        clamp_playback_speed, compute_bitrate_kbps_from_bytes, compute_local_file_bitrate_kbps,
         format_measured_audio_badge, format_sample_rate_khz, parse_mpv_audio_params,
         skip_silence_af_filter, MpvAudioParams, SKIP_SILENCE_AF_FILTER,
     };
@@ -901,5 +936,16 @@ mod tests {
         assert!(video_args.contains(&"--vid=auto".to_string()));
         assert!(!video_args.contains(&"--no-video".to_string()));
         assert!(!video_args.iter().any(|arg| arg.starts_with("--af=")));
+        assert!(video_args.contains(&"--gapless-audio=yes".to_string()));
+
+        let no_gapless_args = build_mpv_spawn_args_with_gapless(
+            85,
+            1.0,
+            false,
+            false,
+            false,
+            Path::new("/tmp/test.sock"),
+        );
+        assert!(no_gapless_args.contains(&"--gapless-audio=no".to_string()));
     }
 }

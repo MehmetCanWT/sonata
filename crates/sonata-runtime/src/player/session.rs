@@ -32,6 +32,35 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 /// Smooth volume ramp-down duration before a sleep timer pauses playback.
 pub const SLEEP_TIMER_FADE_DURATION: Duration = Duration::from_secs(5);
+/// Maximum supported track transition crossfade duration in seconds.
+pub const MAX_CROSSFADE_SECS: u8 = 12;
+
+/// Clamps crossfade duration into the supported `[0, 12]` seconds range.
+pub fn clamp_crossfade_secs(secs: u8) -> u8 {
+    secs.min(MAX_CROSSFADE_SECS)
+}
+
+/// Computes the exit fade-out volume (`0..=base_volume`) as `remaining_secs` approaches `0`.
+pub fn compute_crossfade_exit_volume(base_volume: u8, remaining_secs: f64, fade_secs: f64) -> u8 {
+    if !remaining_secs.is_finite() || !fade_secs.is_finite() || fade_secs <= 0.0 {
+        return base_volume;
+    }
+    let ratio = (remaining_secs / fade_secs).clamp(0.0, 1.0);
+    ((base_volume as f64) * ratio)
+        .round()
+        .clamp(0.0, base_volume as f64) as u8
+}
+
+/// Computes the entry fade-in volume (`0..=base_volume`) as `elapsed_secs` progresses toward `fade_secs`.
+pub fn compute_crossfade_entry_volume(base_volume: u8, elapsed_secs: f64, fade_secs: f64) -> u8 {
+    if !elapsed_secs.is_finite() || !fade_secs.is_finite() || fade_secs <= 0.0 {
+        return base_volume;
+    }
+    let ratio = (elapsed_secs / fade_secs).clamp(0.0, 1.0);
+    ((base_volume as f64) * ratio)
+        .round()
+        .clamp(0.0, base_volume as f64) as u8
+}
 
 /// Bounded command queue depth; callers await capacity so transport commands never drop.
 pub const SESSION_COMMAND_CAPACITY: usize = 64;
@@ -81,6 +110,8 @@ pub struct PlaybackSessionConfig {
     pub initial_muted: bool,
     pub initial_shuffle: bool,
     pub initial_repeat: RepeatMode,
+    pub initial_gapless: bool,
+    pub initial_crossfade_secs: u8,
     pub policy: SessionPolicy,
     pub stale_error_grace: Duration,
     pub shutdown_timeout: Duration,
@@ -96,6 +127,8 @@ impl PlaybackSessionConfig {
             initial_muted: false,
             initial_shuffle: false,
             initial_repeat: RepeatMode::Off,
+            initial_gapless: true,
+            initial_crossfade_secs: 0,
             policy: SessionPolicy {
                 hifi_substitution: true,
                 jiosaavn_enabled: false,
@@ -160,6 +193,7 @@ pub trait PlaybackAudioDriver: Send + Sync + 'static {
     fn set_volume(&self, volume: u8);
     fn set_speed(&self, _speed: f64) {}
     fn set_skip_silence(&self, _enabled: bool) {}
+    fn set_gapless(&self, _enabled: bool) {}
     fn set_video_mode(
         &self,
         _enabled: bool,
@@ -203,6 +237,10 @@ impl PlaybackAudioDriver for MpvController {
 
     fn set_skip_silence(&self, enabled: bool) {
         MpvController::set_skip_silence(self, enabled);
+    }
+
+    fn set_gapless(&self, enabled: bool) {
+        MpvController::set_gapless(self, enabled);
     }
 
     fn set_video_mode(
@@ -377,6 +415,10 @@ pub enum SessionCommand {
     SetPlaybackSpeed(f64),
     /// Enables or disables silence skipping (`af` filter; auto-disabled while video mode is active).
     SetSkipSilence(bool),
+    /// Enables or disables gapless audio transitions (`gapless-audio=yes/no`).
+    SetGapless(bool),
+    /// Sets smooth audio crossfade ramp duration (`0..=12` seconds; automatically bypassed in Video mode).
+    SetCrossfade(u8),
     /// Arms or cancels a sleep timer (`Some(secs)` fades volume smoothly over 5 seconds before pausing and restoring volume).
     SetSleepTimer(Option<u64>),
     /// Switches between audio-only (`--no-video`) and video (`--vid=auto`) playback, preserving position and headers.
@@ -677,6 +719,13 @@ struct SleepTimerState {
     last_applied_volume: Option<u8>,
 }
 
+#[derive(Debug, Clone)]
+struct CrossfadeEntryState {
+    started_at: Instant,
+    duration_secs: f64,
+    last_applied_volume: Option<u8>,
+}
+
 fn local_path_from_stream_url(url: &str) -> Option<PathBuf> {
     let trimmed = url.trim();
     if trimmed.is_empty() || trimmed.starts_with("http://") || trimmed.starts_with("https://") {
@@ -699,6 +748,12 @@ struct SessionActor {
     muted: bool,
     playback_speed: f64,
     skip_silence_pref: bool,
+    gapless_enabled: bool,
+    crossfade_secs: u8,
+    crossfade_exit_active: bool,
+    crossfade_pending_entry: bool,
+    crossfade_last_exit_vol: Option<u8>,
+    crossfade_entry: Option<CrossfadeEntryState>,
     video_mode: bool,
     sleep_timer: Option<SleepTimerState>,
     audio_quality: AudioQualityTracker,
@@ -730,6 +785,8 @@ impl SessionActor {
         playback.shuffle = config.initial_shuffle;
         playback.repeat = config.initial_repeat;
         let muted = config.initial_muted;
+        let gapless_enabled = config.initial_gapless;
+        let crossfade_secs = clamp_crossfade_secs(config.initial_crossfade_secs);
         let (internal_tx, internal_rx) = mpsc::channel(INTERNAL_RESULT_CAPACITY);
 
         Self {
@@ -744,6 +801,12 @@ impl SessionActor {
             muted,
             playback_speed: 1.0,
             skip_silence_pref: false,
+            gapless_enabled,
+            crossfade_secs,
+            crossfade_exit_active: false,
+            crossfade_pending_entry: false,
+            crossfade_last_exit_vol: None,
+            crossfade_entry: None,
             video_mode: false,
             sleep_timer: None,
             audio_quality: AudioQualityTracker::default(),
@@ -1028,6 +1091,7 @@ impl SessionActor {
                 {
                     self.start_play_transition(transition, None).await;
                 } else {
+                    self.cancel_crossfade(true);
                     self.playback.paused = true;
                     self.pos_anchor = None;
                     self.publish_progress();
@@ -1065,6 +1129,7 @@ impl SessionActor {
                 let clamped = vol.min(100);
                 self.muted = false;
                 self.playback.volume = clamped;
+                self.cancel_crossfade(false);
                 if let Some(timer) = self.sleep_timer.as_mut() {
                     if timer.pre_fade_volume.is_some() {
                         timer.pre_fade_volume = Some(clamped);
@@ -1076,12 +1141,18 @@ impl SessionActor {
             }
             SessionCommand::SetMuted(muted) => {
                 self.muted = muted;
+                if muted {
+                    self.cancel_crossfade(false);
+                }
                 let effective = if self.muted { 0 } else { self.playback.volume };
                 self.driver.set_volume(effective);
                 self.emit_mode_changed().await;
             }
             SessionCommand::ToggleMute => {
                 self.muted = !self.muted;
+                if self.muted {
+                    self.cancel_crossfade(false);
+                }
                 let effective = if self.muted { 0 } else { self.playback.volume };
                 self.driver.set_volume(effective);
                 self.emit_mode_changed().await;
@@ -1127,6 +1198,16 @@ impl SessionActor {
                 self.driver.set_skip_silence(effective);
                 self.emit_playback_options_changed().await;
             }
+            SessionCommand::SetGapless(enabled) => {
+                self.gapless_enabled = enabled;
+                self.driver.set_gapless(enabled);
+            }
+            SessionCommand::SetCrossfade(secs) => {
+                self.crossfade_secs = clamp_crossfade_secs(secs);
+                if self.effective_crossfade_secs() == 0 {
+                    self.cancel_crossfade(true);
+                }
+            }
             SessionCommand::SetSleepTimer(seconds) => {
                 self.set_sleep_timer(seconds).await;
             }
@@ -1157,6 +1238,83 @@ impl SessionActor {
 
     fn effective_skip_silence(&self) -> bool {
         self.skip_silence_pref && !self.video_mode
+    }
+
+    fn effective_crossfade_secs(&self) -> u8 {
+        if self.video_mode {
+            0
+        } else {
+            self.crossfade_secs
+        }
+    }
+
+    fn sleep_timer_fading(&self) -> bool {
+        self.sleep_timer
+            .as_ref()
+            .is_some_and(|t| t.pre_fade_volume.is_some())
+    }
+
+    fn cancel_crossfade(&mut self, restore_volume: bool) {
+        let was_fading = self.crossfade_exit_active || self.crossfade_entry.is_some();
+        self.crossfade_exit_active = false;
+        self.crossfade_pending_entry = false;
+        self.crossfade_last_exit_vol = None;
+        self.crossfade_entry = None;
+        if restore_volume && was_fading && !self.muted && !self.sleep_timer_fading() {
+            self.driver.set_volume(self.playback.volume);
+        }
+    }
+
+    fn tick_crossfade(&mut self) {
+        if self.muted || self.sleep_timer_fading() {
+            return;
+        }
+        let fade_secs = self.effective_crossfade_secs();
+        if fade_secs == 0 {
+            self.cancel_crossfade(true);
+            return;
+        }
+        if self.playback.paused || self.playback.loading_track {
+            return;
+        }
+
+        if let Some(entry) = self.crossfade_entry.as_mut() {
+            let elapsed = entry.started_at.elapsed().as_secs_f64();
+            if elapsed >= entry.duration_secs {
+                self.crossfade_entry = None;
+                self.driver.set_volume(self.playback.volume);
+            } else {
+                let vol = compute_crossfade_entry_volume(
+                    self.playback.volume,
+                    elapsed,
+                    entry.duration_secs,
+                );
+                if entry.last_applied_volume != Some(vol) {
+                    entry.last_applied_volume = Some(vol);
+                    self.driver.set_volume(vol);
+                }
+            }
+            return;
+        }
+
+        let duration = self.playback.duration_secs;
+        if duration <= 1.0 || self.playback.peek_next_index().is_none() {
+            return;
+        }
+        let active_fade = (fade_secs as f64).min(duration * 0.4);
+        if active_fade <= 0.0 {
+            return;
+        }
+        let remaining = (duration - self.interpolated_position()).max(0.0);
+        if remaining <= active_fade {
+            self.crossfade_exit_active = true;
+            self.crossfade_pending_entry = true;
+            let vol = compute_crossfade_exit_volume(self.playback.volume, remaining, active_fade);
+            if self.crossfade_last_exit_vol != Some(vol) {
+                self.crossfade_last_exit_vol = Some(vol);
+                self.driver.set_volume(vol);
+            }
+        }
     }
 
     fn sleep_timer_remaining_secs(&self) -> Option<u64> {
@@ -1254,6 +1412,9 @@ impl SessionActor {
         seek_secs: Option<f64>,
     ) {
         self.video_mode = enabled;
+        if enabled {
+            self.cancel_crossfade(true);
+        }
         self.driver.set_skip_silence(self.effective_skip_silence());
 
         let (target_url, target_headers) = match url {
@@ -1446,6 +1607,7 @@ impl SessionActor {
     async fn stop_playback(&mut self) {
         self.generation.advance();
         self.playback_tasks.restart();
+        self.cancel_crossfade(true);
         if let Some((key, task)) = self.next_prefetch_task.take() {
             task.abort();
             self.emit(SessionEvent::PrecacheUpdated {
@@ -1533,6 +1695,11 @@ impl SessionActor {
         self.awaiting_playback_start = false;
         self.pending_auto_advance = None;
         self.audio_quality = AudioQualityTracker::default();
+        if !self.crossfade_pending_entry {
+            self.cancel_crossfade(true);
+        }
+        self.crossfade_exit_active = false;
+        self.crossfade_last_exit_vol = None;
         self.driver.stop();
 
         let generation = self.generation.advance();
@@ -1929,6 +2096,19 @@ impl SessionActor {
                 self.awaiting_playback_start = false;
                 self.playback.paused = false;
                 self.pos_anchor = Some((self.playback.position_secs, Instant::now()));
+                if was_initial_start && self.crossfade_pending_entry {
+                    self.crossfade_pending_entry = false;
+                    let fade_secs = self.effective_crossfade_secs();
+                    if fade_secs > 0 && !self.muted && !self.sleep_timer_fading() {
+                        let entry_duration = (fade_secs as f64).clamp(0.5, 4.0);
+                        self.crossfade_entry = Some(CrossfadeEntryState {
+                            started_at: Instant::now(),
+                            duration_secs: entry_duration,
+                            last_applied_volume: Some(0),
+                        });
+                        self.driver.set_volume(0);
+                    }
+                }
                 self.publish_progress();
 
                 let first_audio_ms = if was_initial_start {
@@ -2043,6 +2223,7 @@ impl SessionActor {
                     .await;
                     self.prepare_next_before_advance(next_idx).await;
                 } else {
+                    self.cancel_crossfade(true);
                     self.playback.paused = true;
                     self.playback.position_secs = 0.0;
                     self.playback.stream_badge = "Finished".to_string();
@@ -2342,6 +2523,7 @@ impl SessionActor {
             self.pos_anchor = Some((next, Instant::now()));
             self.publish_progress();
         }
+        self.tick_crossfade();
         self.poll_adopted_precache().await;
         self.maybe_precache_next().await;
     }
@@ -2570,6 +2752,7 @@ impl SessionActor {
 #[cfg(test)]
 mod tests {
     use super::{
+        clamp_crossfade_secs, compute_crossfade_entry_volume, compute_crossfade_exit_volume,
         PlaybackAudioDriver, PlaybackSession, PlaybackSessionConfig, PlaybackStreamSource,
         SessionCommand, SessionEvent, SessionPolicy,
     };
@@ -2594,6 +2777,7 @@ mod tests {
         Volume(u8),
         Speed(f64),
         SkipSilence(bool),
+        Gapless(bool),
         VideoMode {
             enabled: bool,
             url: Option<String>,
@@ -2669,6 +2853,13 @@ mod tests {
                 .lock()
                 .expect("driver lock")
                 .push(TestDriverCall::SkipSilence(enabled));
+        }
+
+        fn set_gapless(&self, enabled: bool) {
+            self.calls
+                .lock()
+                .expect("driver lock")
+                .push(TestDriverCall::Gapless(enabled));
         }
 
         fn set_video_mode(
@@ -2762,6 +2953,8 @@ mod tests {
             initial_muted: false,
             initial_shuffle: false,
             initial_repeat: RepeatMode::Off,
+            initial_gapless: true,
+            initial_crossfade_secs: 0,
             policy: SessionPolicy {
                 hifi_substitution: false,
                 jiosaavn_enabled: false,
@@ -3096,6 +3289,150 @@ mod tests {
             volumes.last().copied(),
             Some(80),
             "expected volume restored to 80 after pause, got {volumes:?}"
+        );
+
+        session.handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn handles_gapless_and_crossfade_ramp_bypassed_in_video_mode() {
+        assert_eq!(clamp_crossfade_secs(0), 0);
+        assert_eq!(clamp_crossfade_secs(7), 7);
+        assert_eq!(clamp_crossfade_secs(99), 12);
+        assert_eq!(compute_crossfade_exit_volume(80, 2.0, 4.0), 40);
+        assert_eq!(compute_crossfade_exit_volume(80, 0.0, 4.0), 0);
+        assert_eq!(compute_crossfade_entry_volume(80, 1.0, 4.0), 20);
+        assert_eq!(compute_crossfade_entry_volume(80, 4.0, 4.0), 80);
+
+        let driver = Arc::new(RecordingDriver::default());
+        let source = Arc::new(StaticSource {
+            stream: ResolvedStream {
+                url: "https://example.com/audio.webm".to_string(),
+                badge: "OPUS 256kbps".to_string(),
+                headers: Vec::new(),
+            },
+        });
+        let (mpv_tx, mpv_rx) = mpsc::channel(32);
+        let mut session = PlaybackSession::spawn(
+            fast_test_config(),
+            Arc::clone(&driver) as Arc<dyn PlaybackAudioDriver>,
+            source,
+            mpv_rx,
+        );
+
+        session
+            .handle
+            .send(SessionCommand::SetGapless(false))
+            .await
+            .unwrap();
+        session
+            .handle
+            .send(SessionCommand::SetCrossfade(15))
+            .await
+            .unwrap();
+        session
+            .handle
+            .send(SessionCommand::PlayQueue {
+                tracks: vec![make_track("cf-1", 20), make_track("cf-2", 20)],
+                start_index: 0,
+                push_history: false,
+            })
+            .await
+            .unwrap();
+        recv_event_matching(&mut session.events, |e| {
+            matches!(e, SessionEvent::StreamLoaded { .. })
+        })
+        .await;
+        mpv_tx.send(MpvEvent::PlaybackStarted).await.unwrap();
+        mpv_tx.send(MpvEvent::Duration(20.0)).await.unwrap();
+
+        // Advance into the final 8s (capped at 40% of 20s = 8s) so exit ramp lowers volume below 80.
+        mpv_tx.send(MpvEvent::Position(16.0)).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(120)).await;
+
+        let exit_vols: Vec<u8> = driver
+            .calls()
+            .into_iter()
+            .filter_map(|c| match c {
+                TestDriverCall::Volume(v) => Some(v),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            exit_vols.iter().any(|&v| v < 80),
+            "expected crossfade exit volume ramp below 80, got {exit_vols:?}"
+        );
+
+        // Video mode automatically bypasses crossfade and restores configured volume 80.
+        session
+            .handle
+            .send(SessionCommand::SetVideoMode {
+                enabled: true,
+                url: Some("https://example.com/vid.mp4".to_string()),
+                headers: Vec::new(),
+                seek_secs: Some(16.0),
+            })
+            .await
+            .unwrap();
+        recv_event_matching(&mut session.events, |e| {
+            matches!(
+                e,
+                SessionEvent::PlaybackOptionsChanged {
+                    video_mode: true,
+                    ..
+                }
+            )
+        })
+        .await;
+
+        let after_video_vols: Vec<u8> = driver
+            .calls()
+            .into_iter()
+            .filter_map(|c| match c {
+                TestDriverCall::Volume(v) => Some(v),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(after_video_vols.last().copied(), Some(80));
+
+        // Exit video mode and trigger natural track end -> next track fades in from 0.
+        session
+            .handle
+            .send(SessionCommand::SetVideoMode {
+                enabled: false,
+                url: None,
+                headers: Vec::new(),
+                seek_secs: Some(18.0),
+            })
+            .await
+            .unwrap();
+        recv_event_matching(&mut session.events, |e| {
+            matches!(
+                e,
+                SessionEvent::PlaybackOptionsChanged {
+                    video_mode: false,
+                    ..
+                }
+            )
+        })
+        .await;
+        mpv_tx.send(MpvEvent::PlaybackStarted).await.unwrap();
+        mpv_tx.send(MpvEvent::Position(18.5)).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(90)).await;
+        mpv_tx.send(MpvEvent::TrackEnded).await.unwrap();
+        recv_event_matching(
+            &mut session.events,
+            |e| matches!(e, SessionEvent::StreamLoaded { track_id, .. } if track_id == "cf-2"),
+        )
+        .await;
+        mpv_tx.send(MpvEvent::PlaybackStarted).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(120)).await;
+
+        let calls = driver.calls();
+        assert!(calls.contains(&TestDriverCall::Gapless(false)));
+        assert!(
+            calls.contains(&TestDriverCall::Volume(0)),
+            "expected entry fade-in starting from 0, got {calls:?}"
         );
 
         session.handle.shutdown().await;

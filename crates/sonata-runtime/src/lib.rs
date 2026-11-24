@@ -9,11 +9,12 @@
 //! 4. **Playback & Process Runners** (`player`, `process`): `mpv` JSON-IPC driver, CLI JS cipher
 //!    bridge (`node`/`bun`/`deno`), and `LinuxStreamResolver` composing portable `sonata-core`
 //!    resolution with `yt-dlp`.
-//! 5. **Discord Rich Presence** (`discord`): Local IPC v1 Unix socket client with speed-scaled
-//!    timestamps and graceful absence/reconnect handling.
+//! 5. **Discord Rich Presence & Connect** (`discord`, `connect`): Local IPC v1 Unix socket client
+//!    with speed-scaled timestamps plus LAN Sonata Connect discovery and HTTP/JSON control server.
 
 pub mod auth;
 pub mod config;
+pub mod connect;
 pub mod discord;
 pub mod downloads;
 pub mod hyprland;

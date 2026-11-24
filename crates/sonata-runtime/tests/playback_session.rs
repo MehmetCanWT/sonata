@@ -305,6 +305,8 @@ fn test_config() -> PlaybackSessionConfig {
         initial_muted: false,
         initial_shuffle: false,
         initial_repeat: RepeatMode::Off,
+        initial_gapless: true,
+        initial_crossfade_secs: 0,
         policy: SessionPolicy {
             hifi_substitution: true,
             jiosaavn_enabled: false,

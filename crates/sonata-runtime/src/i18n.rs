@@ -348,6 +348,29 @@ pub struct UiStrings {
     pub smb_domain: &'static str,
     pub smb_mount_path: &'static str,
     pub personal_only_active: &'static str,
+
+    // Gapless, Crossfade, Scrobbling, Listening Stats & Sonata Connect
+    pub gapless_playback: &'static str,
+    pub gapless_playback_desc: &'static str,
+    pub crossfade: &'static str,
+    pub crossfade_desc: &'static str,
+    pub lastfm_scrobbling: &'static str,
+    pub lastfm_scrobbling_desc: &'static str,
+    pub listenbrainz_scrobbling: &'static str,
+    pub listenbrainz_scrobbling_desc: &'static str,
+    pub listening_stats: &'static str,
+    pub listening_stats_desc: &'static str,
+    pub total_plays: &'static str,
+    pub listening_time: &'static str,
+    pub streak_days: &'static str,
+    pub top_artists: &'static str,
+    pub top_tracks: &'static str,
+    pub top_albums: &'static str,
+    pub sonata_connect: &'static str,
+    pub sonata_connect_desc: &'static str,
+    pub connect_device_name: &'static str,
+    pub pairing_pin: &'static str,
+    pub paired_devices: &'static str,
 }
 
 /// Translates common YouTube Music mood and genre chip/tile titles into `Tr` / `Ru`.
@@ -791,6 +814,28 @@ pub const EN: UiStrings = UiStrings {
     smb_mount_path: "Local Mount Path (optional)",
     personal_only_active:
         "Personal Only Mode is active — streaming feeds and playback are paused while your preferences remain preserved.",
+
+    gapless_playback: "Gapless Playback",
+    gapless_playback_desc: "Eliminate silent gaps between consecutive tracks during audio playback.",
+    crossfade: "Crossfade",
+    crossfade_desc: "Smoothly fade between consecutive audio tracks (0–12s, disabled in Video mode).",
+    lastfm_scrobbling: "Last.fm Scrobbling",
+    lastfm_scrobbling_desc: "Send Now Playing updates and scrobbles to your Last.fm profile.",
+    listenbrainz_scrobbling: "ListenBrainz Scrobbling",
+    listenbrainz_scrobbling_desc: "Submit listening history to ListenBrainz using your user token.",
+    listening_stats: "Listening Stats",
+    listening_stats_desc: "Private on-device play counts, streaks, and top charts with zero tracking.",
+    total_plays: "Total Plays",
+    listening_time: "Listening Time",
+    streak_days: "Day Streak",
+    top_artists: "Top Artists",
+    top_tracks: "Top Tracks",
+    top_albums: "Top Albums",
+    sonata_connect: "Sonata Connect",
+    sonata_connect_desc: "Control playback and transfer queues between Sonata devices over your local network.",
+    connect_device_name: "Device Name",
+    pairing_pin: "Pairing PIN",
+    paired_devices: "Paired Devices",
 };
 
 pub const TR: UiStrings = UiStrings {
@@ -1074,6 +1119,28 @@ pub const TR: UiStrings = UiStrings {
     smb_mount_path: "Yerel Bağlama Yolu (isteğe bağlı)",
     personal_only_active:
         "Yalnızca Kişisel Mod etkin — tercihlerin korunurken akış katalogları ve oynatma duraklatıldı.",
+
+    gapless_playback: "Kesintisiz Oynatma",
+    gapless_playback_desc: "Ses oynatırken art arda gelen parçalar arasındaki sessiz boşlukları kaldır.",
+    crossfade: "Çapraz Geçiş",
+    crossfade_desc: "Ardışık ses parçaları arasında yumuşak geçiş yap (0–12sn, Video modunda kapalı).",
+    lastfm_scrobbling: "Last.fm Skroblama",
+    lastfm_scrobbling_desc: "Şimdi Çalıyor güncellemelerini ve dinleme kayıtlarını Last.fm hesabına gönder.",
+    listenbrainz_scrobbling: "ListenBrainz Skroblama",
+    listenbrainz_scrobbling_desc: "Kullanıcı belirtecinle dinleme geçmişini ListenBrainz'e gönder.",
+    listening_stats: "Dinleme İstatistikleri",
+    listening_stats_desc: "İzleyici olmadan cihaz içinde tutulan çalma sayısı, seri ve en çok dinlenenler.",
+    total_plays: "Toplam Çalma",
+    listening_time: "Dinleme Süresi",
+    streak_days: "Günlük Seri",
+    top_artists: "En Çok Dinlenen Sanatçılar",
+    top_tracks: "En Çok Dinlenen Parçalar",
+    top_albums: "En Çok Dinlenen Albümler",
+    sonata_connect: "Sonata Connect",
+    sonata_connect_desc: "Yerel ağ üzerinden Sonata cihazları arasında oynatmayı kontrol et ve sırayı aktar.",
+    connect_device_name: "Cihaz Adı",
+    pairing_pin: "Eşleştirme PIN'i",
+    paired_devices: "Eşleştirilmiş Cihazlar",
 };
 
 pub const RU: UiStrings = UiStrings {
@@ -1358,6 +1425,28 @@ pub const RU: UiStrings = UiStrings {
     smb_mount_path: "Локальный путь монтирования (необяз.)",
     personal_only_active:
         "Включён только личный режим — потоковые каталоги и воспроизведение приостановлены, ваши настройки сохранены.",
+
+    gapless_playback: "Воспроизведение без пауз",
+    gapless_playback_desc: "Убирать тишину между соседними треками при воспроизведении аудио.",
+    crossfade: "Кроссфейд",
+    crossfade_desc: "Плавное перетекание громкости между треками (0–12с, отключён в режиме видео).",
+    lastfm_scrobbling: "Скробблинг Last.fm",
+    lastfm_scrobbling_desc: "Отправлять статус «Сейчас играет» и скробблы в ваш профиль Last.fm.",
+    listenbrainz_scrobbling: "Скробблинг ListenBrainz",
+    listenbrainz_scrobbling_desc: "Отправлять историю прослушиваний в ListenBrainz по вашему токену.",
+    listening_stats: "Статистика прослушиваний",
+    listening_stats_desc: "Локальные счётчики, серии дней и топы на устройстве без телеметрии.",
+    total_plays: "Всего прослушиваний",
+    listening_time: "Время прослушивания",
+    streak_days: "Серия дней",
+    top_artists: "Топ исполнителей",
+    top_tracks: "Топ треков",
+    top_albums: "Топ альбомов",
+    sonata_connect: "Sonata Connect",
+    sonata_connect_desc: "Управляйте воспроизведением и передавайте очередь между устройствами Sonata в локальной сети.",
+    connect_device_name: "Имя устройства",
+    pairing_pin: "PIN-код сопряжения",
+    paired_devices: "Сопряжённые устройства",
 };
 
 #[cfg(test)]
@@ -1492,5 +1581,37 @@ mod tests {
         assert!(!strings(AppLanguage::Ru)
             .attribute_personal_to_ytm
             .is_empty());
+
+        // Faz 4 Gapless, Crossfade, Scrobbling, Listening Stats & Sonata Connect strings
+        assert_eq!(
+            strings(AppLanguage::En).gapless_playback,
+            "Gapless Playback"
+        );
+        assert_eq!(
+            strings(AppLanguage::Tr).gapless_playback,
+            "Kesintisiz Oynatma"
+        );
+        assert_eq!(
+            strings(AppLanguage::Ru).gapless_playback,
+            "Воспроизведение без пауз"
+        );
+        assert_eq!(strings(AppLanguage::En).crossfade, "Crossfade");
+        assert_eq!(strings(AppLanguage::Tr).crossfade, "Çapraz Geçiş");
+        assert_eq!(strings(AppLanguage::Ru).crossfade, "Кроссфейд");
+        assert_eq!(
+            strings(AppLanguage::En).lastfm_scrobbling,
+            "Last.fm Scrobbling"
+        );
+        assert_eq!(
+            strings(AppLanguage::En).listenbrainz_scrobbling,
+            "ListenBrainz Scrobbling"
+        );
+        assert_eq!(strings(AppLanguage::En).listening_stats, "Listening Stats");
+        assert_eq!(
+            strings(AppLanguage::Tr).listening_stats,
+            "Dinleme İstatistikleri"
+        );
+        assert_eq!(strings(AppLanguage::En).sonata_connect, "Sonata Connect");
+        assert_eq!(strings(AppLanguage::Ru).sonata_connect, "Sonata Connect");
     }
 }

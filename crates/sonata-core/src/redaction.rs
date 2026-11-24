@@ -3,7 +3,8 @@
 //! 1. **URL Scrubbing**: `stream_url` strips query parameters, paths, and userinfo from HTTP(S) URLs.
 //! 2. **Text & JSON Scrubbing**: `sensitive_text` and `json_payload` redact cookies, auth tokens,
 //!    self-hosted server credentials (`X-Emby-Token`, `X-MediaBrowser-Token`, `api_key`, Subsonic
-//!    `t`/`p`, `Basic ` auth), and signed URLs.
+//!    `t`/`p`, `Basic ` auth), scrobbler credentials (`api_sig`, `sk`, `api_secret`, `Token `),
+//!    and signed URLs.
 
 use regex::{Captures, Regex};
 use reqwest::Url;
@@ -13,7 +14,7 @@ use std::sync::OnceLock;
 const REDACTED_STREAM: &str = "[redacted-stream-url]";
 const REDACTED_SECRET: &str = "[redacted-sensitive-value]";
 
-const FULL_LINE_MARKERS: [&str; 17] = [
+const FULL_LINE_MARKERS: [&str; 23] = [
     "authorization:",
     "authorization=",
     "cookie:",
@@ -31,6 +32,12 @@ const FULL_LINE_MARKERS: [&str; 17] = [
     "x-mediabrowser-token=",
     "api_key:",
     "api_key=",
+    "api_secret:",
+    "api_secret=",
+    "api_sig:",
+    "api_sig=",
+    "session_key:",
+    "session_key=",
 ];
 
 pub fn stream_url(input: &str) -> String {
@@ -59,20 +66,22 @@ pub fn sensitive_text(text: &str) -> String {
 
 fn basic_auth_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r#"(?i)\b(Basic)\s+([^\s"';,]+)"#).unwrap())
+    RE.get_or_init(|| Regex::new(r#"(?i)\b(Basic|Token)\s+([^\s"';,]+)"#).unwrap())
 }
 
 fn named_secret_param_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r#"(?i)(^|[?&\s;,])(api_key|x-emby-token|x-mediabrowser-token)=([^&\s"';,]+)"#)
-            .unwrap()
+        Regex::new(
+            r#"(?i)(^|[?&\s;,])(api_key|api_secret|api_sig|session_key|x-emby-token|x-mediabrowser-token)=([^&\s"';,]+)"#,
+        )
+        .unwrap()
     })
 }
 
 fn subsonic_param_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r#"(?i)(^|[?&\s;,])(t|p)=([^&\s"';,]+)"#).unwrap())
+    RE.get_or_init(|| Regex::new(r#"(?i)(^|[?&\s;,])(t|p|sk)=([^&\s"';,]+)"#).unwrap())
 }
 
 fn redact_inline_tokens(input: &str) -> String {
@@ -132,14 +141,20 @@ fn is_sensitive_json_key(lower: &str) -> bool {
         || lower.contains("x-emby-token")
         || lower.contains("x-mediabrowser-token")
         || lower.contains("api_key")
+        || lower.contains("api_secret")
+        || lower.contains("api_sig")
+        || lower.contains("session_key")
         || matches!(
             lower,
             "apikey"
+                | "apisecret"
+                | "apisig"
                 | "access_token"
                 | "accesstoken"
                 | "bearer_token"
                 | "password"
                 | "token"
+                | "sk"
                 | "t"
                 | "p"
         )
@@ -277,5 +292,63 @@ mod tests {
             );
         }
         assert!(rendered.contains("alice"));
+    }
+
+    #[test]
+    fn redacts_scrobble_secrets_and_listenbrainz_tokens() {
+        let samples = [
+            "POST method=track.scrobble&api_key=lfm-key-secret&sk=lfm-sk-secret&api_sig=lfm-sig-secret",
+            "api_secret=lfm-app-secret session_key=lfm-sess-secret",
+            "Authorization: Token lb-user-token-secret",
+            "header Token lb-inline-token-secret rejected",
+            "https://ws.audioscrobbler.com/2.0/?method=track.scrobble&api_key=lfm-url-key&api_sig=lfm-url-sig&sk=lfm-url-sk",
+        ];
+        let secrets = [
+            "lfm-key-secret",
+            "lfm-sk-secret",
+            "lfm-sig-secret",
+            "lfm-app-secret",
+            "lfm-sess-secret",
+            "lb-user-token-secret",
+            "lb-inline-token-secret",
+            "lfm-url-key",
+            "lfm-url-sig",
+            "lfm-url-sk",
+        ];
+
+        for sample in samples {
+            let safe = sensitive_text(sample);
+            for secret in secrets {
+                assert!(
+                    !safe.contains(secret),
+                    "sensitive_text leaked `{secret}` in `{safe}`"
+                );
+            }
+        }
+
+        let payload = json_payload(&json!({
+            "api_key": "lfm-json-key",
+            "api_secret": "lfm-json-secret",
+            "api_sig": "lfm-json-sig",
+            "sk": "lfm-json-sk",
+            "token": "lb-json-token",
+            "username": "alice"
+        }));
+        let rendered = payload.to_string();
+        for secret in [
+            "lfm-json-key",
+            "lfm-json-secret",
+            "lfm-json-sig",
+            "lfm-json-sk",
+            "lb-json-token",
+        ] {
+            assert!(
+                !rendered.contains(secret),
+                "json_payload leaked `{secret}` in `{rendered}`"
+            );
+        }
+        assert!(rendered.contains("alice"));
+        // Normal words ending with `sk=` in prose must not wipe unrelated prefixes via FULL_LINE_MARKERS.
+        assert!(!sensitive_text("disk=nvme0n1").contains(REDACTED_SECRET));
     }
 }
