@@ -1,5 +1,6 @@
 package dev.sonata.android
 
+import dev.sonata.android.viewmodel.*
 import android.app.Application
 import android.content.ComponentName
 import android.content.ContentUris
@@ -511,22 +512,22 @@ data class SonataUiState(
 }
 
 class SonataViewModel(application: Application) : AndroidViewModel(application) {
-    private data class CachedStream(
+    internal data class CachedStream(
         val stream: AndroidResolvedStream,
         val cachedAtMs: Long,
     )
 
-    private data class CachedArtistPage(
+    internal data class CachedArtistPage(
         val page: AndroidArtistPage,
         val cachedAtMs: Long,
     )
 
-    private data class CachedVideoCandidate(
+    internal data class CachedVideoCandidate(
         val candidate: AndroidMusicVideoCandidate?,
         val cachedAtMs: Long,
     )
 
-    private data class CachedResolvedMusicVideo(
+    internal data class CachedResolvedMusicVideo(
         val resolved: AndroidResolvedMusicVideo,
         val cachedAtMs: Long,
     )
@@ -534,30 +535,30 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
     private val engineDeferred = CompletableDeferred<SonataEngineGateway>()
     private val cipherSolver = WebViewJsCipherSolver(application)
 
-    private val streamCache = ConcurrentHashMap<String, CachedStream>()
-    private val artistPageCache = ConcurrentHashMap<String, CachedArtistPage>()
+    internal val streamCache = ConcurrentHashMap<String, CachedStream>()
+    internal val artistPageCache = ConcurrentHashMap<String, CachedArtistPage>()
     private val inFlightPrefetch = ConcurrentHashMap.newKeySet<String>()
-    private val trackCollectionContext = ConcurrentHashMap<String, String>()
-    private val jioToYtmIdCache = ConcurrentHashMap<String, String>()
-    private val resolvedArtistCardCache = ConcurrentHashMap<String, AndroidHomeCard>()
-    private val inFlightArtistLookups = ConcurrentHashMap.newKeySet<String>()
-    private val musicVideoCandidateCache = ConcurrentHashMap<String, CachedVideoCandidate>()
-    private val resolvedMusicVideoCache = ConcurrentHashMap<String, CachedResolvedMusicVideo>()
-    private val baseStreamBadges = ConcurrentHashMap<String, String>()
-    private val activeCacheKeysByTrackId = ConcurrentHashMap<String, String>()
-    private val localContentUrisByTrackId = ConcurrentHashMap<String, String>()
-    private val localTracksById = ConcurrentHashMap<String, LocalAudioTrack>()
-    @Volatile private var personalPlaylistsCache: List<AndroidPersonalPlaylist> = emptyList()
-    @Volatile private var likedTracksCache: List<AndroidTrack> = emptyList()
-    private val autoPlaylistTracksCache = ConcurrentHashMap<String, List<AndroidTrack>>()
-    private var localScanJob: Job? = null
-    private val serverHealthJobs = ConcurrentHashMap<String, Job>()
-    private val serverSpeedJobs = ConcurrentHashMap<String, Job>()
-    private var musicVideoProbeJob: Job? = null
-    private var videoSwitchJob: Job? = null
-    private var listeningHistoryJob: Job? = null
-    private val historyLock = Any()
-    private var localHistoryCache: List<AndroidTrack>? = null
+    internal val trackCollectionContext = ConcurrentHashMap<String, String>()
+    internal val jioToYtmIdCache = ConcurrentHashMap<String, String>()
+    internal val resolvedArtistCardCache = ConcurrentHashMap<String, AndroidHomeCard>()
+    internal val inFlightArtistLookups = ConcurrentHashMap.newKeySet<String>()
+    internal val musicVideoCandidateCache = ConcurrentHashMap<String, CachedVideoCandidate>()
+    internal val resolvedMusicVideoCache = ConcurrentHashMap<String, CachedResolvedMusicVideo>()
+    internal val baseStreamBadges = ConcurrentHashMap<String, String>()
+    internal val activeCacheKeysByTrackId = ConcurrentHashMap<String, String>()
+    internal val localContentUrisByTrackId = ConcurrentHashMap<String, String>()
+    internal val localTracksById = ConcurrentHashMap<String, LocalAudioTrack>()
+    @Volatile internal var personalPlaylistsCache: List<AndroidPersonalPlaylist> = emptyList()
+    @Volatile internal var likedTracksCache: List<AndroidTrack> = emptyList()
+    internal val autoPlaylistTracksCache = ConcurrentHashMap<String, List<AndroidTrack>>()
+    internal var localScanJob: Job? = null
+    internal val serverHealthJobs = ConcurrentHashMap<String, Job>()
+    internal val serverSpeedJobs = ConcurrentHashMap<String, Job>()
+    internal var musicVideoProbeJob: Job? = null
+    internal var videoSwitchJob: Job? = null
+    internal var listeningHistoryJob: Job? = null
+    internal val historyLock = Any()
+    internal var localHistoryCache: List<AndroidTrack>? = null
 
     @OptIn(ExperimentalCoroutinesApi::class)
     private val prefetchDispatcher = Dispatchers.IO.limitedParallelism(1)
@@ -572,46 +573,46 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
     val activeDownloads: StateFlow<Map<String, ActiveDownload>> = downloadManager.activeDownloads
     val downloadsTotalBytes: StateFlow<Long> = downloadManager.totalBytes
 
-    private val _currentCanvas = MutableStateFlow<CanvasMedia?>(null)
+    internal val _currentCanvas = MutableStateFlow<CanvasMedia?>(null)
     val currentCanvas: StateFlow<CanvasMedia?> = _currentCanvas.asStateFlow()
 
     val audioPipelineInfo: StateFlow<AudioPipelineInfo> = AudioPipelineBus.info
 
-    private val _sleepTimerRemainingMinutes = MutableStateFlow<Int?>(null)
+    internal val _sleepTimerRemainingMinutes = MutableStateFlow<Int?>(null)
     val sleepTimerRemainingMinutes: StateFlow<Int?> = _sleepTimerRemainingMinutes.asStateFlow()
 
     private val _activeLyricsSource = MutableStateFlow("Synced")
     val activeLyricsSource: StateFlow<String> = _activeLyricsSource.asStateFlow()
 
-    private val _lastPlayedTracks = MutableStateFlow<List<AndroidTrack>>(emptyList())
+    internal val _lastPlayedTracks = MutableStateFlow<List<AndroidTrack>>(emptyList())
     val lastPlayedTracks: StateFlow<List<AndroidTrack>> = _lastPlayedTracks.asStateFlow()
 
-    private val _uiState = MutableStateFlow(SonataUiState())
+    internal val _uiState = MutableStateFlow(SonataUiState())
     val uiState: StateFlow<SonataUiState> = _uiState.asStateFlow()
 
-    private val _serverBrowserState = MutableStateFlow(ServerBrowserState())
+    internal val _serverBrowserState = MutableStateFlow(ServerBrowserState())
     val serverBrowserState: StateFlow<ServerBrowserState> = _serverBrowserState.asStateFlow()
 
-    private var serverBrowseJob: Job? = null
-    private var serverTestJob: Job? = null
-    private var serverSearchJob: Job? = null
+    internal var serverBrowseJob: Job? = null
+    internal var serverTestJob: Job? = null
+    internal var serverSearchJob: Job? = null
 
-    private val discordRpcClient = DiscordRpcClient()
-    private val discordSeekSignal = MutableStateFlow(0L)
+    internal val discordRpcClient = DiscordRpcClient()
+    internal val discordSeekSignal = MutableStateFlow(0L)
     val discordStatus: StateFlow<DiscordRpcStatus> = discordRpcClient.status
     val discordConnected: StateFlow<Boolean> = preferences.discordToken
         .map { !it.isNullOrBlank() }
         .stateIn(viewModelScope, SharingStarted.Eagerly, preferences.hasDiscordToken())
 
     private val scrobbleAndStatsTracker = ScrobbleAndStatsTracker()
-    private var statsLoadJob: Job? = null
+    internal var statsLoadJob: Job? = null
     private val connectDeviceId: String by lazy {
         prefs.getString("connect_device_id", null)?.takeIf { it.isNotBlank() }
             ?: UUID.randomUUID().toString().also { id ->
                 prefs.edit().putString("connect_device_id", id).apply()
             }
     }
-    private val connectController: ConnectController by lazy {
+    internal val connectController: ConnectController by lazy {
         ConnectController(
             client = SonataConnectClient(localDeviceId = connectDeviceId),
             secretStore = SharedPrefsConnectSecretStore(application),
@@ -621,697 +622,100 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
     }
     val connectState: StateFlow<ConnectUiState> get() = connectController.state
 
-    private val playbackGeneration = PlaybackGenerationCounter()
+    internal val playbackGeneration = PlaybackGenerationCounter()
     private val recoveryBudget = RecoveryBudget(MAX_RECOVERY_ATTEMPTS)
     @Volatile private var lastHandledEndedGeneration: Long = 0L
 
-    private var controller: MediaController? = null
+    internal var controller: MediaController? = null
     private var playJob: Job? = null
-    private var upgradeJob: Job? = null
+    internal var upgradeJob: Job? = null
     private var lyricsJob: Job? = null
-    private var canvasJob: Job? = null
-    private var sleepTimerJob: Job? = null
-    private var refreshJob: Job? = null
-    private var speculativePrefetchJob: Job? = null
+    internal var canvasJob: Job? = null
+    internal var sleepTimerJob: Job? = null
+    internal var refreshJob: Job? = null
+    internal var speculativePrefetchJob: Job? = null
     private var searchDebounceJob: Job? = null
     private var searchJob: Job? = null
     private var recoveryJob: Job? = null
-    private var autoplayJob: Job? = null
-    private var autoplayPrefetchJob: Job? = null
-    private var artistJob: Job? = null
-    private var collectionJob: Job? = null
+    internal var autoplayJob: Job? = null
+    internal var autoplayPrefetchJob: Job? = null
+    internal var artistJob: Job? = null
+    internal var collectionJob: Job? = null
     private var lyricsFetchedForTrackId: String? = null
     private var activeQueuePlaylistId: String? = null
     private val playedTrackIdsInCurrentQueue = linkedSetOf<String>()
-    @Volatile private var prefetchedAutoplaySeedKey: String? = null
-    @Volatile private var prefetchedAutoplayTracks: List<AndroidTrack> = emptyList()
-    @Volatile private var sleepAtEndOfTrack: Boolean = false
+    @Volatile internal var prefetchedAutoplaySeedKey: String? = null
+    @Volatile internal var prefetchedAutoplayTracks: List<AndroidTrack> = emptyList()
+    @Volatile internal var sleepAtEndOfTrack: Boolean = false
     @Volatile private var cipherWarmupScheduled = false
-    @Volatile private var lastHomeExploreFetchAtMs: Long = 0L
-    @Volatile private var lastRadioFetchAtMs: Long = 0L
+    @Volatile internal var lastHomeExploreFetchAtMs: Long = 0L
+    @Volatile internal var lastRadioFetchAtMs: Long = 0L
     @Volatile private var rateLimitBackoffUntilMs: Long = 0L
-    @Volatile private var homeFetchInFlight: Boolean = false
+    @Volatile internal var homeFetchInFlight: Boolean = false
     private val homeFetchSequence = AtomicLong(0L)
-    @Volatile private var radioFetchInFlight: Boolean = false
+    @Volatile internal var radioFetchInFlight: Boolean = false
     @Volatile private var lastAppliedLanguageCode: String? = null
-    @Volatile private var fullHomeShelves: List<AndroidHomeShelf> = emptyList()
-    private var radioRefreshJob: Job? = null
-    private var homeMoodChipJob: Job? = null
-    private var moodCategoryJob: Job? = null
-    @Volatile private var latestLikedCoverUrl: String? = null
+    @Volatile internal var fullHomeShelves: List<AndroidHomeShelf> = emptyList()
+    internal var radioRefreshJob: Job? = null
+    internal var homeMoodChipJob: Job? = null
+    internal var moodCategoryJob: Job? = null
+    @Volatile internal var latestLikedCoverUrl: String? = null
 
-    private val prefs: SharedPreferences by lazy {
+    internal val prefs: SharedPreferences by lazy {
         getApplication<Application>().getSharedPreferences("sonata_prefs", Context.MODE_PRIVATE)
     }
 
-    private val historyPrefs: SharedPreferences by lazy {
+    internal val historyPrefs: SharedPreferences by lazy {
         getApplication<Application>().getSharedPreferences(LAST_PLAYED_PREFS_NAME, Context.MODE_PRIVATE)
     }
 
-    private val localPlaylistsPrefs: SharedPreferences by lazy {
+    internal val localPlaylistsPrefs: SharedPreferences by lazy {
         getApplication<Application>().getSharedPreferences(LOCAL_PLAYLISTS_PREFS_NAME, Context.MODE_PRIVATE)
     }
 
-    private val localPlaylistsLock = Any()
-    private val pinnedSavedLock = Any()
-    private var cachedPinnedCollections: List<PinnedCollectionEntry> = emptyList()
-    private var cachedSavedExternalPlaylists: List<SavedExternalPlaylist> = emptyList()
+    internal val localPlaylistsLock = Any()
+    internal val pinnedSavedLock = Any()
+    internal var cachedPinnedCollections: List<PinnedCollectionEntry> = emptyList()
+    internal var cachedSavedExternalPlaylists: List<SavedExternalPlaylist> = emptyList()
 
-    private data class LocalPlaylistEntry(
+    internal data class LocalPlaylistEntry(
         val id: String,
         val name: String,
         val tracks: List<AndroidTrack>,
     )
 
-    private fun trackToJson(t: AndroidTrack): JSONObject = JSONObject().apply {
-        put("id", t.id)
-        put("title", t.title)
-        put("artist", t.artist)
-        put("album", t.album)
-        put("durationSecs", t.durationSecs?.toLong() ?: 0L)
-        put("thumbnailUrl", t.thumbnailUrl ?: "")
-        put("liked", t.liked)
-        put("albumId", t.albumId ?: "")
-        put("isExplicit", t.isExplicit)
-    }
+    internal fun getLocalPlaylistTracks(playlistId: String): List<AndroidTrack> = getLocalPlaylistTracksImpl(playlistId)
 
-    private fun jsonToTrack(obj: JSONObject?): AndroidTrack? {
-        obj ?: return null
-        val id = obj.optString("id").trim()
-        val title = obj.optString("title").trim()
-        if (id.isBlank() || title.isBlank()) return null
-        return AndroidTrack(
-            id = id,
-            title = title,
-            artist = obj.optString("artist"),
-            album = obj.optString("album"),
-            durationSecs = obj.optLong("durationSecs", 0L).takeIf { it > 0L }?.toULong(),
-            thumbnailUrl = obj.optString("thumbnailUrl").takeIf { it.isNotBlank() },
-            liked = obj.optBoolean("liked", false),
-            albumId = obj.optString("albumId").takeIf { it.isNotBlank() },
-            isExplicit = obj.optBoolean("isExplicit", false),
-        )
-    }
+    internal fun resolveTrackCoverUrl(track: AndroidTrack): String? = resolveTrackCoverUrlImpl(track)
 
-    private fun loadLocalPlaylistsLocked(): MutableList<LocalPlaylistEntry> {
-        val raw = localPlaylistsPrefs.getString(LOCAL_PLAYLISTS_KEY, null) ?: return mutableListOf()
-        return runCatching {
-            val arr = JSONArray(raw)
-            val out = mutableListOf<LocalPlaylistEntry>()
-            for (i in 0 until arr.length()) {
-                val obj = arr.optJSONObject(i) ?: continue
-                val id = obj.optString("id").trim()
-                val name = obj.optString("name").trim()
-                if (id.isBlank() || name.isBlank()) continue
-                val trackArr = obj.optJSONArray("tracks")
-                val tracks = buildList {
-                    if (trackArr != null) {
-                        for (j in 0 until trackArr.length()) {
-                            jsonToTrack(trackArr.optJSONObject(j))?.let { add(it) }
-                        }
-                    }
-                }
-                out.add(LocalPlaylistEntry(id = id, name = name, tracks = tracks))
-            }
-            out
-        }.getOrDefault(mutableListOf())
-    }
+    internal fun applyLatestLikedCover(playlists: List<AndroidPlaylist>): List<AndroidPlaylist> = applyLatestLikedCoverImpl(playlists)
 
-    private fun saveLocalPlaylistsLocked(entries: List<LocalPlaylistEntry>) {
-        val arr = JSONArray()
-        entries.forEach { entry ->
-            arr.put(
-                JSONObject().apply {
-                    put("id", entry.id)
-                    put("name", entry.name)
-                    put(
-                        "tracks",
-                        JSONArray().apply {
-                            entry.tracks.forEach { put(trackToJson(it)) }
-                        },
-                    )
-                },
-            )
-        }
-        localPlaylistsPrefs.edit().putString(LOCAL_PLAYLISTS_KEY, arr.toString()).apply()
-    }
+    internal fun updateLatestLikedCover(coverUrl: String?, clearIfNull: Boolean = false) = updateLatestLikedCoverImpl(coverUrl, clearIfNull)
 
-    private fun loadLocalPlaylistsAsAndroid(): List<AndroidPlaylist> = synchronized(localPlaylistsLock) {
-        loadLocalPlaylistsLocked().map { entry ->
-            AndroidPlaylist(
-                id = entry.id,
-                name = entry.name,
-                thumbnailUrl = entry.tracks.firstOrNull { !it.thumbnailUrl.isNullOrBlank() }?.thumbnailUrl,
-            )
-        }
-    }
-
-    private fun getLocalPlaylistTracks(playlistId: String): List<AndroidTrack> = synchronized(localPlaylistsLock) {
-        loadLocalPlaylistsLocked()
-            .firstOrNull { it.id == playlistId }
-            ?.tracks
-            .orEmpty()
-    }
-
-    private fun appendTracksToLocalPlaylist(playlistId: String, tracks: List<AndroidTrack>): Boolean =
-        synchronized(localPlaylistsLock) {
-            val entries = loadLocalPlaylistsLocked()
-            val idx = entries.indexOfFirst { it.id == playlistId }
-            if (idx < 0) return false
-            val existing = entries[idx]
-            val merged = (existing.tracks + tracks).distinctBy { it.id }
-            entries[idx] = existing.copy(tracks = merged)
-            saveLocalPlaylistsLocked(entries)
-            true
-        }
-
-    private fun createLocalPlaylist(title: String, tracks: List<AndroidTrack>): AndroidPlaylist =
-        synchronized(localPlaylistsLock) {
-            val entries = loadLocalPlaylistsLocked()
-            val id = "$LOCAL_PLAYLIST_PREFIX${System.currentTimeMillis()}"
-            val uniqueTracks = tracks.distinctBy { it.id }
-            val entry = LocalPlaylistEntry(id = id, name = title, tracks = uniqueTracks)
-            entries.add(0, entry)
-            saveLocalPlaylistsLocked(entries)
-            AndroidPlaylist(
-                id = entry.id,
-                name = entry.name,
-                thumbnailUrl = uniqueTracks.firstOrNull { !it.thumbnailUrl.isNullOrBlank() }?.thumbnailUrl,
-            )
-        }
-
-    private fun isLikedMusicPlaylistId(id: String): Boolean =
-        id.equals("VLLM", ignoreCase = true) || id.equals("LM", ignoreCase = true)
-
-    private fun resolveTrackCoverUrl(track: AndroidTrack): String? =
-        track.thumbnailUrl?.takeIf { it.isNotBlank() }
-            ?: if (!track.id.startsWith("jiosaavn:") && !track.id.startsWith("local:") && track.id.isNotBlank()) {
-                "https://i.ytimg.com/vi/${track.id}/hqdefault.jpg"
-            } else {
-                null
-            }
-
-    private fun applyLatestLikedCover(playlists: List<AndroidPlaylist>): List<AndroidPlaylist> {
-        val likedCover = latestLikedCoverUrl?.takeIf { it.isNotBlank() } ?: return playlists
-        return playlists.map { pl ->
-            if (isLikedMusicPlaylistId(pl.id)) pl.copy(thumbnailUrl = likedCover) else pl
-        }
-    }
-
-    private fun updateLatestLikedCover(coverUrl: String?, clearIfNull: Boolean = false) {
-        val normalized = coverUrl?.takeIf { it.isNotBlank() }
-        if (normalized != null) {
-            latestLikedCoverUrl = normalized
-            prefs.edit().putString("last_liked_cover_url", normalized).apply()
-        } else if (clearIfNull) {
-            latestLikedCoverUrl = null
-            prefs.edit().remove("last_liked_cover_url").apply()
-        } else {
-            return
-        }
-        _uiState.update { state ->
-            val updatedPlaylists = state.playlists.map { pl ->
-                if (isLikedMusicPlaylistId(pl.id)) pl.copy(thumbnailUrl = normalized) else pl
-            }
-            val viewingLiked = state.collectionBrowseId?.let { isLikedMusicPlaylistId(it) } == true
-            val updatedCollectionCover = if (viewingLiked) normalized else state.collectionCoverUrl
-            if (updatedPlaylists == state.playlists && updatedCollectionCover == state.collectionCoverUrl) {
-                state
-            } else {
-                state.copy(
-                    playlists = updatedPlaylists,
-                    collectionCoverUrl = updatedCollectionCover,
-                )
-            }
-        }
-        if (normalized != null) {
-            syncCollectionMetadataToSavedAndPinned("VLLM", uiStrings().likedSongs, null, normalized)
-        }
-    }
-
-    private fun computeOwnedPlaylistIds(
+    internal fun computeOwnedPlaylistIds(
         remote: List<AndroidPlaylist>,
         savedExternalIds: Set<String>,
-    ): Set<String> {
-        val owned = LinkedHashSet<String>()
-        remote.forEach { pl ->
-            if (pl.isOwned) {
-                val norm = normalizeCollectionId(pl.id)
-                if (norm.startsWith("PL") && norm !in savedExternalIds) {
-                    owned.add(norm)
-                }
-            }
-        }
-        return owned
-    }
+    ): Set<String> = computeOwnedPlaylistIdsImpl(remote, savedExternalIds)
 
-    private fun mergePlaylistsWithLocal(
+    internal fun mergePlaylistsWithLocal(
         remote: List<AndroidPlaylist>,
         personalList: List<AndroidPersonalPlaylist> = personalPlaylistsCache,
-    ): List<AndroidPlaylist> {
-        val personalAsAndroid = personalList.map { p ->
-            AndroidPlaylist(
-                id = p.id,
-                name = p.name,
-                thumbnailUrl = p.tracks.firstOrNull { !it.thumbnailUrl.isNullOrBlank() }?.thumbnailUrl,
-                isOwned = true,
-            )
-        }
-        val local = loadLocalPlaylistsAsAndroid()
-        if (preferences.state.value.personalOnlyMode) {
-            val combined = personalAsAndroid + local
-            if (combined.isEmpty()) return emptyList()
-            val seen = HashSet<String>(combined.size)
-            return combined.filter { pl ->
-                val key = normalizeCollectionId(pl.id).ifBlank { pl.id }
-                seen.add(key)
-            }
-        }
-        val decoratedRemote = applyLatestLikedCover(remote)
-        val savedExternal = synchronized(pinnedSavedLock) { cachedSavedExternalPlaylists }
-            .map { saved ->
-                AndroidPlaylist(
-                    id = saved.id,
-                    name = saved.title,
-                    thumbnailUrl = saved.coverUrl,
-                    isOwned = false,
-                )
-            }
-        val combined = decoratedRemote + savedExternal + personalAsAndroid + local
-        if (combined.isEmpty()) return emptyList()
-        val seen = HashSet<String>(combined.size)
-        return combined.filter { pl ->
-            val key = normalizeCollectionId(pl.id).ifBlank { pl.id }
-            seen.add(key)
-        }
-    }
+    ): List<AndroidPlaylist> = mergePlaylistsWithLocalImpl(remote, personalList)
 
-    private fun loadPinnedCollectionsLocked(): List<PinnedCollectionEntry> {
-        val raw = prefs.getString("pinned_collections_v1", null) ?: return emptyList()
-        return runCatching {
-            val arr = JSONArray(raw)
-            buildList {
-                for (i in 0 until arr.length()) {
-                    val obj = arr.optJSONObject(i) ?: continue
-                    val id = obj.optString("id").trim()
-                    val title = obj.optString("title").trim()
-                    if (id.isBlank() || title.isBlank()) continue
-                    add(
-                        PinnedCollectionEntry(
-                            id = id,
-                            title = title,
-                            subtitle = obj.optString("subtitle"),
-                            coverUrl = obj.optString("coverUrl").takeIf { it.isNotBlank() },
-                            kindLabel = obj.optString("kindLabel", "Playlist").ifBlank { "Playlist" },
-                            isAlbum = obj.optBoolean("isAlbum", false),
-                            pinnedAtMs = obj.optLong("pinnedAtMs", 0L),
-                        ),
-                    )
-                }
-            }
-        }.getOrDefault(emptyList())
-    }
+    internal fun initPinnedAndSavedFromPrefs() = initPinnedAndSavedFromPrefsImpl()
 
-    private fun savePinnedCollectionsLocked(entries: List<PinnedCollectionEntry>) {
-        val arr = JSONArray()
-        entries.forEach { entry ->
-            arr.put(
-                JSONObject().apply {
-                    put("id", entry.id)
-                    put("title", entry.title)
-                    put("subtitle", entry.subtitle)
-                    put("coverUrl", entry.coverUrl ?: "")
-                    put("kindLabel", entry.kindLabel)
-                    put("isAlbum", entry.isAlbum)
-                    put("pinnedAtMs", entry.pinnedAtMs)
-                },
-            )
-        }
-        prefs.edit().putString("pinned_collections_v1", arr.toString()).apply()
-    }
-
-    private fun loadSavedExternalPlaylistsLocked(): List<SavedExternalPlaylist> {
-        val raw = prefs.getString("saved_external_playlists_v1", null) ?: return emptyList()
-        return runCatching {
-            val arr = JSONArray(raw)
-            buildList {
-                for (i in 0 until arr.length()) {
-                    val obj = arr.optJSONObject(i) ?: continue
-                    val id = obj.optString("id").trim()
-                    val title = obj.optString("title").trim()
-                    if (id.isBlank() || title.isBlank()) continue
-                    add(
-                        SavedExternalPlaylist(
-                            id = id,
-                            title = title,
-                            subtitle = obj.optString("subtitle"),
-                            coverUrl = obj.optString("coverUrl").takeIf { it.isNotBlank() },
-                            kindLabel = obj.optString("kindLabel", "Playlist").ifBlank { "Playlist" },
-                            savedAtMs = obj.optLong("savedAtMs", 0L),
-                        ),
-                    )
-                }
-            }
-        }.getOrDefault(emptyList())
-    }
-
-    private fun saveExternalPlaylistsLocked(entries: List<SavedExternalPlaylist>) {
-        val arr = JSONArray()
-        entries.forEach { entry ->
-            arr.put(
-                JSONObject().apply {
-                    put("id", entry.id)
-                    put("title", entry.title)
-                    put("subtitle", entry.subtitle)
-                    put("coverUrl", entry.coverUrl ?: "")
-                    put("kindLabel", entry.kindLabel)
-                    put("savedAtMs", entry.savedAtMs)
-                },
-            )
-        }
-        prefs.edit().putString("saved_external_playlists_v1", arr.toString()).apply()
-    }
-
-    private fun initPinnedAndSavedFromPrefs() {
-        val (pinned, saved) = synchronized(pinnedSavedLock) {
-            cachedPinnedCollections = loadPinnedCollectionsLocked()
-            cachedSavedExternalPlaylists = loadSavedExternalPlaylistsLocked()
-            cachedPinnedCollections to cachedSavedExternalPlaylists
-        }
-        val savedIds = saved.mapTo(HashSet()) { normalizeCollectionId(it.id) }
-        _uiState.update { state ->
-            state.copy(
-                pinnedCollections = pinned,
-                savedExternalPlaylistIds = savedIds,
-            )
-        }
-    }
-
-    private fun syncCollectionMetadataToSavedAndPinned(
-        id: String,
-        title: String,
-        subtitle: String?,
-        coverUrl: String?,
-    ) {
-        val norm = normalizeCollectionId(id)
-        if (norm.isBlank()) return
-        val cleanTitle = title.trim()
-        val cleanCover = coverUrl?.takeIf { it.isNotBlank() }
-        val cleanSubtitle = subtitle?.trim()
-        var pinnedUpdated: List<PinnedCollectionEntry>? = null
-        var savedUpdated: List<SavedExternalPlaylist>? = null
-        synchronized(pinnedSavedLock) {
-            val nextPinned = cachedPinnedCollections.map { entry ->
-                if (normalizeCollectionId(entry.id) == norm) {
-                    entry.copy(
-                        title = cleanTitle.ifBlank { entry.title },
-                        subtitle = cleanSubtitle?.takeIf { it.isNotBlank() } ?: entry.subtitle,
-                        coverUrl = cleanCover ?: entry.coverUrl,
-                    )
-                } else {
-                    entry
-                }
-            }
-            if (nextPinned != cachedPinnedCollections) {
-                cachedPinnedCollections = nextPinned
-                savePinnedCollectionsLocked(nextPinned)
-                pinnedUpdated = nextPinned
-            }
-
-            val nextSaved = cachedSavedExternalPlaylists.map { entry ->
-                if (normalizeCollectionId(entry.id) == norm) {
-                    entry.copy(
-                        title = cleanTitle.ifBlank { entry.title },
-                        subtitle = cleanSubtitle?.takeIf { it.isNotBlank() } ?: entry.subtitle,
-                        coverUrl = cleanCover ?: entry.coverUrl,
-                    )
-                } else {
-                    entry
-                }
-            }
-            if (nextSaved != cachedSavedExternalPlaylists) {
-                cachedSavedExternalPlaylists = nextSaved
-                saveExternalPlaylistsLocked(nextSaved)
-                savedUpdated = nextSaved
-            }
-        }
-        if (pinnedUpdated != null || savedUpdated != null) {
-            _uiState.update { state ->
-                val updatedPlaylists = if (savedUpdated != null) {
-                    state.playlists.map { pl ->
-                        if (normalizeCollectionId(pl.id) == norm) {
-                            pl.copy(
-                                name = cleanTitle.ifBlank { pl.name },
-                                thumbnailUrl = cleanCover ?: pl.thumbnailUrl,
-                            )
-                        } else {
-                            pl
-                        }
-                    }
-                } else {
-                    state.playlists
-                }
-                state.copy(
-                    pinnedCollections = pinnedUpdated ?: state.pinnedCollections,
-                    playlists = updatedPlaylists,
-                )
-            }
-        }
-    }
-
-    private fun getCachedArtistPage(key: String): AndroidArtistPage? {
-        val norm = key.trim().lowercase()
-        if (norm.isBlank()) return null
-        val entry = artistPageCache[norm] ?: return null
-        if (SystemClock.elapsedRealtime() - entry.cachedAtMs >= ARTIST_CACHE_TTL_MS) {
-            artistPageCache.remove(norm, entry)
-            return null
-        }
-        return entry.page
-    }
-
-    private fun putCachedArtistPage(page: AndroidArtistPage, queryName: String = "") {
-        val now = SystemClock.elapsedRealtime()
-        val entry = CachedArtistPage(page = page, cachedAtMs = now)
-        if (page.id.isNotBlank()) {
-            artistPageCache[page.id.trim().lowercase()] = entry
-        }
-        if (page.name.isNotBlank()) {
-            artistPageCache["name:${page.name.trim().lowercase()}"] = entry
-        }
-        if (queryName.isNotBlank()) {
-            artistPageCache["name:${queryName.trim().lowercase()}"] = entry
-        }
-        if (artistPageCache.size > ARTIST_CACHE_MAX_ENTRIES * 2) {
-            artistPageCache.entries
-                .sortedBy { it.value.cachedAtMs }
-                .take(artistPageCache.size - ARTIST_CACHE_MAX_ENTRIES * 2)
-                .forEach { artistPageCache.remove(it.key, it.value) }
-        }
-        val primaryKey = page.name.trim().lowercase()
-        if (primaryKey.isNotBlank() && page.id.startsWith("UC")) {
-            val card = AndroidHomeCard(
-                kind = AndroidHomeCardKind.ARTIST,
-                id = page.id,
-                title = page.name,
-                subtitle = page.monthlyListeners ?: page.subscribers ?: uiStrings().artistDefault,
-                thumbnailUrl = page.thumbnailUrl,
-                track = null,
-            )
-            resolvedArtistCardCache[primaryKey] = card
-            queryName.trim().lowercase().takeIf { it.isNotBlank() }?.let {
-                resolvedArtistCardCache.putIfAbsent(it, card)
-            }
-        }
-    }
-
-    private fun seedArtistCardsFromShelves(shelves: List<AndroidHomeShelf>) {
-        shelves.asSequence()
-            .flatMap { it.cards.asSequence() }
-            .filter { it.kind == AndroidHomeCardKind.ARTIST && it.title.isNotBlank() }
-            .forEach { card ->
-                val key = card.title.trim().lowercase()
-                val existing = resolvedArtistCardCache[key]
-                if (existing == null || (!existing.id.startsWith("UC") && card.id.startsWith("UC"))) {
-                    resolvedArtistCardCache[key] = card
-                }
-            }
-    }
-
-    private fun buildRecentArtistCards(
+    internal fun buildRecentArtistCards(
         historyTracks: List<AndroidTrack>,
         shelves: List<AndroidHomeShelf>,
-    ): List<AndroidHomeCard> {
-        seedArtistCardsFromShelves(shelves)
-        val merged = linkedMapOf<String, AndroidHomeCard>()
-        for (track in historyTracks) {
-            val primary = extractPrimaryArtistName(track.artist)
-            val key = primary.lowercase()
-            if (key.isBlank() || merged.containsKey(key)) continue
-            val cached = resolvedArtistCardCache[key]
-            merged[key] = if (cached != null) {
-                if (cached.thumbnailUrl.isNullOrBlank() && !track.thumbnailUrl.isNullOrBlank()) {
-                    cached.copy(thumbnailUrl = track.thumbnailUrl)
-                } else {
-                    cached
-                }
-            } else {
-                AndroidHomeCard(
-                    kind = AndroidHomeCardKind.ARTIST,
-                    id = "",
-                    title = primary,
-                    subtitle = uiStrings().recentlyPlayedSubtitle,
-                    thumbnailUrl = track.thumbnailUrl,
-                    track = null,
-                )
-            }
-        }
-        shelves.asSequence()
-            .flatMap { it.cards.asSequence() }
-            .filter { it.kind == AndroidHomeCardKind.ARTIST && it.title.isNotBlank() }
-            .forEach { card ->
-                val key = card.title.trim().lowercase()
-                if (!merged.containsKey(key)) {
-                    merged[key] = card
-                }
-            }
-        return merged.values.take(16)
-    }
+    ): List<AndroidHomeCard> = buildRecentArtistCardsImpl(historyTracks, shelves)
 
-    private fun ensureArtistCardEnriched(rawArtist: String) {
-        val primary = extractPrimaryArtistName(rawArtist)
-        val key = primary.lowercase()
-        if (key.isBlank()) return
-        val existing = resolvedArtistCardCache[key]
-        if (existing != null && existing.id.startsWith("UC") && !existing.thumbnailUrl.isNullOrBlank()) {
-            return
-        }
-        if (!inFlightArtistLookups.add(key)) return
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val engine = requireEngine()
-                val page = getCachedArtistPage("name:$key")
-                    ?: runSuspendCatching { engine.fetchArtistByName(primary) }.getOrNull()
-                        ?.also { putCachedArtistPage(it, primary) }
-                if (page != null && page.id.startsWith("UC")) {
-                    val refreshed = buildRecentArtistCards(_lastPlayedTracks.value, _uiState.value.shelves)
-                    _uiState.update { it.copy(recentArtistCards = refreshed) }
-                }
-            } finally {
-                inFlightArtistLookups.remove(key)
-            }
-        }
-    }
+    internal fun loadLocalLastPlayedHistory(): List<AndroidTrack> = loadLocalLastPlayedHistoryImpl()
 
-    private fun loadLocalLastPlayedHistory(): List<AndroidTrack> = synchronized(historyLock) {
-        localHistoryCache?.let { return it }
-        val raw = historyPrefs.getString(LAST_PLAYED_KEY, null)
-        val loaded = if (raw == null) {
-            emptyList()
-        } else {
-            runCatching {
-                val arr = JSONArray(raw)
-                val parsed = buildList {
-                    for (i in 0 until arr.length()) {
-                        val obj = arr.optJSONObject(i) ?: continue
-                        val id = obj.optString("id").trim()
-                        val title = obj.optString("title").trim()
-                        if (id.isBlank() || title.isBlank()) continue
-                        add(
-                            AndroidTrack(
-                                id = id,
-                                title = title,
-                                artist = obj.optString("artist"),
-                                album = obj.optString("album"),
-                                durationSecs = obj.optLong("durationSecs", 0L).takeIf { it > 0L }?.toULong(),
-                                thumbnailUrl = obj.optString("thumbnailUrl").takeIf { it.isNotBlank() },
-                                liked = obj.optBoolean("liked", false),
-                                albumId = obj.optString("albumId").takeIf { it.isNotBlank() },
-                                isExplicit = obj.optBoolean("isExplicit", false),
-                            )
-                        )
-                    }
-                }
-                deduplicateTracks(parsed).take(MAX_LAST_PLAYED_HISTORY)
-            }.getOrDefault(emptyList())
-        }
-        localHistoryCache = loaded
-        loaded
-    }
+    internal fun recordLastPlayed(track: AndroidTrack) = recordLastPlayedImpl(track)
 
-    private fun saveLocalLastPlayedHistory(tracks: List<AndroidTrack>) = synchronized(historyLock) {
-        val clean = deduplicateTracks(tracks).take(MAX_LAST_PLAYED_HISTORY)
-        localHistoryCache = clean
-        val arr = JSONArray()
-        clean.forEach { t ->
-            arr.put(
-                JSONObject().apply {
-                    put("id", t.id)
-                    put("title", t.title)
-                    put("artist", t.artist)
-                    put("album", t.album)
-                    put("durationSecs", t.durationSecs?.toLong() ?: 0L)
-                    put("thumbnailUrl", t.thumbnailUrl ?: "")
-                    put("liked", t.liked)
-                    put("albumId", t.albumId ?: "")
-                    put("isExplicit", t.isExplicit)
-                }
-            )
-        }
-        historyPrefs.edit().putString(LAST_PLAYED_KEY, arr.toString()).apply()
-    }
+    internal fun mergeYtmListeningHistory(ytmHistory: List<AndroidTrack>) = mergeYtmListeningHistoryImpl(ytmHistory)
 
-    private fun recordLastPlayed(track: AndroidTrack) {
-        if (track.id.isBlank() || track.title.isBlank()) return
-        val trackKey = canonicalTrackKey(track)
-        val merged = synchronized(historyLock) {
-            val currentLocal = loadLocalLastPlayedHistory()
-            val updatedLocal = deduplicateTracks(
-                listOf(track) + currentLocal.filterNot {
-                    it.id == track.id || canonicalTrackKey(it) == trackKey
-                }
-            ).take(MAX_LAST_PLAYED_HISTORY)
-            saveLocalLastPlayedHistory(updatedLocal)
-            deduplicateTracks(
-                updatedLocal + _lastPlayedTracks.value.filterNot { existing ->
-                    existing.id == track.id ||
-                        canonicalTrackKey(existing) == trackKey ||
-                        updatedLocal.any { it.id == existing.id || canonicalTrackKey(it) == canonicalTrackKey(existing) }
-                }
-            ).take(MAX_LAST_PLAYED_HISTORY)
-        }
-        _lastPlayedTracks.value = merged
-        val updatedArtists = buildRecentArtistCards(merged, _uiState.value.shelves)
-        _uiState.update { it.copy(lastPlayedTracks = merged, recentArtistCards = updatedArtists) }
-        ensureArtistCardEnriched(track.artist)
-    }
-
-    private fun mergeYtmListeningHistory(ytmHistory: List<AndroidTrack>) {
-        if (ytmHistory.isEmpty()) return
-        val merged = synchronized(historyLock) {
-            val local = loadLocalLastPlayedHistory()
-            deduplicateTracks(local + ytmHistory).take(MAX_LAST_PLAYED_HISTORY)
-        }
-        _lastPlayedTracks.value = merged
-        val updatedArtists = buildRecentArtistCards(merged, _uiState.value.shelves)
-        _uiState.update { it.copy(lastPlayedTracks = merged, recentArtistCards = updatedArtists) }
-    }
-
-    fun refreshListeningHistory() {
-        if (listeningHistoryJob?.isActive == true) return
-        listeningHistoryJob = viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            if (!runCatching { engine.isSignedIn() }.getOrDefault(false)) return@launch
-            runSuspendCatching { engine.fetchListeningHistory() }
-                .onSuccess { history ->
-                    mergeYtmListeningHistory(history)
-                }
-                .onFailure { err ->
-                    handleRateLimitIfNeeded(err)
-                    Log.w("SonataLibrary", "Listening history refresh failed: ${err.message}")
-                }
-        }
-    }
+    fun refreshListeningHistory() = refreshListeningHistoryImpl()
 
     private fun resolvePlaybackPlaylistId(
         track: AndroidTrack,
@@ -1331,7 +735,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         return trackCollectionContext[track.id]
     }
 
-    private suspend fun resolveYtmVideoIdForTrack(
+    internal suspend fun resolveYtmVideoIdForTrack(
         engine: SonataEngineGateway,
         track: AndroidTrack,
     ): String? {
@@ -1362,7 +766,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         return match
     }
 
-    private suspend fun resolveYtmVideoIds(
+    internal suspend fun resolveYtmVideoIds(
         engine: SonataEngineGateway,
         tracks: List<AndroidTrack>,
     ): List<String> = tracks.mapNotNull { resolveYtmVideoIdForTrack(engine, it) }.distinct()
@@ -1410,7 +814,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private fun uiStrings(): SonataStrings =
+    internal fun uiStrings(): SonataStrings =
         resolveSonataStrings(preferences.state.value.appLanguage)
 
     private fun resolveEffectiveLanguageCode(appLanguage: AppLanguage): String = when (appLanguage) {
@@ -1424,7 +828,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private fun resolvedDownloadCoverUrl(track: AndroidTrack): String? =
+    internal fun resolvedDownloadCoverUrl(track: AndroidTrack): String? =
         track.thumbnailUrl?.takeIf { it.isNotBlank() }
             ?: if (!track.id.startsWith("jiosaavn:") && !track.id.startsWith("local:") && !isSelfHostedId(track.id)) {
                 "https://i.ytimg.com/vi/${track.id}/hqdefault.jpg"
@@ -1432,9 +836,9 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                 null
             }
 
-    private suspend fun requireEngine(): SonataEngineGateway = engineDeferred.await()
+    internal suspend fun requireEngine(): SonataEngineGateway = engineDeferred.await()
 
-    private fun getCachedStream(trackId: String): AndroidResolvedStream? {
+    internal fun getCachedStream(trackId: String): AndroidResolvedStream? {
         val entry = streamCache[trackId] ?: return null
         if (SystemClock.elapsedRealtime() - entry.cachedAtMs >= STREAM_CACHE_TTL_MS) {
             streamCache.remove(trackId, entry)
@@ -1443,7 +847,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         return entry.stream
     }
 
-    private fun putCachedStream(trackId: String, stream: AndroidResolvedStream) {
+    internal fun putCachedStream(trackId: String, stream: AndroidResolvedStream) {
         val now = SystemClock.elapsedRealtime()
         streamCache[trackId] = CachedStream(stream = stream, cachedAtMs = now)
         if (streamCache.size > STREAM_CACHE_MAX_ENTRIES) {
@@ -1487,7 +891,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         startColdLaunchBootstrap(application, supports120Hz)
     }
 
-    private fun resolveDisplayBadgeForTrack(
+    internal fun resolveDisplayBadgeForTrack(
         trackId: String,
         initialBadge: String,
     ): String {
@@ -1553,70 +957,15 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private fun observeDiscordPresence() {
-        viewModelScope.launch {
-            val playbackFlow = _uiState
-                .map { Triple(it.activeTrack, it.isPlaying, it.isBuffering) }
-                .distinctUntilChanged()
-            combine(
-                preferences.discordToken,
-                preferences.state,
-                playbackFlow,
-                discordSeekSignal,
-            ) { token, prefsState, (track, isPlaying, isBuffering), _ ->
-                val config = DiscordPresenceConfig(
-                    enabled = prefsState.discordRpcEnabled,
-                    appId = prefsState.discordAppId,
-                    activityType = prefsState.discordActivityType,
-                    showTimestamps = prefsState.discordShowTimestamps,
-                    showArtwork = prefsState.discordShowArtwork,
-                    showButtons = prefsState.discordShowButtons,
-                )
-                val presenceTrack = track?.let { active ->
-                    val durationMs = playbackClock.durationMs.takeIf { it > 0L }
-                        ?: ((active.durationSecs?.toLong() ?: 0L) * 1000L)
-                    DiscordPresenceTrack(
-                        id = active.id,
-                        title = active.title,
-                        artist = active.artist,
-                        album = active.album,
-                        durationMs = durationMs,
-                        artworkUrl = active.thumbnailUrl,
-                        isPlaying = isPlaying && !isBuffering,
-                        positionMs = playbackClock.positionMs,
-                        playbackSpeed = prefsState.playbackSpeed,
-                    )
-                }
-                Triple(token, config, presenceTrack)
-            }.collect { (token, config, presenceTrack) ->
-                discordRpcClient.updateAuthAndConfig(token, config)
-                discordRpcClient.updatePresence(presenceTrack)
-            }
-        }
-    }
+    internal fun observeDiscordPresence() = observeDiscordPresenceImpl()
 
-    fun saveDiscordToken(token: String) {
-        val cleaned = token.trim()
-        if (cleaned.isEmpty()) return
-        preferences.setDiscordToken(cleaned)
-        if (!preferences.state.value.discordRpcEnabled) {
-            preferences.update { it.copy(discordRpcEnabled = true) }
-        }
-    }
+    fun saveDiscordToken(token: String) = saveDiscordTokenImpl(token)
 
-    fun signOutDiscord() {
-        preferences.clearDiscordToken()
-        discordRpcClient.updateAuthAndConfig(
-            newToken = null,
-            newConfig = DiscordPresenceConfig(enabled = false, appId = preferences.state.value.discordAppId),
-        )
-    }
+    fun signOutDiscord() = signOutDiscordImpl()
 
-    fun reconnectDiscord() {
-        discordRpcClient.reconnect()
-    }
+    fun reconnectDiscord() = reconnectDiscordImpl()
 
-    private fun applyAudioSettings(state: SonataSettingsState) {
+    internal fun applyAudioSettings(state: SonataSettingsState) {
         PlaybackAudioBridge.applyPlaybackSpeed(state.playbackSpeed)
         PlaybackAudioBridge.applySkipSilence(state.skipSilenceEnabled)
         PlaybackAudioBridge.applyEqualizer(state.eqEnabled, state.eqBandsDb)
@@ -1911,7 +1260,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         )
     }
 
-    private fun isGenerationActive(generation: Long, trackId: String? = null): Boolean {
+    internal fun isGenerationActive(generation: Long, trackId: String? = null): Boolean {
         if (generation == 0L) {
             return trackId == null || _uiState.value.activeTrack?.id == trackId
         }
@@ -1985,7 +1334,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private val autoDataProvider: LiveAutoDataProvider by lazy {
+    internal val autoDataProvider: LiveAutoDataProvider by lazy {
         LiveAutoDataProvider(
             likedTracksProvider = {
                 likedTracksCache.ifEmpty {
@@ -2012,32 +1361,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         )
     }
 
-    fun playAutoMediaId(mediaId: String) {
-        if (mediaId.isBlank()) return
-        val resolved = autoDataProvider.resolvePlaybackTarget(mediaId)
-        if (resolved != null) {
-            playTrack(resolved.first, resolved.second)
-            return
-        }
-        if (mediaId.startsWith(dev.sonata.android.playback.SonataAutoBrowser.PLAYLIST_PREFIX)) {
-            val playlistId = mediaId.removePrefix(dev.sonata.android.playback.SonataAutoBrowser.PLAYLIST_PREFIX)
-            viewModelScope.launch(Dispatchers.IO) {
-                val engine = requireEngine()
-                val tracks = fetchTracksForCollectionAction(engine, playlistId)
-                if (tracks.isNotEmpty()) {
-                    autoPlaylistTracksCache[playlistId] = tracks
-                    withContext(Dispatchers.Main) {
-                        playTrack(tracks.first(), tracks)
-                    }
-                }
-            }
-            return
-        }
-        val active = _uiState.value.activeTrack
-        if (active != null && active.id == mediaId) {
-            playTrack(active, _uiState.value.queue)
-        }
-    }
+    fun playAutoMediaId(mediaId: String) = playAutoMediaIdImpl(mediaId)
 
     private fun registerQueueBridge() {
         PlaybackAudioBridge.registerAutoDataProvider(autoDataProvider)
@@ -2092,7 +1416,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private fun handleRateLimitIfNeeded(err: Throwable) {
+    internal fun handleRateLimitIfNeeded(err: Throwable) {
         val backoffMs = RateLimitPolicy.backoffMsFor(err, RATE_LIMIT_BACKOFF_MS) ?: return
         rateLimitBackoffUntilMs = SystemClock.elapsedRealtime() + backoffMs
         Log.w(
@@ -2734,736 +2058,61 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(showSettingsSheet = false) }
     }
 
-    fun openServersScreen(initialServerId: String? = null) {
-        _uiState.update { it.copy(showServersSheet = true) }
-        viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            val list = runSuspendCatching { engine.listServers() }.getOrDefault(emptyList())
-            _uiState.update { it.copy(servers = list) }
-            val target = initialServerId?.let { id -> list.firstOrNull { it.id == id } }
-            if (target != null) {
-                openServerBrowser(target)
-            }
-        }
-    }
+    fun openServersScreen(initialServerId: String? = null) = openServersScreenImpl(initialServerId)
 
-    fun dismissServersScreen() {
-        serverBrowseJob?.cancel()
-        serverTestJob?.cancel()
-        serverSearchJob?.cancel()
-        _serverBrowserState.value = ServerBrowserState()
-        _uiState.update { it.copy(showServersSheet = false) }
-    }
+    fun dismissServersScreen() = dismissServersScreenImpl()
 
-    private fun onPersonalOnlyModeChanged(enabled: Boolean) {
-        if (enabled) {
-            refreshJob?.cancel()
-            radioRefreshJob?.cancel()
-            homeMoodChipJob?.cancel()
-            moodCategoryJob?.cancel()
-            autoplayJob?.cancel()
-            autoplayPrefetchJob?.cancel()
-            prefetchedAutoplaySeedKey = null
-            prefetchedAutoplayTracks = emptyList()
-            homeFetchInFlight = false
-            radioFetchInFlight = false
-            val localOnly = mergePlaylistsWithLocal(emptyList())
-            _uiState.update { state ->
-                state.copy(
-                    loading = false,
-                    refreshing = false,
-                    shelves = emptyList(),
-                    exploreShelves = emptyList(),
-                    moodCategories = emptyList(),
-                    homeMoodChips = emptyList(),
-                    selectedHomeMoodParams = null,
-                    radioMixShelves = emptyList(),
-                    playlists = localOnly,
-                    ownedPlaylistIds = emptySet(),
-                    status = sourcesStrings(preferences.state.value.appLanguage).personalOnlyModeBadge,
-                )
-            }
-            scanLocalMusic()
-        } else {
-            lastHomeExploreFetchAtMs = 0L
-            lastRadioFetchAtMs = 0L
-            loadHome(forceRefresh = true)
-        }
-    }
+    internal fun onPersonalOnlyModeChanged(enabled: Boolean) = onPersonalOnlyModeChangedImpl(enabled)
 
-    fun scanLocalMusic() {
-        val ctx = getApplication<Application>()
-        if (!preferences.state.value.localMusicEnabled) {
-            localContentUrisByTrackId.clear()
-            localTracksById.clear()
-            _uiState.update {
-                it.copy(
-                    localMusicLibrary = LocalMusicLibrary(
-                        permissionGranted = LocalMusicScanner.hasAudioReadPermission(ctx),
-                    ),
-                    localMusicLoading = false,
-                )
-            }
-            return
-        }
-        localScanJob?.cancel()
-        _uiState.update { it.copy(localMusicLoading = true) }
-        localScanJob = viewModelScope.launch(Dispatchers.IO) {
-            val library = LocalMusicScanner.scanAsync(ctx)
-            localContentUrisByTrackId.clear()
-            localTracksById.clear()
-            library.tracks.forEach { localTrack ->
-                localContentUrisByTrackId[localTrack.id] = localTrack.contentUri
-                localTracksById[localTrack.id] = localTrack
-            }
-            _uiState.update {
-                it.copy(
-                    localMusicLibrary = library,
-                    localMusicLoading = false,
-                )
-            }
-        }
-    }
+    fun scanLocalMusic() = scanLocalMusicImpl()
 
-    private fun resolveLocalContentUri(trackId: String): String? {
-        if (!trackId.startsWith(LocalMusicScanner.LOCAL_ID_PREFIX) || trackId == DOWNLOADS_PLAYLIST_ID) {
-            return null
-        }
-        localContentUrisByTrackId[trackId]?.let { return it }
-        val mediaId = trackId.removePrefix(LocalMusicScanner.LOCAL_ID_PREFIX).toLongOrNull()
-        if (mediaId != null && mediaId > 0L) {
-            val reconstructed = ContentUris.withAppendedId(
-                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
-                mediaId,
-            ).toString()
-            localContentUrisByTrackId[trackId] = reconstructed
-            return reconstructed
-        }
-        return null
-    }
+    internal fun resolveLocalContentUri(trackId: String): String? = resolveLocalContentUriImpl(trackId)
 
-    private fun resolveLocalInitialBadge(trackId: String): String {
-        val local = localTracksById[trackId] ?: return "Local"
-        val codec = when {
-            local.mimeType.contains("flac", ignoreCase = true) -> "FLAC"
-            local.mimeType.contains("alac", ignoreCase = true) -> "ALAC"
-            local.mimeType.contains("opus", ignoreCase = true) -> "OPUS"
-            local.mimeType.contains("mpeg", ignoreCase = true) -> "MP3"
-            local.mimeType.contains("mp4", ignoreCase = true) || local.mimeType.contains("aac", ignoreCase = true) -> "AAC"
-            local.mimeType.contains("wav", ignoreCase = true) -> "WAV"
-            else -> "Local"
-        }
-        return if (local.bitrateKbps > 0) "$codec · ${local.bitrateKbps} kbps" else codec
-    }
+    internal fun resolveLocalInitialBadge(trackId: String): String = resolveLocalInitialBadgeImpl(trackId)
 
-    fun probeServerHealth(serverId: String) {
-        if (serverId.isBlank()) return
-        serverHealthJobs.remove(serverId)?.cancel()
-        _uiState.update { state ->
-            val current = state.serverDiagnostics[serverId] ?: ServerDiagnosticState()
-            state.copy(
-                serverDiagnostics = state.serverDiagnostics + (
-                    serverId to current.copy(checkingHealth = true, healthError = null)
-                    ),
-            )
-        }
-        val job = viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            runSuspendCatching { engine.probeServerHealth(serverId) }
-                .onSuccess { report ->
-                    _uiState.update { state ->
-                        val current = state.serverDiagnostics[serverId] ?: ServerDiagnosticState()
-                        state.copy(
-                            serverDiagnostics = state.serverDiagnostics + (
-                                serverId to current.copy(
-                                    checkingHealth = false,
-                                    healthReport = report,
-                                    healthError = if (report.alive) null else report.message,
-                                )
-                                ),
-                        )
-                    }
-                }
-                .onFailure { err ->
-                    _uiState.update { state ->
-                        val current = state.serverDiagnostics[serverId] ?: ServerDiagnosticState()
-                        state.copy(
-                            serverDiagnostics = state.serverDiagnostics + (
-                                serverId to current.copy(
-                                    checkingHealth = false,
-                                    healthError = err.message ?: "Health check failed",
-                                )
-                                ),
-                        )
-                    }
-                }
-        }
-        serverHealthJobs[serverId] = job
-    }
+    fun probeServerHealth(serverId: String) = probeServerHealthImpl(serverId)
 
-    fun runServerSpeedTest(serverId: String) {
-        if (serverId.isBlank()) return
-        serverSpeedJobs.remove(serverId)?.cancel()
-        _uiState.update { state ->
-            val current = state.serverDiagnostics[serverId] ?: ServerDiagnosticState()
-            state.copy(
-                serverDiagnostics = state.serverDiagnostics + (
-                    serverId to current.copy(runningSpeedTest = true, speedTestError = null)
-                    ),
-            )
-        }
-        val job = viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            runSuspendCatching { engine.runServerSpeedTest(serverId) }
-                .onSuccess { report ->
-                    _uiState.update { state ->
-                        val current = state.serverDiagnostics[serverId] ?: ServerDiagnosticState()
-                        val updatedHealth = if (report.alive) {
-                            uniffi.sonata_android.AndroidServerHealthReport(
-                                alive = true,
-                                latencyMs = report.latencyMs,
-                                message = report.sampleNote,
-                            )
-                        } else {
-                            current.healthReport
-                        }
-                        state.copy(
-                            serverDiagnostics = state.serverDiagnostics + (
-                                serverId to current.copy(
-                                    runningSpeedTest = false,
-                                    speedTestReport = report,
-                                    speedTestError = if (report.alive) null else report.sampleNote,
-                                    healthReport = updatedHealth,
-                                )
-                                ),
-                        )
-                    }
-                }
-                .onFailure { err ->
-                    _uiState.update { state ->
-                        val current = state.serverDiagnostics[serverId] ?: ServerDiagnosticState()
-                        state.copy(
-                            serverDiagnostics = state.serverDiagnostics + (
-                                serverId to current.copy(
-                                    runningSpeedTest = false,
-                                    speedTestError = err.message ?: "Speed test failed",
-                                )
-                                ),
-                        )
-                    }
-                }
-        }
-        serverSpeedJobs[serverId] = job
-    }
+    fun runServerSpeedTest(serverId: String) = runServerSpeedTestImpl(serverId)
 
-    fun loadServerSourceSummary(serverId: String, forceRefresh: Boolean = false) {
-        if (serverId.isBlank()) return
-        val existing = _uiState.value.serverSourceSnapshots[serverId]
-        if (!forceRefresh && existing != null && (existing.loading || existing.albums.isNotEmpty() || existing.playlists.isNotEmpty() || existing.tracks.isNotEmpty())) {
-            return
-        }
-        val server = _uiState.value.servers.firstOrNull { it.id == serverId } ?: return
-        _uiState.update { state ->
-            state.copy(
-                serverSourceSnapshots = state.serverSourceSnapshots + (
-                    serverId to ServerSourceSummary(serverId = serverId, loading = true)
-                    ),
-            )
-        }
-        viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            if (server.kind == AndroidServerKind.WEB_DAV) {
-                runSuspendCatching { engine.browseWebdavFolder(serverId, null) }
-                    .onSuccess { listing ->
-                        val folderPlaylists = listing.folders.map { dir ->
-                            AndroidPlaylist(
-                                id = dir.id,
-                                name = dir.name,
-                                thumbnailUrl = null,
-                                isOwned = false,
-                            )
-                        }
-                        _uiState.update { state ->
-                            state.copy(
-                                serverSourceSnapshots = state.serverSourceSnapshots + (
-                                    serverId to ServerSourceSummary(
-                                        serverId = serverId,
-                                        playlists = folderPlaylists,
-                                        tracks = listing.tracks,
-                                        loading = false,
-                                    )
-                                    ),
-                            )
-                        }
-                    }
-                    .onFailure { err ->
-                        _uiState.update { state ->
-                            state.copy(
-                                serverSourceSnapshots = state.serverSourceSnapshots + (
-                                    serverId to ServerSourceSummary(
-                                        serverId = serverId,
-                                        loading = false,
-                                        error = err.message,
-                                    )
-                                    ),
-                            )
-                        }
-                    }
-                return@launch
-            }
-            coroutineScope {
-                val albumsDef = async { runSuspendCatching { engine.listServerAlbums(serverId, null, null) } }
-                val playlistsDef = async { runSuspendCatching { engine.listServerPlaylists(serverId) } }
-                val artistsDef = async { runSuspendCatching { engine.listServerArtists(serverId, null) } }
-                val searchTracksDef = async { runSuspendCatching { engine.searchServer(serverId, "", 40u) } }
-                val albumsRes = albumsDef.await()
-                val playlistsRes = playlistsDef.await()
-                val artistsRes = artistsDef.await()
-                val tracksRes = searchTracksDef.await()
-                val err = albumsRes.exceptionOrNull() ?: playlistsRes.exceptionOrNull()
-                _uiState.update { state ->
-                    state.copy(
-                        serverSourceSnapshots = state.serverSourceSnapshots + (
-                            serverId to ServerSourceSummary(
-                                serverId = serverId,
-                                albums = albumsRes.getOrDefault(emptyList()),
-                                playlists = playlistsRes.getOrDefault(emptyList()),
-                                artists = artistsRes.getOrDefault(emptyList()),
-                                tracks = tracksRes.getOrNull()?.tracks.orEmpty(),
-                                loading = false,
-                                error = if (albumsRes.isFailure && playlistsRes.isFailure) err?.message else null,
-                            )
-                            ),
-                    )
-                }
-            }
-        }
-    }
+    fun loadServerSourceSummary(serverId: String, forceRefresh: Boolean = false) =
+        loadServerSourceSummaryImpl(serverId, forceRefresh)
 
-    private fun clearSelfHostedCaches() {
-        streamCache.keys.filter { isSelfHostedId(it) }.forEach { streamCache.remove(it) }
-        PlaybackAudioBridge.clearStreamHeaders()
-    }
+    fun clearServerTestResult() = clearServerTestResultImpl()
 
-    fun clearServerTestResult() {
-        _serverBrowserState.update {
-            it.copy(testingConnection = false, testResultMessage = null, testResultIsError = false)
-        }
-    }
+    fun testServerConnection(profile: AndroidServerProfile) = testServerConnectionImpl(profile)
 
-    fun testServerConnection(profile: AndroidServerProfile) {
-        serverTestJob?.cancel()
-        val s = uiStrings().servers
-        _serverBrowserState.update {
-            it.copy(testingConnection = true, testResultMessage = s.testingConnection, testResultIsError = false)
-        }
-        serverTestJob = viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            runSuspendCatching { engine.testServerConnection(profile) }
-                .onSuccess { detail ->
-                    _serverBrowserState.update {
-                        it.copy(
-                            testingConnection = false,
-                            testResultMessage = s.connectionOk(detail),
-                            testResultIsError = false,
-                        )
-                    }
-                }
-                .onFailure { err ->
-                    _serverBrowserState.update {
-                        it.copy(
-                            testingConnection = false,
-                            testResultMessage = s.connectionFailed(err.message.orEmpty()),
-                            testResultIsError = true,
-                        )
-                    }
-                }
-        }
-    }
+    fun saveServer(profile: AndroidServerProfile, onComplete: () -> Unit = {}) =
+        saveServerImpl(profile, onComplete)
 
-    fun saveServer(profile: AndroidServerProfile, onComplete: () -> Unit = {}) {
-        val s = uiStrings().servers
-        _serverBrowserState.update { it.copy(saving = true, error = null) }
-        viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            runSuspendCatching { engine.upsertServer(profile) }
-                .onSuccess { updated ->
-                    clearSelfHostedCaches()
-                    val activeId = _serverBrowserState.value.activeServer?.id
-                    val refreshedActive = activeId?.let { id -> updated.firstOrNull { it.id == id } }
-                    _serverBrowserState.update {
-                        it.copy(
-                            saving = false,
-                            activeServer = refreshedActive ?: it.activeServer,
-                            error = null,
-                        )
-                    }
-                    _uiState.update {
-                        it.copy(
-                            servers = updated,
-                            status = s.serverSaved(profile.name.trim().ifBlank { profile.baseUrl }),
-                        )
-                    }
-                    withContext(Dispatchers.Main) { onComplete() }
-                }
-                .onFailure { err ->
-                    _serverBrowserState.update {
-                        it.copy(
-                            saving = false,
-                            error = s.connectionFailed(err.message.orEmpty()),
-                        )
-                    }
-                }
-        }
-    }
+    fun deleteServer(serverId: String) = deleteServerImpl(serverId)
 
-    fun deleteServer(serverId: String) {
-        val s = uiStrings().servers
-        val removedName = _uiState.value.servers.firstOrNull { it.id == serverId }?.name ?: serverId
-        viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            runSuspendCatching { engine.deleteServer(serverId) }
-                .onSuccess { updated ->
-                    clearSelfHostedCaches()
-                    if (_serverBrowserState.value.activeServer?.id == serverId) {
-                        _serverBrowserState.value = ServerBrowserState()
-                    }
-                    _uiState.update {
-                        it.copy(
-                            servers = updated,
-                            status = s.serverDeleted(removedName),
-                        )
-                    }
-                }
-                .onFailure { err ->
-                    _serverBrowserState.update { it.copy(error = err.message) }
-                }
-        }
-    }
+    fun setServerEnabled(serverId: String, enabled: Boolean) = setServerEnabledImpl(serverId, enabled)
 
-    fun setServerEnabled(serverId: String, enabled: Boolean) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            runSuspendCatching { engine.setServerEnabled(serverId, enabled) }
-                .onSuccess { updated ->
-                    clearSelfHostedCaches()
-                    val refreshedActive = _serverBrowserState.value.activeServer?.let { cur ->
-                        if (cur.id == serverId) updated.firstOrNull { it.id == serverId } else cur
-                    }
-                    _serverBrowserState.update { it.copy(activeServer = refreshedActive) }
-                    _uiState.update { it.copy(servers = updated) }
-                }
-        }
-    }
+    fun openServerBrowser(server: AndroidServerProfile) = openServerBrowserImpl(server)
 
-    fun openServerBrowser(server: AndroidServerProfile) {
-        serverBrowseJob?.cancel()
-        serverSearchJob?.cancel()
-        _serverBrowserState.value = ServerBrowserState(
-            activeServer = server,
-            loading = true,
-            webdavPathStack = if (server.kind == AndroidServerKind.WEB_DAV) {
-                listOf(null to uiStrings().servers.rootFolder)
-            } else {
-                emptyList()
-            },
-        )
-        serverBrowseJob = viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            if (server.kind == AndroidServerKind.WEB_DAV) {
-                runSuspendCatching { engine.browseWebdavFolder(server.id, null) }
-                    .onSuccess { listing ->
-                        _serverBrowserState.update {
-                            it.copy(
-                                loading = false,
-                                webdavFolders = listing.folders,
-                                webdavTracks = listing.tracks,
-                                error = null,
-                            )
-                        }
-                    }
-                    .onFailure { err ->
-                        _serverBrowserState.update {
-                            it.copy(loading = false, error = err.message)
-                        }
-                    }
-                return@launch
-            }
+    fun closeServerBrowser() = closeServerBrowserImpl()
 
-            coroutineScope {
-                val libsDef = async { runSuspendCatching { engine.listServerLibraries(server.id) } }
-                val playlistsDef = async { runSuspendCatching { engine.listServerPlaylists(server.id) } }
-                val albumsDef = async { runSuspendCatching { engine.listServerAlbums(server.id, null, null) } }
-                val artistsDef = async { runSuspendCatching { engine.listServerArtists(server.id, null) } }
+    fun selectServerLibrary(libraryId: String?) = selectServerLibraryImpl(libraryId)
 
-                val libsRes = libsDef.await()
-                val playlistsRes = playlistsDef.await()
-                val albumsRes = albumsDef.await()
-                val artistsRes = artistsDef.await()
-                val firstErr = libsRes.exceptionOrNull()
-                    ?: playlistsRes.exceptionOrNull()
-                    ?: albumsRes.exceptionOrNull()
-                    ?: artistsRes.exceptionOrNull()
+    fun openServerArtist(artist: AndroidHomeCard) = openServerArtistImpl(artist)
 
-                _serverBrowserState.update {
-                    it.copy(
-                        loading = false,
-                        libraries = libsRes.getOrDefault(emptyList()),
-                        playlists = playlistsRes.getOrDefault(emptyList()),
-                        albums = albumsRes.getOrDefault(emptyList()),
-                        artists = artistsRes.getOrDefault(emptyList()),
-                        error = if (libsRes.isFailure && playlistsRes.isFailure && albumsRes.isFailure) {
-                            firstErr?.message
-                        } else {
-                            null
-                        },
-                    )
-                }
-            }
-        }
-    }
+    fun closeServerArtist() = closeServerArtistImpl()
 
-    fun closeServerBrowser() {
-        serverBrowseJob?.cancel()
-        serverSearchJob?.cancel()
-        _serverBrowserState.value = ServerBrowserState()
-    }
+    fun openWebDavFolder(folderIdOrPath: String?, label: String) = openWebDavFolderImpl(folderIdOrPath, label)
 
-    fun selectServerLibrary(libraryId: String?) {
-        val server = _serverBrowserState.value.activeServer ?: return
-        if (server.kind == AndroidServerKind.WEB_DAV) {
-            openWebDavFolder(libraryId, libraryId ?: uiStrings().servers.rootFolder)
-            return
-        }
-        serverBrowseJob?.cancel()
-        _serverBrowserState.update {
-            it.copy(
-                selectedLibraryId = libraryId,
-                selectedArtistName = null,
-                artistAlbums = emptyList(),
-                loading = true,
-                error = null,
-            )
-        }
-        serverBrowseJob = viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            coroutineScope {
-                val albumsDef = async {
-                    runSuspendCatching { engine.listServerAlbums(server.id, libraryId, null) }
-                }
-                val artistsDef = async {
-                    runSuspendCatching { engine.listServerArtists(server.id, libraryId) }
-                }
-                val albumsRes = albumsDef.await()
-                val artistsRes = artistsDef.await()
-                _serverBrowserState.update {
-                    it.copy(
-                        loading = false,
-                        albums = albumsRes.getOrDefault(emptyList()),
-                        artists = artistsRes.getOrDefault(emptyList()),
-                        error = albumsRes.exceptionOrNull()?.message,
-                    )
-                }
-            }
-        }
-    }
+    fun navigateWebDavBack(): Boolean = navigateWebDavBackImpl()
 
-    fun openServerArtist(artist: AndroidHomeCard) {
-        val server = _serverBrowserState.value.activeServer ?: return
-        serverBrowseJob?.cancel()
-        _serverBrowserState.update {
-            it.copy(
-                selectedArtistName = artist.title,
-                artistAlbums = emptyList(),
-                loading = true,
-                error = null,
-            )
-        }
-        serverBrowseJob = viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            runSuspendCatching { engine.listServerAlbums(server.id, null, artist.id) }
-                .onSuccess { albums ->
-                    _serverBrowserState.update {
-                        it.copy(loading = false, artistAlbums = albums, error = null)
-                    }
-                }
-                .onFailure { err ->
-                    _serverBrowserState.update {
-                        it.copy(loading = false, error = err.message)
-                    }
-                }
-        }
-    }
+    fun searchInsideServer(query: String) = searchInsideServerImpl(query)
 
-    fun closeServerArtist() {
-        _serverBrowserState.update {
-            it.copy(selectedArtistName = null, artistAlbums = emptyList())
-        }
-    }
+    fun openServerAlbum(card: AndroidHomeCard) = openServerAlbumImpl(card)
 
-    fun openWebDavFolder(folderIdOrPath: String?, label: String) {
-        val server = _serverBrowserState.value.activeServer ?: return
-        serverBrowseJob?.cancel()
-        val updatedStack = if (folderIdOrPath == null) {
-            listOf(null to uiStrings().servers.rootFolder)
-        } else {
-            _serverBrowserState.value.webdavPathStack + (folderIdOrPath to label)
-        }
-        _serverBrowserState.update {
-            it.copy(
-                webdavPathStack = updatedStack,
-                loading = true,
-                error = null,
-            )
-        }
-        serverBrowseJob = viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            runSuspendCatching { engine.browseWebdavFolder(server.id, folderIdOrPath) }
-                .onSuccess { listing ->
-                    _serverBrowserState.update {
-                        it.copy(
-                            loading = false,
-                            webdavFolders = listing.folders,
-                            webdavTracks = listing.tracks,
-                            error = null,
-                        )
-                    }
-                }
-                .onFailure { err ->
-                    _serverBrowserState.update {
-                        it.copy(loading = false, error = err.message)
-                    }
-                }
-        }
-    }
-
-    fun navigateWebDavBack(): Boolean {
-        val stack = _serverBrowserState.value.webdavPathStack
-        if (stack.size <= 1) return false
-        val server = _serverBrowserState.value.activeServer ?: return false
-        val trimmedStack = stack.dropLast(1)
-        val targetPath = trimmedStack.lastOrNull()?.first
-        serverBrowseJob?.cancel()
-        _serverBrowserState.update {
-            it.copy(
-                webdavPathStack = trimmedStack,
-                loading = true,
-                error = null,
-            )
-        }
-        serverBrowseJob = viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            runSuspendCatching { engine.browseWebdavFolder(server.id, targetPath) }
-                .onSuccess { listing ->
-                    _serverBrowserState.update {
-                        it.copy(
-                            loading = false,
-                            webdavFolders = listing.folders,
-                            webdavTracks = listing.tracks,
-                            error = null,
-                        )
-                    }
-                }
-                .onFailure { err ->
-                    _serverBrowserState.update {
-                        it.copy(loading = false, error = err.message)
-                    }
-                }
-        }
-        return true
-    }
-
-    fun searchInsideServer(query: String) {
-        val server = _serverBrowserState.value.activeServer ?: return
-        val clean = query.trim()
-        serverSearchJob?.cancel()
-        if (clean.isEmpty()) {
-            _serverBrowserState.update {
-                it.copy(serverSearchQuery = "", serverSearchResult = null)
-            }
-            return
-        }
-        _serverBrowserState.update { it.copy(serverSearchQuery = query, loading = true, error = null) }
-        serverSearchJob = viewModelScope.launch(Dispatchers.IO) {
-            delay(250L)
-            val engine = requireEngine()
-            runSuspendCatching { engine.searchServer(server.id, clean, 40u) }
-                .onSuccess { res ->
-                    _serverBrowserState.update {
-                        it.copy(loading = false, serverSearchResult = res, error = null)
-                    }
-                }
-                .onFailure { err ->
-                    _serverBrowserState.update {
-                        it.copy(loading = false, error = err.message)
-                    }
-                }
-        }
-    }
-
-    fun openServerAlbum(card: AndroidHomeCard) {
-        openServerAlbumById(
-            albumId = card.id,
-            albumTitle = card.title,
-            artistName = card.subtitle,
-            coverUrl = card.thumbnailUrl,
-        )
-    }
-
-    private fun openServerAlbumById(
+    internal fun openServerAlbumById(
         albumId: String,
         albumTitle: String,
         artistName: String = "",
         coverUrl: String? = null,
         year: String? = null,
-    ) {
-        val s = uiStrings()
-        collectionJob?.cancel()
-        collectionJob = viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            _uiState.update {
-                it.copy(
-                    artistPage = null,
-                    artistLoading = false,
-                    moodCategoryTitle = null,
-                    moodCategoryShelves = emptyList(),
-                    moodCategoryLoading = false,
-                    collectionBrowseId = albumId,
-                    collectionTitle = albumTitle,
-                    collectionCoverUrl = coverUrl,
-                    collectionSubtitle = artistName.takeIf { sub -> sub.isNotBlank() },
-                    collectionKindLabel = s.albumLabel,
-                    collectionYear = year,
-                    collectionTracks = emptyList(),
-                    loading = true,
-                    status = s.loadingNamedStatus(albumTitle),
-                )
-            }
-            runSuspendCatching { engine.getServerAlbum(albumId) }
-                .onSuccess { detail ->
-                    val resolvedCover = detail.coverUrl ?: coverUrl
-                    val resolvedTitle = detail.title.ifBlank { albumTitle }
-                    val resolvedSubtitle = detail.subtitle.ifBlank { artistName }.takeIf { it.isNotBlank() }
-                    _uiState.update { state ->
-                        state.copy(
-                            loading = false,
-                            collectionBrowseId = detail.id,
-                            collectionTitle = resolvedTitle,
-                            collectionCoverUrl = resolvedCover,
-                            collectionSubtitle = resolvedSubtitle,
-                            collectionYear = detail.year ?: year,
-                            collectionTracks = detail.tracks,
-                            status = s.tracksInCollectionStatus(detail.tracks.size, resolvedTitle),
-                        )
-                    }
-                }
-                .onFailure { err ->
-                    _uiState.update {
-                        it.copy(loading = false, status = s.collectionErrorStatus(err.message.orEmpty()))
-                    }
-                }
-        }
-    }
+    ) = openServerAlbumByIdImpl(albumId, albumTitle, artistName, coverUrl, year)
 
     fun updateSettings(transform: (SonataSettingsState) -> SonataSettingsState) {
         preferences.update(transform)
@@ -3497,656 +2146,31 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
     fun queryDownloadStorageStats(): SonataDownloadManager.DownloadStorageStats =
         downloadManager.queryStorageStats(settings.value.downloadStorageLocation)
 
-    private suspend fun resolveBestDownloadStream(
-        engine: SonataEngineGateway,
-        track: AndroidTrack,
-    ): AndroidResolvedStream? {
-        val currentSettings = settings.value
-        val quality = currentSettings.downloadQuality
-        val wantsHighOrHighest =
-            quality == DownloadQualityTier.HIGHEST || quality == DownloadQualityTier.HIGH
+    fun downloadTrack(track: AndroidTrack, collectionId: String? = null) =
+        downloadTrackImpl(track, collectionId)
 
-        var stream = if (track.id.startsWith("jiosaavn:")) {
-            runSuspendCatching { engine.resolveJiosaavnById(track.id) }.getOrNull()?.let { js ->
-                AndroidResolvedStream(
-                    url = js.url,
-                    badge = js.badge,
-                    headers = emptyList(),
-                )
-            } ?: return null
-        } else {
-            getCachedStream(track.id) ?: runSuspendCatching { engine.resolveStream(track) }
-                .onSuccess { putCachedStream(track.id, it) }
-                .getOrNull() ?: return null
-        }
-
-        if (!track.id.startsWith("jiosaavn:") && !isSelfHostedId(track.id) && wantsHighOrHighest) {
-            if (shouldUpgradeStreamBadge(stream.badge, _uiState.value.signedIn)) {
-                runSuspendCatching { engine.resolveHifiUpgrade(track, stream) }
-                    .getOrNull()
-                    ?.let { upgraded ->
-                        stream = upgraded
-                        putCachedStream(track.id, upgraded)
-                    }
-            }
-            if (currentSettings.downloadIncludeJioSaavn) {
-                val curKbps = parseBitrateKbps(stream.badge).coerceAtLeast(0)
-                if (quality == DownloadQualityTier.HIGHEST || curKbps < 256) {
-                    runSuspendCatching {
-                        engine.findJiosaavnUpgrade(track, curKbps.toUInt())
-                    }.getOrNull()?.let { js ->
-                        val jsKbps = js.bitrateKbps.toInt()
-                        if (jsKbps > curKbps) {
-                            stream = AndroidResolvedStream(
-                                url = js.url,
-                                badge = js.badge,
-                                headers = emptyList(),
-                            )
-                        }
-                    }
-                }
-            }
-        }
-        return stream
-    }
-
-    fun downloadTrack(track: AndroidTrack, collectionId: String? = null) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val s = uiStrings()
-            val wifiOnly = settings.value.wifiOnlyDownloads
-            val wantsCompanionVideo = settings.value.downloadVideosIfAvailable &&
-                !track.id.startsWith("local:") &&
-                downloadManager.localVideoFor(track.id) == null
-            if (downloadManager.isDownloaded(track.id)) {
-                if (!wantsCompanionVideo) {
-                    _uiState.update {
-                        it.copy(
-                            status = s.alreadyDownloadedNamed(track.title),
-                            addToPlaylistStatus = s.alreadyDownloadedShort,
-                        )
-                    }
-                    return@launch
-                }
-                if (wifiOnly && downloadManager.isOnMeteredNetwork()) {
-                    val blocked = s.wifiOnlyDownloadBlocked
-                    _uiState.update {
-                        it.copy(
-                            status = blocked,
-                            addToPlaylistStatus = blocked,
-                        )
-                    }
-                    return@launch
-                }
-                _uiState.update {
-                    it.copy(
-                        status = s.downloadingVideoStatus,
-                        addToPlaylistStatus = s.downloadingVideoStatus,
-                    )
-                }
-                val videoOk = downloadCompanionMusicVideoIfEnabled(requireEngine(), track, wifiOnly)
-                val statusMsg = if (videoOk) s.downloadedNamed(track.title) else s.alreadyDownloadedNamed(track.title)
-                val shortMsg = if (videoOk) statusMsg else s.alreadyDownloadedShort
-                _uiState.update {
-                    it.copy(
-                        status = statusMsg,
-                        addToPlaylistStatus = shortMsg,
-                    )
-                }
-                return@launch
-            }
-            if (wifiOnly && downloadManager.isOnMeteredNetwork()) {
-                val blocked = s.wifiOnlyDownloadBlocked
-                _uiState.update {
-                    it.copy(
-                        status = blocked,
-                        addToPlaylistStatus = blocked,
-                    )
-                }
-                return@launch
-            }
-            val downloadingMsg = s.downloadingNamed(track.title)
-            _uiState.update {
-                it.copy(
-                    status = downloadingMsg,
-                    addToPlaylistStatus = downloadingMsg,
-                )
-            }
-            val engine = requireEngine()
-            val stream = resolveBestDownloadStream(engine, track) ?: run {
-                _uiState.update {
-                    it.copy(
-                        status = s.downloadFailedStreamUnavailable,
-                        addToPlaylistStatus = s.downloadFailedShort,
-                    )
-                }
-                return@launch
-            }
-            val cleanUrl = stripRangeQueryParam(stream.url)
-            val exportExternal = settings.value.usesExternalDownloadStorage()
-            val input = DownloadedTrackInput(
-                videoId = track.id,
-                title = track.title,
-                artist = track.artist,
-                album = track.album.ifBlank { null },
-                durationSecs = track.durationSecs?.toLong() ?: 0L,
-                coverUrl = resolvedDownloadCoverUrl(track),
-                codec = stream.badge.ifBlank { null },
-            )
-            var result = downloadManager.downloadTrack(
-                track = input,
-                streamUrl = cleanUrl,
-                exportToMusic = exportExternal,
-                collectionId = collectionId,
-                wifiOnly = wifiOnly,
-                headers = stream.headers.associate { it.name to it.value },
-            )
-            if (result.isFailure &&
-                result.exceptionOrNull() !is SonataDownloadManager.WifiOnlyNetworkException &&
-                !track.id.startsWith("jiosaavn:") &&
-                !isSelfHostedId(track.id)
-            ) {
-                val recovered = runSuspendCatching { engine.resolveRecovery(track) }.getOrNull()
-                if (recovered != null) {
-                    putCachedStream(track.id, recovered)
-                    result = downloadManager.downloadTrack(
-                        track = input.copy(codec = recovered.badge.ifBlank { input.codec }),
-                        streamUrl = stripRangeQueryParam(recovered.url),
-                        exportToMusic = exportExternal,
-                        collectionId = collectionId,
-                        wifiOnly = wifiOnly,
-                        headers = recovered.headers.associate { it.name to it.value },
-                    )
-                }
-            }
-            result.onSuccess {
-                if (settings.value.downloadVideosIfAvailable && !track.id.startsWith("local:") && !isSelfHostedId(track.id)) {
-                    _uiState.update {
-                        it.copy(
-                            status = s.downloadingVideoStatus,
-                            addToPlaylistStatus = s.downloadingVideoStatus,
-                        )
-                    }
-                    downloadCompanionMusicVideoIfEnabled(engine, track, wifiOnly)
-                }
-                val doneMsg = s.downloadedNamed(track.title)
-                _uiState.update {
-                    it.copy(
-                        status = doneMsg,
-                        addToPlaylistStatus = doneMsg,
-                    )
-                }
-            }.onFailure { err ->
-                Log.w("SonataDownload", "downloadTrack failed id=${track.id}: ${err.message}")
-                val failStatus = if (err is SonataDownloadManager.WifiOnlyNetworkException) {
-                    s.wifiOnlyDownloadBlocked
-                } else {
-                    s.downloadFailedNamed(err.message.orEmpty())
-                }
-                val failShort = if (err is SonataDownloadManager.WifiOnlyNetworkException) {
-                    s.wifiOnlyDownloadBlocked
-                } else {
-                    s.downloadFailedShort
-                }
-                _uiState.update {
-                    it.copy(
-                        status = failStatus,
-                        addToPlaylistStatus = failShort,
-                    )
-                }
-            }
-        }
-    }
-
-    fun downloadCollection(tracks: List<AndroidTrack>, collectionId: String) {
-        if (tracks.isEmpty()) return
-        viewModelScope.launch(Dispatchers.IO) {
-            val s = uiStrings()
-            val unique = tracks.distinctBy { it.id }
-            val wantsVideos = settings.value.downloadVideosIfAvailable
-            val pending = unique.filter { track ->
-                !downloadManager.isDownloaded(track.id) ||
-                    (wantsVideos && !track.id.startsWith("local:") && downloadManager.localVideoFor(track.id) == null)
-            }
-            if (pending.isEmpty()) {
-                _uiState.update {
-                    it.copy(
-                        status = s.allTracksAlreadyDownloaded(unique.size),
-                        addToPlaylistStatus = s.allTracksAlreadyDownloadedShort,
-                    )
-                }
-                return@launch
-            }
-            val wifiOnly = settings.value.wifiOnlyDownloads
-            if (wifiOnly && downloadManager.isOnMeteredNetwork()) {
-                val blocked = s.wifiOnlyDownloadBlocked
-                _uiState.update {
-                    it.copy(
-                        status = blocked,
-                        addToPlaylistStatus = blocked,
-                    )
-                }
-                return@launch
-            }
-            val batchMsg = s.downloadingTracksCount(pending.size)
-            _uiState.update {
-                it.copy(
-                    status = batchMsg,
-                    addToPlaylistStatus = batchMsg,
-                )
-            }
-            val engine = requireEngine()
-            val exportExternal = settings.value.usesExternalDownloadStorage()
-            var savedCount = 0
-            var blockedByWifi = false
-            for (track in pending) {
-                if (!isActive) break
-                val alreadyHasAudio = downloadManager.isDownloaded(track.id)
-                var audioReady = alreadyHasAudio
-                if (!alreadyHasAudio) {
-                    val stream = resolveBestDownloadStream(engine, track) ?: continue
-                    val input = DownloadedTrackInput(
-                        videoId = track.id,
-                        title = track.title,
-                        artist = track.artist,
-                        album = track.album.ifBlank { null },
-                        durationSecs = track.durationSecs?.toLong() ?: 0L,
-                        coverUrl = resolvedDownloadCoverUrl(track),
-                        codec = stream.badge.ifBlank { null },
-                    )
-                    var res = downloadManager.downloadTrack(
-                        track = input,
-                        streamUrl = stripRangeQueryParam(stream.url),
-                        exportToMusic = exportExternal,
-                        collectionId = collectionId,
-                        wifiOnly = wifiOnly,
-                        headers = stream.headers.associate { it.name to it.value },
-                    )
-                    if (res.exceptionOrNull() is SonataDownloadManager.WifiOnlyNetworkException) {
-                        blockedByWifi = true
-                        break
-                    }
-                    if (res.isFailure && !track.id.startsWith("jiosaavn:") && !isSelfHostedId(track.id)) {
-                        val recovered = runSuspendCatching { engine.resolveRecovery(track) }.getOrNull()
-                        if (recovered != null) {
-                            putCachedStream(track.id, recovered)
-                            res = downloadManager.downloadTrack(
-                                track = input.copy(codec = recovered.badge.ifBlank { input.codec }),
-                                streamUrl = stripRangeQueryParam(recovered.url),
-                                exportToMusic = exportExternal,
-                                collectionId = collectionId,
-                                wifiOnly = wifiOnly,
-                                headers = recovered.headers.associate { it.name to it.value },
-                            )
-                        }
-                    }
-                    if (res.exceptionOrNull() is SonataDownloadManager.WifiOnlyNetworkException) {
-                        blockedByWifi = true
-                        break
-                    }
-                    if (res.isSuccess) {
-                        audioReady = true
-                        savedCount++
-                    } else {
-                        Log.w("SonataDownload", "downloadCollection track failed id=${track.id}: ${res.exceptionOrNull()?.message}")
-                    }
-                }
-                if (audioReady && wantsVideos && !track.id.startsWith("local:") && !isSelfHostedId(track.id) &&
-                    downloadManager.localVideoFor(track.id) == null
-                ) {
-                    val videoOk = downloadCompanionMusicVideoIfEnabled(engine, track, wifiOnly)
-                    if (alreadyHasAudio && videoOk) {
-                        savedCount++
-                    }
-                }
-            }
-            val msg = when {
-                blockedByWifi -> s.wifiOnlyDownloadBlocked
-                savedCount > 0 -> s.downloadedCountOfTotal(savedCount, pending.size)
-                else -> s.downloadFailedShort
-            }
-            _uiState.update { it.copy(status = msg, addToPlaylistStatus = msg) }
-        }
-    }
-
-    private suspend fun downloadCompanionMusicVideoIfEnabled(
-        engine: SonataEngineGateway,
-        track: AndroidTrack,
-        wifiOnly: Boolean,
-    ): Boolean {
-        if (!settings.value.downloadVideosIfAvailable || track.id.isBlank() || track.id.startsWith("local:")) {
-            return false
-        }
-        if (downloadManager.localVideoFor(track.id) != null) return true
-        return try {
-            val cachedCandidate = musicVideoCandidateCache[track.id]
-                ?.takeIf { SystemClock.elapsedRealtime() - it.cachedAtMs < ARTIST_CACHE_TTL_MS }
-                ?.candidate
-            val candidate = cachedCandidate
-                ?: runSuspendCatching { engine.resolveMusicVideoCandidate(track) }
-                    .getOrNull()
-                    ?.also { fetched ->
-                        musicVideoCandidateCache[track.id] = CachedVideoCandidate(
-                            candidate = fetched,
-                            cachedAtMs = SystemClock.elapsedRealtime(),
-                        )
-                    }
-                ?: return false
-
-            val resolved = resolveOrFetchMusicVideo(candidate.videoId) ?: return false
-            if (resolved.qualities.isEmpty()) return false
-            val targetPref = settings.value.videoDownloadQuality.toVideoQualityPreference()
-            val selected = selectVideoQualityStream(
-                qualities = resolved.qualities,
-                preference = targetPref,
-            ) ?: return false
-
-            val input = DownloadedTrackInput(
-                videoId = track.id,
-                title = track.title,
-                artist = track.artist,
-                album = track.album.ifBlank { null },
-                durationSecs = track.durationSecs?.toLong() ?: 0L,
-                coverUrl = resolvedDownloadCoverUrl(track),
-                codec = resolved.audioBadge.ifBlank { null },
-            )
-            val result = downloadManager.downloadCompanionVideo(
-                track = input,
-                videoUrl = selected.videoUrl,
-                videoMimeHint = selected.mimeType.ifBlank { null },
-                audioUrl = if (selected.isMuxed) null else resolved.audioUrl,
-                qualityLabel = selected.qualityLabel.ifBlank { "${selected.height}p" },
-                qualityHeight = selected.height.toInt(),
-                syncSegments = candidate.syncSegments,
-                wifiOnly = wifiOnly,
-            )
-            result.isSuccess
-        } catch (ce: CancellationException) {
-            throw ce
-        } catch (t: Throwable) {
-            Log.w("SonataDownload", "Companion video download skipped id=${track.id}: ${t.message}")
-            false
-        }
-    }
+    fun downloadCollection(tracks: List<AndroidTrack>, collectionId: String) =
+        downloadCollectionImpl(tracks, collectionId)
 
     fun cancelDownload(videoId: String) {
         downloadManager.cancelDownload(videoId)
     }
 
-    fun removeDownload(videoId: String) {
-        viewModelScope.launch(Dispatchers.IO) {
-            downloadManager.removeDownload(videoId)
-        }
-    }
+    fun removeDownload(videoId: String) = removeDownloadImpl(videoId)
 
-    fun clearAllDownloads() {
-        viewModelScope.launch(Dispatchers.IO) {
-            downloadManager.clearAllDownloads()
-            _uiState.update { it.copy(status = uiStrings().downloadsClearedStatus) }
-        }
-    }
+    fun clearAllDownloads() = clearAllDownloadsImpl()
 
-    fun playDownloadedTrack(record: DownloadedTrackRecord) {
-        val queue = downloads.value.map { it.toAndroidTrack() }
-        val target = queue.firstOrNull { it.id == record.videoId } ?: record.toAndroidTrack()
-        playTrack(target, queue.ifEmpty { listOf(target) })
-    }
+    fun playDownloadedTrack(record: DownloadedTrackRecord) = playDownloadedTrackImpl(record)
 
-    private fun DownloadedTrackRecord.toAndroidTrack(): AndroidTrack = AndroidTrack(
-        id = videoId,
-        title = title,
-        artist = artist,
-        album = album.orEmpty(),
-        durationSecs = durationSecs.takeIf { it > 0L }?.toULong(),
-        thumbnailUrl = coverUrl,
-        liked = videoId in _uiState.value.likedTrackIds,
-    )
+    internal fun DownloadedTrackRecord.toAndroidTrack(): AndroidTrack = downloadedRecordToAndroidTrack(this)
 
-    private fun collectPersonalRadioPool(): List<AndroidTrack> {
-        val state = _uiState.value
-        val local = if (preferences.state.value.localMusicEnabled) {
-            state.localMusicLibrary.tracks.map { it.toAndroidTrack() }
-        } else {
-            emptyList()
-        }
-        val personalPlTracks = state.personalPlaylists.flatMap { it.tracks }
-        val serverTracks = state.serverSourceSnapshots.values.flatMap { it.tracks }
-        val offline = downloads.value.map { it.toAndroidTrack() }
-        return (local + personalPlTracks + serverTracks + offline).distinctBy { it.id }
-    }
+    fun startQuickRadio(seedTrack: AndroidTrack? = uiState.value.activeTrack) = startQuickRadioImpl(seedTrack)
 
-    fun startQuickRadio(seedTrack: AndroidTrack? = uiState.value.activeTrack) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            val s = uiStrings()
-            _uiState.update { it.copy(status = s.startingRadio) }
-            if (preferences.state.value.personalOnlyMode) {
-                val pool = collectPersonalRadioPool().shuffled()
-                val queue = if (seedTrack != null) {
-                    (listOf(seedTrack) + pool.filterNot { it.id == seedTrack.id }).distinctBy { it.id }
-                } else {
-                    pool
-                }
-                if (queue.isNotEmpty()) {
-                    playTrack(queue.first(), queue)
-                } else {
-                    _uiState.update { it.copy(status = s.radioUnavailable) }
-                }
-                return@launch
-            }
-            val preferredArtists = buildPreferredArtists()
+    fun startPersonalStation() = startPersonalStationImpl()
 
-            if (seedTrack != null && !isPersonalTrackId(seedTrack.id)) {
-                val radioTracks = runSuspendCatching {
-                    engine.fetchEndlessRadioQueue(
-                        seedVideoIds = listOf(seedTrack.id),
-                        playlistId = null,
-                        excludeVideoIds = listOf(seedTrack.id),
-                        preferredArtists = preferredArtists,
-                    )
-                }.getOrDefault(emptyList()).ifEmpty {
-                    runSuspendCatching { engine.fetchRadioQueue(seedTrack.id) }
-                        .getOrDefault(emptyList())
-                }
-                val radioQueue = (listOf(seedTrack) + radioTracks).distinctBy { it.id }
-                if (radioQueue.size > 1) {
-                    playTrack(radioQueue.first(), radioQueue)
-                    return@launch
-                }
-                val query = listOf(seedTrack.artist, seedTrack.title, "mix")
-                    .filter { it.isNotBlank() }
-                    .joinToString(" ")
-                val results = runSuspendCatching { engine.searchSongs(query) }.getOrDefault(emptyList())
-                val fallbackQueue = (listOf(seedTrack) + results).distinctBy { it.id }
-                if (fallbackQueue.isNotEmpty()) {
-                    playTrack(fallbackQueue.first(), fallbackQueue)
-                    return@launch
-                }
-            }
+    fun startDiscoveryStation() = startDiscoveryStationImpl()
 
-            val mixCard = _uiState.value.shelves
-                .firstOrNull { shelf ->
-                    val title = shelf.title.lowercase()
-                    title.contains("mix") || title.contains("radio") || title.contains("station")
-                }
-                ?.cards
-                ?.firstOrNull { it.kind == AndroidHomeCardKind.PLAYLIST }
-
-            if (mixCard != null) {
-                val mixTracks = runSuspendCatching { engine.fetchCollectionTracks(mixCard.id) }
-                    .getOrDefault(emptyList())
-                if (mixTracks.isNotEmpty()) {
-                    playTrack(mixTracks.first(), mixTracks)
-                    return@launch
-                }
-            }
-
-            val fallbackTracks = _uiState.value.shelves
-                .flatMap { it.tracks }
-                .ifEmpty { runSuspendCatching { engine.searchSongs("top hits radio mix") }.getOrDefault(emptyList()) }
-                .distinctBy { it.id }
-
-            if (fallbackTracks.isNotEmpty()) {
-                playTrack(fallbackTracks.first(), fallbackTracks)
-            } else {
-                _uiState.update { it.copy(status = s.radioUnavailable) }
-            }
-        }
-    }
-
-    fun startPersonalStation() {
-        viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            val s = uiStrings()
-            _uiState.update { it.copy(status = s.startingPersonalMix) }
-            val state = _uiState.value
-            if (preferences.state.value.personalOnlyMode) {
-                val pool = collectPersonalRadioPool().shuffled()
-                if (pool.isNotEmpty()) {
-                    playTrack(pool.first(), pool)
-                } else {
-                    _uiState.update { it.copy(status = s.radioUnavailable) }
-                }
-                return@launch
-            }
-            val preferredArtists = buildPreferredArtists()
-            val seedCandidates = (_lastPlayedTracks.value +
-                state.shelves.flatMap { it.tracks }.filter { it.id in state.likedTrackIds })
-                .filterNot { isPersonalTrackId(it.id) }
-                .distinctBy { it.id }
-            val seeds = selectDistinctArtistIds(seedCandidates, maxCount = 3)
-                .ifEmpty { listOfNotNull(state.activeTrack?.id?.takeUnless { isPersonalTrackId(it) }) }
-            if (seeds.isNotEmpty()) {
-                val stationTracks = runSuspendCatching {
-                    engine.fetchEndlessRadioQueue(
-                        seedVideoIds = seeds,
-                        playlistId = null,
-                        excludeVideoIds = emptyList(),
-                        preferredArtists = preferredArtists,
-                    )
-                }.getOrDefault(emptyList()).ifEmpty {
-                    runSuspendCatching { engine.fetchRadioQueue(seeds.first()) }
-                        .getOrDefault(emptyList())
-                }
-                if (stationTracks.isNotEmpty()) {
-                    playTrack(stationTracks.first(), stationTracks)
-                    return@launch
-                }
-            }
-            val query = preferredArtists.firstOrNull()?.let { "$it radio mix" } ?: "my supermix"
-            val fallback = runSuspendCatching { engine.searchSongs(query) }.getOrDefault(emptyList())
-            if (fallback.isNotEmpty()) {
-                playTrack(fallback.first(), fallback)
-            } else {
-                startQuickRadio(state.activeTrack)
-            }
-        }
-    }
-
-    fun startDiscoveryStation() {
-        viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            val s = uiStrings()
-            _uiState.update { it.copy(status = s.startingDiscoveryMix) }
-            val state = _uiState.value
-            if (preferences.state.value.personalOnlyMode) {
-                val historyIds = _lastPlayedTracks.value.mapTo(HashSet()) { it.id }
-                val pool = collectPersonalRadioPool()
-                val fresh = pool.filterNot { it.id in historyIds }.ifEmpty { pool }.shuffled()
-                if (fresh.isNotEmpty()) {
-                    playTrack(fresh.first(), fresh)
-                } else {
-                    _uiState.update { it.copy(status = s.radioUnavailable) }
-                }
-                return@launch
-            }
-            val preferredArtists = buildPreferredArtists()
-            val historyIds = _lastPlayedTracks.value.map { it.id }.toSet()
-            val freshCandidates = state.shelves.flatMap { it.tracks }
-                .filter { it.id.isNotBlank() && !isPersonalTrackId(it.id) && it.id !in historyIds && it.id !in state.likedTrackIds }
-                .distinctBy { it.id }
-            val seeds = selectDistinctArtistIds(freshCandidates, maxCount = 3)
-                .ifEmpty { selectDistinctArtistIds(_lastPlayedTracks.value.filterNot { isPersonalTrackId(it.id) }, maxCount = 2) }
-                .ifEmpty { listOfNotNull(state.activeTrack?.id?.takeUnless { isPersonalTrackId(it) }) }
-            val excludeIds = (historyIds + state.likedTrackIds).take(120)
-            if (seeds.isNotEmpty()) {
-                val discoveryTracks = runSuspendCatching {
-                    engine.fetchEndlessRadioQueue(
-                        seedVideoIds = seeds,
-                        playlistId = null,
-                        excludeVideoIds = excludeIds,
-                        preferredArtists = preferredArtists,
-                    )
-                }.getOrDefault(emptyList()).ifEmpty {
-                    runSuspendCatching { engine.fetchRadioQueue(seeds.first()) }
-                        .getOrDefault(emptyList())
-                }
-                if (discoveryTracks.isNotEmpty()) {
-                    playTrack(discoveryTracks.first(), discoveryTracks)
-                    return@launch
-                }
-            }
-            val fallback = runSuspendCatching { engine.searchSongs("new music discovery mix") }
-                .getOrDefault(emptyList())
-            if (fallback.isNotEmpty()) {
-                playTrack(fallback.first(), fallback)
-            } else {
-                startQuickRadio(state.activeTrack)
-            }
-        }
-    }
-
-    fun setSleepTimer(minutes: Int?) {
-        sleepTimerJob?.cancel()
-        sleepTimerJob = null
-        PlaybackAudioBridge.applySleepFadeMultiplier(1f)
-        if (minutes == null) {
-            sleepAtEndOfTrack = false
-            _sleepTimerRemainingMinutes.value = null
-            return
-        }
-        if (minutes <= 0) {
-            sleepAtEndOfTrack = true
-            _sleepTimerRemainingMinutes.value = 0
-            return
-        }
-        sleepAtEndOfTrack = false
-        _sleepTimerRemainingMinutes.value = minutes
-        sleepTimerJob = viewModelScope.launch {
-            try {
-                var remaining = minutes
-                while (remaining > 1 && isActive) {
-                    delay(60_000L)
-                    remaining -= 1
-                    _sleepTimerRemainingMinutes.value = remaining
-                }
-                if (isActive) {
-                    if (settings.value.sleepTimerFadeOut) {
-                        delay(50_000L)
-                        val steps = 20
-                        for (step in 1..steps) {
-                            if (!isActive) break
-                            val vol = (1f - step.toFloat() / steps.toFloat()).coerceAtLeast(0.04f)
-                            PlaybackAudioBridge.applySleepFadeMultiplier(vol)
-                            delay(500L)
-                        }
-                    } else {
-                        delay(60_000L)
-                    }
-                }
-                if (isActive) {
-                    withContext(Dispatchers.Main) {
-                        controller?.pause()
-                    }
-                    _sleepTimerRemainingMinutes.value = null
-                    _uiState.update { it.copy(status = uiStrings().sleepTimerPaused) }
-                }
-            } finally {
-                withContext(NonCancellable) {
-                    PlaybackAudioBridge.applySleepFadeMultiplier(1f)
-                }
-            }
-        }
-    }
+    fun setSleepTimer(minutes: Int?) = setSleepTimerImpl(minutes)
 
     fun getTrackLyricOffsetMs(videoId: String): Long = preferences.getTrackLyricOffsetMs(videoId)
 
@@ -4165,406 +2189,42 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     @Volatile
-    private var requestedCanvasTrackId: String? = null
+    internal var requestedCanvasTrackId: String? = null
 
-    private fun resolveCanvasForTrack(
+    internal fun resolveCanvasForTrack(
         track: AndroidTrack,
         generation: Long = playbackGeneration.current,
-    ) {
-        canvasJob?.cancel()
-        val trackId = track.id
-        requestedCanvasTrackId = trackId
-        _currentCanvas.value = null
-        if (!settings.value.animatedArtwork) return
-        if (!settings.value.animatedArtworkCellular) {
-            val cm = getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE)
-                as? android.net.ConnectivityManager
-            if (cm?.isActiveNetworkMetered == true) return
-        }
-        canvasJob = viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            val resolved = runSuspendCatching {
-                CanvasResolver.resolve(
-                    videoId = trackId,
-                    title = track.title,
-                    artist = track.artist,
-                    album = track.album.ifBlank { null },
-                    gateway = engine,
-                )
-            }.getOrNull()
-            if (isActive &&
-                settings.value.animatedArtwork &&
-                requestedCanvasTrackId == trackId &&
-                isGenerationActive(generation, trackId)
-            ) {
-                _currentCanvas.value = resolved
-            }
-        }
-    }
+    ) = resolveCanvasForTrackImpl(track, generation)
 
-    fun toggleStarTrack(trackId: String) {
-        val nowLiked = trackId !in _uiState.value.likedTrackIds
-        _uiState.update { state ->
-            val updated = if (nowLiked) {
-                state.likedTrackIds + trackId
-            } else {
-                state.likedTrackIds - trackId
-            }
-            state.copy(likedTrackIds = updated)
-        }
-        val snapshotTrack = _uiState.value.let { state ->
-            listOfNotNull(state.activeTrack).firstOrNull { it.id == trackId }
-                ?: state.queue.firstOrNull { it.id == trackId }
-                ?: state.collectionTracks.firstOrNull { it.id == trackId }
-                ?: state.tracks.firstOrNull { it.id == trackId }
-                ?: state.lastPlayedTracks.firstOrNull { it.id == trackId }
-                ?: (state.shelves + state.exploreShelves + state.radioMixShelves + state.moodCategoryShelves)
-                    .asSequence()
-                    .flatMap { shelf -> shelf.tracks.asSequence() + shelf.cards.asSequence().mapNotNull { it.track } }
-                    .firstOrNull { it.id == trackId }
-        }
-        if (nowLiked) {
-            val likedCover = snapshotTrack?.let { resolveTrackCoverUrl(it) }
-                ?: if (!trackId.startsWith("jiosaavn:") && !trackId.startsWith("local:") && trackId.isNotBlank()) {
-                    "https://i.ytimg.com/vi/$trackId/hqdefault.jpg"
-                } else {
-                    null
-                }
-            updateLatestLikedCover(likedCover)
-        }
-        if (nowLiked &&
-            settings.value.autoDownloadLiked &&
-            snapshotTrack != null &&
-            !snapshotTrack.id.startsWith("local:") &&
-            !downloadManager.isDownloaded(snapshotTrack.id)
-        ) {
-            downloadTrack(snapshotTrack)
-        }
-        if (!trackId.startsWith("local:")) {
-            viewModelScope.launch(Dispatchers.IO) {
-                val engine = requireEngine()
-                if (runCatching { engine.isSignedIn() }.getOrDefault(false)) {
-                    val ytmId: String = (if (snapshotTrack != null) {
-                        resolveYtmVideoIdForTrack(engine, snapshotTrack)
-                    } else if (!trackId.startsWith("jiosaavn:")) {
-                        trackId
-                    } else {
-                        null
-                    }) ?: return@launch
-                    runSuspendCatching { engine.setLikeStatus(ytmId, nowLiked) }
-                        .onSuccess {
-                            if (!nowLiked) {
-                                runSuspendCatching { engine.fetchCollectionTracks("VLLM") }
-                                    .onSuccess { likedTracks ->
-                                        val nextCover = likedTracks.firstNotNullOfOrNull { resolveTrackCoverUrl(it) }
-                                        updateLatestLikedCover(nextCover, clearIfNull = likedTracks.isEmpty())
-                                    }
-                            }
-                        }
-                        .onFailure { err ->
-                            Log.w("SonataLibrary", "Like status sync failed for '$ytmId': ${err.message}")
-                        }
-                }
-            }
-        }
-    }
+    fun toggleStarTrack(trackId: String) = toggleStarTrackImpl(trackId)
 
-    fun openAddToPlaylist(tracks: List<AndroidTrack>) {
-        val unique = tracks.filter { it.id.isNotBlank() }.distinctBy { it.id }
-        if (unique.isEmpty()) return
-        _uiState.update {
-            it.copy(
-                addToPlaylistTargets = unique,
-                addToPlaylistStatus = null,
-            )
-        }
-    }
+    fun openAddToPlaylist(tracks: List<AndroidTrack>) = openAddToPlaylistImpl(tracks)
 
-    fun dismissAddToPlaylist() {
-        _uiState.update {
-            it.copy(
-                addToPlaylistTargets = emptyList(),
-                addToPlaylistStatus = null,
-            )
-        }
-    }
+    fun dismissAddToPlaylist() = dismissAddToPlaylistImpl()
 
-    fun clearAddToPlaylistStatus() {
-        _uiState.update {
-            if (it.addToPlaylistStatus != null) it.copy(addToPlaylistStatus = null) else it
-        }
-    }
+    fun clearAddToPlaylistStatus() = clearAddToPlaylistStatusImpl()
 
     fun addTracksToPlaylists(
         tracks: List<AndroidTrack>,
         playlistIds: List<String>,
         onComplete: (Boolean, String) -> Unit = { _, _ -> },
-    ) {
-        val s = uiStrings()
-        val cleanTracks = tracks.filter { it.id.isNotBlank() }.distinctBy { it.id }
-        val cleanPlaylistIds = playlistIds.map { it.trim() }.filter { it.isNotBlank() }.distinct()
-        if (cleanTracks.isEmpty() || cleanPlaylistIds.isEmpty()) {
-            onComplete(false, s.selectAtLeastOnePlaylist)
-            return
-        }
-        val hasPersonalTrack = cleanTracks.any { isPersonalTrackId(it.id) }
-        val ytmOnlyTracks = cleanTracks.filterNot { isPersonalTrackId(it.id) }
-        viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            val personalOnly = preferences.state.value.personalOnlyMode
-            val signedIn = !personalOnly && runCatching { engine.isSignedIn() }.getOrDefault(false)
-            val resolvedVideoIds = if (signedIn && !hasPersonalTrack && ytmOnlyTracks.isNotEmpty() && cleanPlaylistIds.any { !it.startsWith(PERSONAL_PLAYLIST_ID_PREFIX) && !it.startsWith(LOCAL_PLAYLIST_PREFIX) }) {
-                resolveYtmVideoIds(engine, ytmOnlyTracks)
-            } else {
-                emptyList()
-            }
-            _uiState.update { it.copy(addToPlaylistStatus = s.addingToPlaylistStatus) }
-
-            var successCount = 0
-            var firstError: String? = null
-
-            val results = coroutineScope {
-                cleanPlaylistIds.map { plId ->
-                    async {
-                        when {
-                            plId.startsWith(PERSONAL_PLAYLIST_ID_PREFIX) -> runSuspendCatching {
-                                cleanTracks.forEach { tr ->
-                                    engine.addTrackToPersonalPlaylist(plId, tr)
-                                }
-                            }
-                            plId.startsWith(LOCAL_PLAYLIST_PREFIX) -> {
-                                if (appendTracksToLocalPlaylist(plId, cleanTracks)) {
-                                    Result.success(Unit)
-                                } else {
-                                    Result.failure(IllegalStateException(s.failedUpdatePlaylist))
-                                }
-                            }
-                            hasPersonalTrack -> {
-                                // Personal/FLAC/local/server tracks must never hit YTM playlist APIs.
-                                Result.failure(IllegalStateException(sourcesStrings(preferences.state.value.appLanguage).addToPersonalPlaylist))
-                            }
-                            !signedIn -> {
-                                Result.failure(IllegalStateException(s.signInToEditPlaylists))
-                            }
-                            resolvedVideoIds.isEmpty() -> {
-                                Result.failure(IllegalStateException(s.noYtmMatchFound))
-                            }
-                            else -> {
-                                runSuspendCatching { engine.addTracksToPlaylist(plId, resolvedVideoIds) }
-                            }
-                        }
-                    }
-                }.awaitAll()
-            }
-
-            results.forEach { res ->
-                res.onSuccess {
-                    successCount++
-                }.onFailure { err ->
-                    if (firstError == null) firstError = err.message ?: s.failedUpdatePlaylist
-                }
-            }
-
-            val updatedPersonal = runSuspendCatching { engine.listPersonalPlaylists() }
-                .getOrNull()
-                ?.also { personalPlaylistsCache = it }
-            val updatedRemote = if (signedIn && successCount > 0 && cleanPlaylistIds.any { !it.startsWith(PERSONAL_PLAYLIST_ID_PREFIX) && !it.startsWith(LOCAL_PLAYLIST_PREFIX) }) {
-                runSuspendCatching { engine.fetchLibraryPlaylists() }.getOrNull()
-            } else {
-                null
-            }
-            val ok = successCount == cleanPlaylistIds.size
-            val message = when {
-                ok -> if (cleanTracks.size == 1) {
-                    s.addedSingleTrackToPlaylists(cleanTracks.first().title, cleanPlaylistIds.size)
-                } else {
-                    s.addedTracksToPlaylistsCount(cleanTracks.size, cleanPlaylistIds.size)
-                }
-                successCount > 0 -> s.addedToSomePlaylists(successCount, cleanPlaylistIds.size)
-                else -> firstError ?: s.couldNotAddToPlaylist
-            }
-
-            _uiState.update { state ->
-                val personalNow = updatedPersonal ?: state.personalPlaylists
-                val baseRemote = updatedRemote ?: state.playlists.filterNot {
-                    it.id.startsWith(LOCAL_PLAYLIST_PREFIX) || it.id.startsWith(PERSONAL_PLAYLIST_ID_PREFIX)
-                }
-                val nextPlaylists = mergePlaylistsWithLocal(baseRemote, personalNow)
-                val updatedCollectionTracks = if (
-                    state.collectionBrowseId != null &&
-                    state.collectionBrowseId in cleanPlaylistIds &&
-                    state.collectionBrowseId.startsWith(PERSONAL_PLAYLIST_ID_PREFIX)
-                ) {
-                    personalNow.firstOrNull { it.id == state.collectionBrowseId }?.tracks ?: state.collectionTracks
-                } else {
-                    state.collectionTracks
-                }
-                state.copy(
-                    personalPlaylists = personalNow,
-                    playlists = nextPlaylists,
-                    collectionTracks = updatedCollectionTracks,
-                    addToPlaylistTargets = if (ok) emptyList() else state.addToPlaylistTargets,
-                    addToPlaylistStatus = message,
-                    status = message,
-                )
-            }
-            withContext(Dispatchers.Main) {
-                onComplete(ok, message)
-            }
-        }
-    }
+    ) = addTracksToPlaylistsImpl(tracks, playlistIds, onComplete)
 
     fun createPlaylistWithTracks(
         title: String,
         tracks: List<AndroidTrack>,
         onComplete: (Boolean, String) -> Unit = { _, _ -> },
-    ) {
-        val s = uiStrings()
-        val srcStrings = sourcesStrings(preferences.state.value.appLanguage)
-        val cleanTitle = title.trim()
-        if (cleanTitle.isEmpty()) {
-            onComplete(false, s.playlistNameEmpty)
-            return
-        }
-        val cleanTracks = tracks.filter { it.id.isNotBlank() }.distinctBy { it.id }
-        val hasPersonalTrack = cleanTracks.any { isPersonalTrackId(it.id) }
-        viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            val personalOnly = preferences.state.value.personalOnlyMode
-            val signedIn = !personalOnly && runCatching { engine.isSignedIn() }.getOrDefault(false)
-            _uiState.update { it.copy(addToPlaylistStatus = s.creatingPlaylistStatus(cleanTitle)) }
-
-            if (hasPersonalTrack || !signedIn) {
-                val createRes = runSuspendCatching {
-                    var created = engine.createPersonalPlaylist(cleanTitle)
-                    cleanTracks.forEach { tr ->
-                        created = engine.addTrackToPersonalPlaylist(created.id, tr)
-                    }
-                    created
-                }
-                if (createRes.isSuccess) {
-                    val updatedPersonal = runSuspendCatching { engine.listPersonalPlaylists() }
-                        .getOrDefault(personalPlaylistsCache)
-                        .also { personalPlaylistsCache = it }
-                    val message = srcStrings.personalPlaylistCreated(cleanTitle)
-                    _uiState.update { state ->
-                        val baseRemote = state.playlists.filterNot {
-                            it.id.startsWith(LOCAL_PLAYLIST_PREFIX) || it.id.startsWith(PERSONAL_PLAYLIST_ID_PREFIX)
-                        }
-                        state.copy(
-                            personalPlaylists = updatedPersonal,
-                            playlists = mergePlaylistsWithLocal(baseRemote, updatedPersonal),
-                            addToPlaylistTargets = emptyList(),
-                            addToPlaylistStatus = message,
-                            status = message,
-                        )
-                    }
-                    withContext(Dispatchers.Main) { onComplete(true, message) }
-                } else {
-                    val errMsg = createRes.exceptionOrNull()?.message ?: s.failedCreatePlaylist
-                    _uiState.update { it.copy(addToPlaylistStatus = errMsg, status = errMsg) }
-                    withContext(Dispatchers.Main) { onComplete(false, errMsg) }
-                }
-                return@launch
-            }
-
-            val resolvedVideoIds = resolveYtmVideoIds(engine, cleanTracks)
-            val remoteResult = runSuspendCatching { engine.createPlaylist(cleanTitle, "", resolvedVideoIds) }
-            if (remoteResult.isSuccess) {
-                val createdId = remoteResult.getOrNull().orEmpty()
-                val updatedRemote = runSuspendCatching { engine.fetchLibraryPlaylists() }.getOrNull()
-                val createdThumb = cleanTracks.firstOrNull { !it.thumbnailUrl.isNullOrBlank() }?.thumbnailUrl
-                val message = s.createdPlaylistStatus(cleanTitle)
-                _uiState.update { state ->
-                    val base = updatedRemote ?: (listOf(AndroidPlaylist(createdId, cleanTitle, createdThumb, isOwned = true)) + state.playlists)
-                    val ownedNorm = normalizeCollectionId(createdId)
-                    val nextOwned = if (ownedNorm.startsWith("PL")) {
-                        state.ownedPlaylistIds + ownedNorm
-                    } else {
-                        computeOwnedPlaylistIds(base, state.savedExternalPlaylistIds)
-                    }
-                    state.copy(
-                        playlists = mergePlaylistsWithLocal(base),
-                        ownedPlaylistIds = nextOwned,
-                        addToPlaylistTargets = emptyList(),
-                        addToPlaylistStatus = message,
-                        status = message,
-                    )
-                }
-                withContext(Dispatchers.Main) { onComplete(true, message) }
-            } else {
-                val errMsg = remoteResult.exceptionOrNull()?.message ?: s.failedCreatePlaylist
-                _uiState.update {
-                    it.copy(
-                        addToPlaylistStatus = errMsg,
-                        status = errMsg,
-                    )
-                }
-                withContext(Dispatchers.Main) { onComplete(false, errMsg) }
-            }
-        }
-    }
+    ) = createPlaylistWithTracksImpl(title, tracks, onComplete)
 
     fun createPersonalPlaylist(name: String) {
         createPlaylistWithTracks(title = name, tracks = emptyList())
     }
 
-    fun deletePersonalPlaylist(playlistId: String) {
-        if (!playlistId.startsWith(PERSONAL_PLAYLIST_ID_PREFIX)) return
-        val srcStrings = sourcesStrings(preferences.state.value.appLanguage)
-        val existingName = _uiState.value.personalPlaylists.firstOrNull { it.id == playlistId }?.name ?: playlistId
-        viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            runSuspendCatching { engine.deletePersonalPlaylist(playlistId) }
-                .onSuccess {
-                    val updatedPersonal = runSuspendCatching { engine.listPersonalPlaylists() }
-                        .getOrDefault(emptyList())
-                        .also { personalPlaylistsCache = it }
-                    val msg = srcStrings.personalPlaylistRemoved(existingName)
-                    _uiState.update { state ->
-                        val baseRemote = state.playlists.filterNot {
-                            it.id.startsWith(LOCAL_PLAYLIST_PREFIX) || it.id.startsWith(PERSONAL_PLAYLIST_ID_PREFIX)
-                        }
-                        state.copy(
-                            personalPlaylists = updatedPersonal,
-                            playlists = mergePlaylistsWithLocal(baseRemote, updatedPersonal),
-                            collectionBrowseId = if (state.collectionBrowseId == playlistId) null else state.collectionBrowseId,
-                            collectionTitle = if (state.collectionBrowseId == playlistId) null else state.collectionTitle,
-                            collectionTracks = if (state.collectionBrowseId == playlistId) emptyList() else state.collectionTracks,
-                            status = msg,
-                        )
-                    }
-                }
-        }
-    }
+    fun deletePersonalPlaylist(playlistId: String) = deletePersonalPlaylistImpl(playlistId)
 
-    fun removeTrackFromPersonalPlaylist(playlistId: String, trackId: String) {
-        if (!playlistId.startsWith(PERSONAL_PLAYLIST_ID_PREFIX) || trackId.isBlank()) return
-        viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            runSuspendCatching { engine.removeTrackFromPersonalPlaylist(playlistId, trackId) }
-                .onSuccess { updatedPl ->
-                    val updatedPersonal = runSuspendCatching { engine.listPersonalPlaylists() }
-                        .getOrDefault(personalPlaylistsCache)
-                        .also { personalPlaylistsCache = it }
-                    _uiState.update { state ->
-                        val baseRemote = state.playlists.filterNot {
-                            it.id.startsWith(LOCAL_PLAYLIST_PREFIX) || it.id.startsWith(PERSONAL_PLAYLIST_ID_PREFIX)
-                        }
-                        state.copy(
-                            personalPlaylists = updatedPersonal,
-                            playlists = mergePlaylistsWithLocal(baseRemote, updatedPersonal),
-                            collectionTracks = if (state.collectionBrowseId == playlistId) updatedPl.tracks else state.collectionTracks,
-                        )
-                    }
-                }
-        }
-    }
+    fun removeTrackFromPersonalPlaylist(playlistId: String, trackId: String) =
+        removeTrackFromPersonalPlaylistImpl(playlistId, trackId)
 
-    /**
-     * Renames a YouTube Music playlist, updates its optional description/privacy,
-     * and/or uploads a custom cover image, syncing the changes to the user's account.
-     */
     fun editPlaylist(
         playlistId: String,
         title: String?,
@@ -4573,266 +2233,33 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         coverBytes: ByteArray?,
         mimeType: String?,
         onComplete: (Boolean, String) -> Unit = { _, _ -> },
-    ) {
-        val s = uiStrings()
-        val cleanId = playlistId.trim()
-        val cleanTitle = title?.trim()?.takeIf { it.isNotEmpty() }
-        val cleanDesc = description?.trim()?.takeIf { it.isNotEmpty() }
-        val cleanPrivacy = privacy?.trim()?.takeIf { it.isNotEmpty() }
-        val hasMetadata = cleanTitle != null || cleanDesc != null || cleanPrivacy != null
-        val hasCover = coverBytes != null && coverBytes.isNotEmpty()
-        if (cleanId.isEmpty() || (!hasMetadata && !hasCover)) {
-            onComplete(false, s.nothingToUpdate)
-            return
-        }
+    ) = editPlaylistImpl(playlistId, title, description, privacy, coverBytes, mimeType, onComplete)
 
-        viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            if (cleanId.startsWith(PERSONAL_PLAYLIST_ID_PREFIX)) {
-                if (cleanTitle == null) {
-                    withContext(Dispatchers.Main) { onComplete(false, s.nothingToUpdate) }
-                    return@launch
-                }
-                val renameRes = runSuspendCatching { engine.renamePersonalPlaylist(cleanId, cleanTitle) }
-                if (renameRes.isSuccess) {
-                    val updatedPersonal = runSuspendCatching { engine.listPersonalPlaylists() }
-                        .getOrDefault(personalPlaylistsCache)
-                        .also { personalPlaylistsCache = it }
-                    _uiState.update { state ->
-                        val baseRemote = state.playlists.filterNot {
-                            it.id.startsWith(LOCAL_PLAYLIST_PREFIX) || it.id.startsWith(PERSONAL_PLAYLIST_ID_PREFIX)
-                        }
-                        state.copy(
-                            personalPlaylists = updatedPersonal,
-                            playlists = mergePlaylistsWithLocal(baseRemote, updatedPersonal),
-                            collectionTitle = if (state.collectionBrowseId == cleanId) cleanTitle else state.collectionTitle,
-                            status = s.updatedPlaylist,
-                        )
-                    }
-                    withContext(Dispatchers.Main) { onComplete(true, s.updatedPlaylist) }
-                } else {
-                    val err = renameRes.exceptionOrNull()?.message ?: s.failedUpdatePlaylist
-                    _uiState.update { it.copy(status = err) }
-                    withContext(Dispatchers.Main) { onComplete(false, err) }
-                }
-                return@launch
-            }
-            if (!runCatching { engine.isSignedIn() }.getOrDefault(false)) {
-                val msg = s.signInToEditPlaylists
-                withContext(Dispatchers.Main) { onComplete(false, msg) }
-                return@launch
-            }
+    fun removeTrackFromCache(videoId: String) = removeTrackFromCacheImpl(videoId)
 
-            if (hasMetadata) {
-                val metaRes = runSuspendCatching {
-                    engine.editPlaylistMetadata(cleanId, cleanTitle, cleanDesc, cleanPrivacy)
-                }
-                if (metaRes.isFailure) {
-                    val err = metaRes.exceptionOrNull()?.message ?: s.failedUpdatePlaylist
-                    _uiState.update { it.copy(status = err) }
-                    withContext(Dispatchers.Main) { onComplete(false, err) }
-                    return@launch
-                }
-            }
-
-            if (hasCover) {
-                val bytes = coverBytes!!
-                val mime = mimeType?.takeIf { it.isNotBlank() } ?: "image/jpeg"
-                val coverRes = runSuspendCatching {
-                    engine.uploadPlaylistCover(cleanId, bytes, mime)
-                }
-                if (coverRes.isFailure) {
-                    val err = coverRes.exceptionOrNull()?.message ?: s.failedUploadCover
-                    _uiState.update { it.copy(status = err) }
-                    withContext(Dispatchers.Main) { onComplete(false, err) }
-                    return@launch
-                }
-            }
-
-            val refreshedRemote = runSuspendCatching { engine.fetchLibraryPlaylists() }.getOrNull()
-            val normalizedId = cleanId.removePrefix("VL")
-            val matchedRemote = refreshedRemote?.firstOrNull {
-                it.id == cleanId || it.id.removePrefix("VL") == normalizedId
-            }
-
-            val updatedTitle = cleanTitle ?: matchedRemote?.name
-            val statusMsg = if (hasCover && cleanTitle != null) {
-                s.updatedPlaylistAndCover
-            } else if (hasCover) {
-                s.updatedPlaylistCover
-            } else {
-                s.updatedPlaylist
-            }
-
-            _uiState.update { state ->
-                val isCurrentDetail = state.collectionBrowseId?.let {
-                    it == cleanId || it.removePrefix("VL") == normalizedId
-                } == true
-                val basePlaylists = refreshedRemote ?: state.playlists.map { pl ->
-                    if (pl.id == cleanId || pl.id.removePrefix("VL") == normalizedId) {
-                        pl.copy(name = updatedTitle ?: pl.name)
-                    } else {
-                        pl
-                    }
-                }
-                state.copy(
-                    playlists = mergePlaylistsWithLocal(basePlaylists),
-                    collectionTitle = if (isCurrentDetail && updatedTitle != null) updatedTitle else state.collectionTitle,
-                    collectionCoverUrl = if (isCurrentDetail && matchedRemote?.thumbnailUrl != null) {
-                        matchedRemote.thumbnailUrl
-                    } else {
-                        state.collectionCoverUrl
-                    },
-                    status = statusMsg,
-                )
-            }
-            withContext(Dispatchers.Main) { onComplete(true, statusMsg) }
-        }
-    }
-
-    @OptIn(UnstableApi::class)
-    fun removeTrackFromCache(videoId: String) {
-        if (videoId.isBlank()) return
-        viewModelScope.launch(Dispatchers.IO) {
-            val cached = streamCache.remove(videoId)
-            PlaybackService.evictCacheKey(videoId)
-            val rawCacheKey = activeCacheKeysByTrackId.remove(videoId)
-            if (rawCacheKey != null) {
-                PlaybackService.evictCacheKey(rawCacheKey)
-            }
-            if (cached != null && cached.stream.badge.isNotBlank()) {
-                PlaybackService.evictCacheKey("$videoId:${cached.stream.badge}")
-            }
-            val activeBadge = _uiState.value.takeIf { it.activeTrack?.id == videoId }?.streamBadge
-            if (!activeBadge.isNullOrBlank()) {
-                PlaybackService.evictCacheKey("$videoId:$activeBadge")
-            }
-            downloadManager.removeDownload(videoId)
-            _uiState.update { it.copy(status = uiStrings().removedFromCacheStatus) }
-        }
-    }
-
-    private suspend fun fetchTracksForCollectionAction(
+    internal suspend fun fetchTracksForCollectionAction(
         engine: SonataEngineGateway,
         browseId: String,
-    ): List<AndroidTrack> {
-        return when {
-            browseId == DOWNLOADS_PLAYLIST_ID -> downloads.value.map { it.toAndroidTrack() }
-            browseId.startsWith(LOCAL_PLAYLIST_PREFIX) -> getLocalPlaylistTracks(browseId)
-            else -> runSuspendCatching { engine.fetchCollectionTracks(browseId) }.getOrDefault(emptyList())
-        }
-    }
+    ): List<AndroidTrack> = fetchTracksForCollectionActionImpl(engine, browseId)
 
     fun playCollectionShuffled(
         browseId: String,
         title: String,
         subtitle: String = "",
         coverUrl: String? = null,
-    ) {
-        if (browseId.isBlank()) return
-        viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            val tracks = fetchTracksForCollectionAction(engine, browseId)
-            if (tracks.isEmpty()) {
-                _uiState.update { it.copy(status = uiStrings().noTracksInCollection(title)) }
-                return@launch
-            }
-            val backfilled = backfillCollectionTracks(
-                rawTracks = tracks,
-                id = browseId,
-                title = title.ifBlank { uiStrings().playlistLabel },
-                subtitle = subtitle.takeIf { it.isNotBlank() },
-                coverUrl = coverUrl,
-            )
-            toggleShuffleAndPlay(backfilled)
-        }
-    }
+    ) = playCollectionShuffledImpl(browseId, title, subtitle, coverUrl)
 
-    fun enqueueCollectionNext(browseId: String) {
-        if (browseId.isBlank()) return
-        viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            val tracks = fetchTracksForCollectionAction(engine, browseId)
-            if (tracks.isEmpty()) return@launch
-            val current = _uiState.value
-            val existingQueue = current.queue
-            if (existingQueue.isEmpty() || current.activeTrack == null) {
-                playTrack(tracks.first(), tracks)
-                return@launch
-            }
-            val insertIndex = (current.queueIndex + 1).coerceIn(0, existingQueue.size)
-            val mutable = existingQueue.toMutableList()
-            mutable.addAll(insertIndex, tracks)
-            _uiState.update {
-                it.copy(queue = mutable, status = uiStrings().addedToPlayNextStatus(tracks.size))
-            }
-        }
-    }
+    fun enqueueCollectionNext(browseId: String) = enqueueCollectionNextImpl(browseId)
 
-    fun enqueueCollectionLater(browseId: String) {
-        if (browseId.isBlank()) return
-        viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            val tracks = fetchTracksForCollectionAction(engine, browseId)
-            if (tracks.isEmpty()) return@launch
-            val current = _uiState.value
-            val existingQueue = current.queue
-            if (existingQueue.isEmpty() || current.activeTrack == null) {
-                playTrack(tracks.first(), tracks)
-                return@launch
-            }
-            _uiState.update {
-                it.copy(
-                    queue = existingQueue + tracks,
-                    status = uiStrings().addedToQueueStatus(tracks.size),
-                )
-            }
-        }
-    }
+    fun enqueueCollectionLater(browseId: String) = enqueueCollectionLaterImpl(browseId)
 
-    fun downloadCollectionById(browseId: String) {
-        if (browseId.isBlank()) return
-        viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            val tracks = fetchTracksForCollectionAction(engine, browseId)
-            if (tracks.isNotEmpty()) {
-                downloadCollection(tracks, browseId)
-            }
-        }
-    }
+    fun downloadCollectionById(browseId: String) = downloadCollectionByIdImpl(browseId)
 
-    fun playNext(track: AndroidTrack) {
-        val current = _uiState.value
-        val queue = current.queue
-        if (queue.isEmpty() || current.activeTrack == null) {
-            playTrack(track, listOf(track))
-            return
-        }
-        val insertIndex = (current.queueIndex + 1).coerceIn(0, queue.size)
-        val mutable = queue.toMutableList()
-        mutable.add(insertIndex, track)
-        _uiState.update { it.copy(queue = mutable, status = uiStrings().playingNextStatus(track.title)) }
-    }
+    fun playNext(track: AndroidTrack) = playNextImpl(track)
 
-    fun addToQueue(track: AndroidTrack) {
-        val current = _uiState.value
-        val queue = current.queue
-        if (queue.isEmpty() || current.activeTrack == null) {
-            playTrack(track, listOf(track))
-            return
-        }
-        _uiState.update {
-            it.copy(queue = queue + track, status = uiStrings().addedTrackToQueueStatus(track.title))
-        }
-    }
+    fun addToQueue(track: AndroidTrack) = addToQueueImpl(track)
 
-    fun toggleShuffleAndPlay(tracks: List<AndroidTrack>) {
-        if (tracks.isEmpty()) return
-        preferences.update { it.copy(shuffleEnabled = true) }
-        _uiState.update { it.copy(shuffleEnabled = true) }
-        val start = tracks[Random.nextInt(tracks.size)]
-        playTrack(start, tracks)
-    }
+    fun toggleShuffleAndPlay(tracks: List<AndroidTrack>) = toggleShuffleAndPlayImpl(tracks)
 
     fun removeRecentSearch(q: String) {
         _uiState.update { state ->
@@ -5119,31 +2546,11 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun isCollectionPinned(browseId: String?): Boolean {
-        val norm = normalizeCollectionId(browseId)
-        if (norm.isBlank()) return false
-        return _uiState.value.pinnedCollections.any { normalizeCollectionId(it.id) == norm }
-    }
+    fun isCollectionPinned(browseId: String?): Boolean = isCollectionPinnedImpl(browseId)
 
-    fun isPlaylistSavedToLibrary(browseId: String?): Boolean {
-        val norm = normalizeCollectionId(browseId)
-        if (norm.isBlank()) return false
-        val state = _uiState.value
-        if (norm in state.savedExternalPlaylistIds) return true
-        if (norm in state.ownedPlaylistIds) return false
-        return state.playlists.any { normalizeCollectionId(it.id) == norm }
-    }
+    fun isPlaylistSavedToLibrary(browseId: String?): Boolean = isPlaylistSavedToLibraryImpl(browseId)
 
-    fun isOwnedEditablePlaylist(browseId: String?): Boolean {
-        if (browseId?.startsWith(PERSONAL_PLAYLIST_ID_PREFIX) == true) return true
-        val state = _uiState.value
-        return isEditableUserPlaylist(
-            browseId = browseId,
-            signedIn = state.signedIn,
-            ownedPlaylistIds = state.ownedPlaylistIds,
-            savedExternalPlaylistIds = state.savedExternalPlaylistIds,
-        )
-    }
+    fun isOwnedEditablePlaylist(browseId: String?): Boolean = isOwnedEditablePlaylistImpl(browseId)
 
     fun togglePinCollection(
         id: String,
@@ -5152,48 +2559,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         coverUrl: String? = null,
         kindLabel: String = "",
         isAlbum: Boolean = false,
-    ) {
-        val norm = normalizeCollectionId(id)
-        if (norm.isBlank()) return
-        val s = uiStrings()
-        val cleanTitle = title.trim().ifBlank { s.playlistLabel }
-        viewModelScope.launch(Dispatchers.IO) {
-            var nowPinned = false
-            val updatedList = synchronized(pinnedSavedLock) {
-                val existingIdx = cachedPinnedCollections.indexOfFirst { normalizeCollectionId(it.id) == norm }
-                val next = if (existingIdx >= 0) {
-                    nowPinned = false
-                    cachedPinnedCollections.filterNot { normalizeCollectionId(it.id) == norm }
-                } else {
-                    nowPinned = true
-                    val resolvedCover = coverUrl?.takeIf { it.isNotBlank() }
-                        ?: _uiState.value.playlists.firstOrNull { normalizeCollectionId(it.id) == norm }?.thumbnailUrl
-                    val entry = PinnedCollectionEntry(
-                        id = id.trim(),
-                        title = cleanTitle,
-                        subtitle = subtitle.trim().ifBlank {
-                            if (isAlbum) s.albumLabel else s.playlistLabel
-                        },
-                        coverUrl = resolvedCover,
-                        kindLabel = kindLabel.ifBlank { if (isAlbum) s.albumLabel else s.playlistLabel },
-                        isAlbum = isAlbum,
-                        pinnedAtMs = System.currentTimeMillis(),
-                    )
-                    listOf(entry) + cachedPinnedCollections
-                }
-                cachedPinnedCollections = next
-                savePinnedCollectionsLocked(next)
-                next
-            }
-            val statusMsg = if (nowPinned) s.pinnedStatus(cleanTitle) else s.unpinnedStatus(cleanTitle)
-            _uiState.update { state ->
-                state.copy(
-                    pinnedCollections = updatedList,
-                    status = statusMsg,
-                )
-            }
-        }
-    }
+    ) = togglePinCollectionImpl(id, title, subtitle, coverUrl, kindLabel, isAlbum)
 
     fun toggleSaveExternalPlaylist(
         id: String,
@@ -5201,98 +2567,13 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         subtitle: String = "",
         coverUrl: String? = null,
         kindLabel: String = "",
-    ) {
-        val norm = normalizeCollectionId(id)
-        if (norm.isBlank() || isOwnedEditablePlaylist(id)) return
-        val s = uiStrings()
-        val cleanTitle = title.trim().ifBlank { s.playlistLabel }
-        viewModelScope.launch(Dispatchers.IO) {
-            var nowSaved = false
-            val updatedSaved = synchronized(pinnedSavedLock) {
-                val existsInSaved = cachedSavedExternalPlaylists.any { normalizeCollectionId(it.id) == norm }
-                val inPlaylists = _uiState.value.playlists.any { normalizeCollectionId(it.id) == norm }
-                val shouldRemove = existsInSaved || inPlaylists
-                val next = if (shouldRemove) {
-                    nowSaved = false
-                    cachedSavedExternalPlaylists.filterNot { normalizeCollectionId(it.id) == norm }
-                } else {
-                    nowSaved = true
-                    val entry = SavedExternalPlaylist(
-                        id = id.trim(),
-                        title = cleanTitle,
-                        subtitle = subtitle.trim().ifBlank { s.playlistLabel },
-                        coverUrl = coverUrl?.takeIf { it.isNotBlank() },
-                        kindLabel = kindLabel.ifBlank { s.playlistLabel },
-                        savedAtMs = System.currentTimeMillis(),
-                    )
-                    listOf(entry) + cachedSavedExternalPlaylists
-                }
-                cachedSavedExternalPlaylists = next
-                saveExternalPlaylistsLocked(next)
-                next
-            }
-            val savedIdSet = updatedSaved.mapTo(HashSet()) { normalizeCollectionId(it.id) }
-            val statusMsg = if (nowSaved) s.addedToLibraryStatus(cleanTitle) else s.removedFromLibraryStatus(cleanTitle)
-            _uiState.update { state ->
-                val remoteClean = state.playlists.filter { pl ->
-                    val plNorm = normalizeCollectionId(pl.id)
-                    !pl.id.startsWith(LOCAL_PLAYLIST_PREFIX) &&
-                        plNorm !in state.savedExternalPlaylistIds &&
-                        (nowSaved || plNorm != norm)
-                }
-                state.copy(
-                    savedExternalPlaylistIds = savedIdSet,
-                    playlists = mergePlaylistsWithLocal(remoteClean),
-                    status = statusMsg,
-                )
-            }
-            val engine = requireEngine()
-            if (runCatching { engine.isSignedIn() }.getOrDefault(false)) {
-                runSuspendCatching { engine.setPlaylistSaved(id, nowSaved) }
-                    .onFailure { err ->
-                        Log.w("SonataLibrary", "setPlaylistSaved($id, $nowSaved) remote sync failed: ${err.message}")
-                    }
-            }
-        }
-    }
+    ) = toggleSaveExternalPlaylistImpl(id, title, subtitle, coverUrl, kindLabel)
 
-    fun openPinnedCollection(entry: PinnedCollectionEntry) {
-        if (entry.id == DOWNLOADS_PLAYLIST_ID) {
-            openDownloadsPlaylist()
-        } else {
-            openAlbumOrPlaylist(
-                id = entry.id,
-                title = entry.title,
-                coverUrl = entry.coverUrl,
-                subtitle = entry.subtitle,
-                kindLabel = entry.kindLabel,
-            )
-        }
-    }
+    fun openPinnedCollection(entry: PinnedCollectionEntry) = openPinnedCollectionImpl(entry)
 
-    fun openPlaylist(playlist: AndroidPlaylist) {
-        val s = uiStrings()
-        openCollectionById(
-            id = playlist.id,
-            title = playlist.name,
-            coverUrl = playlist.thumbnailUrl,
-            subtitle = if (playlist.isOwned) (_uiState.value.accountProfile?.name ?: s.playlistLabel) else s.playlistLabel,
-            kindLabel = s.playlistLabel,
-        )
-    }
+    fun openPlaylist(playlist: AndroidPlaylist) = openPlaylistImpl(playlist)
 
-    fun openDownloadsPlaylist() {
-        val s = uiStrings()
-        val latestCover = downloads.value.maxByOrNull { it.downloadedAtMs }?.coverUrl?.takeIf { it.isNotBlank() }
-            ?: downloads.value.firstOrNull { !it.coverUrl.isNullOrBlank() }?.coverUrl
-        openCollectionById(
-            id = DOWNLOADS_PLAYLIST_ID,
-            title = s.downloads,
-            coverUrl = latestCover,
-            subtitle = s.offlineSongsCount(downloads.value.size),
-            kindLabel = s.offlineLibrary,
-        )
-    }
+    fun openDownloadsPlaylist() = openDownloadsPlaylistImpl()
 
     fun openAlbumOrPlaylist(
         id: String,
@@ -5301,54 +2582,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         subtitle: String? = null,
         kindLabel: String? = null,
         year: String? = null,
-    ) {
-        val isAlbumKind = kindLabel.equals("Album", ignoreCase = true) ||
-            kindLabel.equals(uiStrings().albumLabel, ignoreCase = true)
-        if (isSelfHostedId(id)) {
-            if (isAlbumKind) {
-                openServerAlbumById(
-                    albumId = id,
-                    albumTitle = title,
-                    artistName = subtitle.orEmpty(),
-                    coverUrl = coverUrl,
-                    year = year,
-                )
-            } else {
-                openCollectionById(
-                    id = id,
-                    title = title,
-                    coverUrl = coverUrl,
-                    subtitle = subtitle,
-                    kindLabel = kindLabel,
-                    year = year,
-                )
-            }
-            return
-        }
-        if (isAlbumKind &&
-            !id.startsWith("MPRE") &&
-            !id.startsWith("OLAK") &&
-            !id.startsWith("VL") &&
-            !id.startsWith("PL")
-        ) {
-            openAlbum(
-                albumId = id,
-                albumTitle = title,
-                artistName = subtitle.orEmpty(),
-                coverUrl = coverUrl,
-                year = year,
-            )
-            return
-        }
-        openCollectionById(
-            id = id,
-            title = title,
-            coverUrl = coverUrl,
-            subtitle = subtitle,
-            kindLabel = kindLabel,
-            year = year,
-        )
-    }
+    ) = openAlbumOrPlaylistImpl(id, title, coverUrl, subtitle, kindLabel, year)
 
     fun openAlbum(
         albumId: String,
@@ -5356,582 +2590,32 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         artistName: String = "",
         coverUrl: String? = null,
         year: String? = null,
-    ) {
-        val s = uiStrings()
-        val cleanId = albumId.trim()
-        val cleanTitle = albumTitle.trim()
-        if (isSelfHostedId(cleanId)) {
-            openServerAlbumById(
-                albumId = cleanId,
-                albumTitle = cleanTitle.ifBlank { s.albumLabel },
-                artistName = artistName,
-                coverUrl = coverUrl,
-                year = year,
-            )
-            return
-        }
-        if (cleanId.startsWith("MPRE") ||
-            cleanId.startsWith("OLAK") ||
-            cleanId.startsWith("VL") ||
-            cleanId.startsWith("PL")
-        ) {
-            openCollectionById(
-                id = cleanId,
-                title = cleanTitle.ifBlank { s.albumLabel },
-                coverUrl = coverUrl,
-                subtitle = artistName.takeIf { it.isNotBlank() },
-                kindLabel = "Album",
-                year = year,
-            )
-            return
-        }
-        if (cleanTitle.isBlank()) {
-            if (artistName.isNotBlank()) openArtist("", artistName)
-            return
-        }
-        speculativePrefetchJob?.cancel()
-        viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            _uiState.update {
-                it.copy(
-                    artistPage = null,
-                    artistLoading = false,
-                    moodCategoryTitle = null,
-                    moodCategoryShelves = emptyList(),
-                    moodCategoryLoading = false,
-                    collectionTitle = cleanTitle,
-                    collectionCoverUrl = coverUrl,
-                    collectionSubtitle = artistName.takeIf { sub -> sub.isNotBlank() },
-                    collectionKindLabel = "Album",
-                    collectionYear = year,
-                    collectionTracks = emptyList(),
-                    loading = true,
-                    status = s.openingNamedStatus(cleanTitle),
-                )
-            }
-            val resolvedId = runSuspendCatching {
-                engine.resolveAlbumBrowseId(cleanTitle, artistName)
-            }.getOrNull()
-            if (!resolvedId.isNullOrBlank()) {
-                openCollectionById(
-                    id = resolvedId,
-                    title = cleanTitle,
-                    coverUrl = coverUrl,
-                    subtitle = artistName.takeIf { sub -> sub.isNotBlank() },
-                    kindLabel = "Album",
-                    year = year,
-                )
-            } else {
-                _uiState.update {
-                    it.copy(
-                        loading = false,
-                        collectionTitle = null,
-                        collectionTracks = emptyList(),
-                    )
-                }
-                search(listOf(cleanTitle, artistName).filter { part -> part.isNotBlank() }.joinToString(" "))
-            }
-        }
-    }
+    ) = openAlbumImpl(albumId, albumTitle, artistName, coverUrl, year)
 
-    fun openArtist(browseId: String, name: String = "") {
-        val cleanBrowseId = browseId.trim()
-        val cleanName = name.trim()
-        if (cleanBrowseId.isBlank() && cleanName.isBlank()) return
-        speculativePrefetchJob?.cancel()
+    fun openArtist(browseId: String, name: String = "") = openArtistImpl(browseId, name)
 
-        val cached = (if (cleanBrowseId.startsWith("UC")) getCachedArtistPage(cleanBrowseId) else null)
-            ?: cleanName.takeIf { it.isNotBlank() }?.let { getCachedArtistPage("name:$it") }
-        if (cached != null) {
-            _uiState.update {
-                it.copy(
-                    collectionBrowseId = null,
-                    collectionTitle = null,
-                    collectionTracks = emptyList(),
-                    moodCategoryTitle = null,
-                    moodCategoryShelves = emptyList(),
-                    moodCategoryLoading = false,
-                    artistLoading = false,
-                    artistPage = cached,
-                    status = cached.name,
-                )
-            }
-            prefetchStreams(cached.popularTracks.take(2), delayMs = 1_000L)
-            return
-        }
+    fun selectHomeMoodChip(params: String?) = selectHomeMoodChipImpl(params)
 
-        val s = uiStrings()
-        artistJob?.cancel()
-        artistJob = viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            _uiState.update {
-                it.copy(
-                    collectionBrowseId = null,
-                    collectionTitle = null,
-                    collectionTracks = emptyList(),
-                    moodCategoryTitle = null,
-                    moodCategoryShelves = emptyList(),
-                    moodCategoryLoading = false,
-                    artistLoading = true,
-                    artistPage = AndroidArtistPage(
-                        id = cleanBrowseId,
-                        name = cleanName.ifBlank { s.artistDefault },
-                        subtitle = "",
-                        description = null,
-                        subscribers = null,
-                        monthlyListeners = null,
-                        thumbnailUrl = null,
-                        shufflePlaylistId = null,
-                        radioPlaylistId = null,
-                        latestRelease = null,
-                        popularTracks = emptyList(),
-                        releases = emptyList(),
-                        relatedArtists = emptyList(),
-                    ),
-                    status = s.loadingNamedStatus(cleanName.ifBlank { s.artistDefault }),
-                )
-            }
-            val result = runSuspendCatching {
-                if (cleanBrowseId.startsWith("UC")) {
-                    engine.fetchArtistPage(cleanBrowseId)
-                } else {
-                    engine.fetchArtistByName(cleanName)
-                }
-            }
-            result
-                .onSuccess { page ->
-                    putCachedArtistPage(page, cleanName)
-                    _uiState.update {
-                        it.copy(
-                            artistLoading = false,
-                            artistPage = page,
-                            status = page.name,
-                        )
-                    }
-                    prefetchStreams(page.popularTracks.take(2), delayMs = 1_200L)
-                }
-                .onFailure { err ->
-                    if (!cleanBrowseId.startsWith("UC") && cleanName.isNotBlank()) {
-                        _uiState.update {
-                            it.copy(
-                                artistLoading = false,
-                                artistPage = null,
-                            )
-                        }
-                        search(cleanName)
-                    } else {
-                        _uiState.update {
-                            it.copy(
-                                artistLoading = false,
-                                status = s.artistErrorStatus(err.message.orEmpty()),
-                            )
-                        }
-                    }
-                }
-        }
-    }
-
-    fun selectHomeMoodChip(params: String?) {
-        val currentSelected = _uiState.value.selectedHomeMoodParams
-        val nextParams = when {
-            params.isNullOrBlank() -> null
-            currentSelected == params -> null
-            else -> params
-        }
-        homeMoodChipJob?.cancel()
-        if (nextParams == null) {
-            val cachedFull = fullHomeShelves
-            if (cachedFull.isNotEmpty()) {
-                val updatedArtists = buildRecentArtistCards(_lastPlayedTracks.value, cachedFull)
-                _uiState.update {
-                    it.copy(
-                        selectedHomeMoodParams = null,
-                        shelves = cachedFull,
-                        recentArtistCards = updatedArtists,
-                        refreshing = false,
-                        status = uiStrings().personalizedShelvesCount(cachedFull.size),
-                    )
-                }
-                return
-            }
-            _uiState.update { it.copy(selectedHomeMoodParams = null, refreshing = true) }
-            homeMoodChipJob?.cancel()
-            homeMoodChipJob = viewModelScope.launch(Dispatchers.IO) {
-                val engine = requireEngine()
-                runSuspendCatching { engine.fetchHomeMoodFeed(null) }
-                    .onSuccess { rawShelves ->
-                        if (!isActive || _uiState.value.selectedHomeMoodParams != null) return@onSuccess
-                        val cleaned = normalizeAndMergeHomeShelves(rawShelves)
-                        if (cleaned.isNotEmpty()) {
-                            fullHomeShelves = cleaned
-                        }
-                        val updatedArtists = buildRecentArtistCards(_lastPlayedTracks.value, cleaned)
-                        _uiState.update { state ->
-                            state.copy(
-                                shelves = cleaned.ifEmpty { state.shelves },
-                                recentArtistCards = updatedArtists,
-                                refreshing = false,
-                                status = uiStrings().personalizedShelvesCount(cleaned.size),
-                            )
-                        }
-                    }
-                    .onFailure { err ->
-                        handleRateLimitIfNeeded(err)
-                        _uiState.update {
-                            it.copy(
-                                refreshing = false,
-                                status = uiStrings().homeErrorStatus(err.message.orEmpty()),
-                            )
-                        }
-                    }
-            }
-            return
-        }
-
-        _uiState.update { it.copy(selectedHomeMoodParams = nextParams, refreshing = true) }
-        homeMoodChipJob?.cancel()
-        homeMoodChipJob = viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            runSuspendCatching { engine.fetchHomeMoodFeed(nextParams) }
-                .onSuccess { rawShelves ->
-                    if (!isActive || _uiState.value.selectedHomeMoodParams != nextParams) return@onSuccess
-                    val cleaned = normalizeAndMergeHomeShelves(rawShelves)
-                    val updatedArtists = buildRecentArtistCards(_lastPlayedTracks.value, cleaned)
-                    _uiState.update { state ->
-                        state.copy(
-                            shelves = cleaned.ifEmpty { state.shelves },
-                            recentArtistCards = updatedArtists,
-                            refreshing = false,
-                            status = uiStrings().personalizedShelvesCount(cleaned.size),
-                        )
-                    }
-                }
-                .onFailure { err ->
-                    handleRateLimitIfNeeded(err)
-                    _uiState.update { state ->
-                        val fallback = if (fullHomeShelves.isNotEmpty()) fullHomeShelves else state.shelves
-                        state.copy(
-                            selectedHomeMoodParams = null,
-                            shelves = fallback,
-                            refreshing = false,
-                            status = uiStrings().homeErrorStatus(err.message.orEmpty()),
-                        )
-                    }
-                }
-        }
-    }
-
-    fun openMoodCategory(title: String, browseId: String = "", params: String = "") {
-        val cleanTitle = title.trim()
-        if (cleanTitle.isBlank() && browseId.isBlank()) return
-        speculativePrefetchJob?.cancel()
-        moodCategoryJob?.cancel()
-        val s = uiStrings()
-        val displayTitle = localizeMoodTitle(cleanTitle, s).ifBlank { cleanTitle }
-        _uiState.update {
-            it.copy(
-                collectionBrowseId = null,
-                collectionTitle = null,
-                collectionTracks = emptyList(),
-                artistPage = null,
-                artistLoading = false,
-                showLyrics = false,
-                moodCategoryTitle = displayTitle,
-                moodCategoryShelves = emptyList(),
-                moodCategoryLoading = true,
-                status = s.loadingNamedStatus(displayTitle),
-            )
-        }
-        moodCategoryJob?.cancel()
-        moodCategoryJob = viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            var resolvedBrowseId = browseId.trim()
-            var resolvedParams = params.trim()
-
-            if (resolvedBrowseId.isBlank() || resolvedParams.isBlank()) {
-                var categories = _uiState.value.moodCategories
-                if (categories.isEmpty()) {
-                    runSuspendCatching { engine.fetchExploreFeed() }
-                        .onSuccess { feed ->
-                            categories = feed.moods
-                            val cleanedExplore = normalizeAndMergeHomeShelves(feed.shelves)
-                            _uiState.update { state ->
-                                state.copy(
-                                    exploreShelves = cleanedExplore.ifEmpty { state.exploreShelves },
-                                    moodCategories = feed.moods.ifEmpty { state.moodCategories },
-                                )
-                            }
-                        }
-                        .onFailure { handleRateLimitIfNeeded(it) }
-                }
-                val match = categories.firstOrNull { cat ->
-                    val catRaw = cat.title.trim()
-                    val catLoc = localizeMoodTitle(catRaw, s)
-                    val enLoc = localizeMoodTitle(catRaw, EnglishSonataStrings)
-                    catRaw.equals(cleanTitle, ignoreCase = true) ||
-                        catRaw.equals(displayTitle, ignoreCase = true) ||
-                        catLoc.equals(cleanTitle, ignoreCase = true) ||
-                        catLoc.equals(displayTitle, ignoreCase = true) ||
-                        enLoc.equals(cleanTitle, ignoreCase = true) ||
-                        (resolvedBrowseId.isNotBlank() && cat.browseId == resolvedBrowseId)
-                }
-                if (match != null) {
-                    if (resolvedBrowseId.isBlank()) resolvedBrowseId = match.browseId
-                    if (resolvedParams.isBlank()) resolvedParams = match.params
-                }
-            }
-
-            if (resolvedBrowseId.isNotBlank()) {
-                val rawShelves = runSuspendCatching {
-                    engine.fetchMoodCategory(resolvedBrowseId, resolvedParams)
-                }.onFailure { err ->
-                    handleRateLimitIfNeeded(err)
-                }.getOrDefault(emptyList())
-                if (!isActive) return@launch
-                val cleaned = normalizeAndMergeHomeShelves(rawShelves)
-                if (cleaned.isNotEmpty()) {
-                    _uiState.update {
-                        it.copy(
-                            moodCategoryTitle = displayTitle,
-                            moodCategoryShelves = cleaned,
-                            moodCategoryLoading = false,
-                            status = displayTitle,
-                        )
-                    }
-                    return@launch
-                }
-            }
-
-            if (!isActive) return@launch
-            _uiState.update {
-                it.copy(
-                    moodCategoryTitle = null,
-                    moodCategoryShelves = emptyList(),
-                    moodCategoryLoading = false,
-                )
-            }
-            search("$cleanTitle music")
-        }
-    }
+    fun openMoodCategory(title: String, browseId: String = "", params: String = "") =
+        openMoodCategoryImpl(title, browseId, params)
 
     fun openMood(title: String) {
         openMoodCategory(title)
     }
 
-    fun closeMoodCategory() {
-        moodCategoryJob?.cancel()
-        _uiState.update {
-            it.copy(
-                moodCategoryTitle = null,
-                moodCategoryShelves = emptyList(),
-                moodCategoryLoading = false,
-            )
-        }
-    }
+    fun closeMoodCategory() = closeMoodCategoryImpl()
 
-    fun openCard(card: AndroidHomeCard, shelfTracks: List<AndroidTrack> = emptyList()) {
-        when (card.kind) {
-            AndroidHomeCardKind.SONG, AndroidHomeCardKind.VIDEO -> {
-                card.track?.let { track ->
-                    val queueSource = shelfTracks.ifEmpty { listOf(track) }
-                    playTrack(track, queueSource)
-                }
-            }
-            AndroidHomeCardKind.MOOD -> openMoodCategory(card.title, card.id)
-            AndroidHomeCardKind.PLAYLIST, AndroidHomeCardKind.ALBUM -> {
-                val kind = if (card.kind == AndroidHomeCardKind.ALBUM) "Album" else "Playlist"
-                val year = YEAR_REGEX.find(card.subtitle)?.value
-                openCollectionById(
-                    id = card.id,
-                    title = card.title,
-                    coverUrl = card.thumbnailUrl,
-                    subtitle = card.subtitle.ifBlank { null },
-                    kindLabel = kind,
-                    year = year,
-                )
-            }
-            AndroidHomeCardKind.ARTIST -> openArtist(card.id, card.title)
-        }
-    }
+    fun openCard(card: AndroidHomeCard, shelfTracks: List<AndroidTrack> = emptyList()) =
+        openCardImpl(card, shelfTracks)
 
-    private fun openCollectionById(
+    internal fun openCollectionById(
         id: String,
         title: String,
         coverUrl: String? = null,
         subtitle: String? = null,
         kindLabel: String? = null,
         year: String? = null,
-    ) {
-        val s = uiStrings()
-        speculativePrefetchJob?.cancel()
-        if (id == DOWNLOADS_PLAYLIST_ID) {
-            val latestDownloadCover = downloads.value.maxByOrNull { it.downloadedAtMs }?.coverUrl?.takeIf { it.isNotBlank() }
-            val offlineTracks = downloads.value.map { it.toAndroidTrack() }
-            val resolvedCover = coverUrl ?: latestDownloadCover ?: offlineTracks.firstOrNull { t -> !t.thumbnailUrl.isNullOrBlank() }?.thumbnailUrl
-            syncCollectionMetadataToSavedAndPinned(
-                id = id,
-                title = s.downloads,
-                subtitle = s.offlineSongsCount(offlineTracks.size),
-                coverUrl = resolvedCover,
-            )
-            _uiState.update {
-                it.copy(
-                    artistPage = null,
-                    artistLoading = false,
-                    moodCategoryTitle = null,
-                    moodCategoryShelves = emptyList(),
-                    moodCategoryLoading = false,
-                    collectionBrowseId = id,
-                    collectionTitle = s.downloads,
-                    collectionCoverUrl = resolvedCover,
-                    collectionSubtitle = s.offlineSongsCount(offlineTracks.size),
-                    collectionKindLabel = s.offlineLibrary,
-                    collectionYear = null,
-                    collectionTracks = offlineTracks,
-                    loading = false,
-                    status = s.downloadedSongsCount(offlineTracks.size),
-                )
-            }
-            return
-        }
-        if (id.startsWith(PERSONAL_PLAYLIST_ID_PREFIX)) {
-            val cachedPl = _uiState.value.personalPlaylists.firstOrNull { it.id == id }
-            if (cachedPl != null) {
-                val pTracks = cachedPl.tracks
-                val srcLabel = sourcesStrings(preferences.state.value.appLanguage).personalPlaylistsTitle
-                _uiState.update {
-                    it.copy(
-                        artistPage = null,
-                        artistLoading = false,
-                        moodCategoryTitle = null,
-                        moodCategoryShelves = emptyList(),
-                        moodCategoryLoading = false,
-                        collectionBrowseId = id,
-                        collectionTitle = cachedPl.name,
-                        collectionCoverUrl = coverUrl ?: pTracks.firstOrNull { t -> !t.thumbnailUrl.isNullOrBlank() }?.thumbnailUrl,
-                        collectionSubtitle = s.offlinePlaylistSongsCount(pTracks.size),
-                        collectionKindLabel = kindLabel ?: srcLabel,
-                        collectionYear = year,
-                        collectionTracks = pTracks,
-                        loading = false,
-                        status = s.tracksInCollectionStatus(pTracks.size, cachedPl.name),
-                    )
-                }
-                return
-            }
-        }
-        if (id.startsWith(LOCAL_PLAYLIST_PREFIX)) {
-            val localTracks = getLocalPlaylistTracks(id)
-            _uiState.update {
-                it.copy(
-                    artistPage = null,
-                    artistLoading = false,
-                    moodCategoryTitle = null,
-                    moodCategoryShelves = emptyList(),
-                    moodCategoryLoading = false,
-                    collectionBrowseId = id,
-                    collectionTitle = title,
-                    collectionCoverUrl = coverUrl ?: localTracks.firstOrNull { t -> !t.thumbnailUrl.isNullOrBlank() }?.thumbnailUrl,
-                    collectionSubtitle = s.offlinePlaylistSongsCount(localTracks.size),
-                    collectionKindLabel = kindLabel ?: s.offlinePlaylist,
-                    collectionYear = year,
-                    collectionTracks = localTracks,
-                    loading = false,
-                    status = s.tracksInCollectionStatus(localTracks.size, title),
-                )
-            }
-            return
-        }
-        collectionJob?.cancel()
-        collectionJob = viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            _uiState.update {
-                it.copy(
-                    artistPage = null,
-                    artistLoading = false,
-                    moodCategoryTitle = null,
-                    moodCategoryShelves = emptyList(),
-                    moodCategoryLoading = false,
-                    collectionBrowseId = id,
-                    collectionTitle = title,
-                    collectionCoverUrl = coverUrl,
-                    collectionSubtitle = subtitle,
-                    collectionKindLabel = kindLabel,
-                    collectionYear = year,
-                    collectionTracks = emptyList(),
-                    loading = true,
-                    status = s.loadingNamedStatus(title)
-                )
-            }
-            runSuspendCatching {
-                if (isSelfHostedId(id)) {
-                    engine.getServerPlaylistTracks(id)
-                } else {
-                    engine.fetchCollectionTracksFresh(id)
-                }
-            }
-                .onSuccess { rawTracks ->
-                    val firstLiveTrackCover = rawTracks.firstNotNullOfOrNull { resolveTrackCoverUrl(it) }
-                    val fallbackCover = if (isLikedMusicPlaylistId(id)) {
-                        firstLiveTrackCover ?: coverUrl
-                    } else {
-                        coverUrl ?: firstLiveTrackCover
-                    }
-                    val tracks = backfillCollectionTracks(
-                        rawTracks = rawTracks,
-                        id = id,
-                        title = title,
-                        subtitle = subtitle,
-                        coverUrl = fallbackCover,
-                    )
-                    if (isLikedMusicPlaylistId(id)) {
-                        likedTracksCache = tracks
-                        val likedIds = tracks.mapNotNull { t -> t.id.takeIf { it.isNotBlank() } }
-                        if (likedIds.isNotEmpty()) {
-                            _uiState.update { state ->
-                                val mergedLiked = state.likedTrackIds + likedIds
-                                if (mergedLiked == state.likedTrackIds) state else state.copy(likedTrackIds = mergedLiked)
-                            }
-                        }
-                        updateLatestLikedCover(fallbackCover, clearIfNull = tracks.isEmpty())
-                    }
-                    autoPlaylistTracksCache[id] = tracks
-                    if (trackCollectionContext.size > 512) {
-                        trackCollectionContext.clear()
-                    }
-                    tracks.forEach { t ->
-                        if (t.id.isNotBlank()) trackCollectionContext[t.id] = id
-                    }
-                    val resolvedHeaderCover = if (isLikedMusicPlaylistId(id)) {
-                        fallbackCover ?: _uiState.value.collectionCoverUrl
-                    } else {
-                        _uiState.value.collectionCoverUrl ?: fallbackCover
-                    }
-                    syncCollectionMetadataToSavedAndPinned(
-                        id = id,
-                        title = title,
-                        subtitle = subtitle,
-                        coverUrl = resolvedHeaderCover,
-                    )
-                    _uiState.update { state ->
-                        state.copy(
-                            loading = false,
-                            collectionBrowseId = id,
-                            collectionTitle = title,
-                            collectionCoverUrl = resolvedHeaderCover,
-                            collectionTracks = tracks,
-                            status = s.tracksInCollectionStatus(tracks.size, title)
-                        )
-                    }
-                    prefetchStreams(tracks.take(2), delayMs = 1_500L)
-                }
-                .onFailure { err ->
-                    _uiState.update {
-                        it.copy(loading = false, status = s.collectionErrorStatus(err.message.orEmpty()))
-                    }
-                }
-        }
-    }
+    ) = openCollectionByIdImpl(id, title, coverUrl, subtitle, kindLabel, year)
 
     fun prefetchStreams(
         tracks: List<AndroidTrack>,
@@ -6348,7 +3032,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     @OptIn(UnstableApi::class)
-    private fun buildOfflineMediaItem(track: AndroidTrack, localUri: String): MediaItem {
+    internal fun buildOfflineMediaItem(track: AndroidTrack, localUri: String): MediaItem {
         val uri = if (localUri.startsWith("content://") || localUri.startsWith("file://")) {
             Uri.parse(localUri)
         } else {
@@ -6371,7 +3055,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     @OptIn(UnstableApi::class)
-    private fun buildMediaItem(track: AndroidTrack, stream: AndroidResolvedStream): MediaItem {
+    internal fun buildMediaItem(track: AndroidTrack, stream: AndroidResolvedStream): MediaItem {
         if (stream.headers.isNotEmpty()) {
             PlaybackAudioBridge.registerStreamHeaders(
                 url = stream.url,
@@ -6398,7 +3082,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
             .build()
     }
 
-    private fun launchBackgroundQualityUpgrade(
+    internal fun launchBackgroundQualityUpgrade(
         generation: Long,
         engine: SonataEngineGateway,
         effectiveTrack: AndroidTrack,
@@ -6532,7 +3216,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         return true
     }
 
-    private fun selectDistinctArtistIds(tracks: List<AndroidTrack>, maxCount: Int): List<String> {
+    internal fun selectDistinctArtistIds(tracks: List<AndroidTrack>, maxCount: Int): List<String> {
         val out = ArrayList<String>(maxCount)
         val seenArtists = HashSet<String>()
         for (t in tracks) {
@@ -6546,7 +3230,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         return out
     }
 
-    private fun buildPreferredArtists(): List<String> {
+    internal fun buildPreferredArtists(): List<String> {
         val scores = LinkedHashMap<String, Int>()
         val displayNames = HashMap<String, String>()
         _lastPlayedTracks.value.take(30).forEachIndexed { idx, track ->
@@ -6829,181 +3513,19 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         discordSeekSignal.value += 1L
     }
 
-    private var updateDownloadJob: Job? = null
-    private var dismissedUpdateVersion: String? = null
+    internal var updateDownloadJob: Job? = null
+    internal var dismissedUpdateVersion: String? = null
 
-    fun checkForUpdates(autoPopup: Boolean = true, isManual: Boolean = true) {
-        if (_uiState.value.checkingUpdates) return
-        if (isManual) {
-            dismissedUpdateVersion = null
-        }
-        viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            val installedVersion = runCatching {
-                val app = getApplication<Application>()
-                app.packageManager.getPackageInfo(app.packageName, 0).versionName.orEmpty()
-            }.getOrDefault("").ifBlank { _uiState.value.installedVersionName }
-            _uiState.update {
-                it.copy(
-                    checkingUpdates = true,
-                    installedVersionName = installedVersion,
-                    updateError = null,
-                )
-            }
-            runSuspendCatching { engine.checkForUpdatesForVersion(installedVersion) }
-                .onSuccess { info ->
-                    val shouldShowPopup = autoPopup &&
-                        info.updateAvailable &&
-                        (isManual || dismissedUpdateVersion != info.latestVersion)
-                    _uiState.update {
-                        it.copy(
-                            updateInfo = info,
-                            checkingUpdates = false,
-                            showUpdateDialog = it.showUpdateDialog || shouldShowPopup,
-                        )
-                    }
-                }
-                .onFailure { err ->
-                    _uiState.update {
-                        it.copy(
-                            checkingUpdates = false,
-                            updateError = if (isManual) err.message ?: uiStrings().updateCheckFailed else it.updateError,
-                        )
-                    }
-                }
-        }
-    }
+    fun checkForUpdates(autoPopup: Boolean = true, isManual: Boolean = true) =
+        checkForUpdatesImpl(autoPopup, isManual)
 
-    fun openUpdateDialog() {
-        _uiState.update { it.copy(showUpdateDialog = true, updateError = null) }
-    }
+    fun openUpdateDialog() = openUpdateDialogImpl()
 
-    fun dismissUpdateDialog() {
-        val latest = _uiState.value.updateInfo?.latestVersion
-        if (!latest.isNullOrBlank()) {
-            dismissedUpdateVersion = latest
-        }
-        _uiState.update { it.copy(showUpdateDialog = false) }
-    }
+    fun dismissUpdateDialog() = dismissUpdateDialogImpl()
 
-    fun cancelUpdateDownload() {
-        updateDownloadJob?.cancel()
-        updateDownloadJob = null
-        _uiState.update {
-            it.copy(
-                updateDownloading = false,
-                updateDownloadProgress = null,
-                updateDownloadDetail = "",
-                updateError = null,
-            )
-        }
-    }
+    fun cancelUpdateDownload() = cancelUpdateDownloadImpl()
 
-    fun downloadAndInstallUpdate() {
-        val state = _uiState.value
-        if (state.updateDownloading) return
-        val app = getApplication<Application>()
-
-        val s = uiStrings()
-        // If already downloaded for this release, trigger installer directly.
-        val existingPath = state.downloadedUpdateApkPath
-        if (!existingPath.isNullOrBlank()) {
-            val existingFile = java.io.File(existingPath)
-            when (ApkUpdater.launchInstall(app, existingFile)) {
-                ApkInstallLaunchResult.LAUNCHED -> {
-                    _uiState.update {
-                        it.copy(
-                            updateDownloadDetail = s.updateOpeningInstaller,
-                            updateError = null,
-                        )
-                    }
-                    return
-                }
-                ApkInstallLaunchResult.PERMISSION_REQUIRED -> {
-                    _uiState.update {
-                        it.copy(
-                            updateDownloadDetail = s.updatePermissionRequired,
-                            updateError = null,
-                        )
-                    }
-                    return
-                }
-                ApkInstallLaunchResult.FILE_MISSING -> {
-                    _uiState.update { it.copy(downloadedUpdateApkPath = null) }
-                }
-            }
-        }
-
-        val info = state.updateInfo ?: return
-        val apkUrl = info.apkDownloadUrl?.takeIf { it.isNotBlank() }
-        if (apkUrl == null) {
-            _uiState.update { it.copy(updateError = s.updateNoApkAsset) }
-            return
-        }
-
-        _uiState.update {
-            it.copy(
-                showUpdateDialog = true,
-                updateDownloading = true,
-                updateDownloadProgress = null,
-                updateDownloadDetail = s.updateStartingDownload,
-                updateError = null,
-            )
-        }
-
-        updateDownloadJob?.cancel()
-        updateDownloadJob = viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val apkFile = ApkUpdater.downloadApk(
-                    context = app,
-                    urlString = apkUrl,
-                    versionLabel = info.latestVersion,
-                ) { fraction, downloaded, total ->
-                    val detail = if (total > 0L) {
-                        "${ApkUpdater.formatBytes(downloaded)} / ${ApkUpdater.formatBytes(total)}"
-                    } else {
-                        ApkUpdater.formatBytes(downloaded)
-                    }
-                    _uiState.update {
-                        it.copy(
-                            updateDownloadProgress = fraction,
-                            updateDownloadDetail = detail,
-                        )
-                    }
-                }
-                val launchResult = kotlinx.coroutines.withContext(Dispatchers.Main) {
-                    ApkUpdater.launchInstall(app, apkFile)
-                }
-                val curStrings = uiStrings()
-                val detailMsg = when (launchResult) {
-                    ApkInstallLaunchResult.LAUNCHED -> curStrings.updateInstallingVersion(info.latestVersion)
-                    ApkInstallLaunchResult.PERMISSION_REQUIRED -> curStrings.updatePermissionRequired
-                    ApkInstallLaunchResult.FILE_MISSING -> curStrings.updateApkMissingRetry
-                }
-                _uiState.update {
-                    it.copy(
-                        updateDownloading = false,
-                        updateDownloadProgress = 1f,
-                        updateDownloadDetail = detailMsg,
-                        downloadedUpdateApkPath = apkFile.absolutePath,
-                        status = detailMsg,
-                    )
-                }
-            } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                throw cancelled
-            } catch (err: Throwable) {
-                Log.e("SonataUpdater", "APK download failed", err)
-                _uiState.update {
-                    it.copy(
-                        updateDownloading = false,
-                        updateDownloadProgress = null,
-                        updateDownloadDetail = "",
-                        updateError = err.message ?: uiStrings().downloadFailedShort,
-                    )
-                }
-            }
-        }
-    }
+    fun downloadAndInstallUpdate() = downloadAndInstallUpdateImpl()
 
     fun seekToFraction(fraction: Float) {
         val duration = playbackClock.durationMs
@@ -7026,660 +3548,64 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private fun probeMusicVideoForTrack(
+    internal fun probeMusicVideoForTrack(
         track: AndroidTrack,
         generation: Long = playbackGeneration.current,
-    ) {
-        musicVideoProbeJob?.cancel()
-        val trackId = track.id.trim()
-        if (trackId.isBlank() || trackId.startsWith("local:") || isSelfHostedId(trackId)) {
-            _uiState.update { state ->
-                if (isGenerationActive(generation, track.id)) {
-                    state.copy(musicVideoCandidate = null)
-                } else {
-                    state
-                }
-            }
-            return
-        }
-        val offlineVideo = downloadManager.localVideoFor(trackId)
-        val offlineFallback = offlineVideo?.let {
-            AndroidMusicVideoCandidate(
-                videoId = trackId,
-                title = track.title,
-                thumbnailUrl = track.thumbnailUrl,
-                durationSecs = track.durationSecs,
-                syncSegments = it.syncSegments,
-            )
-        }
-        if (offlineFallback != null) {
-            _uiState.update { state ->
-                if (isGenerationActive(generation, track.id)) {
-                    state.copy(musicVideoCandidate = offlineFallback)
-                } else {
-                    state
-                }
-            }
-        }
-        val cached = musicVideoCandidateCache[trackId]?.takeIf {
-            SystemClock.elapsedRealtime() - it.cachedAtMs < ARTIST_CACHE_TTL_MS
-        }
-        if (cached != null) {
-            val resolvedCandidate = cached.candidate?.let { cand ->
-                if (cand.syncSegments.isEmpty() && offlineVideo?.syncSegments?.isNotEmpty() == true) {
-                    cand.copy(syncSegments = offlineVideo.syncSegments)
-                } else {
-                    cand
-                }
-            } ?: offlineFallback
-            _uiState.update { state ->
-                if (isGenerationActive(generation, track.id)) {
-                    state.copy(musicVideoCandidate = resolvedCandidate)
-                } else {
-                    state
-                }
-            }
-            return
-        }
-        musicVideoProbeJob = viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            val fetched = runSuspendCatching { engine.resolveMusicVideoCandidate(track) }.getOrNull()
-            val candidate = fetched?.let { cand ->
-                if (cand.syncSegments.isEmpty() && offlineVideo?.syncSegments?.isNotEmpty() == true) {
-                    cand.copy(syncSegments = offlineVideo.syncSegments)
-                } else {
-                    cand
-                }
-            }
-            if (candidate != null || offlineFallback == null) {
-                musicVideoCandidateCache[trackId] = CachedVideoCandidate(
-                    candidate = candidate,
-                    cachedAtMs = SystemClock.elapsedRealtime(),
-                )
-            }
-            val effectiveCandidate = candidate ?: offlineFallback
-            if (isActive && isGenerationActive(generation, track.id)) {
-                _uiState.update { state ->
-                    if (isGenerationActive(generation, track.id)) {
-                        state.copy(musicVideoCandidate = effectiveCandidate)
-                    } else {
-                        state
-                    }
-                }
-            }
-        }
-    }
+    ) = probeMusicVideoForTrackImpl(track, generation)
 
-    fun enableVideoMode() {
-        val state = _uiState.value
-        val track = state.activeTrack ?: return
-        val candidate = state.musicVideoCandidate ?: return
-        val generation = playbackGeneration.current
-        videoSwitchJob?.cancel()
-        upgradeJob?.cancel()
-        PlaybackAudioBridge.applyCrossfade(false, settings.value.crossfadeSeconds)
-        videoSwitchJob = viewModelScope.launch(Dispatchers.IO) {
-            _uiState.update {
-                if (isGenerationActive(generation, track.id)) {
-                    it.copy(videoLoading = true, isUpgradingQuality = false, status = uiStrings().loadingVideo)
-                } else {
-                    it
-                }
-            }
-            val offlineVideo = downloadManager.localVideoFor(track.id)
-            val syncSegments = candidate.syncSegments.ifEmpty { offlineVideo?.syncSegments.orEmpty() }
-            if (offlineVideo != null) {
-                val activeMusicPosMs = withContext(Dispatchers.Main) {
-                    controller?.currentPosition?.coerceAtLeast(0L) ?: playbackClock.positionMs
-                }
-                val startVideoPosMs = mapMusicToVideoMs(activeMusicPosMs, syncSegments)
-                val shouldPlay = withContext(Dispatchers.Main) {
-                    controller?.playWhenReady ?: _uiState.value.isPlaying
-                }
-                val offlineItem = buildOfflineMediaItem(track, offlineVideo.videoUri)
-                val startedOffline = withContext(Dispatchers.Main) {
-                    if (!isGenerationActive(generation, track.id)) {
-                        false
-                    } else {
-                        PlaybackAudioBridge.playVideoStream(
-                            videoUrl = offlineVideo.videoUri,
-                            audioUrl = offlineVideo.audioUri,
-                            mediaItem = offlineItem,
-                            startPositionMs = startVideoPosMs,
-                            playWhenReady = shouldPlay,
-                        )
-                    }
-                }
-                if (startedOffline) {
-                    val offlineHeight = offlineVideo.qualityHeight.takeIf { it > 0 } ?: 720
-                    val cachedQualities = resolvedMusicVideoCache[candidate.videoId]?.resolved?.qualities.orEmpty()
-                    val qualities = if (cachedQualities.any { it.height.toInt() == offlineHeight }) {
-                        cachedQualities
-                    } else {
-                        val syntheticOffline = AndroidVideoQualityStream(
-                            qualityLabel = offlineVideo.qualityLabel,
-                            height = offlineHeight.toUInt(),
-                            fps = 30u,
-                            videoUrl = offlineVideo.videoUri,
-                            mimeType = "video/mp4",
-                            bitrateBps = 0uL,
-                            isMuxed = offlineVideo.audioUri == null,
-                        )
-                        (listOf(syntheticOffline) + cachedQualities).sortedByDescending { it.height.toInt() }
-                    }
-                    _uiState.update {
-                        if (isGenerationActive(generation, track.id)) {
-                            it.copy(
-                                videoModeEnabled = true,
-                                videoLoading = false,
-                                availableVideoQualities = qualities,
-                                activeVideoQualityLabel = offlineVideo.qualityLabel,
-                                activeVideoQualityHeight = offlineHeight,
-                                streamBadge = "Offline · ${offlineVideo.qualityLabel}",
-                                status = "${uiStrings().videoMode} · Offline · ${offlineVideo.qualityLabel}",
-                            )
-                        } else {
-                            it
-                        }
-                    }
-                    return@launch
-                }
-            }
-            val resolved = resolveOrFetchMusicVideo(candidate.videoId)
-            if (!isActive || !isGenerationActive(generation, track.id)) return@launch
-            if (resolved == null || resolved.qualities.isEmpty()) {
-                _uiState.update {
-                    if (isGenerationActive(generation, track.id)) {
-                        it.copy(
-                            videoLoading = false,
-                            videoModeEnabled = false,
-                            videoFullscreen = false,
-                            status = uiStrings().videoUnavailableStatus,
-                        )
-                    } else {
-                        it
-                    }
-                }
-                return@launch
-            }
-            val selected = selectVideoQualityStream(
-                qualities = resolved.qualities,
-                preference = settings.value.videoQuality,
-            )
-            if (selected == null) {
-                _uiState.update {
-                    if (isGenerationActive(generation, track.id)) {
-                        it.copy(
-                            videoLoading = false,
-                            videoModeEnabled = false,
-                            videoFullscreen = false,
-                            status = uiStrings().videoUnavailableStatus,
-                        )
-                    } else {
-                        it
-                    }
-                }
-                return@launch
-            }
-            val activeMusicPosMs = withContext(Dispatchers.Main) {
-                controller?.currentPosition?.coerceAtLeast(0L) ?: playbackClock.positionMs
-            }
-            val startVideoPosMs = mapMusicToVideoMs(activeMusicPosMs, syncSegments)
-            val shouldPlay = withContext(Dispatchers.Main) {
-                controller?.playWhenReady ?: _uiState.value.isPlaying
-            }
-            val mediaItem = buildMediaItem(
-                track = track,
-                stream = AndroidResolvedStream(
-                    url = selected.videoUrl,
-                    badge = resolved.audioBadge,
-                    headers = resolved.headers,
-                ),
-            )
-            val audioForVideo = if (selected.isMuxed) null else resolved.audioUrl
-            val badgeLabel = "${selected.qualityLabel} · ${resolved.audioBadge}".trim(' ', '·')
-            val started = withContext(Dispatchers.Main) {
-                if (!isGenerationActive(generation, track.id)) {
-                    false
-                } else {
-                    PlaybackAudioBridge.playVideoStream(
-                        videoUrl = selected.videoUrl,
-                        audioUrl = audioForVideo,
-                        mediaItem = mediaItem,
-                        startPositionMs = startVideoPosMs,
-                        playWhenReady = shouldPlay,
-                    )
-                }
-            }
-            if (!started) {
-                _uiState.update {
-                    if (isGenerationActive(generation, track.id)) {
-                        it.copy(videoLoading = false, status = uiStrings().videoUnavailableStatus)
-                    } else {
-                        it
-                    }
-                }
-                return@launch
-            }
-            _uiState.update {
-                if (isGenerationActive(generation, track.id)) {
-                    it.copy(
-                        videoModeEnabled = true,
-                        videoLoading = false,
-                        availableVideoQualities = resolved.qualities,
-                        activeVideoQualityLabel = selected.qualityLabel,
-                        activeVideoQualityHeight = selected.height.toInt(),
-                        streamBadge = badgeLabel,
-                        status = "${uiStrings().videoMode} · ${selected.qualityLabel}",
-                    )
-                } else {
-                    it
-                }
-            }
-        }
-    }
+    fun enableVideoMode() = enableVideoModeImpl()
 
     fun selectVideoQuality(
         preference: VideoQualityPreference,
         explicitHeight: Int? = null,
-    ) {
-        preferences.update { it.copy(videoQuality = preference) }
-        val state = _uiState.value
-        if (!state.videoModeEnabled) return
-        val track = state.activeTrack ?: return
-        val candidate = state.musicVideoCandidate ?: return
-        val generation = playbackGeneration.current
-        videoSwitchJob?.cancel()
-        videoSwitchJob = viewModelScope.launch(Dispatchers.IO) {
-            _uiState.update {
-                if (isGenerationActive(generation, track.id)) it.copy(videoLoading = true) else it
-            }
-            val offlineVideo = downloadManager.localVideoFor(track.id)
-            val offlineMatches = offlineVideo != null &&
-                (explicitHeight == null || (offlineVideo.qualityHeight > 0 && explicitHeight == offlineVideo.qualityHeight))
-            if (offlineMatches && offlineVideo != null) {
-                val activePosMs = withContext(Dispatchers.Main) {
-                    controller?.currentPosition?.coerceAtLeast(0L) ?: playbackClock.positionMs
-                }
-                val shouldPlay = withContext(Dispatchers.Main) {
-                    controller?.playWhenReady ?: _uiState.value.isPlaying
-                }
-                val offlineItem = buildOfflineMediaItem(track, offlineVideo.videoUri)
-                val switchedOffline = withContext(Dispatchers.Main) {
-                    if (isGenerationActive(generation, track.id)) {
-                        PlaybackAudioBridge.playVideoStream(
-                            videoUrl = offlineVideo.videoUri,
-                            audioUrl = offlineVideo.audioUri,
-                            mediaItem = offlineItem,
-                            startPositionMs = activePosMs,
-                            playWhenReady = shouldPlay,
-                        )
-                    } else {
-                        false
-                    }
-                }
-                if (switchedOffline && isActive && isGenerationActive(generation, track.id)) {
-                    _uiState.update {
-                        it.copy(
-                            videoLoading = false,
-                            activeVideoQualityLabel = offlineVideo.qualityLabel,
-                            activeVideoQualityHeight = offlineVideo.qualityHeight,
-                            streamBadge = "Offline · ${offlineVideo.qualityLabel}",
-                            status = "${uiStrings().videoMode} · Offline · ${offlineVideo.qualityLabel}",
-                        )
-                    }
-                    return@launch
-                }
-            }
-            val resolved = resolveOrFetchMusicVideo(candidate.videoId) ?: run {
-                _uiState.update { it.copy(videoLoading = false) }
-                return@launch
-            }
-            val selected = selectVideoQualityStream(
-                qualities = resolved.qualities,
-                preference = preference,
-                explicitHeight = explicitHeight,
-            ) ?: run {
-                _uiState.update { it.copy(videoLoading = false) }
-                return@launch
-            }
-            val activePosMs = withContext(Dispatchers.Main) {
-                controller?.currentPosition?.coerceAtLeast(0L) ?: playbackClock.positionMs
-            }
-            val shouldPlay = withContext(Dispatchers.Main) {
-                controller?.playWhenReady ?: _uiState.value.isPlaying
-            }
-            val mediaItem = buildMediaItem(
-                track = track,
-                stream = AndroidResolvedStream(
-                    url = selected.videoUrl,
-                    badge = resolved.audioBadge,
-                    headers = resolved.headers,
-                ),
-            )
-            val audioForVideo = if (selected.isMuxed) null else resolved.audioUrl
-            val badgeLabel = "${selected.qualityLabel} · ${resolved.audioBadge}".trim(' ', '·')
-            withContext(Dispatchers.Main) {
-                if (isGenerationActive(generation, track.id)) {
-                    PlaybackAudioBridge.playVideoStream(
-                        videoUrl = selected.videoUrl,
-                        audioUrl = audioForVideo,
-                        mediaItem = mediaItem,
-                        startPositionMs = activePosMs,
-                        playWhenReady = shouldPlay,
-                    )
-                }
-            }
-            if (isActive && isGenerationActive(generation, track.id)) {
-                _uiState.update {
-                    it.copy(
-                        videoLoading = false,
-                        availableVideoQualities = resolved.qualities,
-                        activeVideoQualityLabel = selected.qualityLabel,
-                        activeVideoQualityHeight = selected.height.toInt(),
-                        streamBadge = badgeLabel,
-                        status = "${uiStrings().videoMode} · ${selected.qualityLabel}",
-                    )
-                }
-            }
-        }
-    }
+    ) = selectVideoQualityImpl(preference, explicitHeight)
 
-    fun disableVideoMode() {
-        val state = _uiState.value
-        val track = state.activeTrack
-        if (!state.videoModeEnabled && !state.videoFullscreen) return
-        val generation = playbackGeneration.current
-        val candidateSyncSegments = state.musicVideoCandidate?.syncSegments.orEmpty()
-        videoSwitchJob?.cancel()
-        _uiState.update {
-            it.copy(
-                videoModeEnabled = false,
-                videoFullscreen = false,
-                videoLoading = track != null,
-            )
-        }
-        if (track == null) {
-            PlaybackAudioBridge.setVideoModePlayback(false)
-            applyAudioSettings(settings.value)
-            return
-        }
-        if (settings.value.animatedArtwork && _currentCanvas.value == null) {
-            resolveCanvasForTrack(track, generation)
-        }
-        videoSwitchJob = viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            val (activeVideoPosMs, shouldPlay) = withContext(Dispatchers.Main) {
-                val pos = controller?.currentPosition?.coerceAtLeast(0L) ?: playbackClock.positionMs
-                val play = controller?.playWhenReady ?: _uiState.value.isPlaying
-                pos to play
-            }
-            val offlineVideo = downloadManager.localVideoFor(track.id)
-            val syncSegments = candidateSyncSegments.ifEmpty { offlineVideo?.syncSegments.orEmpty() }
-            val mappedMusicPosMs = mapVideoToMusicMs(activeVideoPosMs, syncSegments)
-            val offlineUri = downloadManager.localUriFor(track.id)
-            if (offlineUri != null) {
-                val offlineRecord = downloads.value.firstOrNull { it.videoId == track.id }
-                val offlineBadge = offlineRecord?.codec?.takeIf { it.isNotBlank() }?.let { "Offline · $it" } ?: "Offline"
-                baseStreamBadges[track.id] = offlineBadge
-                val offlineItem = buildOfflineMediaItem(track, offlineUri)
-                withContext(Dispatchers.Main) {
-                    PlaybackAudioBridge.setVideoModePlayback(false)
-                    applyAudioSettings(settings.value)
-                    if (isGenerationActive(generation, track.id)) {
-                        controller?.apply {
-                            setMediaItem(offlineItem, mappedMusicPosMs)
-                            prepare()
-                            playWhenReady = shouldPlay
-                        }
-                    }
-                }
-                val displayOfflineBadge = resolveDisplayBadgeForTrack(track.id, offlineBadge)
-                _uiState.update {
-                    if (isGenerationActive(generation, track.id)) {
-                        it.copy(
-                            videoLoading = false,
-                            streamBadge = displayOfflineBadge,
-                            status = uiStrings().playingTrackOfflineStatus(track.title),
-                        )
-                    } else {
-                        it
-                    }
-                }
-                return@launch
-            }
-            val stream = getCachedStream(track.id)
-                ?: runSuspendCatching {
-                    if (track.id.startsWith("jiosaavn:")) {
-                        val js = engine.resolveJiosaavnById(track.id) ?: error("JioSaavn stream unavailable")
-                        AndroidResolvedStream(url = js.url, badge = js.badge, headers = emptyList())
-                    } else {
-                        engine.resolveStream(track)
-                    }
-                }.onSuccess { putCachedStream(track.id, it) }.getOrNull()
+    fun disableVideoMode() = disableVideoModeImpl()
 
-            if (!isActive || !isGenerationActive(generation, track.id) || stream == null) {
-                PlaybackAudioBridge.setVideoModePlayback(false)
-                _uiState.update { it.copy(videoLoading = false) }
-                return@launch
-            }
-            baseStreamBadges[track.id] = stream.badge
-            val mediaItem = buildMediaItem(track, stream)
-            withContext(Dispatchers.Main) {
-                PlaybackAudioBridge.setVideoModePlayback(false)
-                applyAudioSettings(settings.value)
-                if (isGenerationActive(generation, track.id)) {
-                    controller?.apply {
-                        setMediaItem(mediaItem, mappedMusicPosMs)
-                        prepare()
-                        playWhenReady = shouldPlay
-                    }
-                }
-            }
-            val displayAudioBadge = resolveDisplayBadgeForTrack(track.id, stream.badge)
-            _uiState.update {
-                if (isGenerationActive(generation, track.id)) {
-                    it.copy(
-                        videoLoading = false,
-                        streamBadge = displayAudioBadge,
-                        status = uiStrings().playingTrackStatus(track.title),
-                    )
-                } else {
-                    it
-                }
-            }
-            launchBackgroundQualityUpgrade(
-                generation = generation,
-                engine = engine,
-                effectiveTrack = track,
-                currentStream = stream,
-            )
-        }
-    }
+    fun openStatsScreen() = openStatsScreenImpl()
 
-    private suspend fun resolveOrFetchMusicVideo(videoId: String): AndroidResolvedMusicVideo? {
-        val now = SystemClock.elapsedRealtime()
-        val cached = resolvedMusicVideoCache[videoId]?.takeIf { now - it.cachedAtMs < STREAM_CACHE_TTL_MS }
-        if (cached != null) return cached.resolved
-        val engine = requireEngine()
-        val fetched = runSuspendCatching { engine.resolveMusicVideoStreams(videoId) }.getOrNull()
-            ?: return null
-        if (fetched.qualities.isNotEmpty()) {
-            resolvedMusicVideoCache[videoId] = CachedResolvedMusicVideo(resolved = fetched, cachedAtMs = now)
-        }
-        return fetched
-    }
+    fun dismissStatsScreen() = dismissStatsScreenImpl()
 
-    fun openStatsScreen() {
-        _uiState.update { it.copy(showStatsScreen = true) }
-        refreshListeningStats()
-    }
+    fun selectStatsWindow(window: AndroidStatsWindow) = selectStatsWindowImpl(window)
 
-    fun dismissStatsScreen() {
-        _uiState.update { it.copy(showStatsScreen = false) }
-    }
+    fun refreshListeningStats(window: AndroidStatsWindow = _uiState.value.statsWindow) =
+        refreshListeningStatsImpl(window)
 
-    fun selectStatsWindow(window: AndroidStatsWindow) {
-        _uiState.update { it.copy(statsWindow = window) }
-        refreshListeningStats(window)
-    }
+    fun saveScrobbleConfig(config: AndroidScrobbleConfig) = saveScrobbleConfigImpl(config)
 
-    fun refreshListeningStats(window: AndroidStatsWindow = _uiState.value.statsWindow) {
-        statsLoadJob?.cancel()
-        statsLoadJob = viewModelScope.launch(Dispatchers.IO) {
-            _uiState.update { it.copy(statsLoading = true) }
-            val engine = requireEngine()
-            runSuspendCatching { engine.queryListeningStats(window) }
-                .onSuccess { summary ->
-                    _uiState.update {
-                        if (it.statsWindow == window) {
-                            it.copy(statsSummary = summary, statsLoading = false)
-                        } else {
-                            it.copy(statsLoading = false)
-                        }
-                    }
-                }
-                .onFailure {
-                    _uiState.update { it.copy(statsLoading = false) }
-                }
-        }
-    }
+    internal fun dispatchScrobbleNowPlaying(track: AndroidTrack) = dispatchScrobbleNowPlayingImpl(track)
 
-    fun saveScrobbleConfig(config: AndroidScrobbleConfig) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            runSuspendCatching { engine.saveScrobbleConfig(config) }
-                .onSuccess { saved ->
-                    preferences.setLastFmEnabled(saved.lastfm.enabled)
-                    preferences.setListenBrainzEnabled(saved.listenbrainz.enabled)
-                    _uiState.update { it.copy(scrobbleConfig = saved) }
-                }
-                .onFailure { err ->
-                    Log.w("SonataScrobble", "Failed saving scrobble config: ${err.message}")
-                }
-        }
-    }
+    internal fun dispatchScrobbleSubmit(track: AndroidTrack, timestampUnix: ULong) =
+        dispatchScrobbleSubmitImpl(track, timestampUnix)
 
-    private fun dispatchScrobbleNowPlaying(track: AndroidTrack) {
-        val cfg = _uiState.value.scrobbleConfig
-        if (!cfg.lastfm.enabled && !cfg.listenbrainz.enabled) return
-        viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            runSuspendCatching { engine.scrobbleNowPlaying(track) }
-                .onFailure { err ->
-                    Log.w("SonataScrobble", "Now playing scrobble failed: ${err.message}")
-                }
-        }
-    }
-
-    private fun dispatchScrobbleSubmit(track: AndroidTrack, timestampUnix: ULong) {
-        val cfg = _uiState.value.scrobbleConfig
-        if (!cfg.lastfm.enabled && !cfg.listenbrainz.enabled) return
-        viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            runSuspendCatching { engine.scrobbleSubmit(track, timestampUnix) }
-                .onFailure { err ->
-                    Log.w("SonataScrobble", "Scrobble submit failed: ${err.message}")
-                }
-        }
-    }
-
-    private fun dispatchRecordListeningStat(
+    internal fun dispatchRecordListeningStat(
         track: AndroidTrack,
         sourceTag: String,
         playedSecs: ULong,
         playedAtUnix: ULong?,
-    ) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val engine = requireEngine()
-            runSuspendCatching {
-                engine.recordListeningStat(
-                    track = track,
-                    sourceTag = sourceTag,
-                    playedSecs = playedSecs,
-                    playedAtUnix = playedAtUnix,
-                )
-            }.onSuccess {
-                runSuspendCatching { engine.queryListeningStats(_uiState.value.statsWindow) }
-                    .onSuccess { summary ->
-                        _uiState.update { it.copy(statsSummary = summary) }
-                    }
-            }.onFailure { err ->
-                Log.w("SonataStats", "Recording listening stat failed: ${err.message}")
-            }
-        }
-    }
+    ) = dispatchRecordListeningStatImpl(track, sourceTag, playedSecs, playedAtUnix)
 
-    fun openConnectSheet() {
-        _uiState.update { it.copy(showConnectSheet = true) }
-        if (preferences.state.value.connectEnabled) {
-            connectController.refreshDiscovery()
-        }
-    }
+    fun openConnectSheet() = openConnectSheetImpl()
 
-    fun dismissConnectSheet() {
-        _uiState.update { it.copy(showConnectSheet = false) }
-    }
+    fun dismissConnectSheet() = dismissConnectSheetImpl()
 
-    fun setConnectEnabled(enabled: Boolean) {
-        preferences.setConnectEnabled(enabled)
-        connectController.setEnabled(enabled)
-    }
+    fun setConnectEnabled(enabled: Boolean) = setConnectEnabledImpl(enabled)
 
-    fun setConnectDeviceName(name: String) {
-        preferences.setConnectDeviceName(name)
-        connectController.updateDeviceName(preferences.state.value.connectDeviceName)
-    }
+    fun setConnectDeviceName(name: String) = setConnectDeviceNameImpl(name)
 
-    fun refreshConnectDiscovery() {
-        if (!preferences.state.value.connectEnabled) {
-            preferences.setConnectEnabled(true)
-        }
-        connectController.refreshDiscovery()
-    }
+    fun refreshConnectDiscovery() = refreshConnectDiscoveryImpl()
 
-    fun pairConnectDevice(beacon: ConnectBeacon, pin: String) {
-        viewModelScope.launch(Dispatchers.IO) {
-            connectController.pairAndConnect(beacon, pin)
-        }
-    }
+    fun pairConnectDevice(beacon: ConnectBeacon, pin: String) = pairConnectDeviceImpl(beacon, pin)
 
-    fun connectPairedDevice(beacon: ConnectBeacon) {
-        viewModelScope.launch(Dispatchers.IO) {
-            connectController.connectToPaired(beacon)
-        }
-    }
+    fun connectPairedDevice(beacon: ConnectBeacon) = connectPairedDeviceImpl(beacon)
 
-    fun disconnectConnectDevice() {
-        connectController.disconnect()
-    }
+    fun disconnectConnectDevice() = disconnectConnectDeviceImpl()
 
-    fun forgetConnectDevice(deviceId: String) {
-        connectController.forgetDevice(deviceId)
-    }
+    fun forgetConnectDevice(deviceId: String) = forgetConnectDeviceImpl(deviceId)
 
-    fun sendConnectCommand(command: ConnectCommand) {
-        viewModelScope.launch(Dispatchers.IO) {
-            connectController.sendCommand(command)
-        }
-    }
+    fun sendConnectCommand(command: ConnectCommand) = sendConnectCommandImpl(command)
 
-    fun transferQueueToConnectDevice() {
-        val state = _uiState.value
-        val queue = state.queue
-        if (queue.isEmpty()) return
-        val startIndex = state.queueIndex.coerceAtLeast(0)
-        val posMs = playbackClock.positionMs.coerceAtLeast(0L)
-        val isPlaying = state.isPlaying
-        viewModelScope.launch(Dispatchers.IO) {
-            connectController.transferQueue(
-                tracks = queue,
-                startIndex = startIndex,
-                positionMs = posMs,
-                playWhenReady = isPlaying,
-            )
-        }
-    }
+    fun transferQueueToConnectDevice() = transferQueueToConnectDeviceImpl()
 
     override fun onCleared() {
         PlaybackQueueBridge.reset()
@@ -7747,20 +3673,20 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
     companion object {
         const val DOWNLOADS_PLAYLIST_ID = "local:downloads"
         private const val LOCAL_PLAYLISTS_PREFS_NAME = "sonata_local_playlists"
-        private const val LOCAL_PLAYLISTS_KEY = "playlists_json"
-        private const val LOCAL_PLAYLIST_PREFIX = "local:pl_"
+        internal const val LOCAL_PLAYLISTS_KEY = "playlists_json"
+        internal const val LOCAL_PLAYLIST_PREFIX = "local:pl_"
         private const val LAST_PLAYED_PREFS_NAME = "sonata_last_played_history"
-        private const val LAST_PLAYED_KEY = "tracks_json"
-        private const val MAX_LAST_PLAYED_HISTORY = 50
-        private const val ARTIST_CACHE_TTL_MS = 15L * 60L * 1000L
-        private const val ARTIST_CACHE_MAX_ENTRIES = 20
+        internal const val LAST_PLAYED_KEY = "tracks_json"
+        internal const val MAX_LAST_PLAYED_HISTORY = 50
+        internal const val ARTIST_CACHE_TTL_MS = 15L * 60L * 1000L
+        internal const val ARTIST_CACHE_MAX_ENTRIES = 20
         private const val MAX_RECOVERY_ATTEMPTS = 2
-        private const val STREAM_CACHE_TTL_MS = 4L * 60L * 60L * 1000L
+        internal const val STREAM_CACHE_TTL_MS = 4L * 60L * 60L * 1000L
         private const val STREAM_CACHE_MAX_ENTRIES = 64
         private const val AUTO_REFRESH_COOLDOWN_MS = 18_000L
         private const val MANUAL_REFRESH_COOLDOWN_MS = 4_000L
         private const val RATE_LIMIT_BACKOFF_MS = 45_000L
-        private val YEAR_REGEX = Regex("\\b(19|20)\\d{2}\\b")
+        internal val YEAR_REGEX = Regex("\\b(19|20)\\d{2}\\b")
         private val ITAG_REGEX = Regex("[?&]itag=(\\d+)")
         private val KBPS_REGEX = Regex("(\\d+)\\s*kbps")
         private val PAREN_FEAT_REGEX = Regex("\\((?:feat|ft|featuring)\\b[^)]*\\)")
