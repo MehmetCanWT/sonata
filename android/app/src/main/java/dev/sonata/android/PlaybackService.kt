@@ -5,6 +5,7 @@ import android.content.Intent
 import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
 import android.os.Handler
+import android.provider.OpenableColumns
 import android.util.Log
 import android.view.TextureView
 import androidx.annotation.OptIn
@@ -13,7 +14,6 @@ import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
-import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
@@ -27,6 +27,7 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.TransferListener
 import androidx.media3.datasource.cache.CacheDataSink
 import androidx.media3.datasource.cache.CacheDataSource
+import androidx.media3.datasource.cache.ContentMetadata
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.exoplayer.DecoderReuseEvaluation
@@ -37,11 +38,19 @@ import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.LoadEventInfo
+import androidx.media3.exoplayer.source.MediaLoadData
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import dev.sonata.android.data.AudioPipelineBus
+import dev.sonata.android.data.formatMeasuredAudioBadge
+import dev.sonata.android.data.normalizeAudioCodecLabel
+import dev.sonata.android.data.parseHttpContentLength
+import dev.sonata.android.data.parseHttpContentRangeTotal
+import dev.sonata.android.data.pcmEncodingToBitDepth
+import dev.sonata.android.data.resolveMeasuredBitrateKbps
 import dev.sonata.android.playback.EndedStateTransitionGuard
 import dev.sonata.android.playback.SonataDspAudioProcessor
 import kotlinx.coroutines.CoroutineScope
@@ -414,6 +423,7 @@ class PlaybackService : MediaSessionService() {
                     crossfadeFadeInDurationMs = 0L
                     dspProcessor?.setCrossfadeMultiplier(1f)
                 }
+                resetPipelineForMediaItem(mediaItem)
                 syncLoudnessEnhancerForSession(exoPlayer.audioSessionId)
                 maybeScheduleCrossfadeMonitor()
             }
@@ -431,6 +441,9 @@ class PlaybackService : MediaSessionService() {
                 if (suppressed && !alreadyDispatchedByCrossfade) {
                     Log.i(TAG, "STATE_ENDED with pending next track; keeping foreground service alive during transition")
                     PlaybackQueueBridge.onTrackEnded()
+                }
+                if (playbackState == Player.STATE_READY) {
+                    refreshFormatTelemetryIfPossible(exoPlayer, simpleCache)
                 }
                 if (playbackState == Player.STATE_READY && exoPlayer.isPlaying) {
                     maybeStartCrossfadeFadeIn()
@@ -493,26 +506,65 @@ class PlaybackService : MediaSessionService() {
             format: Format,
             decoderReuseEvaluation: DecoderReuseEvaluation?,
         ) {
-            publishFormatTelemetry(exoPlayer, simpleCache, format)
+            val tracksFormat = findSelectedAudioFormat(exoPlayer.currentTracks)
+            publishFormatTelemetry(
+                exoPlayer = exoPlayer,
+                simpleCache = simpleCache,
+                tracksFormat = tracksFormat,
+                decoderFormat = format,
+            )
         }
 
         override fun onTracksChanged(
             eventTime: AnalyticsListener.EventTime,
             tracks: Tracks,
         ) {
-            val activeFormat = tracks.groups
-                .asSequence()
-                .filter { it.type == C.TRACK_TYPE_AUDIO && it.isSelected }
-                .mapNotNull { group ->
-                    (0 until group.length)
-                        .firstOrNull { group.isTrackSelected(it) }
-                        ?.let { group.getTrackFormat(it) }
-                }
-                .firstOrNull()
-            if (activeFormat != null) {
-                publishFormatTelemetry(exoPlayer, simpleCache, activeFormat)
+            val activeFormat = findSelectedAudioFormat(tracks)
+            val decoderFormat = exoPlayer.audioFormat
+            if (activeFormat != null || decoderFormat != null) {
+                publishFormatTelemetry(
+                    exoPlayer = exoPlayer,
+                    simpleCache = simpleCache,
+                    tracksFormat = activeFormat,
+                    decoderFormat = decoderFormat,
+                )
             } else {
                 publishSourceOnly(exoPlayer, simpleCache)
+            }
+        }
+
+        override fun onLoadCompleted(
+            eventTime: AnalyticsListener.EventTime,
+            loadEventInfo: LoadEventInfo,
+            mediaLoadData: MediaLoadData,
+        ) {
+            if (mediaLoadData.dataType != C.DATA_TYPE_MEDIA) return
+            val uriString = exoPlayer.currentMediaItem?.localConfiguration?.uri?.toString()
+                ?: loadEventInfo.uri.toString()
+            if (uriString.isBlank()) return
+            val rangeTotal = parseHttpContentRangeTotal(loadEventInfo.responseHeaders)
+            val spec = loadEventInfo.dataSpec
+            val isFullRequest = spec.position == 0L &&
+                spec.length == C.LENGTH_UNSET.toLong() &&
+                !spec.uri.toString().contains("range=", ignoreCase = true)
+            val headerLength = if (isFullRequest) {
+                parseHttpContentLength(loadEventInfo.responseHeaders)
+            } else {
+                0L
+            }
+            val totalBytes = when {
+                rangeTotal > 0L -> rangeTotal
+                headerLength > 0L -> headerLength
+                else -> 0L
+            }
+            if (totalBytes > 0L) {
+                recordMeasuredContentBytes(uriString, totalBytes)
+            }
+            if (isFullRequest && loadEventInfo.bytesLoaded > 0L) {
+                recordCompletedLoadBytes(uriString, loadEventInfo.bytesLoaded)
+            }
+            if (AudioPipelineBus.info.value.bitrateKbps <= 0) {
+                refreshFormatTelemetryIfPossible(exoPlayer, simpleCache)
             }
         }
 
@@ -521,6 +573,9 @@ class PlaybackService : MediaSessionService() {
             isPlaying: Boolean,
         ) {
             publishSourceOnly(exoPlayer, simpleCache)
+            if (isPlaying && AudioPipelineBus.info.value.bitrateKbps <= 0) {
+                refreshFormatTelemetryIfPossible(exoPlayer, simpleCache)
+            }
             dev.sonata.android.widget.SonataWidgetUpdater.pushPlaybackState(
                 context = this@PlaybackService,
                 isPlaying = isPlaying,
@@ -537,6 +592,62 @@ class PlaybackService : MediaSessionService() {
                 syncLoudnessEnhancerForSession(audioSessionId)
                 PlaybackAudioBridge.syncAllTo(this@PlaybackService)
             }
+        }
+    }
+
+    @OptIn(UnstableApi::class)
+    private fun findSelectedAudioFormat(tracks: Tracks): Format? {
+        return tracks.groups
+            .asSequence()
+            .filter { it.type == C.TRACK_TYPE_AUDIO && it.isSelected }
+            .mapNotNull { group ->
+                (0 until group.length)
+                    .firstOrNull { group.isTrackSelected(it) }
+                    ?.let { group.getTrackFormat(it) }
+            }
+            .firstOrNull()
+    }
+
+    @OptIn(UnstableApi::class)
+    private fun resetPipelineForMediaItem(mediaItem: MediaItem?) {
+        val nextMediaId = mediaItem?.mediaId.orEmpty()
+        val uriString = mediaItem?.localConfiguration?.uri?.toString().orEmpty()
+        val isOffline = uriString.startsWith("file://") || uriString.startsWith("content://")
+        val sourceLabel = resolvePipelineSourceLabel(mediaItem)
+        AudioPipelineBus.update { current ->
+            if (current.mediaId == nextMediaId && current.mediaId.isNotBlank()) {
+                current
+            } else {
+                current.copy(
+                    sourceLabel = sourceLabel,
+                    codec = "—",
+                    bitrateKbps = 0,
+                    sampleRateHz = 0,
+                    channelCount = 0,
+                    fromCache = false,
+                    fromOfflineDownload = isOffline,
+                    bitDepthBits = 0,
+                    mediaId = nextMediaId,
+                    measuredBadge = "",
+                )
+            }
+        }
+    }
+
+    @OptIn(UnstableApi::class)
+    private fun refreshFormatTelemetryIfPossible(
+        exoPlayer: ExoPlayer,
+        simpleCache: SimpleCache,
+    ) {
+        val tracksFormat = findSelectedAudioFormat(exoPlayer.currentTracks)
+        val decoderFormat = exoPlayer.audioFormat
+        if (tracksFormat != null || decoderFormat != null) {
+            publishFormatTelemetry(
+                exoPlayer = exoPlayer,
+                simpleCache = simpleCache,
+                tracksFormat = tracksFormat,
+                decoderFormat = decoderFormat,
+            )
         }
     }
 
@@ -566,18 +677,11 @@ class PlaybackService : MediaSessionService() {
     }
 
     @OptIn(UnstableApi::class)
-    private fun publishFormatTelemetry(
-        exoPlayer: ExoPlayer,
-        simpleCache: SimpleCache,
-        format: Format,
-    ) {
-        val uriString = exoPlayer.currentMediaItem?.localConfiguration?.uri?.toString().orEmpty()
+    private fun resolvePipelineSourceLabel(mediaItem: MediaItem?): String {
+        val uriString = mediaItem?.localConfiguration?.uri?.toString().orEmpty()
         val isOffline = uriString.startsWith("file://") || uriString.startsWith("content://")
-        val cacheKey = exoPlayer.currentMediaItem?.localConfiguration?.customCacheKey
-            ?: uriString.takeIf { it.isNotBlank() }
-        val isCached = queryCacheStatusAsync(simpleCache, cacheKey, isOffline)
-        val mediaId = exoPlayer.currentMediaItem?.mediaId.orEmpty()
-        val sourceLabel = when {
+        val mediaId = mediaItem?.mediaId.orEmpty()
+        return when {
             isOffline -> "Offline Download"
             mediaId.startsWith("jellyfin:") -> "Jellyfin"
             mediaId.startsWith("subsonic:") -> "Subsonic"
@@ -586,24 +690,190 @@ class PlaybackService : MediaSessionService() {
             uriString.isNotBlank() -> "Audio Stream"
             else -> "Idle"
         }
-        val bitrate = when {
-            format.averageBitrate > 0 -> format.averageBitrate / 1000
-            format.bitrate > 0 -> format.bitrate / 1000
-            else -> 0
+    }
+
+    @OptIn(UnstableApi::class)
+    private fun publishFormatTelemetry(
+        exoPlayer: ExoPlayer,
+        simpleCache: SimpleCache,
+        tracksFormat: Format?,
+        decoderFormat: Format?,
+    ) {
+        val mediaItem = exoPlayer.currentMediaItem
+        val uri = mediaItem?.localConfiguration?.uri
+        val uriString = uri?.toString().orEmpty()
+        val isOffline = uriString.startsWith("file://") || uriString.startsWith("content://")
+        val cacheKey = mediaItem?.localConfiguration?.customCacheKey
+            ?: uriString.takeIf { it.isNotBlank() }
+        val isCached = queryCacheStatusAsync(simpleCache, cacheKey, isOffline)
+        val mediaId = mediaItem?.mediaId.orEmpty()
+        val sourceLabel = resolvePipelineSourceLabel(mediaItem)
+
+        val mime = tracksFormat?.sampleMimeType ?: decoderFormat?.sampleMimeType
+        val codecs = tracksFormat?.codecs ?: decoderFormat?.codecs
+        val codecLabel = normalizeAudioCodecLabel(mime, codecs).ifBlank { "PCM" }
+
+        val sampleRateHz = decoderFormat?.sampleRate?.takeIf { it > 0 }
+            ?: tracksFormat?.sampleRate?.takeIf { it > 0 }
+            ?: 0
+        val channelCount = decoderFormat?.channelCount?.takeIf { it > 0 }
+            ?: tracksFormat?.channelCount?.takeIf { it > 0 }
+            ?: 0
+        val bitDepthBits = pcmEncodingToBitDepth(tracksFormat?.pcmEncoding ?: Format.NO_VALUE)
+            .takeIf { it > 0 }
+            ?: pcmEncodingToBitDepth(decoderFormat?.pcmEncoding ?: Format.NO_VALUE)
+
+        val reportedAvgBps = tracksFormat?.averageBitrate?.takeIf { it > 0 }
+            ?: decoderFormat?.averageBitrate?.takeIf { it > 0 }
+            ?: Format.NO_VALUE
+        val reportedPeakBps = tracksFormat?.bitrate?.takeIf { it > 0 }
+            ?: decoderFormat?.bitrate?.takeIf { it > 0 }
+            ?: Format.NO_VALUE
+
+        val durationMs = exoPlayer.duration.takeIf { it > 0L && it != C.TIME_UNSET } ?: 0L
+        val bufferedFullBytes = if (
+            !isOffline &&
+            !cacheKey.isNullOrBlank() &&
+            durationMs > 0L &&
+            exoPlayer.bufferedPosition >= durationMs - 500L
+        ) {
+            runCatching { simpleCache.getCachedBytes(cacheKey, 0L, Long.MAX_VALUE) }
+                .getOrDefault(0L)
+                .takeIf { it > 0L } ?: 0L
+        } else {
+            0L
         }
-        val codecLabel = formatCodecLabel(format)
+
+        val immediateContentBytes = when {
+            uriString.isBlank() -> 0L
+            else -> lookupMeasuredContentBytes(uriString)
+                .takeIf { it > 0L }
+                ?: uri?.getQueryParameter("clen")?.toLongOrNull()?.takeIf { it > 0L }
+                ?: cacheKey?.let { key ->
+                    runCatching { ContentMetadata.getContentLength(simpleCache.getContentMetadata(key)) }
+                        .getOrDefault(0L)
+                        .takeIf { it > 0L }
+                }
+                ?: lookupCompletedLoadBytes(uriString).takeIf { it > 0L }
+                ?: bufferedFullBytes
+        }
+
+        val measuredBitrateKbps = resolveMeasuredBitrateKbps(
+            reportedAverageBitrateBps = reportedAvgBps,
+            reportedBitrateBps = reportedPeakBps,
+            contentBytes = immediateContentBytes,
+            durationMs = durationMs,
+        )
+
         AudioPipelineBus.update { current ->
+            val sameTrack = current.mediaId.isNotBlank() && current.mediaId == mediaId
+            val effectiveCodec = if (codecLabel != "PCM" || !sameTrack || current.codec == "—") {
+                codecLabel
+            } else {
+                current.codec
+            }
+            val effectiveBitrate = if (measuredBitrateKbps > 0) {
+                measuredBitrateKbps
+            } else if (sameTrack) {
+                current.bitrateKbps
+            } else {
+                0
+            }
+            val effectiveSampleRate = if (sampleRateHz > 0) {
+                sampleRateHz
+            } else if (sameTrack) {
+                current.sampleRateHz
+            } else {
+                0
+            }
+            val effectiveChannels = if (channelCount > 0) {
+                channelCount
+            } else if (sameTrack) {
+                current.channelCount
+            } else {
+                0
+            }
+            val effectiveBitDepth = if (bitDepthBits > 0) {
+                bitDepthBits
+            } else if (sameTrack) {
+                current.bitDepthBits
+            } else {
+                0
+            }
+            val badge = formatMeasuredAudioBadge(
+                codec = effectiveCodec,
+                bitrateKbps = effectiveBitrate,
+                sampleRateHz = effectiveSampleRate,
+                bitDepthBits = effectiveBitDepth,
+            )
             val next = current.copy(
                 sourceLabel = sourceLabel,
-                codec = codecLabel,
-                bitrateKbps = bitrate,
-                sampleRateHz = format.sampleRate.takeIf { it > 0 } ?: current.sampleRateHz,
-                channelCount = format.channelCount.takeIf { it > 0 } ?: current.channelCount,
+                codec = effectiveCodec,
+                bitrateKbps = effectiveBitrate,
+                sampleRateHz = effectiveSampleRate,
+                channelCount = effectiveChannels,
                 fromCache = isCached,
                 fromOfflineDownload = isOffline,
+                bitDepthBits = effectiveBitDepth,
+                mediaId = mediaId,
+                measuredBadge = badge,
             )
             if (next == current) current else next
         }
+
+        // For local files / content URIs with missing container bitrate, measure file size off Main thread.
+        if (measuredBitrateKbps <= 0 && isOffline && uri != null && durationMs > 0L) {
+            serviceScope.launch {
+                val localBytes = resolveLocalContentSizeBytes(uri)
+                if (localBytes > 0L) {
+                    recordMeasuredContentBytes(uriString, localBytes)
+                    val computed = resolveMeasuredBitrateKbps(
+                        reportedAverageBitrateBps = Format.NO_VALUE,
+                        reportedBitrateBps = Format.NO_VALUE,
+                        contentBytes = localBytes,
+                        durationMs = durationMs,
+                    )
+                    if (computed > 0) {
+                        AudioPipelineBus.update { current ->
+                            if (current.mediaId != mediaId) return@update current
+                            val effectiveBitrate = if (current.bitrateKbps > 0) current.bitrateKbps else computed
+                            val badge = formatMeasuredAudioBadge(
+                                codec = current.codec,
+                                bitrateKbps = effectiveBitrate,
+                                sampleRateHz = current.sampleRateHz,
+                                bitDepthBits = current.bitDepthBits,
+                            )
+                            val next = current.copy(
+                                bitrateKbps = effectiveBitrate,
+                                measuredBadge = badge,
+                            )
+                            if (next == current) current else next
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun resolveLocalContentSizeBytes(uri: Uri): Long {
+        val scheme = uri.scheme?.lowercase(Locale.ROOT)
+        if (scheme == null || scheme == "file") {
+            val path = uri.path ?: return 0L
+            return runCatching { File(path).takeIf { it.isFile }?.length() ?: 0L }.getOrDefault(0L)
+        }
+        if (scheme == "content") {
+            val afdLength = runCatching {
+                contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
+            }.getOrDefault(-1L)
+            if (afdLength > 0L) return afdLength
+            return runCatching {
+                contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+                    val col = cursor.getColumnIndex(OpenableColumns.SIZE)
+                    if (col >= 0 && cursor.moveToFirst()) cursor.getLong(col) else 0L
+                } ?: 0L
+            }.getOrDefault(0L)
+        }
+        return 0L
     }
 
     @OptIn(UnstableApi::class)
@@ -611,44 +881,22 @@ class PlaybackService : MediaSessionService() {
         exoPlayer: ExoPlayer,
         simpleCache: SimpleCache,
     ) {
-        val uriString = exoPlayer.currentMediaItem?.localConfiguration?.uri?.toString().orEmpty()
+        val mediaItem = exoPlayer.currentMediaItem
+        val uriString = mediaItem?.localConfiguration?.uri?.toString().orEmpty()
         val isOffline = uriString.startsWith("file://") || uriString.startsWith("content://")
-        val cacheKey = exoPlayer.currentMediaItem?.localConfiguration?.customCacheKey
+        val cacheKey = mediaItem?.localConfiguration?.customCacheKey
             ?: uriString.takeIf { it.isNotBlank() }
         val isCached = queryCacheStatusAsync(simpleCache, cacheKey, isOffline)
-        val mediaId = exoPlayer.currentMediaItem?.mediaId.orEmpty()
-        val sourceLabel = when {
-            isOffline -> "Offline Download"
-            mediaId.startsWith("jellyfin:") -> "Jellyfin"
-            mediaId.startsWith("subsonic:") -> "Subsonic"
-            mediaId.startsWith("webdav:") -> "WebDAV"
-            uriString.contains("googlevideo.com", ignoreCase = true) -> "YouTube Music"
-            uriString.isNotBlank() -> "Audio Stream"
-            else -> "Idle"
-        }
+        val mediaId = mediaItem?.mediaId.orEmpty()
+        val sourceLabel = resolvePipelineSourceLabel(mediaItem)
         AudioPipelineBus.update { current ->
             val next = current.copy(
                 sourceLabel = sourceLabel,
                 fromCache = isCached,
                 fromOfflineDownload = isOffline,
+                mediaId = mediaId.ifBlank { current.mediaId },
             )
             if (next == current) current else next
-        }
-    }
-
-    private fun formatCodecLabel(format: Format): String {
-        val mime = format.sampleMimeType.orEmpty()
-        val codecs = format.codecs.orEmpty().lowercase(Locale.ROOT)
-        return when {
-            mime == MimeTypes.AUDIO_OPUS || "opus" in codecs -> "Opus"
-            mime == MimeTypes.AUDIO_FLAC || "flac" in codecs -> "FLAC"
-            mime == MimeTypes.AUDIO_ALAC || "alac" in codecs -> "ALAC"
-            mime == MimeTypes.AUDIO_AAC || "mp4a" in codecs -> "AAC"
-            mime == MimeTypes.AUDIO_MPEG -> "MP3"
-            mime == MimeTypes.AUDIO_VORBIS -> "Vorbis"
-            mime.startsWith("audio/") -> mime.removePrefix("audio/").uppercase(Locale.ROOT)
-            codecs.isNotBlank() -> codecs.uppercase(Locale.ROOT)
-            else -> "PCM"
         }
     }
 
@@ -1165,7 +1413,47 @@ class PlaybackService : MediaSessionService() {
             } else {
                 dataSpec
             }
-            return httpSource.open(resolvedSpec)
+            val openedLength = httpSource.open(resolvedSpec)
+            val contentRangeTotal = parseHttpContentRangeTotal(httpSource.responseHeaders)
+            val clenParam = dataSpec.uri.getQueryParameter("clen")?.toLongOrNull()?.takeIf { it > 0L }
+            val isFullRequest = dataSpec.position == 0L &&
+                dataSpec.length == C.LENGTH_UNSET.toLong() &&
+                !resolvedSpec.uri.toString().contains("range=", ignoreCase = true)
+            val totalBytes = when {
+                contentRangeTotal > 0L -> contentRangeTotal
+                clenParam != null -> clenParam
+                isFullRequest -> {
+                    val headerLen = parseHttpContentLength(httpSource.responseHeaders)
+                    when {
+                        headerLen > 0L -> headerLen
+                        openedLength > 0L -> openedLength
+                        else -> 0L
+                    }
+                }
+                else -> 0L
+            }
+            if (totalBytes > 0L) {
+                recordMeasuredContentBytes(dataSpec.uri.toString(), totalBytes)
+                httpSource.uri?.toString()?.let { finalUri ->
+                    if (finalUri != dataSpec.uri.toString()) {
+                        recordMeasuredContentBytes(finalUri, totalBytes)
+                    }
+                }
+                if (AudioPipelineBus.info.value.bitrateKbps <= 0) {
+                    PlaybackAudioBridge.activeService?.let { service ->
+                        service.postOnPlayer {
+                            val player = service.exoPlayerInstance
+                            if (player != null) {
+                                service.refreshFormatTelemetryIfPossible(
+                                    exoPlayer = player,
+                                    simpleCache = getOrCreateCache(service),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            return openedLength
         }
 
         override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
@@ -1415,6 +1703,45 @@ class PlaybackService : MediaSessionService() {
         private const val GOOGLEVIDEO_CHUNK_BYTES = 1024L * 1024L
         private const val NARROW_RANGE_BYTES = 512L * 1024L
         private const val EXO_CACHE_BYTES = 512L * 1024L * 1024L
+        private const val MAX_CONTENT_BYTES_ENTRIES = 64
+
+        private val contentBytesLock = Any()
+        private val measuredContentBytesByUri = object : LinkedHashMap<String, Long>(64, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean =
+                size > MAX_CONTENT_BYTES_ENTRIES
+        }
+        private val completedLoadBytesByUri = object : LinkedHashMap<String, Long>(64, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean =
+                size > MAX_CONTENT_BYTES_ENTRIES
+        }
+
+        private fun recordMeasuredContentBytes(uri: String, bytes: Long) {
+            if (uri.isBlank() || bytes <= 0L) return
+            synchronized(contentBytesLock) {
+                measuredContentBytesByUri[uri] = bytes
+            }
+        }
+
+        private fun lookupMeasuredContentBytes(uri: String): Long {
+            if (uri.isBlank()) return 0L
+            synchronized(contentBytesLock) {
+                return measuredContentBytesByUri[uri] ?: 0L
+            }
+        }
+
+        private fun recordCompletedLoadBytes(uri: String, bytes: Long) {
+            if (uri.isBlank() || bytes <= 0L) return
+            synchronized(contentBytesLock) {
+                completedLoadBytesByUri[uri] = bytes
+            }
+        }
+
+        private fun lookupCompletedLoadBytes(uri: String): Long {
+            if (uri.isBlank()) return 0L
+            synchronized(contentBytesLock) {
+                return completedLoadBytesByUri[uri] ?: 0L
+            }
+        }
         private const val VISIONOS_USER_AGENT =
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 " +
                 "(KHTML, like Gecko) Version/26.0 Safari/605.1.15"

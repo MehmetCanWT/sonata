@@ -43,6 +43,8 @@ import dev.sonata.android.data.SonataDownloadManager
 import dev.sonata.android.data.SonataPreferences
 import dev.sonata.android.data.SonataSettingsState
 import dev.sonata.android.data.VideoQualityPreference
+import dev.sonata.android.data.formatMeasuredAudioBadge
+import dev.sonata.android.data.mergeStreamBadgeWithMeasurement
 import dev.sonata.android.discord.DiscordPresenceConfig
 import dev.sonata.android.discord.DiscordPresenceTrack
 import dev.sonata.android.discord.DiscordRpcClient
@@ -474,6 +476,8 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
     private val inFlightArtistLookups = ConcurrentHashMap.newKeySet<String>()
     private val musicVideoCandidateCache = ConcurrentHashMap<String, CachedVideoCandidate>()
     private val resolvedMusicVideoCache = ConcurrentHashMap<String, CachedResolvedMusicVideo>()
+    private val baseStreamBadges = ConcurrentHashMap<String, String>()
+    private val activeCacheKeysByTrackId = ConcurrentHashMap<String, String>()
     private var musicVideoProbeJob: Job? = null
     private var videoSwitchJob: Job? = null
     private var listeningHistoryJob: Job? = null
@@ -1339,10 +1343,77 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
 
         applyAudioSettings(initialSettings)
         observePreferences(supports120Hz)
+        observeAudioPipelineTelemetry()
         observeDiscordPresence()
         registerQueueBridge()
         startPositionPoller()
         startColdLaunchBootstrap(application, supports120Hz)
+    }
+
+    private fun resolveDisplayBadgeForTrack(
+        trackId: String,
+        initialBadge: String,
+    ): String {
+        val pipeline = AudioPipelineBus.info.value
+        if (pipeline.mediaId != trackId) return initialBadge
+        val measured = pipeline.measuredBadge.ifBlank {
+            formatMeasuredAudioBadge(
+                codec = pipeline.codec,
+                bitrateKbps = pipeline.bitrateKbps,
+                sampleRateHz = pipeline.sampleRateHz,
+                bitDepthBits = pipeline.bitDepthBits,
+            )
+        }
+        if (measured.isBlank()) return initialBadge
+        return mergeStreamBadgeWithMeasurement(
+            initialBadge = initialBadge,
+            measuredBadge = measured,
+            sourceLabel = pipeline.sourceLabel,
+            measuredBitrateKbps = pipeline.bitrateKbps,
+        )
+    }
+
+    private fun observeAudioPipelineTelemetry() {
+        viewModelScope.launch {
+            AudioPipelineBus.info.collect { pipeline ->
+                val currentState = _uiState.value
+                val activeTrack = currentState.activeTrack ?: return@collect
+                if (currentState.videoModeEnabled) return@collect
+                if (pipeline.mediaId.isNotBlank() && pipeline.mediaId != activeTrack.id) return@collect
+                val measured = pipeline.measuredBadge.ifBlank {
+                    formatMeasuredAudioBadge(
+                        codec = pipeline.codec,
+                        bitrateKbps = pipeline.bitrateKbps,
+                        sampleRateHz = pipeline.sampleRateHz,
+                        bitDepthBits = pipeline.bitDepthBits,
+                    )
+                }
+                if (measured.isBlank()) return@collect
+                val baseBadge = baseStreamBadges[activeTrack.id] ?: currentState.streamBadge
+                val merged = mergeStreamBadgeWithMeasurement(
+                    initialBadge = baseBadge,
+                    measuredBadge = measured,
+                    sourceLabel = pipeline.sourceLabel,
+                    measuredBitrateKbps = pipeline.bitrateKbps,
+                )
+                if (merged.isNotBlank() && merged != currentState.streamBadge) {
+                    var updated = false
+                    _uiState.update { state ->
+                        if (state.activeTrack?.id == activeTrack.id && !state.videoModeEnabled && state.streamBadge != merged) {
+                            updated = true
+                            state.copy(streamBadge = merged)
+                        } else {
+                            state
+                        }
+                    }
+                    if (updated) {
+                        withContext(Dispatchers.IO) {
+                            saveActiveTrackToPrefs(activeTrack, merged)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private fun observeDiscordPresence() {
@@ -2189,6 +2260,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                         val resumePositionMs = ctrl.currentPosition.coerceAtLeast(0L)
                         val resumePlayIntent = ctrl.isPlaying || ctrl.playWhenReady || _uiState.value.isPlaying
                         val oldBadge = _uiState.value.streamBadge
+                        val rawCacheKey = activeCacheKeysByTrackId.remove(active.id)
                         Log.w(
                             "SonataStream",
                             "Recovering track=${active.id} gen=$generation attempt=$attempt posMs=$resumePositionMs cause=${error.errorCodeName}"
@@ -2198,6 +2270,9 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                         recoveryJob = viewModelScope.launch(Dispatchers.IO) {
                             val engine = requireEngine()
                             streamCache.remove(active.id)
+                            if (rawCacheKey != null) {
+                                PlaybackService.evictCacheKey(rawCacheKey)
+                            }
                             if (oldBadge.isNotBlank()) {
                                 PlaybackService.evictCacheKey("${active.id}:$oldBadge")
                             }
@@ -2220,9 +2295,11 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                                                 isStillCurrent = { isActive && isGenerationActive(generation, active.id) },
                                                 onCommitted = { _, _ ->
                                                     putCachedStream(active.id, recovered)
+                                                    baseStreamBadges[active.id] = recovered.badge
+                                                    val displayBadge = resolveDisplayBadgeForTrack(active.id, recovered.badge)
                                                     _uiState.update {
                                                         it.copy(
-                                                            streamBadge = recovered.badge,
+                                                            streamBadge = displayBadge,
                                                             status = uiStrings().playingTrackStatus(active.title),
                                                         )
                                                     }
@@ -2233,7 +2310,9 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                                         }.getOrNull()
                                     }
                                     if (swap?.applied == true) {
-                                        saveActiveTrackToPrefs(active, recovered.badge)
+                                        val finalBadge = _uiState.value.takeIf { it.activeTrack?.id == active.id }?.streamBadge
+                                            ?: recovered.badge
+                                        saveActiveTrackToPrefs(active, finalBadge)
                                     }
                                 }
                                 .onFailure { recErr ->
@@ -3845,6 +3924,10 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch(Dispatchers.IO) {
             val cached = streamCache.remove(videoId)
             PlaybackService.evictCacheKey(videoId)
+            val rawCacheKey = activeCacheKeysByTrackId.remove(videoId)
+            if (rawCacheKey != null) {
+                PlaybackService.evictCacheKey(rawCacheKey)
+            }
             if (cached != null && cached.stream.badge.isNotBlank()) {
                 PlaybackService.evictCacheKey("$videoId:${cached.stream.badge}")
             }
@@ -5047,6 +5130,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                         )
                         val generationStillValid = expectedGeneration == null || playbackGeneration.isCurrent(expectedGeneration)
                         if (generationStillValid && _uiState.value.activeTrack?.id == track.id && !_uiState.value.isPlaying) {
+                            baseStreamBadges[track.id] = stream.badge
                             saveActiveTrackToPrefs(track, stream.badge)
                             _uiState.update { it.copy(streamBadge = stream.badge) }
                         }
@@ -5136,6 +5220,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                 if (!isActive || !playbackGeneration.isCurrent(generation)) return@launch
                 val offlineRecord = downloads.value.firstOrNull { it.videoId == track.id }
                 val offlineBadge = offlineRecord?.codec?.takeIf { it.isNotBlank() }?.let { "Offline · $it" } ?: "Offline"
+                baseStreamBadges[track.id] = offlineBadge
                 saveActiveTrackToPrefs(track, offlineBadge)
                 withContext(Dispatchers.Main) {
                     if (playbackGeneration.isCurrent(generation)) {
@@ -5189,6 +5274,11 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
             val engine = requireEngine()
             if (!isActive || !playbackGeneration.isCurrent(generation)) return@launch
             val cachedStream = getCachedStream(track.id)
+            if (cachedStream != null) {
+                baseStreamBadges[track.id] = cachedStream.badge
+            } else {
+                baseStreamBadges.remove(track.id)
+            }
             saveActiveTrackToPrefs(track, cachedStream?.badge.orEmpty())
             withContext(Dispatchers.Main) {
                 if (playbackGeneration.isCurrent(generation)) {
@@ -5324,9 +5414,11 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                                 overridePlayIntent = true,
                                 isStillCurrent = { isActive && isGenerationActive(generation, effectiveTrack.id) },
                                 onCommitted = { _, _ ->
+                                    baseStreamBadges[effectiveTrack.id] = stream.badge
+                                    val displayBadge = resolveDisplayBadgeForTrack(effectiveTrack.id, stream.badge)
                                     _uiState.update {
                                         it.copy(
-                                            streamBadge = stream.badge,
+                                            streamBadge = displayBadge,
                                             status = uiStrings().playingTrackStatus(effectiveTrack.title),
                                         )
                                     }
@@ -5340,7 +5432,9 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                         PlaybackAudioBridge.clearEndedTransitionSuppression()
                         return@onSuccess
                     }
-                    saveActiveTrackToPrefs(effectiveTrack, stream.badge)
+                    val committedBadge = _uiState.value.takeIf { it.activeTrack?.id == effectiveTrack.id }?.streamBadge
+                        ?: stream.badge
+                    saveActiveTrackToPrefs(effectiveTrack, committedBadge)
                     reportTrackPlaybackToYtm(effectiveTrack, playbackPlaylistId)
 
                     // Delay upcoming queue prefetch so ExoPlayer gets full bandwidth for instant audio start.
@@ -5413,9 +5507,11 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
             )
         }
         val uri = if (stream.url.startsWith("http")) Uri.parse(stream.url) else Uri.fromFile(File(stream.url))
+        val cacheKey = "${track.id}:${stream.badge}"
+        activeCacheKeysByTrackId[track.id] = cacheKey
         return MediaItem.Builder()
             .setMediaId(track.id)
-            .setCustomCacheKey("${track.id}:${stream.badge}")
+            .setCustomCacheKey(cacheKey)
             .setUri(uri)
             .setMediaMetadata(
                 MediaMetadata.Builder()
@@ -5533,7 +5629,9 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                                 isStillCurrent = { isActive && isGenerationActive(generation, effectiveTrack.id) },
                                 onCommitted = { _, _ ->
                                     putCachedStream(effectiveTrack.id, targetUpgrade)
-                                    _uiState.update { it.copy(streamBadge = targetUpgrade.badge) }
+                                    baseStreamBadges[effectiveTrack.id] = targetUpgrade.badge
+                                    val displayBadge = resolveDisplayBadgeForTrack(effectiveTrack.id, targetUpgrade.badge)
+                                    _uiState.update { it.copy(streamBadge = displayBadge) }
                                 },
                             )
                         }.onFailure { err ->
@@ -5541,7 +5639,9 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                         }.getOrNull()
                     }
                     if (swap?.applied == true) {
-                        saveActiveTrackToPrefs(effectiveTrack, targetUpgrade.badge)
+                        val finalBadge = _uiState.value.takeIf { it.activeTrack?.id == effectiveTrack.id }?.streamBadge
+                            ?: targetUpgrade.badge
+                        saveActiveTrackToPrefs(effectiveTrack, finalBadge)
                     }
                 }
             } finally {
@@ -6446,6 +6546,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
             if (offlineUri != null) {
                 val offlineRecord = downloads.value.firstOrNull { it.videoId == track.id }
                 val offlineBadge = offlineRecord?.codec?.takeIf { it.isNotBlank() }?.let { "Offline · $it" } ?: "Offline"
+                baseStreamBadges[track.id] = offlineBadge
                 val offlineItem = buildOfflineMediaItem(track, offlineUri)
                 withContext(Dispatchers.Main) {
                     PlaybackAudioBridge.setVideoModePlayback(false)
@@ -6457,11 +6558,12 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                         }
                     }
                 }
+                val displayOfflineBadge = resolveDisplayBadgeForTrack(track.id, offlineBadge)
                 _uiState.update {
                     if (isGenerationActive(generation, track.id)) {
                         it.copy(
                             videoLoading = false,
-                            streamBadge = offlineBadge,
+                            streamBadge = displayOfflineBadge,
                             status = uiStrings().playingTrackOfflineStatus(track.title),
                         )
                     } else {
@@ -6485,6 +6587,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                 _uiState.update { it.copy(videoLoading = false) }
                 return@launch
             }
+            baseStreamBadges[track.id] = stream.badge
             val mediaItem = buildMediaItem(track, stream)
             withContext(Dispatchers.Main) {
                 PlaybackAudioBridge.setVideoModePlayback(false)
@@ -6496,11 +6599,12 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 }
             }
+            val displayAudioBadge = resolveDisplayBadgeForTrack(track.id, stream.badge)
             _uiState.update {
                 if (isGenerationActive(generation, track.id)) {
                     it.copy(
                         videoLoading = false,
-                        streamBadge = stream.badge,
+                        streamBadge = displayAudioBadge,
                         status = uiStrings().playingTrackStatus(track.title),
                     )
                 } else {
