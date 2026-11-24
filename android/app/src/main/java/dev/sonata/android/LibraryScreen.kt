@@ -310,6 +310,7 @@ internal fun LibraryTabContent(
     onPlaylistLongClick: (AndroidPlaylist, Rect?) -> Unit = { _, _ -> },
     onPlayTrack: (AndroidTrack, List<AndroidTrack>) -> Unit,
     onOpenDownloads: () -> Unit,
+    onOpenServers: (String?) -> Unit = {},
     onOpenArtist: (String, String) -> Unit,
 ) {
     val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
@@ -463,8 +464,9 @@ internal fun LibraryTabContent(
             Spacer(Modifier.height(10.dp))
         }
 
-        // Downloads Playlist row (never navigates to Search!)
+        // Downloads & Self-Hosted Servers rows
         item(key = "library_device_rows", contentType = "device_rows") {
+            val enabledServers = remember(state.servers) { state.servers.filter { it.enabled } }
             Column(modifier = Modifier.padding(horizontal = PAGE_GUTTER)) {
                 LibraryNavRow(
                     icon = SonataIcons.Download,
@@ -472,6 +474,54 @@ internal fun LibraryTabContent(
                     subtitle = if (downloadsCount > 0) strings.tracksCount(downloadsCount) else strings.offlineLabel,
                     onClick = onOpenDownloads,
                 )
+                LibraryNavRow(
+                    icon = SonataIcons.Folder,
+                    label = strings.servers.selfHostedServers,
+                    subtitle = if (state.servers.isNotEmpty()) {
+                        strings.servers.enabledCountSummary(enabledServers.size, state.servers.size)
+                    } else {
+                        strings.servers.manageServersSummary
+                    },
+                    onClick = { onOpenServers(null) },
+                )
+            }
+            if (enabledServers.isNotEmpty()) {
+                val tokens = LocalLunariaColors.current
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = PAGE_GUTTER, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    items(enabledServers, key = { "lib_srv_${it.id}" }) { srv ->
+                        val tag = when (srv.kind) {
+                            uniffi.sonata_android.AndroidServerKind.JELLYFIN -> "JFN"
+                            uniffi.sonata_android.AndroidServerKind.SUBSONIC -> "SUB"
+                            uniffi.sonata_android.AndroidServerKind.WEB_DAV -> "DAV"
+                        }
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(tokens.eclipseCard)
+                                .border(0.75.dp, tokens.cardStroke, RoundedCornerShape(14.dp))
+                                .clickable { onOpenServers(srv.id) }
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                text = tag,
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = tokens.petalLavender,
+                            )
+                            Text(
+                                text = srv.name,
+                                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Medium),
+                                color = tokens.onSurfacePrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
             }
             Spacer(Modifier.height(14.dp))
         }

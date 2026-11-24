@@ -234,6 +234,7 @@ class SonataDownloadManager(private val context: Context) {
         exportToMusic: Boolean,
         collectionId: String? = null,
         wifiOnly: Boolean = false,
+        headers: Map<String, String> = emptyMap(),
     ): Result<DownloadedTrackRecord> = withContext(Dispatchers.IO) {
         ensureLoaded()
         val isLocalFile = !streamUrl.startsWith("http", ignoreCase = true)
@@ -287,7 +288,7 @@ class SonataDownloadManager(private val context: Context) {
                 File(streamUrl.removePrefix("file://")).takeIf { it.isFile }?.length()
             } else {
                 parsedUri.getQueryParameter("clen")?.toLongOrNull()
-                    ?: probeContentLength(streamUrl, parsedUri)
+                    ?: probeContentLength(streamUrl, parsedUri, headers)
             }
 
             val resultRecord = if (exportToMusic && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -299,6 +300,7 @@ class SonataDownloadManager(private val context: Context) {
                     extension = extension,
                     knownTotal = totalLength,
                     collectionId = collectionId,
+                    headers = headers,
                     cancelFlag = cancelFlag,
                     onProgress = ::publishProgress,
                 )
@@ -310,6 +312,7 @@ class SonataDownloadManager(private val context: Context) {
                     extension = extension,
                     knownTotal = totalLength,
                     collectionId = collectionId,
+                    headers = headers,
                     cancelFlag = cancelFlag,
                     onProgress = ::publishProgress,
                 )
@@ -516,6 +519,7 @@ class SonataDownloadManager(private val context: Context) {
         extension: String,
         knownTotal: Long?,
         collectionId: String?,
+        headers: Map<String, String> = emptyMap(),
         cancelFlag: AtomicBoolean,
         onProgress: (Float, String) -> Unit,
     ): DownloadedTrackRecord {
@@ -532,6 +536,7 @@ class SonataDownloadManager(private val context: Context) {
                     parsedUri = parsedUri,
                     knownTotal = knownTotal,
                     output = out,
+                    headers = headers,
                     cancelFlag = cancelFlag,
                     onProgress = onProgress,
                 )
@@ -569,6 +574,7 @@ class SonataDownloadManager(private val context: Context) {
         extension: String,
         knownTotal: Long?,
         collectionId: String?,
+        headers: Map<String, String> = emptyMap(),
         cancelFlag: AtomicBoolean,
         onProgress: (Float, String) -> Unit,
     ): DownloadedTrackRecord {
@@ -599,6 +605,7 @@ class SonataDownloadManager(private val context: Context) {
                         parsedUri = parsedUri,
                         knownTotal = knownTotal,
                         output = out,
+                        headers = headers,
                         cancelFlag = cancelFlag,
                         onProgress = onProgress,
                     )
@@ -638,6 +645,7 @@ class SonataDownloadManager(private val context: Context) {
         parsedUri: Uri,
         knownTotal: Long?,
         output: OutputStream,
+        headers: Map<String, String> = emptyMap(),
         cancelFlag: AtomicBoolean,
         onProgress: (Float, String) -> Unit,
     ): Long {
@@ -711,7 +719,7 @@ class SonataDownloadManager(private val context: Context) {
         }
 
         // Direct single-request stream for non-googlevideo or unknown-length URLs.
-        val conn = openConnection(streamUrl, parsedUri, rangeHeader = null)
+        val conn = openConnection(streamUrl, parsedUri, rangeHeader = null, extraHeaders = headers)
         return try {
             val code = conn.responseCode
             if (code !in 200..299) {
@@ -748,8 +756,12 @@ class SonataDownloadManager(private val context: Context) {
         }
     }
 
-    private fun probeContentLength(streamUrl: String, parsedUri: Uri): Long? {
-        val conn = openConnection(streamUrl, parsedUri, rangeHeader = "bytes=0-0")
+    private fun probeContentLength(
+        streamUrl: String,
+        parsedUri: Uri,
+        extraHeaders: Map<String, String> = emptyMap(),
+    ): Long? {
+        val conn = openConnection(streamUrl, parsedUri, rangeHeader = "bytes=0-0", extraHeaders = extraHeaders)
         return try {
             val code = conn.responseCode
             if (code == 206) {
@@ -771,6 +783,7 @@ class SonataDownloadManager(private val context: Context) {
         streamUrl: String,
         parsedUri: Uri,
         rangeHeader: String?,
+        extraHeaders: Map<String, String> = emptyMap(),
     ): HttpURLConnection {
         val conn = (URL(streamUrl).openConnection() as HttpURLConnection).apply {
             connectTimeout = CONNECT_TIMEOUT_MS
@@ -780,6 +793,11 @@ class SonataDownloadManager(private val context: Context) {
         }
         val headers = headersForUri(parsedUri)
         headers.forEach { (key, value) -> conn.setRequestProperty(key, value) }
+        extraHeaders.forEach { (key, value) ->
+            if (key.isNotBlank() && value.isNotBlank()) {
+                conn.setRequestProperty(key, value)
+            }
+        }
         if (rangeHeader != null) {
             conn.setRequestProperty("Range", rangeHeader)
         }

@@ -310,6 +310,7 @@ internal fun SearchTabContent(
     onTrackOptions: (AndroidTrack, Rect?) -> Unit = { _, _ -> },
     onTrackLongClick: (AndroidTrack, Rect?) -> Unit = { _, _ -> },
     onOpenPlaylist: (AndroidPlaylist) -> Unit,
+    onOpenAlbumOrPlaylist: (String, String, String?, String?, String?) -> Unit = { _, _, _, _, _ -> },
 ) {
     val screenWidthDp = LocalConfiguration.current.screenWidthDp
     val recentCols = when {
@@ -330,8 +331,33 @@ internal fun SearchTabContent(
     }
 
     val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
-    var selectedSegment by remember { mutableIntStateOf(0) }
-    val segments = remember(strings) { listOf("YouTube", strings.libraryHeading, strings.playlists) }
+    val hasEnabledServers = remember(state.servers, state.serverSearchResult) {
+        state.servers.any { it.enabled } || state.serverSearchResult != null
+    }
+    var selectedSegment by remember(hasEnabledServers) { mutableIntStateOf(0) }
+    val segments = remember(strings, hasEnabledServers) {
+        if (hasEnabledServers) {
+            listOf("YouTube", strings.servers.serversTab, strings.libraryHeading, strings.playlists)
+        } else {
+            listOf("YouTube", strings.libraryHeading, strings.playlists)
+        }
+    }
+    val activeSegmentKey = remember(selectedSegment, hasEnabledServers) {
+        if (hasEnabledServers) {
+            when (selectedSegment) {
+                0 -> "YOUTUBE"
+                1 -> "SERVERS"
+                2 -> "LIBRARY"
+                else -> "PLAYLISTS"
+            }
+        } else {
+            when (selectedSegment) {
+                0 -> "YOUTUBE"
+                1 -> "LIBRARY"
+                else -> "PLAYLISTS"
+            }
+        }
+    }
     val filteredLibraryTracks = remember(state.tracks, state.query, selectedSegment) {
         if (state.query.isBlank()) state.tracks
         else state.tracks.filter {
@@ -560,7 +586,7 @@ internal fun SearchTabContent(
                 }
             }
 
-            if (state.loading && selectedSegment == 0) {
+            if (state.loading && activeSegmentKey == "YOUTUBE") {
                 item(key = "search_loading") {
                     Box(
                         modifier = Modifier
@@ -573,8 +599,8 @@ internal fun SearchTabContent(
                 }
             }
 
-            when (selectedSegment) {
-                0 -> {
+            when (activeSegmentKey) {
+                "YOUTUBE" -> {
                     if (state.tracks.isNotEmpty()) {
                         item(key = "search_results_header", contentType = "section_header") {
                             SectionHeader(title = state.listTitle)
@@ -600,7 +626,203 @@ internal fun SearchTabContent(
                     }
                 }
 
-                1 -> {
+                "SERVERS" -> {
+                    if (state.serverSearchLoading) {
+                        item(key = "server_search_loading") {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 32.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                CircularProgressIndicator(color = LocalLunariaColors.current.petalLavender, strokeWidth = 2.5.dp)
+                            }
+                        }
+                    } else {
+                        val srvRes = state.serverSearchResult
+                        val srvTracks = srvRes?.tracks.orEmpty()
+                        val srvAlbums = srvRes?.albums.orEmpty()
+                        val srvPlaylists = srvRes?.playlists.orEmpty()
+                        if (srvTracks.isEmpty() && srvAlbums.isEmpty() && srvPlaylists.isEmpty()) {
+                            item(key = "server_search_empty") {
+                                Text(
+                                    text = strings.servers.serverSearchEmpty,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = LocalLunariaColors.current.onSurfaceSecondary,
+                                    modifier = Modifier.padding(horizontal = PAGE_GUTTER, vertical = 24.dp),
+                                )
+                            }
+                        }
+                        if (srvTracks.isNotEmpty()) {
+                            item(key = "srv_res_tracks_hdr", contentType = "section_header") {
+                                SectionHeader(title = strings.servers.serverTracksCount(srvTracks.size))
+                            }
+                            items(
+                                items = srvTracks,
+                                key = { "srv_trk_${it.id}" },
+                                contentType = { "search_track" },
+                            ) { track ->
+                                val activeId = state.activeTrack?.id
+                                val current = activeId != null && track.id == activeId
+                                Box(modifier = Modifier.padding(horizontal = PAGE_GUTTER)) {
+                                    CompactTrackRow(
+                                        track = track,
+                                        isCurrent = current,
+                                        isPlaying = current && state.isPlaying,
+                                        onClick = { onPlayTrack(track, srvTracks) },
+                                        onOptionsClick = { bounds -> onTrackOptions(track, bounds) },
+                                        onLongClick = { bounds -> onTrackLongClick(track, bounds) },
+                                    )
+                                }
+                            }
+                        }
+                        if (srvAlbums.isNotEmpty()) {
+                            item(key = "srv_res_albums_hdr", contentType = "section_header") {
+                                SectionHeader(title = strings.servers.albumsTab)
+                            }
+                            items(
+                                items = srvAlbums,
+                                key = { "srv_alb_${it.id}" },
+                                contentType = { "search_playlist" },
+                            ) { card ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            onOpenAlbumOrPlaylist(
+                                                card.id,
+                                                card.title,
+                                                card.thumbnailUrl,
+                                                card.subtitle,
+                                                "Album",
+                                            )
+                                        }
+                                        .padding(horizontal = PAGE_GUTTER, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(50.dp)
+                                            .clip(Shape8)
+                                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        val thumb = remember(card.thumbnailUrl) { card.thumbnailUrl.artworkAt(ROW_ART_PX) }
+                                        val thumbRequest = rememberArtworkRequest(thumb, ROW_ART_PX, ROW_ART_PX)
+                                        if (thumbRequest != null) {
+                                            AsyncImage(
+                                                model = thumbRequest,
+                                                contentDescription = null,
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize(),
+                                            )
+                                        } else {
+                                            Icon(
+                                                imageVector = SonataIcons.MusicNote,
+                                                contentDescription = null,
+                                                tint = LocalLunariaColors.current.onSurfaceSecondary,
+                                            )
+                                        }
+                                    }
+                                    Spacer(Modifier.width(12.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = card.title,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            color = LocalLunariaColors.current.onSurfacePrimary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        if (card.subtitle.isNotBlank()) {
+                                            Text(
+                                                text = card.subtitle,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = LocalLunariaColors.current.onSurfaceSecondary,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        }
+                                    }
+                                    Icon(
+                                        imageVector = SonataIcons.ChevronRight,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
+                            }
+                        }
+                        if (srvPlaylists.isNotEmpty()) {
+                            item(key = "srv_res_pl_hdr", contentType = "section_header") {
+                                SectionHeader(title = strings.servers.playlistsTab)
+                            }
+                            items(
+                                items = srvPlaylists,
+                                key = { "srv_pl_${it.id}" },
+                                contentType = { "search_playlist" },
+                            ) { card ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            onOpenPlaylist(
+                                                AndroidPlaylist(
+                                                    id = card.id,
+                                                    name = card.title,
+                                                    thumbnailUrl = card.thumbnailUrl,
+                                                    isOwned = false,
+                                                ),
+                                            )
+                                        }
+                                        .padding(horizontal = PAGE_GUTTER, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(50.dp)
+                                            .clip(Shape8)
+                                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        val thumb = remember(card.thumbnailUrl) { card.thumbnailUrl.artworkAt(ROW_ART_PX) }
+                                        val thumbRequest = rememberArtworkRequest(thumb, ROW_ART_PX, ROW_ART_PX)
+                                        if (thumbRequest != null) {
+                                            AsyncImage(
+                                                model = thumbRequest,
+                                                contentDescription = null,
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize(),
+                                            )
+                                        } else {
+                                            Icon(
+                                                imageVector = SonataIcons.TabLibrary,
+                                                contentDescription = null,
+                                                tint = LocalLunariaColors.current.onSurfaceSecondary,
+                                            )
+                                        }
+                                    }
+                                    Spacer(Modifier.width(12.dp))
+                                    Text(
+                                        text = card.title,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = LocalLunariaColors.current.onSurfacePrimary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    Icon(
+                                        imageVector = SonataIcons.ChevronRight,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                "LIBRARY" -> {
                     items(
                         items = filteredLibraryTracks,
                         key = { "lib_search_${it.id}" },

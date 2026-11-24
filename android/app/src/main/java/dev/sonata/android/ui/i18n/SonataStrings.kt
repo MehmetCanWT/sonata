@@ -637,6 +637,7 @@ data class SonataStrings(
     val player: PlayerStrings,
     val settings: SettingsStrings,
     val discord: DiscordStrings,
+    val servers: ServerStrings = EnglishServerStrings,
 ) {
     val tabHome: String get() = common.tabHome
     val tabExplore: String get() = common.tabExplore
@@ -1866,6 +1867,7 @@ val EnglishSonataStrings = SonataStrings(
         discordStatusError = { err -> "Connection error: $err" },
         discordReconnect = "Reconnect Gateway",
     ),
+    servers = EnglishServerStrings,
 )
 
 val TurkishSonataStrings = SonataStrings(
@@ -2485,6 +2487,7 @@ val TurkishSonataStrings = SonataStrings(
         discordStatusError = { err -> "Bağlantı hatası: $err" },
         discordReconnect = "Gateway'e Yeniden Bağlan",
     ),
+    servers = TurkishServerStrings,
 )
 
 val RussianSonataStrings = SonataStrings(
@@ -3104,6 +3107,7 @@ val RussianSonataStrings = SonataStrings(
         discordStatusError = { err -> "Ошибка подключения: $err" },
         discordReconnect = "Переподключить Gateway",
     ),
+    servers = RussianServerStrings,
 )
 
 /**

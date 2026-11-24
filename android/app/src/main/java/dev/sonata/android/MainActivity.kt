@@ -282,6 +282,7 @@ import dev.sonata.android.ui.screens.ArtistTrackItem
 import dev.sonata.android.ui.screens.DownloadsManagerSheet
 import dev.sonata.android.ui.screens.MoodCategoryScreen
 import dev.sonata.android.ui.screens.RadioMixesScreen
+import dev.sonata.android.ui.screens.ServersScreen
 import dev.sonata.android.ui.screens.SonataSettingsScreen
 import dev.sonata.android.ui.theme.SonataRadioWavesIcon
 import dev.sonata.android.ui.theme.SonataTabIconSize
@@ -1102,6 +1103,7 @@ private fun SonataAppContent(
                                     },
                                     onPlayTrack = { track, queue -> vm.playTrack(track, queue) },
                                     onOpenDownloads = vm::openDownloadsPlaylist,
+                                    onOpenServers = { srvId -> vm.openServersScreen(srvId) },
                                     onOpenArtist = { id, name -> vm.openArtist(id, name) },
                                 )
                             }
@@ -1118,6 +1120,15 @@ private fun SonataAppContent(
                                 onTrackOptions = { track, bounds -> trackOptionsTarget = TrackMenuRequest(track, bounds) },
                                 onTrackLongClick = { track, bounds -> openTrackHeldMenu(track, null, bounds) },
                                 onOpenPlaylist = vm::openPlaylist,
+                                onOpenAlbumOrPlaylist = { id, title, cover, sub, kind ->
+                                    vm.openAlbumOrPlaylist(
+                                        id = id,
+                                        title = title,
+                                        coverUrl = cover,
+                                        subtitle = sub,
+                                        kindLabel = kind,
+                                    )
+                                },
                             )
                         }
                     }
@@ -1621,6 +1632,42 @@ private fun SonataAppContent(
                 onSaveDiscordToken = vm::saveDiscordToken,
                 onClearDiscordToken = vm::signOutDiscord,
                 onReconnectDiscord = vm::reconnectDiscord,
+                serverCount = state.servers.size,
+                enabledServerCount = state.servers.count { it.enabled },
+                onOpenServers = { vm.openServersScreen() },
+            )
+        }
+
+        // Full-screen Self-Hosted Music Servers manager & browser
+        AnimatedVisibility(
+            visible = state.showServersSheet && state.collectionTitle == null && state.artistPage == null && !state.artistLoading,
+            enter = slideInVertically(tween(240)) { it / 8 } + fadeIn(tween(180)),
+            exit = slideOutVertically(tween(200)) { it / 8 } + fadeOut(tween(150)),
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            val serverBrowserState by vm.serverBrowserState.collectAsStateWithLifecycle()
+            ServersScreen(
+                servers = state.servers,
+                browserState = serverBrowserState,
+                activeTrackId = state.activeTrack?.id,
+                isPlaying = state.isPlaying,
+                onBack = vm::dismissServersScreen,
+                onOpenServer = vm::openServerBrowser,
+                onCloseServerBrowser = vm::closeServerBrowser,
+                onSelectLibrary = vm::selectServerLibrary,
+                onOpenArtist = vm::openServerArtist,
+                onCloseArtist = vm::closeServerArtist,
+                onOpenAlbum = vm::openServerAlbum,
+                onOpenPlaylist = vm::openPlaylist,
+                onOpenWebDavFolder = { path, label -> vm.openWebDavFolder(path, label) },
+                onNavigateWebDavBack = vm::navigateWebDavBack,
+                onSearchInServer = vm::searchInsideServer,
+                onPlayTrack = { track, queue -> vm.playTrack(track, queue) },
+                onSaveServer = vm::saveServer,
+                onDeleteServer = vm::deleteServer,
+                onSetServerEnabled = vm::setServerEnabled,
+                onTestConnection = vm::testServerConnection,
+                onClearTestResult = vm::clearServerTestResult,
             )
         }
 

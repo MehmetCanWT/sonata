@@ -5,6 +5,7 @@ import uniffi.sonata_android.AndroidAccountProfile
 import uniffi.sonata_android.AndroidArtistPage
 import uniffi.sonata_android.AndroidExploreFeed
 import uniffi.sonata_android.AndroidHomeShelf
+import uniffi.sonata_android.AndroidJellyfinAuth
 import uniffi.sonata_android.AndroidJioSaavnStream
 import uniffi.sonata_android.AndroidJsCipherSolver
 import uniffi.sonata_android.AndroidLyricLine
@@ -15,8 +16,14 @@ import uniffi.sonata_android.AndroidMusicVideoCandidate
 import uniffi.sonata_android.AndroidPlaylist
 import uniffi.sonata_android.AndroidResolvedMusicVideo
 import uniffi.sonata_android.AndroidResolvedStream
+import uniffi.sonata_android.AndroidServerAlbum
+import uniffi.sonata_android.AndroidServerLibrary
+import uniffi.sonata_android.AndroidServerProfile
+import uniffi.sonata_android.AndroidServerSearchResult
+import uniffi.sonata_android.AndroidServerStream
 import uniffi.sonata_android.AndroidTrack
 import uniffi.sonata_android.AndroidUpdateInfo
+import uniffi.sonata_android.AndroidWebDavListing
 import uniffi.sonata_android.SonataAndroidEngine
 
 /**
@@ -117,6 +124,32 @@ interface SonataEngineGateway {
     ): AndroidMotionMedia?
     suspend fun resolveMusicVideoCandidate(track: AndroidTrack): AndroidMusicVideoCandidate?
     suspend fun resolveMusicVideoStreams(videoId: String): AndroidResolvedMusicVideo
+
+    suspend fun listServers(): List<AndroidServerProfile>
+    suspend fun upsertServer(profile: AndroidServerProfile): List<AndroidServerProfile>
+    suspend fun deleteServer(serverId: String): List<AndroidServerProfile>
+    suspend fun setServerEnabled(serverId: String, enabled: Boolean): List<AndroidServerProfile>
+    suspend fun testServerConnection(profile: AndroidServerProfile): String
+    suspend fun authenticateJellyfin(
+        baseUrl: String,
+        username: String,
+        password: String,
+        deviceId: String,
+    ): AndroidJellyfinAuth
+    suspend fun listServerLibraries(serverId: String): List<AndroidServerLibrary>
+    suspend fun listServerArtists(serverId: String, libraryId: String?): List<uniffi.sonata_android.AndroidHomeCard>
+    suspend fun listServerAlbums(
+        serverId: String,
+        libraryId: String?,
+        artistId: String?,
+    ): List<uniffi.sonata_android.AndroidHomeCard>
+    suspend fun getServerAlbum(albumId: String): AndroidServerAlbum
+    suspend fun listServerPlaylists(serverId: String): List<AndroidPlaylist>
+    suspend fun getServerPlaylistTracks(playlistId: String): List<AndroidTrack>
+    suspend fun browseWebdavFolder(serverId: String, folderPath: String?): AndroidWebDavListing
+    suspend fun searchServer(serverId: String, query: String, limit: UInt): AndroidServerSearchResult
+    suspend fun searchAllServers(query: String, limitPerServer: UInt): AndroidServerSearchResult
+    suspend fun resolveServerStream(track: AndroidTrack): AndroidServerStream
 }
 
 /** Production [SonataEngineGateway] backed directly by UniFFI async [SonataAndroidEngine]. */
@@ -283,4 +316,70 @@ class NativeSonataEngineGateway(
     override suspend fun resolveMusicVideoStreams(
         videoId: String,
     ): AndroidResolvedMusicVideo = engine.resolveMusicVideoStreams(videoId)
+
+    override suspend fun listServers(): List<AndroidServerProfile> = engine.listServers()
+
+    override suspend fun upsertServer(profile: AndroidServerProfile): List<AndroidServerProfile> =
+        engine.upsertServer(profile)
+
+    override suspend fun deleteServer(serverId: String): List<AndroidServerProfile> =
+        engine.deleteServer(serverId)
+
+    override suspend fun setServerEnabled(
+        serverId: String,
+        enabled: Boolean,
+    ): List<AndroidServerProfile> = engine.setServerEnabled(serverId, enabled)
+
+    override suspend fun testServerConnection(profile: AndroidServerProfile): String =
+        engine.testServerConnection(profile)
+
+    override suspend fun authenticateJellyfin(
+        baseUrl: String,
+        username: String,
+        password: String,
+        deviceId: String,
+    ): AndroidJellyfinAuth = engine.authenticateJellyfin(baseUrl, username, password, deviceId)
+
+    override suspend fun listServerLibraries(serverId: String): List<AndroidServerLibrary> =
+        engine.listServerLibraries(serverId)
+
+    override suspend fun listServerArtists(
+        serverId: String,
+        libraryId: String?,
+    ): List<uniffi.sonata_android.AndroidHomeCard> = engine.listServerArtists(serverId, libraryId)
+
+    override suspend fun listServerAlbums(
+        serverId: String,
+        libraryId: String?,
+        artistId: String?,
+    ): List<uniffi.sonata_android.AndroidHomeCard> =
+        engine.listServerAlbums(serverId, libraryId, artistId)
+
+    override suspend fun getServerAlbum(albumId: String): AndroidServerAlbum =
+        engine.getServerAlbum(albumId)
+
+    override suspend fun listServerPlaylists(serverId: String): List<AndroidPlaylist> =
+        engine.listServerPlaylists(serverId)
+
+    override suspend fun getServerPlaylistTracks(playlistId: String): List<AndroidTrack> =
+        engine.getServerPlaylistTracks(playlistId)
+
+    override suspend fun browseWebdavFolder(
+        serverId: String,
+        folderPath: String?,
+    ): AndroidWebDavListing = engine.browseWebdavFolder(serverId, folderPath)
+
+    override suspend fun searchServer(
+        serverId: String,
+        query: String,
+        limit: UInt,
+    ): AndroidServerSearchResult = engine.searchServer(serverId, query, limit)
+
+    override suspend fun searchAllServers(
+        query: String,
+        limitPerServer: UInt,
+    ): AndroidServerSearchResult = engine.searchAllServers(query, limitPerServer)
+
+    override suspend fun resolveServerStream(track: AndroidTrack): AndroidServerStream =
+        engine.resolveServerStream(track)
 }

@@ -238,6 +238,9 @@ fun SonataSettingsScreen(
     onSaveDiscordToken: (String) -> Unit = {},
     onClearDiscordToken: () -> Unit = {},
     onReconnectDiscord: () -> Unit = {},
+    serverCount: Int = 0,
+    enabledServerCount: Int = 0,
+    onOpenServers: () -> Unit = {},
 ) {
     val strings = LocalSonataStrings.current
     val tokens = LocalLunariaColors.current
@@ -543,6 +546,43 @@ fun SonataSettingsScreen(
                                                 },
                                             )
                                         }
+                                    }
+                                    Spacer(Modifier.height(14.dp))
+                                }
+
+                                // Self-Hosted Music Servers quick access row
+                                if (search.matches(
+                                        "Server",
+                                        "Servers",
+                                        "Music Server",
+                                        "Self-Hosted",
+                                        "Jellyfin",
+                                        "Subsonic",
+                                        "OpenSubsonic",
+                                        "Navidrome",
+                                        "WebDAV",
+                                        "Sunucu",
+                                        "Сервер",
+                                    )
+                                ) {
+                                    SettingsGroup(
+                                        cardBg = cardBg,
+                                        dividerColor = dividerColor,
+                                        header = strings.servers.headerServers,
+                                        secondaryText = secondaryText,
+                                    ) {
+                                        SettingsRow(
+                                            icon = SonataIcons.Folder,
+                                            title = strings.servers.manageServers,
+                                            subtitle = if (serverCount > 0) {
+                                                strings.servers.enabledCountSummary(enabledServerCount, serverCount)
+                                            } else {
+                                                strings.servers.manageServersSummary
+                                            },
+                                            primaryText = primaryText,
+                                            secondaryText = secondaryText,
+                                            onClick = onOpenServers,
+                                        )
                                     }
                                     Spacer(Modifier.height(14.dp))
                                 }

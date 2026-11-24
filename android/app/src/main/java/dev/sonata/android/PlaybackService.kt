@@ -231,6 +231,43 @@ object PlaybackAudioBridge {
         activeService?.clearEndedTransitionSuppressionInternal()
     }
 
+    private const val MAX_REGISTERED_STREAM_HEADERS = 64
+    private val streamHeadersLock = Any()
+    private val streamHeadersByUrl = object : LinkedHashMap<String, Map<String, String>>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Map<String, String>>?): Boolean {
+            return size > MAX_REGISTERED_STREAM_HEADERS
+        }
+    }
+
+    fun registerStreamHeaders(url: String, headers: Map<String, String>) {
+        val cleanUrl = url.trim()
+        if (cleanUrl.isBlank()) return
+        val cleanHeaders = headers.entries
+            .filter { (k, v) -> k.isNotBlank() && v.isNotBlank() }
+            .associate { (k, v) -> k.trim() to v }
+        synchronized(streamHeadersLock) {
+            if (cleanHeaders.isEmpty()) {
+                streamHeadersByUrl.remove(cleanUrl)
+            } else {
+                streamHeadersByUrl[cleanUrl] = cleanHeaders
+            }
+        }
+    }
+
+    fun headersForStreamUrl(url: String): Map<String, String> {
+        val cleanUrl = url.trim()
+        if (cleanUrl.isBlank()) return emptyMap()
+        synchronized(streamHeadersLock) {
+            return streamHeadersByUrl[cleanUrl]?.toMap().orEmpty()
+        }
+    }
+
+    fun clearStreamHeaders() {
+        synchronized(streamHeadersLock) {
+            streamHeadersByUrl.clear()
+        }
+    }
+
     internal fun syncAllTo(service: PlaybackService) {
         AudioPipelineBus.update { current ->
             val next = current.copy(
@@ -539,8 +576,12 @@ class PlaybackService : MediaSessionService() {
         val cacheKey = exoPlayer.currentMediaItem?.localConfiguration?.customCacheKey
             ?: uriString.takeIf { it.isNotBlank() }
         val isCached = queryCacheStatusAsync(simpleCache, cacheKey, isOffline)
+        val mediaId = exoPlayer.currentMediaItem?.mediaId.orEmpty()
         val sourceLabel = when {
             isOffline -> "Offline Download"
+            mediaId.startsWith("jellyfin:") -> "Jellyfin"
+            mediaId.startsWith("subsonic:") -> "Subsonic"
+            mediaId.startsWith("webdav:") -> "WebDAV"
             uriString.contains("googlevideo.com", ignoreCase = true) -> "YouTube Music"
             uriString.isNotBlank() -> "Audio Stream"
             else -> "Idle"
@@ -575,8 +616,12 @@ class PlaybackService : MediaSessionService() {
         val cacheKey = exoPlayer.currentMediaItem?.localConfiguration?.customCacheKey
             ?: uriString.takeIf { it.isNotBlank() }
         val isCached = queryCacheStatusAsync(simpleCache, cacheKey, isOffline)
+        val mediaId = exoPlayer.currentMediaItem?.mediaId.orEmpty()
         val sourceLabel = when {
             isOffline -> "Offline Download"
+            mediaId.startsWith("jellyfin:") -> "Jellyfin"
+            mediaId.startsWith("subsonic:") -> "Subsonic"
+            mediaId.startsWith("webdav:") -> "WebDAV"
             uriString.contains("googlevideo.com", ignoreCase = true) -> "YouTube Music"
             uriString.isNotBlank() -> "Audio Stream"
             else -> "Idle"
@@ -1077,12 +1122,17 @@ class PlaybackService : MediaSessionService() {
 
         override fun open(dataSpec: DataSpec): Long {
             val profile = resolveHttpProfile(dataSpec.uri)
-            val factory = httpFactoriesByUa.getOrPut(profile.userAgent) {
+            val registeredHeaders = PlaybackAudioBridge.headersForStreamUrl(dataSpec.uri.toString())
+            val customUa = registeredHeaders.entries
+                .firstOrNull { it.key.equals("User-Agent", ignoreCase = true) }
+                ?.value
+            val effectiveUa = if (profile.isGooglevideo) profile.userAgent else (customUa ?: profile.userAgent)
+            val factory = httpFactoriesByUa.getOrPut(effectiveUa) {
                 DefaultHttpDataSource.Factory()
                     .setAllowCrossProtocolRedirects(true)
                     .setConnectTimeoutMs(8_000)
                     .setReadTimeoutMs(15_000)
-                    .setUserAgent(profile.userAgent)
+                    .setUserAgent(effectiveUa)
             }
 
             val httpSource = factory.createDataSource()
@@ -1101,6 +1151,16 @@ class PlaybackService : MediaSessionService() {
                 profile.referer?.let { filteredHeaders["Referer"] = it }
                 dataSpec.buildUpon()
                     .setHttpRequestHeaders(filteredHeaders)
+                    .build()
+            } else if (registeredHeaders.isNotEmpty()) {
+                val mergedHeaders = dataSpec.httpRequestHeaders.toMutableMap()
+                registeredHeaders.forEach { (key, value) ->
+                    if (!key.equals("User-Agent", ignoreCase = true)) {
+                        mergedHeaders[key] = value
+                    }
+                }
+                dataSpec.buildUpon()
+                    .setHttpRequestHeaders(mergedHeaders)
                     .build()
             } else {
                 dataSpec

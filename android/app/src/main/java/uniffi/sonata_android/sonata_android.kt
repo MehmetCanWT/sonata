@@ -845,6 +845,38 @@ internal open class UniffiVTableCallbackInterfaceAndroidJsCipherSolver(
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -862,6 +894,10 @@ internal interface IntegrityCheckingUniffiLib : Library {
     // Integrity check functions only
     fun uniffi_sonata_android_checksum_method_sonataandroidengine_add_tracks_to_playlist(
 ): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_authenticate_jellyfin(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_browse_webdav_folder(
+): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_check_for_updates(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_check_for_updates_for_version(
@@ -869,6 +905,8 @@ fun uniffi_sonata_android_checksum_method_sonataandroidengine_check_for_updates_
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_clear_lyrics_cache(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_create_playlist(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_delete_server(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_edit_playlist_metadata(
 ): Short
@@ -910,7 +948,21 @@ fun uniffi_sonata_android_checksum_method_sonataandroidengine_get_cached_account
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_get_cached_library_playlists(
 ): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_get_server_album(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_get_server_playlist_tracks(
+): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_is_signed_in(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_list_server_albums(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_list_server_artists(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_list_server_libraries(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_list_server_playlists(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_list_servers(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_report_playback(
 ): Short
@@ -932,9 +984,15 @@ fun uniffi_sonata_android_checksum_method_sonataandroidengine_resolve_music_vide
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_resolve_recovery(
 ): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_resolve_server_stream(
+): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_resolve_stream(
 ): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_search_all_servers(
+): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_search_jiosaavn(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_search_server(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_search_songs(
 ): Short
@@ -946,11 +1004,17 @@ fun uniffi_sonata_android_checksum_method_sonataandroidengine_set_like_status(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_set_playlist_saved(
 ): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_set_server_enabled(
+): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_set_ytm_cookie_header(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_sign_out(
 ): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_test_server_connection(
+): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_upload_playlist_cover(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_upsert_server(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_warm_cipher_solver(
 ): Short
@@ -1018,6 +1082,10 @@ fun uniffi_sonata_android_fn_constructor_sonataandroidengine_new(`configDir`: Ru
 ): Pointer
 fun uniffi_sonata_android_fn_method_sonataandroidengine_add_tracks_to_playlist(`ptr`: Pointer,`playlistId`: RustBuffer.ByValue,`videoIds`: RustBuffer.ByValue,
 ): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_authenticate_jellyfin(`ptr`: Pointer,`baseUrl`: RustBuffer.ByValue,`username`: RustBuffer.ByValue,`password`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_browse_webdav_folder(`ptr`: Pointer,`serverId`: RustBuffer.ByValue,`folderPath`: RustBuffer.ByValue,
+): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_check_for_updates(`ptr`: Pointer,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_check_for_updates_for_version(`ptr`: Pointer,`currentVersion`: RustBuffer.ByValue,
@@ -1025,6 +1093,8 @@ fun uniffi_sonata_android_fn_method_sonataandroidengine_check_for_updates_for_ve
 fun uniffi_sonata_android_fn_method_sonataandroidengine_clear_lyrics_cache(`ptr`: Pointer,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_create_playlist(`ptr`: Pointer,`title`: RustBuffer.ByValue,`description`: RustBuffer.ByValue,`videoIds`: RustBuffer.ByValue,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_delete_server(`ptr`: Pointer,`serverId`: RustBuffer.ByValue,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_edit_playlist_metadata(`ptr`: Pointer,`playlistId`: RustBuffer.ByValue,`title`: RustBuffer.ByValue,`description`: RustBuffer.ByValue,`privacy`: RustBuffer.ByValue,
 ): Long
@@ -1066,8 +1136,22 @@ fun uniffi_sonata_android_fn_method_sonataandroidengine_get_cached_account_profi
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_get_cached_library_playlists(`ptr`: Pointer,
 ): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_get_server_album(`ptr`: Pointer,`albumId`: RustBuffer.ByValue,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_get_server_playlist_tracks(`ptr`: Pointer,`playlistId`: RustBuffer.ByValue,
+): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_is_signed_in(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Byte
+fun uniffi_sonata_android_fn_method_sonataandroidengine_list_server_albums(`ptr`: Pointer,`serverId`: RustBuffer.ByValue,`libraryId`: RustBuffer.ByValue,`artistId`: RustBuffer.ByValue,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_list_server_artists(`ptr`: Pointer,`serverId`: RustBuffer.ByValue,`libraryId`: RustBuffer.ByValue,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_list_server_libraries(`ptr`: Pointer,`serverId`: RustBuffer.ByValue,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_list_server_playlists(`ptr`: Pointer,`serverId`: RustBuffer.ByValue,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_list_servers(`ptr`: Pointer,
+): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_report_playback(`ptr`: Pointer,`videoId`: RustBuffer.ByValue,`playlistId`: RustBuffer.ByValue,`durationSecs`: RustBuffer.ByValue,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_resolve_album_browse_id(`ptr`: Pointer,`albumName`: RustBuffer.ByValue,`artistName`: RustBuffer.ByValue,
@@ -1088,9 +1172,15 @@ fun uniffi_sonata_android_fn_method_sonataandroidengine_resolve_music_video_stre
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_resolve_recovery(`ptr`: Pointer,`track`: RustBuffer.ByValue,
 ): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_resolve_server_stream(`ptr`: Pointer,`track`: RustBuffer.ByValue,
+): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_resolve_stream(`ptr`: Pointer,`track`: RustBuffer.ByValue,
 ): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_search_all_servers(`ptr`: Pointer,`query`: RustBuffer.ByValue,`limitPerServer`: Int,
+): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_search_jiosaavn(`ptr`: Pointer,`query`: RustBuffer.ByValue,`limit`: Int,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_search_server(`ptr`: Pointer,`serverId`: RustBuffer.ByValue,`query`: RustBuffer.ByValue,`limit`: Int,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_search_songs(`ptr`: Pointer,`query`: RustBuffer.ByValue,
 ): Long
@@ -1102,11 +1192,17 @@ fun uniffi_sonata_android_fn_method_sonataandroidengine_set_like_status(`ptr`: P
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_set_playlist_saved(`ptr`: Pointer,`playlistId`: RustBuffer.ByValue,`saved`: Byte,
 ): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_set_server_enabled(`ptr`: Pointer,`serverId`: RustBuffer.ByValue,`enabled`: Byte,
+): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_set_ytm_cookie_header(`ptr`: Pointer,`cookieHeader`: RustBuffer.ByValue,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_sign_out(`ptr`: Pointer,
 ): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_test_server_connection(`ptr`: Pointer,`profile`: RustBuffer.ByValue,
+): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_upload_playlist_cover(`ptr`: Pointer,`playlistId`: RustBuffer.ByValue,`imageBytes`: RustBuffer.ByValue,`mimeType`: RustBuffer.ByValue,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_upsert_server(`ptr`: Pointer,`profile`: RustBuffer.ByValue,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_warm_cipher_solver(`ptr`: Pointer,
 ): Long
@@ -1241,6 +1337,12 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_add_tracks_to_playlist() != 5157.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_authenticate_jellyfin() != 1906.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_browse_webdav_folder() != 9767.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_check_for_updates() != 9075.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1251,6 +1353,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_create_playlist() != 31585.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_delete_server() != 39641.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_edit_playlist_metadata() != 5729.toShort()) {
@@ -1313,7 +1418,28 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_get_cached_library_playlists() != 9821.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_get_server_album() != 21834.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_get_server_playlist_tracks() != 40527.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_is_signed_in() != 32775.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_list_server_albums() != 3979.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_list_server_artists() != 2360.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_list_server_libraries() != 32530.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_list_server_playlists() != 18703.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_list_servers() != 18599.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_report_playback() != 22899.toShort()) {
@@ -1346,10 +1472,19 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_resolve_recovery() != 10519.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_resolve_server_stream() != 51305.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_resolve_stream() != 30833.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_search_all_servers() != 32685.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_search_jiosaavn() != 28156.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_search_server() != 43028.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_search_songs() != 58369.toShort()) {
@@ -1367,13 +1502,22 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_set_playlist_saved() != 35695.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_set_server_enabled() != 15648.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_set_ytm_cookie_header() != 54700.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_sign_out() != 13398.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_test_server_connection() != 9030.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_upload_playlist_cover() != 28266.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_upsert_server() != 40650.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_warm_cipher_solver() != 8119.toShort()) {
@@ -1877,6 +2021,16 @@ public interface SonataAndroidEngineInterface {
     suspend fun `addTracksToPlaylist`(`playlistId`: kotlin.String, `videoIds`: List<kotlin.String>)
     
     /**
+     * Authenticates against a Jellyfin server using username and password, returning an access token and user ID.
+     */
+    suspend fun `authenticateJellyfin`(`baseUrl`: kotlin.String, `username`: kotlin.String, `password`: kotlin.String, `deviceId`: kotlin.String): AndroidJellyfinAuth
+    
+    /**
+     * Lists immediate subfolders and audio tracks for a WebDAV folder path (`None` = root).
+     */
+    suspend fun `browseWebdavFolder`(`serverId`: kotlin.String, `folderPath`: kotlin.String?): AndroidWebDavListing
+    
+    /**
      * Checks GitHub Releases for a newer Sonata Android APK release.
      */
     suspend fun `checkForUpdates`(): AndroidUpdateInfo
@@ -1895,6 +2049,11 @@ public interface SonataAndroidEngineInterface {
      * Creates a new private YouTube Music playlist and optionally seeds it with `video_ids`.
      */
     suspend fun `createPlaylist`(`title`: kotlin.String, `description`: kotlin.String, `videoIds`: List<kotlin.String>): kotlin.String
+    
+    /**
+     * Deletes a configured self-hosted music server profile by `server_id`.
+     */
+    suspend fun `deleteServer`(`serverId`: kotlin.String): List<AndroidServerProfile>
     
     /**
      * Updates a user-owned YouTube Music playlist's title, description, and/or privacy status.
@@ -1999,9 +2158,44 @@ public interface SonataAndroidEngineInterface {
     suspend fun `getCachedLibraryPlaylists`(): List<AndroidPlaylist>
     
     /**
+     * Fetches album metadata and tracks for a prefixed self-hosted `album_id`.
+     */
+    suspend fun `getServerAlbum`(`albumId`: kotlin.String): AndroidServerAlbum
+    
+    /**
+     * Fetches tracks for a prefixed self-hosted `playlist_id` (or WebDAV folder item ID).
+     */
+    suspend fun `getServerPlaylistTracks`(`playlistId`: kotlin.String): List<AndroidTrack>
+    
+    /**
      * Returns whether valid YouTube Music session cookies are loaded.
      */
     fun `isSignedIn`(): kotlin.Boolean
+    
+    /**
+     * Lists albums from `server_id`, optionally filtered by `library_id` or `artist_id`.
+     */
+    suspend fun `listServerAlbums`(`serverId`: kotlin.String, `libraryId`: kotlin.String?, `artistId`: kotlin.String?): List<AndroidHomeCard>
+    
+    /**
+     * Lists album artists from `server_id`, optionally filtered by `library_id`.
+     */
+    suspend fun `listServerArtists`(`serverId`: kotlin.String, `libraryId`: kotlin.String?): List<AndroidHomeCard>
+    
+    /**
+     * Lists music libraries or top-level WebDAV folders exposed by `server_id`.
+     */
+    suspend fun `listServerLibraries`(`serverId`: kotlin.String): List<AndroidServerLibrary>
+    
+    /**
+     * Lists playlists exposed by `server_id`.
+     */
+    suspend fun `listServerPlaylists`(`serverId`: kotlin.String): List<AndroidPlaylist>
+    
+    /**
+     * Lists all configured self-hosted music servers (`Jellyfin`, `Subsonic`, `WebDAV`).
+     */
+    suspend fun `listServers`(): List<AndroidServerProfile>
     
     /**
      * Reports single-track playback and watchtime telemetry for `video_id`
@@ -2055,14 +2249,29 @@ public interface SonataAndroidEngineInterface {
     suspend fun `resolveRecovery`(`track`: AndroidTrack): AndroidResolvedStream
     
     /**
+     * Resolves a direct stream URL and HTTP auth headers for a prefixed self-hosted `track`.
+     */
+    suspend fun `resolveServerStream`(`track`: AndroidTrack): AndroidServerStream
+    
+    /**
      * Resolves a fast-start audio stream URL and HTTP headers for Media3 `ExoPlayer`.
      */
     suspend fun `resolveStream`(`track`: AndroidTrack): AndroidResolvedStream
     
     /**
+     * Searches all enabled self-hosted servers concurrently and merges results.
+     */
+    suspend fun `searchAllServers`(`query`: kotlin.String, `limitPerServer`: kotlin.UInt): AndroidServerSearchResult
+    
+    /**
      * Searches JioSaavn catalog using the shared Rust provider parser and YTM attribution.
      */
     suspend fun `searchJiosaavn`(`query`: kotlin.String, `limit`: kotlin.UInt): List<AndroidTrack>
+    
+    /**
+     * Searches a single configured self-hosted server (`server_id`).
+     */
+    suspend fun `searchServer`(`serverId`: kotlin.String, `query`: kotlin.String, `limit`: kotlin.UInt): AndroidServerSearchResult
     
     /**
      * Searches YouTube Music songs for the given query.
@@ -2091,6 +2300,11 @@ public interface SonataAndroidEngineInterface {
     suspend fun `setPlaylistSaved`(`playlistId`: kotlin.String, `saved`: kotlin.Boolean)
     
     /**
+     * Enables or disables an existing self-hosted music server profile.
+     */
+    suspend fun `setServerEnabled`(`serverId`: kotlin.String, `enabled`: kotlin.Boolean): List<AndroidServerProfile>
+    
+    /**
      * Installs YouTube Music WebView cookies, persists them privately, and returns the account profile.
      */
     suspend fun `setYtmCookieHeader`(`cookieHeader`: kotlin.String): AndroidAccountProfile?
@@ -2101,9 +2315,19 @@ public interface SonataAndroidEngineInterface {
     suspend fun `signOut`()
     
     /**
+     * Tests connectivity and credentials against a server profile without persisting it.
+     */
+    suspend fun `testServerConnection`(`profile`: AndroidServerProfile): kotlin.String
+    
+    /**
      * Uploads a custom cover image (`JPEG`/`PNG`/`WebP` bytes) to YouTube Music and binds it to the playlist.
      */
     suspend fun `uploadPlaylistCover`(`playlistId`: kotlin.String, `imageBytes`: kotlin.ByteArray, `mimeType`: kotlin.String)
+    
+    /**
+     * Creates or updates a self-hosted music server profile and persists it with `0o600` permissions.
+     */
+    suspend fun `upsertServer`(`profile`: AndroidServerProfile): List<AndroidServerProfile>
     
     /**
      * Pre-fetches, hooks, caches, and loads YouTube's `base.js` into the registered Android cipher solver.
@@ -2232,6 +2456,54 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
 
     
     /**
+     * Authenticates against a Jellyfin server using username and password, returning an access token and user ID.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `authenticateJellyfin`(`baseUrl`: kotlin.String, `username`: kotlin.String, `password`: kotlin.String, `deviceId`: kotlin.String) : AndroidJellyfinAuth {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_authenticate_jellyfin(
+                thisPtr,
+                FfiConverterString.lower(`baseUrl`),FfiConverterString.lower(`username`),FfiConverterString.lower(`password`),FfiConverterString.lower(`deviceId`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterTypeAndroidJellyfinAuth.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Lists immediate subfolders and audio tracks for a WebDAV folder path (`None` = root).
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `browseWebdavFolder`(`serverId`: kotlin.String, `folderPath`: kotlin.String?) : AndroidWebDavListing {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_browse_webdav_folder(
+                thisPtr,
+                FfiConverterString.lower(`serverId`),FfiConverterOptionalString.lower(`folderPath`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterTypeAndroidWebDavListing.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
      * Checks GitHub Releases for a newer Sonata Android APK release.
      */
     @Throws(SonataAndroidException::class)
@@ -2321,6 +2593,30 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
         { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
         // lift function
         { FfiConverterString.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Deletes a configured self-hosted music server profile by `server_id`.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `deleteServer`(`serverId`: kotlin.String) : List<AndroidServerProfile> {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_delete_server(
+                thisPtr,
+                FfiConverterString.lower(`serverId`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterSequenceTypeAndroidServerProfile.lift(it) },
         // Error FFI converter
         SonataAndroidException.ErrorHandler,
     )
@@ -2807,6 +3103,54 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
 
     
     /**
+     * Fetches album metadata and tracks for a prefixed self-hosted `album_id`.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `getServerAlbum`(`albumId`: kotlin.String) : AndroidServerAlbum {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_get_server_album(
+                thisPtr,
+                FfiConverterString.lower(`albumId`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterTypeAndroidServerAlbum.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Fetches tracks for a prefixed self-hosted `playlist_id` (or WebDAV folder item ID).
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `getServerPlaylistTracks`(`playlistId`: kotlin.String) : List<AndroidTrack> {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_get_server_playlist_tracks(
+                thisPtr,
+                FfiConverterString.lower(`playlistId`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterSequenceTypeAndroidTrack.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
      * Returns whether valid YouTube Music session cookies are loaded.
      */override fun `isSignedIn`(): kotlin.Boolean {
             return FfiConverterBoolean.lift(
@@ -2819,6 +3163,126 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
     )
     }
     
+
+    
+    /**
+     * Lists albums from `server_id`, optionally filtered by `library_id` or `artist_id`.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `listServerAlbums`(`serverId`: kotlin.String, `libraryId`: kotlin.String?, `artistId`: kotlin.String?) : List<AndroidHomeCard> {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_list_server_albums(
+                thisPtr,
+                FfiConverterString.lower(`serverId`),FfiConverterOptionalString.lower(`libraryId`),FfiConverterOptionalString.lower(`artistId`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterSequenceTypeAndroidHomeCard.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Lists album artists from `server_id`, optionally filtered by `library_id`.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `listServerArtists`(`serverId`: kotlin.String, `libraryId`: kotlin.String?) : List<AndroidHomeCard> {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_list_server_artists(
+                thisPtr,
+                FfiConverterString.lower(`serverId`),FfiConverterOptionalString.lower(`libraryId`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterSequenceTypeAndroidHomeCard.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Lists music libraries or top-level WebDAV folders exposed by `server_id`.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `listServerLibraries`(`serverId`: kotlin.String) : List<AndroidServerLibrary> {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_list_server_libraries(
+                thisPtr,
+                FfiConverterString.lower(`serverId`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterSequenceTypeAndroidServerLibrary.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Lists playlists exposed by `server_id`.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `listServerPlaylists`(`serverId`: kotlin.String) : List<AndroidPlaylist> {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_list_server_playlists(
+                thisPtr,
+                FfiConverterString.lower(`serverId`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterSequenceTypeAndroidPlaylist.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Lists all configured self-hosted music servers (`Jellyfin`, `Subsonic`, `WebDAV`).
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `listServers`() : List<AndroidServerProfile> {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_list_servers(
+                thisPtr,
+                
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterSequenceTypeAndroidServerProfile.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
 
     
     /**
@@ -3061,6 +3525,30 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
 
     
     /**
+     * Resolves a direct stream URL and HTTP auth headers for a prefixed self-hosted `track`.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `resolveServerStream`(`track`: AndroidTrack) : AndroidServerStream {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_resolve_server_stream(
+                thisPtr,
+                FfiConverterTypeAndroidTrack.lower(`track`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterTypeAndroidServerStream.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
      * Resolves a fast-start audio stream URL and HTTP headers for Media3 `ExoPlayer`.
      */
     @Throws(SonataAndroidException::class)
@@ -3085,6 +3573,30 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
 
     
     /**
+     * Searches all enabled self-hosted servers concurrently and merges results.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `searchAllServers`(`query`: kotlin.String, `limitPerServer`: kotlin.UInt) : AndroidServerSearchResult {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_search_all_servers(
+                thisPtr,
+                FfiConverterString.lower(`query`),FfiConverterUInt.lower(`limitPerServer`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterTypeAndroidServerSearchResult.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
      * Searches JioSaavn catalog using the shared Rust provider parser and YTM attribution.
      */
     @Throws(SonataAndroidException::class)
@@ -3102,6 +3614,30 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
         { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
         // lift function
         { FfiConverterSequenceTypeAndroidTrack.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Searches a single configured self-hosted server (`server_id`).
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `searchServer`(`serverId`: kotlin.String, `query`: kotlin.String, `limit`: kotlin.UInt) : AndroidServerSearchResult {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_search_server(
+                thisPtr,
+                FfiConverterString.lower(`serverId`),FfiConverterString.lower(`query`),FfiConverterUInt.lower(`limit`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterTypeAndroidServerSearchResult.lift(it) },
         // Error FFI converter
         SonataAndroidException.ErrorHandler,
     )
@@ -3222,6 +3758,30 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
 
     
     /**
+     * Enables or disables an existing self-hosted music server profile.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `setServerEnabled`(`serverId`: kotlin.String, `enabled`: kotlin.Boolean) : List<AndroidServerProfile> {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_set_server_enabled(
+                thisPtr,
+                FfiConverterString.lower(`serverId`),FfiConverterBoolean.lower(`enabled`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterSequenceTypeAndroidServerProfile.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
      * Installs YouTube Music WebView cookies, persists them privately, and returns the account profile.
      */
     @Throws(SonataAndroidException::class)
@@ -3270,6 +3830,30 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
 
     
     /**
+     * Tests connectivity and credentials against a server profile without persisting it.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `testServerConnection`(`profile`: AndroidServerProfile) : kotlin.String {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_test_server_connection(
+                thisPtr,
+                FfiConverterTypeAndroidServerProfile.lower(`profile`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterString.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
      * Uploads a custom cover image (`JPEG`/`PNG`/`WebP` bytes) to YouTube Music and binds it to the playlist.
      */
     @Throws(SonataAndroidException::class)
@@ -3288,6 +3872,30 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
         // lift function
         { Unit },
         
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Creates or updates a self-hosted music server profile and persists it with `0o600` permissions.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `upsertServer`(`profile`: AndroidServerProfile) : List<AndroidServerProfile> {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_upsert_server(
+                thisPtr,
+                FfiConverterTypeAndroidServerProfile.lower(`profile`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterSequenceTypeAndroidServerProfile.lift(it) },
         // Error FFI converter
         SonataAndroidException.ErrorHandler,
     )
@@ -3613,6 +4221,46 @@ public object FfiConverterTypeAndroidHomeShelf: FfiConverterRustBuffer<AndroidHo
             FfiConverterString.write(value.`title`, buf)
             FfiConverterSequenceTypeAndroidTrack.write(value.`tracks`, buf)
             FfiConverterSequenceTypeAndroidHomeCard.write(value.`cards`, buf)
+    }
+}
+
+
+
+data class AndroidJellyfinAuth (
+    var `accessToken`: kotlin.String, 
+    var `userId`: kotlin.String, 
+    var `userName`: kotlin.String?, 
+    var `serverId`: kotlin.String?
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAndroidJellyfinAuth: FfiConverterRustBuffer<AndroidJellyfinAuth> {
+    override fun read(buf: ByteBuffer): AndroidJellyfinAuth {
+        return AndroidJellyfinAuth(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AndroidJellyfinAuth) = (
+            FfiConverterString.allocationSize(value.`accessToken`) +
+            FfiConverterString.allocationSize(value.`userId`) +
+            FfiConverterOptionalString.allocationSize(value.`userName`) +
+            FfiConverterOptionalString.allocationSize(value.`serverId`)
+    )
+
+    override fun write(value: AndroidJellyfinAuth, buf: ByteBuffer) {
+            FfiConverterString.write(value.`accessToken`, buf)
+            FfiConverterString.write(value.`userId`, buf)
+            FfiConverterOptionalString.write(value.`userName`, buf)
+            FfiConverterOptionalString.write(value.`serverId`, buf)
     }
 }
 
@@ -4058,6 +4706,250 @@ public object FfiConverterTypeAndroidResolvedStream: FfiConverterRustBuffer<Andr
 
 
 
+data class AndroidServerAlbum (
+    var `id`: kotlin.String, 
+    var `title`: kotlin.String, 
+    var `subtitle`: kotlin.String, 
+    var `year`: kotlin.String?, 
+    var `coverUrl`: kotlin.String?, 
+    var `tracks`: List<AndroidTrack>
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAndroidServerAlbum: FfiConverterRustBuffer<AndroidServerAlbum> {
+    override fun read(buf: ByteBuffer): AndroidServerAlbum {
+        return AndroidServerAlbum(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterSequenceTypeAndroidTrack.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AndroidServerAlbum) = (
+            FfiConverterString.allocationSize(value.`id`) +
+            FfiConverterString.allocationSize(value.`title`) +
+            FfiConverterString.allocationSize(value.`subtitle`) +
+            FfiConverterOptionalString.allocationSize(value.`year`) +
+            FfiConverterOptionalString.allocationSize(value.`coverUrl`) +
+            FfiConverterSequenceTypeAndroidTrack.allocationSize(value.`tracks`)
+    )
+
+    override fun write(value: AndroidServerAlbum, buf: ByteBuffer) {
+            FfiConverterString.write(value.`id`, buf)
+            FfiConverterString.write(value.`title`, buf)
+            FfiConverterString.write(value.`subtitle`, buf)
+            FfiConverterOptionalString.write(value.`year`, buf)
+            FfiConverterOptionalString.write(value.`coverUrl`, buf)
+            FfiConverterSequenceTypeAndroidTrack.write(value.`tracks`, buf)
+    }
+}
+
+
+
+data class AndroidServerLibrary (
+    var `id`: kotlin.String, 
+    var `name`: kotlin.String, 
+    var `kind`: kotlin.String
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAndroidServerLibrary: FfiConverterRustBuffer<AndroidServerLibrary> {
+    override fun read(buf: ByteBuffer): AndroidServerLibrary {
+        return AndroidServerLibrary(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AndroidServerLibrary) = (
+            FfiConverterString.allocationSize(value.`id`) +
+            FfiConverterString.allocationSize(value.`name`) +
+            FfiConverterString.allocationSize(value.`kind`)
+    )
+
+    override fun write(value: AndroidServerLibrary, buf: ByteBuffer) {
+            FfiConverterString.write(value.`id`, buf)
+            FfiConverterString.write(value.`name`, buf)
+            FfiConverterString.write(value.`kind`, buf)
+    }
+}
+
+
+
+data class AndroidServerProfile (
+    var `id`: kotlin.String, 
+    var `name`: kotlin.String, 
+    var `kind`: AndroidServerKind, 
+    var `baseUrl`: kotlin.String, 
+    var `enabled`: kotlin.Boolean, 
+    var `username`: kotlin.String?, 
+    var `password`: kotlin.String?, 
+    var `apiKey`: kotlin.String?, 
+    var `accessToken`: kotlin.String?, 
+    var `userId`: kotlin.String?, 
+    var `bearerToken`: kotlin.String?, 
+    var `libraryIds`: List<kotlin.String>
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAndroidServerProfile: FfiConverterRustBuffer<AndroidServerProfile> {
+    override fun read(buf: ByteBuffer): AndroidServerProfile {
+        return AndroidServerProfile(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterTypeAndroidServerKind.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterSequenceString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AndroidServerProfile) = (
+            FfiConverterString.allocationSize(value.`id`) +
+            FfiConverterString.allocationSize(value.`name`) +
+            FfiConverterTypeAndroidServerKind.allocationSize(value.`kind`) +
+            FfiConverterString.allocationSize(value.`baseUrl`) +
+            FfiConverterBoolean.allocationSize(value.`enabled`) +
+            FfiConverterOptionalString.allocationSize(value.`username`) +
+            FfiConverterOptionalString.allocationSize(value.`password`) +
+            FfiConverterOptionalString.allocationSize(value.`apiKey`) +
+            FfiConverterOptionalString.allocationSize(value.`accessToken`) +
+            FfiConverterOptionalString.allocationSize(value.`userId`) +
+            FfiConverterOptionalString.allocationSize(value.`bearerToken`) +
+            FfiConverterSequenceString.allocationSize(value.`libraryIds`)
+    )
+
+    override fun write(value: AndroidServerProfile, buf: ByteBuffer) {
+            FfiConverterString.write(value.`id`, buf)
+            FfiConverterString.write(value.`name`, buf)
+            FfiConverterTypeAndroidServerKind.write(value.`kind`, buf)
+            FfiConverterString.write(value.`baseUrl`, buf)
+            FfiConverterBoolean.write(value.`enabled`, buf)
+            FfiConverterOptionalString.write(value.`username`, buf)
+            FfiConverterOptionalString.write(value.`password`, buf)
+            FfiConverterOptionalString.write(value.`apiKey`, buf)
+            FfiConverterOptionalString.write(value.`accessToken`, buf)
+            FfiConverterOptionalString.write(value.`userId`, buf)
+            FfiConverterOptionalString.write(value.`bearerToken`, buf)
+            FfiConverterSequenceString.write(value.`libraryIds`, buf)
+    }
+}
+
+
+
+data class AndroidServerSearchResult (
+    var `tracks`: List<AndroidTrack>, 
+    var `albums`: List<AndroidHomeCard>, 
+    var `artists`: List<AndroidHomeCard>, 
+    var `playlists`: List<AndroidHomeCard>
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAndroidServerSearchResult: FfiConverterRustBuffer<AndroidServerSearchResult> {
+    override fun read(buf: ByteBuffer): AndroidServerSearchResult {
+        return AndroidServerSearchResult(
+            FfiConverterSequenceTypeAndroidTrack.read(buf),
+            FfiConverterSequenceTypeAndroidHomeCard.read(buf),
+            FfiConverterSequenceTypeAndroidHomeCard.read(buf),
+            FfiConverterSequenceTypeAndroidHomeCard.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AndroidServerSearchResult) = (
+            FfiConverterSequenceTypeAndroidTrack.allocationSize(value.`tracks`) +
+            FfiConverterSequenceTypeAndroidHomeCard.allocationSize(value.`albums`) +
+            FfiConverterSequenceTypeAndroidHomeCard.allocationSize(value.`artists`) +
+            FfiConverterSequenceTypeAndroidHomeCard.allocationSize(value.`playlists`)
+    )
+
+    override fun write(value: AndroidServerSearchResult, buf: ByteBuffer) {
+            FfiConverterSequenceTypeAndroidTrack.write(value.`tracks`, buf)
+            FfiConverterSequenceTypeAndroidHomeCard.write(value.`albums`, buf)
+            FfiConverterSequenceTypeAndroidHomeCard.write(value.`artists`, buf)
+            FfiConverterSequenceTypeAndroidHomeCard.write(value.`playlists`, buf)
+    }
+}
+
+
+
+data class AndroidServerStream (
+    var `url`: kotlin.String, 
+    var `headers`: List<AndroidHeader>, 
+    var `mimeType`: kotlin.String?, 
+    var `bitrateKbps`: kotlin.UInt?, 
+    var `codec`: kotlin.String?, 
+    var `audioBadge`: kotlin.String?
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAndroidServerStream: FfiConverterRustBuffer<AndroidServerStream> {
+    override fun read(buf: ByteBuffer): AndroidServerStream {
+        return AndroidServerStream(
+            FfiConverterString.read(buf),
+            FfiConverterSequenceTypeAndroidHeader.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalUInt.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AndroidServerStream) = (
+            FfiConverterString.allocationSize(value.`url`) +
+            FfiConverterSequenceTypeAndroidHeader.allocationSize(value.`headers`) +
+            FfiConverterOptionalString.allocationSize(value.`mimeType`) +
+            FfiConverterOptionalUInt.allocationSize(value.`bitrateKbps`) +
+            FfiConverterOptionalString.allocationSize(value.`codec`) +
+            FfiConverterOptionalString.allocationSize(value.`audioBadge`)
+    )
+
+    override fun write(value: AndroidServerStream, buf: ByteBuffer) {
+            FfiConverterString.write(value.`url`, buf)
+            FfiConverterSequenceTypeAndroidHeader.write(value.`headers`, buf)
+            FfiConverterOptionalString.write(value.`mimeType`, buf)
+            FfiConverterOptionalUInt.write(value.`bitrateKbps`, buf)
+            FfiConverterOptionalString.write(value.`codec`, buf)
+            FfiConverterOptionalString.write(value.`audioBadge`, buf)
+    }
+}
+
+
+
 data class AndroidSolvedCipher (
     var `sig`: kotlin.String?, 
     var `n`: kotlin.String?
@@ -4250,6 +5142,38 @@ public object FfiConverterTypeAndroidVideoQualityStream: FfiConverterRustBuffer<
 
 
 
+data class AndroidWebDavListing (
+    var `folders`: List<AndroidServerLibrary>, 
+    var `tracks`: List<AndroidTrack>
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAndroidWebDavListing: FfiConverterRustBuffer<AndroidWebDavListing> {
+    override fun read(buf: ByteBuffer): AndroidWebDavListing {
+        return AndroidWebDavListing(
+            FfiConverterSequenceTypeAndroidServerLibrary.read(buf),
+            FfiConverterSequenceTypeAndroidTrack.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AndroidWebDavListing) = (
+            FfiConverterSequenceTypeAndroidServerLibrary.allocationSize(value.`folders`) +
+            FfiConverterSequenceTypeAndroidTrack.allocationSize(value.`tracks`)
+    )
+
+    override fun write(value: AndroidWebDavListing, buf: ByteBuffer) {
+            FfiConverterSequenceTypeAndroidServerLibrary.write(value.`folders`, buf)
+            FfiConverterSequenceTypeAndroidTrack.write(value.`tracks`, buf)
+    }
+}
+
+
+
 
 enum class AndroidHomeCardKind {
     
@@ -4276,6 +5200,37 @@ public object FfiConverterTypeAndroidHomeCardKind: FfiConverterRustBuffer<Androi
     override fun allocationSize(value: AndroidHomeCardKind) = 4UL
 
     override fun write(value: AndroidHomeCardKind, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+
+enum class AndroidServerKind {
+    
+    JELLYFIN,
+    SUBSONIC,
+    WEB_DAV;
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAndroidServerKind: FfiConverterRustBuffer<AndroidServerKind> {
+    override fun read(buf: ByteBuffer) = try {
+        AndroidServerKind.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: AndroidServerKind) = 4UL
+
+    override fun write(value: AndroidServerKind, buf: ByteBuffer) {
         buf.putInt(value.ordinal + 1)
     }
 }
@@ -4631,6 +5586,38 @@ internal object uniffiCallbackInterfaceAndroidJsCipherSolver {
  * @suppress
  */
 public object FfiConverterTypeAndroidJsCipherSolver: FfiConverterCallbackInterface<AndroidJsCipherSolver>()
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalUInt: FfiConverterRustBuffer<kotlin.UInt?> {
+    override fun read(buf: ByteBuffer): kotlin.UInt? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterUInt.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.UInt?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterUInt.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.UInt?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterUInt.write(value, buf)
+        }
+    }
+}
 
 
 
@@ -5260,6 +6247,62 @@ public object FfiConverterSequenceTypeAndroidPlaylist: FfiConverterRustBuffer<Li
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeAndroidPlaylist.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeAndroidServerLibrary: FfiConverterRustBuffer<List<AndroidServerLibrary>> {
+    override fun read(buf: ByteBuffer): List<AndroidServerLibrary> {
+        val len = buf.getInt()
+        return List<AndroidServerLibrary>(len) {
+            FfiConverterTypeAndroidServerLibrary.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<AndroidServerLibrary>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeAndroidServerLibrary.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<AndroidServerLibrary>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeAndroidServerLibrary.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeAndroidServerProfile: FfiConverterRustBuffer<List<AndroidServerProfile>> {
+    override fun read(buf: ByteBuffer): List<AndroidServerProfile> {
+        val len = buf.getInt()
+        return List<AndroidServerProfile>(len) {
+            FfiConverterTypeAndroidServerProfile.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<AndroidServerProfile>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeAndroidServerProfile.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<AndroidServerProfile>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeAndroidServerProfile.write(it, buf)
         }
     }
 }

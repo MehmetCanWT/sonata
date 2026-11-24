@@ -25,6 +25,11 @@ use sonata_core::providers::hifi::{
     SolvedCipherPair, StreamFallbackMode, StreamResolver, UpgradeDelivery, VideoQualityStream,
 };
 use sonata_core::providers::jiosaavn::{self, ResolvedJioSaavnStream};
+use sonata_core::providers::servers::{
+    encode_server_item_id, jellyfin, load_server_profiles, parse_server_item_id,
+    save_server_profiles, webdav, ServerClient, ServerKind, ServerLibrary, ServerProfile,
+    ServerSearchResult, ServerStream,
+};
 use sonata_core::providers::ytmusic::{
     ArtistPage, HomeCard, HomeCardKind, HomeShelf, MoodCategoryTile, MoodChip, MusicVideoCandidate,
     MusicVideoSyncSegment, YtAccountProfile, YtMusicClient,
@@ -695,6 +700,218 @@ impl From<sonata_core::updater::UpdateCheckResult> for AndroidUpdateInfo {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, uniffi::Enum)]
+pub enum AndroidServerKind {
+    Jellyfin,
+    Subsonic,
+    WebDav,
+}
+
+impl From<ServerKind> for AndroidServerKind {
+    fn from(kind: ServerKind) -> Self {
+        match kind {
+            ServerKind::Jellyfin => Self::Jellyfin,
+            ServerKind::Subsonic => Self::Subsonic,
+            ServerKind::WebDav => Self::WebDav,
+        }
+    }
+}
+
+impl From<AndroidServerKind> for ServerKind {
+    fn from(kind: AndroidServerKind) -> Self {
+        match kind {
+            AndroidServerKind::Jellyfin => Self::Jellyfin,
+            AndroidServerKind::Subsonic => Self::Subsonic,
+            AndroidServerKind::WebDav => Self::WebDav,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+pub struct AndroidServerProfile {
+    pub id: String,
+    pub name: String,
+    pub kind: AndroidServerKind,
+    pub base_url: String,
+    pub enabled: bool,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub api_key: Option<String>,
+    pub access_token: Option<String>,
+    pub user_id: Option<String>,
+    pub bearer_token: Option<String>,
+    pub library_ids: Vec<String>,
+}
+
+impl std::fmt::Debug for AndroidServerProfile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let redact = |opt: &Option<String>| -> &'static str {
+            if opt.as_deref().is_some_and(|v| !v.is_empty()) {
+                "[redacted]"
+            } else {
+                "<none>"
+            }
+        };
+        f.debug_struct("AndroidServerProfile")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("kind", &self.kind)
+            .field(
+                "base_url",
+                &sonata_core::redaction::stream_url(&self.base_url),
+            )
+            .field("enabled", &self.enabled)
+            .field("username", &self.username)
+            .field("password", &redact(&self.password))
+            .field("api_key", &redact(&self.api_key))
+            .field("access_token", &redact(&self.access_token))
+            .field("user_id", &self.user_id)
+            .field("bearer_token", &redact(&self.bearer_token))
+            .field("library_ids", &self.library_ids)
+            .finish()
+    }
+}
+
+impl From<ServerProfile> for AndroidServerProfile {
+    fn from(p: ServerProfile) -> Self {
+        Self {
+            id: p.id,
+            name: p.name,
+            kind: p.kind.into(),
+            base_url: p.base_url,
+            enabled: p.enabled,
+            username: p.username,
+            password: p.password,
+            api_key: p.api_key,
+            access_token: p.access_token,
+            user_id: p.user_id,
+            bearer_token: p.bearer_token,
+            library_ids: p.library_ids,
+        }
+    }
+}
+
+impl From<AndroidServerProfile> for ServerProfile {
+    fn from(p: AndroidServerProfile) -> Self {
+        Self {
+            id: p.id,
+            name: p.name,
+            kind: p.kind.into(),
+            base_url: p.base_url,
+            enabled: p.enabled,
+            username: p.username,
+            password: p.password,
+            api_key: p.api_key,
+            access_token: p.access_token,
+            user_id: p.user_id,
+            bearer_token: p.bearer_token,
+            library_ids: p.library_ids,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+pub struct AndroidServerLibrary {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+}
+
+impl From<ServerLibrary> for AndroidServerLibrary {
+    fn from(lib: ServerLibrary) -> Self {
+        Self {
+            id: lib.id,
+            name: lib.name,
+            kind: lib.kind,
+        }
+    }
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct AndroidServerAlbum {
+    pub id: String,
+    pub title: String,
+    pub subtitle: String,
+    pub year: Option<String>,
+    pub cover_url: Option<String>,
+    pub tracks: Vec<AndroidTrack>,
+}
+
+#[derive(Debug, Clone, Default, uniffi::Record)]
+pub struct AndroidServerSearchResult {
+    pub tracks: Vec<AndroidTrack>,
+    pub albums: Vec<AndroidHomeCard>,
+    pub artists: Vec<AndroidHomeCard>,
+    pub playlists: Vec<AndroidHomeCard>,
+}
+
+impl From<ServerSearchResult> for AndroidServerSearchResult {
+    fn from(res: ServerSearchResult) -> Self {
+        Self {
+            tracks: res.tracks.into_iter().map(AndroidTrack::from).collect(),
+            albums: res.albums.into_iter().map(AndroidHomeCard::from).collect(),
+            artists: res.artists.into_iter().map(AndroidHomeCard::from).collect(),
+            playlists: res
+                .playlists
+                .into_iter()
+                .map(AndroidHomeCard::from)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct AndroidServerStream {
+    pub url: String,
+    pub headers: Vec<AndroidHeader>,
+    pub mime_type: Option<String>,
+    pub bitrate_kbps: Option<u32>,
+    pub codec: Option<String>,
+    pub audio_badge: Option<String>,
+}
+
+impl From<ServerStream> for AndroidServerStream {
+    fn from(stream: ServerStream) -> Self {
+        Self {
+            url: stream.url,
+            headers: stream
+                .headers
+                .into_iter()
+                .map(|(name, value)| AndroidHeader { name, value })
+                .collect(),
+            mime_type: stream.mime_type,
+            bitrate_kbps: stream.bitrate_kbps,
+            codec: stream.codec,
+            audio_badge: stream.audio_badge,
+        }
+    }
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct AndroidWebDavListing {
+    pub folders: Vec<AndroidServerLibrary>,
+    pub tracks: Vec<AndroidTrack>,
+}
+
+#[derive(Clone, uniffi::Record)]
+pub struct AndroidJellyfinAuth {
+    pub access_token: String,
+    pub user_id: String,
+    pub user_name: Option<String>,
+    pub server_id: Option<String>,
+}
+
+impl std::fmt::Debug for AndroidJellyfinAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AndroidJellyfinAuth")
+            .field("access_token", &"[redacted]")
+            .field("user_id", &self.user_id)
+            .field("user_name", &self.user_name)
+            .field("server_id", &self.server_id)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct AndroidSolvedCipher {
     pub sig: Option<String>,
@@ -761,9 +978,130 @@ pub struct SonataAndroidEngine {
     cipher_bridge: RwLock<Option<Arc<dyn JsCipherBridge>>>,
     language: RwLock<String>,
     session: RwLock<AuthSession>,
+    server_lock: Arc<tokio::sync::Mutex<()>>,
+    server_id_seq: std::sync::atomic::AtomicU64,
 }
 
 impl SonataAndroidEngine {
+    fn server_client(&self) -> ServerClient {
+        ServerClient::new(self.http.clone())
+    }
+
+    async fn load_servers_internal(&self) -> Result<Vec<ServerProfile>, SonataAndroidError> {
+        let paths = self.paths.clone();
+        let profiles = tokio::task::spawn_blocking(move || load_server_profiles(&paths))
+            .await
+            .map_err(|err| SonataAndroidError::Internal {
+                reason: format!("Server config read task failed: {err}"),
+            })??;
+        Ok(profiles)
+    }
+
+    async fn find_server_profile(
+        &self,
+        server_id: &str,
+    ) -> Result<ServerProfile, SonataAndroidError> {
+        let profiles = self.load_servers_internal().await?;
+        profiles
+            .into_iter()
+            .find(|p| p.id == server_id)
+            .ok_or_else(|| SonataAndroidError::NotFound {
+                reason: format!("Music server `{server_id}` was not found"),
+            })
+    }
+
+    async fn find_server_for_item(
+        &self,
+        encoded_id: &str,
+    ) -> Result<
+        (
+            ServerProfile,
+            sonata_core::providers::servers::ServerItemRef,
+        ),
+        SonataAndroidError,
+    > {
+        let item_ref =
+            parse_server_item_id(encoded_id).ok_or_else(|| SonataAndroidError::NotFound {
+                reason: format!("Invalid self-hosted server item ID `{encoded_id}`"),
+            })?;
+        let profile = self.find_server_profile(&item_ref.server_id).await?;
+        if profile.kind != item_ref.kind {
+            return Err(SonataAndroidError::NotFound {
+                reason: format!(
+                    "Server `{}` protocol mismatch for item `{encoded_id}`",
+                    profile.id
+                ),
+            });
+        }
+        Ok((profile, item_ref))
+    }
+
+    fn generate_server_id(&self, kind: ServerKind) -> String {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let seq = self
+            .server_id_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let prefix = match kind {
+            ServerKind::Jellyfin => "jf",
+            ServerKind::Subsonic => "sub",
+            ServerKind::WebDav => "dav",
+        };
+        format!("{prefix}-{nanos}-{seq}")
+    }
+
+    async fn ensure_jellyfin_auth_if_needed(
+        &self,
+        mut profile: ServerProfile,
+    ) -> Result<ServerProfile, SonataAndroidError> {
+        if profile.kind != ServerKind::Jellyfin {
+            return Ok(profile);
+        }
+        let has_token = profile
+            .access_token
+            .as_deref()
+            .is_some_and(|t| !t.trim().is_empty())
+            || profile
+                .api_key
+                .as_deref()
+                .is_some_and(|k| !k.trim().is_empty());
+        if has_token {
+            return Ok(profile);
+        }
+        let username = profile
+            .username
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let password = profile.password.as_deref().filter(|s| !s.is_empty());
+        if let (Some(user), Some(pass)) = (username, password) {
+            let device_id = if profile.id.trim().is_empty() {
+                "sonata-android".to_string()
+            } else {
+                profile.id.clone()
+            };
+            let auth = jellyfin::authenticate_by_name(
+                &self.http,
+                &profile.base_url,
+                user,
+                pass,
+                &device_id,
+            )
+            .await?;
+            profile.access_token = Some(auth.access_token);
+            if profile
+                .user_id
+                .as_deref()
+                .is_none_or(|id| id.trim().is_empty())
+                && !auth.user_id.trim().is_empty()
+            {
+                profile.user_id = Some(auth.user_id);
+            }
+        }
+        Ok(profile)
+    }
+
     fn current_ytm(&self) -> YtMusicClient {
         self.session
             .read()
@@ -846,6 +1184,8 @@ impl SonataAndroidEngine {
             cipher_bridge: RwLock::new(None),
             language: RwLock::new("en".to_string()),
             session: RwLock::new(session),
+            server_lock: Arc::new(tokio::sync::Mutex::new(())),
+            server_id_seq: std::sync::atomic::AtomicU64::new(1),
         })
     }
 
@@ -1206,6 +1546,9 @@ impl SonataAndroidEngine {
 
     /// Finds an explicit counterpart track when `track` is unbadged or clean/edited.
     pub async fn resolve_explicit_counterpart(&self, track: AndroidTrack) -> Option<AndroidTrack> {
+        if parse_server_item_id(&track.id).is_some() {
+            return None;
+        }
         let ytm = self.current_ytm();
         let core_track: Track = track.into();
         ytm.resolve_explicit_counterpart(&core_track)
@@ -1342,6 +1685,25 @@ impl SonataAndroidEngine {
         &self,
         track: AndroidTrack,
     ) -> Result<AndroidResolvedStream, SonataAndroidError> {
+        if parse_server_item_id(&track.id).is_some() {
+            let (profile, item_ref) = self.find_server_for_item(&track.id).await?;
+            let core_track: Track = track.into();
+            let stream = self.server_client().resolve_stream(&profile, &core_track)?;
+            let badge = stream
+                .audio_badge
+                .clone()
+                .filter(|b| !b.trim().is_empty())
+                .unwrap_or_else(|| item_ref.kind.display_name().to_string());
+            return Ok(AndroidResolvedStream {
+                url: stream.url,
+                badge,
+                headers: stream
+                    .headers
+                    .into_iter()
+                    .map(|(name, value)| AndroidHeader { name, value })
+                    .collect(),
+            });
+        }
         let resolver = self.current_resolver();
         let core_track: Track = track.into();
         let stream = resolver.resolve_fast_typed(&core_track).await?;
@@ -1353,6 +1715,9 @@ impl SonataAndroidEngine {
         &self,
         track: AndroidTrack,
     ) -> Result<AndroidResolvedStream, SonataAndroidError> {
+        if parse_server_item_id(&track.id).is_some() {
+            return self.resolve_stream(track).await;
+        }
         let resolver = self.current_resolver();
         let core_track: Track = track.into();
         let stream = resolver.resolve_recovery_typed(&core_track).await?;
@@ -1365,6 +1730,9 @@ impl SonataAndroidEngine {
         track: AndroidTrack,
         current: AndroidResolvedStream,
     ) -> Option<AndroidResolvedStream> {
+        if parse_server_item_id(&track.id).is_some() {
+            return None;
+        }
         let resolver = self.current_resolver();
         let core_track: Track = track.into();
         let core_stream = ResolvedStream {
@@ -1387,6 +1755,9 @@ impl SonataAndroidEngine {
         &self,
         track: AndroidTrack,
     ) -> Option<AndroidMusicVideoCandidate> {
+        if parse_server_item_id(&track.id).is_some() {
+            return None;
+        }
         let ytm = self.current_ytm();
         let core_track: Track = track.into();
         ytm.resolve_music_video_candidate(&core_track)
@@ -1547,6 +1918,330 @@ impl SonataAndroidEngine {
         )
         .await;
         Ok(found.map(AndroidMotionMedia::from))
+    }
+
+    /// Lists all configured self-hosted music servers (`Jellyfin`, `Subsonic`, `WebDAV`).
+    pub async fn list_servers(&self) -> Result<Vec<AndroidServerProfile>, SonataAndroidError> {
+        let _guard = self.server_lock.lock().await;
+        let profiles = self.load_servers_internal().await?;
+        Ok(profiles
+            .into_iter()
+            .map(AndroidServerProfile::from)
+            .collect())
+    }
+
+    /// Creates or updates a self-hosted music server profile and persists it with `0o600` permissions.
+    pub async fn upsert_server(
+        &self,
+        profile: AndroidServerProfile,
+    ) -> Result<Vec<AndroidServerProfile>, SonataAndroidError> {
+        let mut core_profile: ServerProfile = profile.into();
+        core_profile.name = core_profile.name.trim().to_string();
+        core_profile.base_url = core_profile.normalized_base_url();
+        if core_profile.name.is_empty() {
+            return Err(SonataAndroidError::InvalidResponse {
+                provider: "servers".to_string(),
+                reason: "Server name must not be empty".to_string(),
+            });
+        }
+        if core_profile.base_url.is_empty() {
+            return Err(SonataAndroidError::InvalidResponse {
+                provider: "servers".to_string(),
+                reason: "Server base URL must not be empty".to_string(),
+            });
+        }
+        if core_profile.id.trim().is_empty() {
+            core_profile.id = self.generate_server_id(core_profile.kind);
+        } else {
+            core_profile.id = core_profile.id.trim().to_string();
+        }
+        core_profile = self.ensure_jellyfin_auth_if_needed(core_profile).await?;
+
+        let _guard = self.server_lock.lock().await;
+        let mut existing = self.load_servers_internal().await?;
+        if let Some(pos) = existing.iter().position(|p| p.id == core_profile.id) {
+            existing[pos] = core_profile;
+        } else {
+            existing.push(core_profile);
+        }
+        let paths = self.paths.clone();
+        let to_save = existing.clone();
+        tokio::task::spawn_blocking(move || save_server_profiles(&paths, &to_save))
+            .await
+            .map_err(|err| SonataAndroidError::Internal {
+                reason: format!("Server config write task failed: {err}"),
+            })??;
+        Ok(existing
+            .into_iter()
+            .map(AndroidServerProfile::from)
+            .collect())
+    }
+
+    /// Deletes a configured self-hosted music server profile by `server_id`.
+    pub async fn delete_server(
+        &self,
+        server_id: String,
+    ) -> Result<Vec<AndroidServerProfile>, SonataAndroidError> {
+        let _guard = self.server_lock.lock().await;
+        let mut existing = self.load_servers_internal().await?;
+        existing.retain(|p| p.id != server_id);
+        let paths = self.paths.clone();
+        let to_save = existing.clone();
+        tokio::task::spawn_blocking(move || save_server_profiles(&paths, &to_save))
+            .await
+            .map_err(|err| SonataAndroidError::Internal {
+                reason: format!("Server config write task failed: {err}"),
+            })??;
+        Ok(existing
+            .into_iter()
+            .map(AndroidServerProfile::from)
+            .collect())
+    }
+
+    /// Enables or disables an existing self-hosted music server profile.
+    pub async fn set_server_enabled(
+        &self,
+        server_id: String,
+        enabled: bool,
+    ) -> Result<Vec<AndroidServerProfile>, SonataAndroidError> {
+        let _guard = self.server_lock.lock().await;
+        let mut existing = self.load_servers_internal().await?;
+        let target = existing
+            .iter_mut()
+            .find(|p| p.id == server_id)
+            .ok_or_else(|| SonataAndroidError::NotFound {
+                reason: format!("Music server `{server_id}` was not found"),
+            })?;
+        target.enabled = enabled;
+        let paths = self.paths.clone();
+        let to_save = existing.clone();
+        tokio::task::spawn_blocking(move || save_server_profiles(&paths, &to_save))
+            .await
+            .map_err(|err| SonataAndroidError::Internal {
+                reason: format!("Server config write task failed: {err}"),
+            })??;
+        Ok(existing
+            .into_iter()
+            .map(AndroidServerProfile::from)
+            .collect())
+    }
+
+    /// Tests connectivity and credentials against a server profile without persisting it.
+    pub async fn test_server_connection(
+        &self,
+        profile: AndroidServerProfile,
+    ) -> Result<String, SonataAndroidError> {
+        let mut core_profile: ServerProfile = profile.into();
+        core_profile.base_url = core_profile.normalized_base_url();
+        core_profile = self.ensure_jellyfin_auth_if_needed(core_profile).await?;
+        let status = self.server_client().ping(&core_profile).await?;
+        Ok(status)
+    }
+
+    /// Authenticates against a Jellyfin server using username and password, returning an access token and user ID.
+    pub async fn authenticate_jellyfin(
+        &self,
+        base_url: String,
+        username: String,
+        password: String,
+        device_id: String,
+    ) -> Result<AndroidJellyfinAuth, SonataAndroidError> {
+        let auth =
+            jellyfin::authenticate_by_name(&self.http, &base_url, &username, &password, &device_id)
+                .await?;
+        Ok(AndroidJellyfinAuth {
+            access_token: auth.access_token,
+            user_id: auth.user_id,
+            user_name: auth.user_name,
+            server_id: auth.server_id,
+        })
+    }
+
+    /// Lists music libraries or top-level WebDAV folders exposed by `server_id`.
+    pub async fn list_server_libraries(
+        &self,
+        server_id: String,
+    ) -> Result<Vec<AndroidServerLibrary>, SonataAndroidError> {
+        let profile = self.find_server_profile(&server_id).await?;
+        let libraries = self.server_client().list_libraries(&profile).await?;
+        Ok(libraries
+            .into_iter()
+            .map(AndroidServerLibrary::from)
+            .collect())
+    }
+
+    /// Lists album artists from `server_id`, optionally filtered by `library_id`.
+    pub async fn list_server_artists(
+        &self,
+        server_id: String,
+        library_id: Option<String>,
+    ) -> Result<Vec<AndroidHomeCard>, SonataAndroidError> {
+        let profile = self.find_server_profile(&server_id).await?;
+        let cards = self
+            .server_client()
+            .list_artists(&profile, library_id.as_deref())
+            .await?;
+        Ok(cards.into_iter().map(AndroidHomeCard::from).collect())
+    }
+
+    /// Lists albums from `server_id`, optionally filtered by `library_id` or `artist_id`.
+    pub async fn list_server_albums(
+        &self,
+        server_id: String,
+        library_id: Option<String>,
+        artist_id: Option<String>,
+    ) -> Result<Vec<AndroidHomeCard>, SonataAndroidError> {
+        let profile = self.find_server_profile(&server_id).await?;
+        let raw_artist = artist_id
+            .as_deref()
+            .map(|aid| parse_server_item_id(aid).map_or_else(|| aid.to_string(), |r| r.item_id));
+        let cards = self
+            .server_client()
+            .list_albums(&profile, library_id.as_deref(), raw_artist.as_deref())
+            .await?;
+        Ok(cards.into_iter().map(AndroidHomeCard::from).collect())
+    }
+
+    /// Fetches album metadata and tracks for a prefixed self-hosted `album_id`.
+    pub async fn get_server_album(
+        &self,
+        album_id: String,
+    ) -> Result<AndroidServerAlbum, SonataAndroidError> {
+        let (profile, _) = self.find_server_for_item(&album_id).await?;
+        let detail = self.server_client().get_album(&profile, &album_id).await?;
+        Ok(AndroidServerAlbum {
+            id: detail.id,
+            title: detail.title,
+            subtitle: detail.subtitle,
+            year: detail.year,
+            cover_url: detail.cover_url,
+            tracks: detail.tracks.into_iter().map(AndroidTrack::from).collect(),
+        })
+    }
+
+    /// Lists playlists exposed by `server_id`.
+    pub async fn list_server_playlists(
+        &self,
+        server_id: String,
+    ) -> Result<Vec<AndroidPlaylist>, SonataAndroidError> {
+        let profile = self.find_server_profile(&server_id).await?;
+        let playlists = self.server_client().list_playlists(&profile).await?;
+        Ok(playlists.into_iter().map(AndroidPlaylist::from).collect())
+    }
+
+    /// Fetches tracks for a prefixed self-hosted `playlist_id` (or WebDAV folder item ID).
+    pub async fn get_server_playlist_tracks(
+        &self,
+        playlist_id: String,
+    ) -> Result<Vec<AndroidTrack>, SonataAndroidError> {
+        let (profile, _) = self.find_server_for_item(&playlist_id).await?;
+        let tracks = self
+            .server_client()
+            .get_playlist_tracks(&profile, &playlist_id)
+            .await?;
+        Ok(tracks.into_iter().map(AndroidTrack::from).collect())
+    }
+
+    /// Lists immediate subfolders and audio tracks for a WebDAV folder path (`None` = root).
+    pub async fn browse_webdav_folder(
+        &self,
+        server_id: String,
+        folder_path: Option<String>,
+    ) -> Result<AndroidWebDavListing, SonataAndroidError> {
+        let profile = self.find_server_profile(&server_id).await?;
+        if profile.kind != ServerKind::WebDav {
+            return Err(SonataAndroidError::NotFound {
+                reason: format!("Server `{}` is not a WebDAV server", profile.id),
+            });
+        }
+        let target = folder_path.as_deref().map(|raw| {
+            parse_server_item_id(raw)
+                .filter(|item| item.kind == ServerKind::WebDav)
+                .map_or_else(|| raw.to_string(), |item| item.item_id)
+        });
+        let listing = webdav::browse_folder(&self.http, &profile, target.as_deref()).await?;
+        let folders = listing
+            .folders
+            .into_iter()
+            .map(|folder| AndroidServerLibrary {
+                id: encode_server_item_id(ServerKind::WebDav, &profile.id, &folder.path),
+                name: folder.name,
+                kind: "folder".to_string(),
+            })
+            .collect();
+        let tracks = listing.tracks.into_iter().map(AndroidTrack::from).collect();
+        Ok(AndroidWebDavListing { folders, tracks })
+    }
+
+    /// Searches a single configured self-hosted server (`server_id`).
+    pub async fn search_server(
+        &self,
+        server_id: String,
+        query: String,
+        limit: u32,
+    ) -> Result<AndroidServerSearchResult, SonataAndroidError> {
+        let profile = self.find_server_profile(&server_id).await?;
+        let res = self
+            .server_client()
+            .search(&profile, &query, limit as usize)
+            .await?;
+        Ok(AndroidServerSearchResult::from(res))
+    }
+
+    /// Searches all enabled self-hosted servers concurrently and merges results.
+    pub async fn search_all_servers(
+        &self,
+        query: String,
+        limit_per_server: u32,
+    ) -> Result<AndroidServerSearchResult, SonataAndroidError> {
+        let clean_query = query.trim().to_string();
+        if clean_query.is_empty() {
+            return Ok(AndroidServerSearchResult::default());
+        }
+        let profiles = self.load_servers_internal().await?;
+        let enabled: Vec<ServerProfile> = profiles.into_iter().filter(|p| p.enabled).collect();
+        if enabled.is_empty() {
+            return Ok(AndroidServerSearchResult::default());
+        }
+
+        let client = self.server_client();
+        let mut join_set = tokio::task::JoinSet::new();
+        for profile in enabled {
+            let client = client.clone();
+            let q = clean_query.clone();
+            let lim = limit_per_server as usize;
+            join_set.spawn(async move { client.search(&profile, &q, lim).await });
+        }
+
+        let mut merged = AndroidServerSearchResult::default();
+        while let Some(joined) = join_set.join_next().await {
+            if let Ok(Ok(res)) = joined {
+                merged
+                    .tracks
+                    .extend(res.tracks.into_iter().map(AndroidTrack::from));
+                merged
+                    .albums
+                    .extend(res.albums.into_iter().map(AndroidHomeCard::from));
+                merged
+                    .artists
+                    .extend(res.artists.into_iter().map(AndroidHomeCard::from));
+                merged
+                    .playlists
+                    .extend(res.playlists.into_iter().map(AndroidHomeCard::from));
+            }
+        }
+        Ok(merged)
+    }
+
+    /// Resolves a direct stream URL and HTTP auth headers for a prefixed self-hosted `track`.
+    pub async fn resolve_server_stream(
+        &self,
+        track: AndroidTrack,
+    ) -> Result<AndroidServerStream, SonataAndroidError> {
+        let (profile, _) = self.find_server_for_item(&track.id).await?;
+        let core_track: Track = track.into();
+        let stream = self.server_client().resolve_stream(&profile, &core_track)?;
+        Ok(AndroidServerStream::from(stream))
     }
 }
 
@@ -2062,5 +2757,159 @@ mod tests {
             std::time::Duration::from_millis(8500)
         );
         assert!(!profile.jiosaavn_enabled);
+    }
+
+    #[tokio::test]
+    async fn server_crud_redaction_and_stream_routing() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let base_dir = std::env::temp_dir().join(format!(
+            "sonata_android_servers_test_{}_{}",
+            std::process::id(),
+            nanos
+        ));
+        let engine = SonataAndroidEngine::new(
+            base_dir.join("cfg").to_string_lossy().into_owned(),
+            base_dir.join("cache").to_string_lossy().into_owned(),
+        )
+        .expect("engine should initialize");
+
+        assert!(engine.list_servers().await.expect("list empty").is_empty());
+
+        let jf = AndroidServerProfile {
+            id: "jf-home".to_string(),
+            name: "Home Jellyfin".to_string(),
+            kind: AndroidServerKind::Jellyfin,
+            base_url: "https://jf.internal/".to_string(),
+            enabled: true,
+            username: Some("alice".to_string()),
+            password: Some("jf-secret-pw".to_string()),
+            api_key: Some("jf-secret-key".to_string()),
+            access_token: Some("jf-secret-tok".to_string()),
+            user_id: Some("uid-1".to_string()),
+            bearer_token: None,
+            library_ids: vec!["lib-1".to_string()],
+        };
+        let dav = AndroidServerProfile {
+            id: "".to_string(),
+            name: "NAS WebDAV".to_string(),
+            kind: AndroidServerKind::WebDav,
+            base_url: "https://dav.internal/music/".to_string(),
+            enabled: true,
+            username: Some("bob".to_string()),
+            password: Some("dav-secret-pw".to_string()),
+            api_key: None,
+            access_token: None,
+            user_id: None,
+            bearer_token: Some("dav-secret-bearer".to_string()),
+            library_ids: vec![],
+        };
+
+        let dbg_jf = format!("{jf:?}");
+        assert!(!dbg_jf.contains("jf-secret-pw"));
+        assert!(!dbg_jf.contains("jf-secret-key"));
+        assert!(!dbg_jf.contains("jf-secret-tok"));
+
+        let auth_dbg = format!(
+            "{:?}",
+            AndroidJellyfinAuth {
+                access_token: "jf-secret-tok".to_string(),
+                user_id: "uid-1".to_string(),
+                user_name: Some("alice".to_string()),
+                server_id: Some("srv-1".to_string()),
+            }
+        );
+        assert!(!auth_dbg.contains("jf-secret-tok"));
+
+        let after_jf = engine.upsert_server(jf).await.expect("upsert jf");
+        assert_eq!(after_jf.len(), 1);
+        assert_eq!(after_jf[0].base_url, "https://jf.internal");
+
+        let after_dav = engine.upsert_server(dav).await.expect("upsert dav");
+        assert_eq!(after_dav.len(), 2);
+        let dav_id = after_dav[1].id.clone();
+        assert!(dav_id.starts_with("dav-"));
+
+        let toggled = engine
+            .set_server_enabled(dav_id.clone(), false)
+            .await
+            .expect("disable dav");
+        assert!(!toggled.iter().find(|s| s.id == dav_id).unwrap().enabled);
+
+        let jf_track = AndroidTrack {
+            id: "jellyfin:jf-home:item-99".to_string(),
+            title: "Track 1".to_string(),
+            artist: "Artist".to_string(),
+            album: "Album".to_string(),
+            duration_secs: Some(200),
+            thumbnail_url: None,
+            liked: false,
+            album_id: None,
+            is_explicit: false,
+        };
+        let resolved = engine
+            .resolve_stream(jf_track.clone())
+            .await
+            .expect("resolve jellyfin stream");
+        assert_eq!(
+            resolved.url,
+            "https://jf.internal/Audio/item-99/stream?static=true"
+        );
+        assert!(resolved
+            .headers
+            .iter()
+            .any(|h| h.name == "X-Emby-Token" && h.value == "jf-secret-tok"));
+
+        let dav_track = AndroidTrack {
+            id: format!("webdav:{dav_id}:/Music/song.flac"),
+            title: "Song".to_string(),
+            artist: "Bob".to_string(),
+            album: "Album".to_string(),
+            duration_secs: Some(180),
+            thumbnail_url: None,
+            liked: false,
+            album_id: None,
+            is_explicit: false,
+        };
+        let dav_resolved = engine
+            .resolve_stream(dav_track)
+            .await
+            .expect("resolve webdav stream");
+        assert_eq!(dav_resolved.url, "https://dav.internal/Music/song.flac");
+        assert!(dav_resolved
+            .headers
+            .iter()
+            .any(|h| h.name == "Authorization" && h.value == "Bearer dav-secret-bearer"));
+
+        let server_stream = engine
+            .resolve_server_stream(jf_track.clone())
+            .await
+            .expect("resolve_server_stream");
+        assert_eq!(server_stream.url, resolved.url);
+
+        let recovered = engine
+            .resolve_recovery(jf_track.clone())
+            .await
+            .expect("resolve_recovery");
+        assert_eq!(recovered.url, resolved.url);
+        assert!(engine
+            .resolve_hifi_upgrade(jf_track.clone(), resolved)
+            .await
+            .is_none());
+        assert!(engine
+            .resolve_explicit_counterpart(jf_track.clone())
+            .await
+            .is_none());
+        assert!(engine
+            .resolve_music_video_candidate(jf_track)
+            .await
+            .is_none());
+
+        let after_del = engine.delete_server(dav_id).await.expect("delete dav");
+        assert_eq!(after_del.len(), 1);
+        assert_eq!(after_del[0].id, "jf-home");
+
+        let _ = fs::remove_dir_all(&base_dir);
     }
 }

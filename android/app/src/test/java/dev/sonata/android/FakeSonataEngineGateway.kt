@@ -5,7 +5,9 @@ import kotlinx.coroutines.CancellationException
 import uniffi.sonata_android.AndroidAccountProfile
 import uniffi.sonata_android.AndroidArtistPage
 import uniffi.sonata_android.AndroidExploreFeed
+import uniffi.sonata_android.AndroidHomeCard
 import uniffi.sonata_android.AndroidHomeShelf
+import uniffi.sonata_android.AndroidJellyfinAuth
 import uniffi.sonata_android.AndroidJioSaavnStream
 import uniffi.sonata_android.AndroidJsCipherSolver
 import uniffi.sonata_android.AndroidLyricLine
@@ -16,8 +18,15 @@ import uniffi.sonata_android.AndroidMusicVideoCandidate
 import uniffi.sonata_android.AndroidPlaylist
 import uniffi.sonata_android.AndroidResolvedMusicVideo
 import uniffi.sonata_android.AndroidResolvedStream
+import uniffi.sonata_android.AndroidServerAlbum
+import uniffi.sonata_android.AndroidServerKind
+import uniffi.sonata_android.AndroidServerLibrary
+import uniffi.sonata_android.AndroidServerProfile
+import uniffi.sonata_android.AndroidServerSearchResult
+import uniffi.sonata_android.AndroidServerStream
 import uniffi.sonata_android.AndroidTrack
 import uniffi.sonata_android.AndroidUpdateInfo
+import uniffi.sonata_android.AndroidWebDavListing
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -290,4 +299,152 @@ class FakeSonataEngineGateway : SonataEngineGateway {
     override suspend fun resolveMusicVideoStreams(
         videoId: String,
     ): AndroidResolvedMusicVideo = musicVideoStreamsHandler(videoId)
+
+    val fakeServers = mutableListOf<AndroidServerProfile>()
+    var testServerConnectionHandler: suspend (AndroidServerProfile) -> String = { profile ->
+        "${profile.kind.name} OK"
+    }
+    var authenticateJellyfinHandler: suspend (String, String, String, String) -> AndroidJellyfinAuth =
+        { _, user, _, _ ->
+            AndroidJellyfinAuth(
+                accessToken = "fake-jf-token",
+                userId = "fake-jf-uid",
+                userName = user,
+                serverId = "fake-jf-srv",
+            )
+        }
+    var serverLibrariesHandler: suspend (String) -> List<AndroidServerLibrary> = { emptyList() }
+    var serverArtistsHandler: suspend (String, String?) -> List<AndroidHomeCard> = { _, _ -> emptyList() }
+    var serverAlbumsHandler: suspend (String, String?, String?) -> List<AndroidHomeCard> = { _, _, _ -> emptyList() }
+    var serverAlbumHandler: suspend (String) -> AndroidServerAlbum = { albumId ->
+        AndroidServerAlbum(
+            id = albumId,
+            title = "Server Album",
+            subtitle = "Server Artist",
+            year = null,
+            coverUrl = null,
+            tracks = emptyList(),
+        )
+    }
+    var serverPlaylistsHandler: suspend (String) -> List<AndroidPlaylist> = { emptyList() }
+    var serverPlaylistTracksHandler: suspend (String) -> List<AndroidTrack> = { emptyList() }
+    var webdavBrowseHandler: suspend (String, String?) -> AndroidWebDavListing = { _, _ ->
+        AndroidWebDavListing(folders = emptyList(), tracks = emptyList())
+    }
+    var serverSearchHandler: suspend (String, String, UInt) -> AndroidServerSearchResult = { _, _, _ ->
+        AndroidServerSearchResult(
+            tracks = emptyList(),
+            albums = emptyList(),
+            artists = emptyList(),
+            playlists = emptyList(),
+        )
+    }
+    var allServersSearchHandler: suspend (String, UInt) -> AndroidServerSearchResult = { _, _ ->
+        AndroidServerSearchResult(
+            tracks = emptyList(),
+            albums = emptyList(),
+            artists = emptyList(),
+            playlists = emptyList(),
+        )
+    }
+    var serverStreamHandler: suspend (AndroidTrack) -> AndroidServerStream = { track ->
+        AndroidServerStream(
+            url = "https://server.test/stream/${track.id}",
+            headers = emptyList(),
+            mimeType = "audio/flac",
+            bitrateKbps = 900u,
+            codec = "flac",
+            audioBadge = "FLAC · 900kbps",
+        )
+    }
+
+    override suspend fun listServers(): List<AndroidServerProfile> = fakeServers.toList()
+
+    override suspend fun upsertServer(profile: AndroidServerProfile): List<AndroidServerProfile> {
+        val assigned = if (profile.id.isBlank()) {
+            val prefix = when (profile.kind) {
+                AndroidServerKind.JELLYFIN -> "jf"
+                AndroidServerKind.SUBSONIC -> "sub"
+                AndroidServerKind.WEB_DAV -> "dav"
+            }
+            profile.copy(id = "$prefix-${fakeServers.size + 1}")
+        } else {
+            profile
+        }
+        val idx = fakeServers.indexOfFirst { it.id == assigned.id }
+        if (idx >= 0) {
+            fakeServers[idx] = assigned
+        } else {
+            fakeServers.add(assigned)
+        }
+        return fakeServers.toList()
+    }
+
+    override suspend fun deleteServer(serverId: String): List<AndroidServerProfile> {
+        fakeServers.removeAll { it.id == serverId }
+        return fakeServers.toList()
+    }
+
+    override suspend fun setServerEnabled(
+        serverId: String,
+        enabled: Boolean,
+    ): List<AndroidServerProfile> {
+        val idx = fakeServers.indexOfFirst { it.id == serverId }
+        if (idx >= 0) {
+            fakeServers[idx] = fakeServers[idx].copy(enabled = enabled)
+        }
+        return fakeServers.toList()
+    }
+
+    override suspend fun testServerConnection(profile: AndroidServerProfile): String =
+        testServerConnectionHandler(profile)
+
+    override suspend fun authenticateJellyfin(
+        baseUrl: String,
+        username: String,
+        password: String,
+        deviceId: String,
+    ): AndroidJellyfinAuth = authenticateJellyfinHandler(baseUrl, username, password, deviceId)
+
+    override suspend fun listServerLibraries(serverId: String): List<AndroidServerLibrary> =
+        serverLibrariesHandler(serverId)
+
+    override suspend fun listServerArtists(
+        serverId: String,
+        libraryId: String?,
+    ): List<AndroidHomeCard> = serverArtistsHandler(serverId, libraryId)
+
+    override suspend fun listServerAlbums(
+        serverId: String,
+        libraryId: String?,
+        artistId: String?,
+    ): List<AndroidHomeCard> = serverAlbumsHandler(serverId, libraryId, artistId)
+
+    override suspend fun getServerAlbum(albumId: String): AndroidServerAlbum =
+        serverAlbumHandler(albumId)
+
+    override suspend fun listServerPlaylists(serverId: String): List<AndroidPlaylist> =
+        serverPlaylistsHandler(serverId)
+
+    override suspend fun getServerPlaylistTracks(playlistId: String): List<AndroidTrack> =
+        serverPlaylistTracksHandler(playlistId)
+
+    override suspend fun browseWebdavFolder(
+        serverId: String,
+        folderPath: String?,
+    ): AndroidWebDavListing = webdavBrowseHandler(serverId, folderPath)
+
+    override suspend fun searchServer(
+        serverId: String,
+        query: String,
+        limit: UInt,
+    ): AndroidServerSearchResult = serverSearchHandler(serverId, query, limit)
+
+    override suspend fun searchAllServers(
+        query: String,
+        limitPerServer: UInt,
+    ): AndroidServerSearchResult = allServersSearchHandler(query, limitPerServer)
+
+    override suspend fun resolveServerStream(track: AndroidTrack): AndroidServerStream =
+        serverStreamHandler(track)
 }

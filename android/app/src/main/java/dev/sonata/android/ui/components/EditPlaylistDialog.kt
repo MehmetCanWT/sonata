@@ -110,7 +110,14 @@ fun isSaveableExternalCollection(
 ): Boolean {
     if (isOwned || browseId.isNullOrBlank()) return false
     val trimmed = browseId.trim()
-    if (trimmed == "__sonata_downloads__" || trimmed.startsWith("local_pl_")) return false
+    if (trimmed == "__sonata_downloads__" ||
+        trimmed.startsWith("local_pl_") ||
+        trimmed.startsWith("jellyfin:") ||
+        trimmed.startsWith("subsonic:") ||
+        trimmed.startsWith("webdav:")
+    ) {
+        return false
+    }
     val normalized = normalizeCollectionId(trimmed)
     if (normalized.isEmpty()) return false
     if (normalized.equals("LM", ignoreCase = true) ||

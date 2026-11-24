@@ -107,6 +107,10 @@ import uniffi.sonata_android.AndroidMusicVideoCandidate
 import uniffi.sonata_android.AndroidPlaylist
 import uniffi.sonata_android.AndroidResolvedMusicVideo
 import uniffi.sonata_android.AndroidResolvedStream
+import uniffi.sonata_android.AndroidServerKind
+import uniffi.sonata_android.AndroidServerLibrary
+import uniffi.sonata_android.AndroidServerProfile
+import uniffi.sonata_android.AndroidServerSearchResult
 import uniffi.sonata_android.AndroidVideoQualityStream
 import uniffi.sonata_android.AndroidSolvedCipher
 import uniffi.sonata_android.AndroidTrack
@@ -300,6 +304,44 @@ data class SavedExternalPlaylist(
     val savedAtMs: Long = 0L,
 )
 
+internal fun isSelfHostedId(id: String?): Boolean {
+    if (id.isNullOrBlank()) return false
+    return id.startsWith("jellyfin:") ||
+        id.startsWith("subsonic:") ||
+        id.startsWith("webdav:")
+}
+
+internal fun selfHostedKindTag(id: String?): String? = when {
+    id == null -> null
+    id.startsWith("jellyfin:") -> "JFN"
+    id.startsWith("subsonic:") -> "SUB"
+    id.startsWith("webdav:") -> "DAV"
+    else -> null
+}
+
+@Immutable
+data class ServerBrowserState(
+    val activeServer: AndroidServerProfile? = null,
+    val libraries: List<AndroidServerLibrary> = emptyList(),
+    val selectedLibraryId: String? = null,
+    val playlists: List<AndroidPlaylist> = emptyList(),
+    val albums: List<AndroidHomeCard> = emptyList(),
+    val artists: List<AndroidHomeCard> = emptyList(),
+    val selectedArtistName: String? = null,
+    val artistAlbums: List<AndroidHomeCard> = emptyList(),
+    val webdavPathStack: List<Pair<String?, String>> = emptyList(),
+    val webdavFolders: List<AndroidServerLibrary> = emptyList(),
+    val webdavTracks: List<AndroidTrack> = emptyList(),
+    val serverSearchQuery: String = "",
+    val serverSearchResult: AndroidServerSearchResult? = null,
+    val loading: Boolean = false,
+    val testingConnection: Boolean = false,
+    val testResultMessage: String? = null,
+    val testResultIsError: Boolean = false,
+    val saving: Boolean = false,
+    val error: String? = null,
+)
+
 @Immutable
 data class SonataUiState(
     val activeTab: AndroidTab = AndroidTab.Home,
@@ -312,6 +354,10 @@ data class SonataUiState(
     val accountProfile: AndroidAccountProfile? = null,
     val showLoginSheet: Boolean = false,
     val showSettingsSheet: Boolean = false,
+    val showServersSheet: Boolean = false,
+    val servers: List<AndroidServerProfile> = emptyList(),
+    val serverSearchResult: AndroidServerSearchResult? = null,
+    val serverSearchLoading: Boolean = false,
     val shelves: List<AndroidHomeShelf> = emptyList(),
     val exploreShelves: List<AndroidHomeShelf> = emptyList(),
     val moodCategories: List<AndroidMoodCategory> = emptyList(),
@@ -463,6 +509,13 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _uiState = MutableStateFlow(SonataUiState())
     val uiState: StateFlow<SonataUiState> = _uiState.asStateFlow()
+
+    private val _serverBrowserState = MutableStateFlow(ServerBrowserState())
+    val serverBrowserState: StateFlow<ServerBrowserState> = _serverBrowserState.asStateFlow()
+
+    private var serverBrowseJob: Job? = null
+    private var serverTestJob: Job? = null
+    private var serverSearchJob: Job? = null
 
     private val discordRpcClient = DiscordRpcClient()
     private val discordSeekSignal = MutableStateFlow(0L)
@@ -1198,7 +1251,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
     ): List<String> = tracks.mapNotNull { resolveYtmVideoIdForTrack(engine, it) }.distinct()
 
     private fun reportTrackPlaybackToYtm(track: AndroidTrack, playlistId: String?) {
-        if (track.id.isBlank() || track.id.startsWith("local:")) return
+        if (track.id.isBlank() || track.id.startsWith("local:") || isSelfHostedId(track.id)) return
         viewModelScope.launch(Dispatchers.IO) {
             val engine = requireEngine()
             if (!runCatching { engine.isSignedIn() }.getOrDefault(false)) return@launch
@@ -1235,7 +1288,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun resolvedDownloadCoverUrl(track: AndroidTrack): String? =
         track.thumbnailUrl?.takeIf { it.isNotBlank() }
-            ?: if (!track.id.startsWith("jiosaavn:") && !track.id.startsWith("local:")) {
+            ?: if (!track.id.startsWith("jiosaavn:") && !track.id.startsWith("local:") && !isSelfHostedId(track.id)) {
                 "https://i.ytimg.com/vi/${track.id}/hqdefault.jpg"
             } else {
                 null
@@ -1513,6 +1566,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
             val savedExternalIds = _uiState.value.savedExternalPlaylistIds
             val ownedIds = if (signedIn) computeOwnedPlaylistIds(cachedPlaylists, savedExternalIds) else emptySet()
             val mergedCachedPlaylists = mergePlaylistsWithLocal(cachedPlaylists)
+            val initialServers = runSuspendCatching { engine.listServers() }.getOrDefault(emptyList())
 
             _uiState.update {
                 it.copy(
@@ -1522,6 +1576,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                     accountProfile = cachedProfile ?: it.accountProfile,
                     ownedPlaylistIds = if (it.ownedPlaylistIds.isEmpty()) ownedIds else it.ownedPlaylistIds,
                     playlists = if (it.playlists.isEmpty()) mergedCachedPlaylists else it.playlists,
+                    servers = initialServers,
                 )
             }
 
@@ -2294,6 +2349,452 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(showSettingsSheet = false) }
     }
 
+    fun openServersScreen(initialServerId: String? = null) {
+        _uiState.update { it.copy(showServersSheet = true) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val engine = requireEngine()
+            val list = runSuspendCatching { engine.listServers() }.getOrDefault(emptyList())
+            _uiState.update { it.copy(servers = list) }
+            val target = initialServerId?.let { id -> list.firstOrNull { it.id == id } }
+            if (target != null) {
+                openServerBrowser(target)
+            }
+        }
+    }
+
+    fun dismissServersScreen() {
+        serverBrowseJob?.cancel()
+        serverTestJob?.cancel()
+        serverSearchJob?.cancel()
+        _serverBrowserState.value = ServerBrowserState()
+        _uiState.update { it.copy(showServersSheet = false) }
+    }
+
+    private fun clearSelfHostedCaches() {
+        streamCache.keys.filter { isSelfHostedId(it) }.forEach { streamCache.remove(it) }
+        PlaybackAudioBridge.clearStreamHeaders()
+    }
+
+    fun clearServerTestResult() {
+        _serverBrowserState.update {
+            it.copy(testingConnection = false, testResultMessage = null, testResultIsError = false)
+        }
+    }
+
+    fun testServerConnection(profile: AndroidServerProfile) {
+        serverTestJob?.cancel()
+        val s = uiStrings().servers
+        _serverBrowserState.update {
+            it.copy(testingConnection = true, testResultMessage = s.testingConnection, testResultIsError = false)
+        }
+        serverTestJob = viewModelScope.launch(Dispatchers.IO) {
+            val engine = requireEngine()
+            runSuspendCatching { engine.testServerConnection(profile) }
+                .onSuccess { detail ->
+                    _serverBrowserState.update {
+                        it.copy(
+                            testingConnection = false,
+                            testResultMessage = s.connectionOk(detail),
+                            testResultIsError = false,
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    _serverBrowserState.update {
+                        it.copy(
+                            testingConnection = false,
+                            testResultMessage = s.connectionFailed(err.message.orEmpty()),
+                            testResultIsError = true,
+                        )
+                    }
+                }
+        }
+    }
+
+    fun saveServer(profile: AndroidServerProfile, onComplete: () -> Unit = {}) {
+        val s = uiStrings().servers
+        _serverBrowserState.update { it.copy(saving = true, error = null) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val engine = requireEngine()
+            runSuspendCatching { engine.upsertServer(profile) }
+                .onSuccess { updated ->
+                    clearSelfHostedCaches()
+                    val activeId = _serverBrowserState.value.activeServer?.id
+                    val refreshedActive = activeId?.let { id -> updated.firstOrNull { it.id == id } }
+                    _serverBrowserState.update {
+                        it.copy(
+                            saving = false,
+                            activeServer = refreshedActive ?: it.activeServer,
+                            error = null,
+                        )
+                    }
+                    _uiState.update {
+                        it.copy(
+                            servers = updated,
+                            status = s.serverSaved(profile.name.trim().ifBlank { profile.baseUrl }),
+                        )
+                    }
+                    withContext(Dispatchers.Main) { onComplete() }
+                }
+                .onFailure { err ->
+                    _serverBrowserState.update {
+                        it.copy(
+                            saving = false,
+                            error = s.connectionFailed(err.message.orEmpty()),
+                        )
+                    }
+                }
+        }
+    }
+
+    fun deleteServer(serverId: String) {
+        val s = uiStrings().servers
+        val removedName = _uiState.value.servers.firstOrNull { it.id == serverId }?.name ?: serverId
+        viewModelScope.launch(Dispatchers.IO) {
+            val engine = requireEngine()
+            runSuspendCatching { engine.deleteServer(serverId) }
+                .onSuccess { updated ->
+                    clearSelfHostedCaches()
+                    if (_serverBrowserState.value.activeServer?.id == serverId) {
+                        _serverBrowserState.value = ServerBrowserState()
+                    }
+                    _uiState.update {
+                        it.copy(
+                            servers = updated,
+                            status = s.serverDeleted(removedName),
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    _serverBrowserState.update { it.copy(error = err.message) }
+                }
+        }
+    }
+
+    fun setServerEnabled(serverId: String, enabled: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val engine = requireEngine()
+            runSuspendCatching { engine.setServerEnabled(serverId, enabled) }
+                .onSuccess { updated ->
+                    clearSelfHostedCaches()
+                    val refreshedActive = _serverBrowserState.value.activeServer?.let { cur ->
+                        if (cur.id == serverId) updated.firstOrNull { it.id == serverId } else cur
+                    }
+                    _serverBrowserState.update { it.copy(activeServer = refreshedActive) }
+                    _uiState.update { it.copy(servers = updated) }
+                }
+        }
+    }
+
+    fun openServerBrowser(server: AndroidServerProfile) {
+        serverBrowseJob?.cancel()
+        serverSearchJob?.cancel()
+        _serverBrowserState.value = ServerBrowserState(
+            activeServer = server,
+            loading = true,
+            webdavPathStack = if (server.kind == AndroidServerKind.WEB_DAV) {
+                listOf(null to uiStrings().servers.rootFolder)
+            } else {
+                emptyList()
+            },
+        )
+        serverBrowseJob = viewModelScope.launch(Dispatchers.IO) {
+            val engine = requireEngine()
+            if (server.kind == AndroidServerKind.WEB_DAV) {
+                runSuspendCatching { engine.browseWebdavFolder(server.id, null) }
+                    .onSuccess { listing ->
+                        _serverBrowserState.update {
+                            it.copy(
+                                loading = false,
+                                webdavFolders = listing.folders,
+                                webdavTracks = listing.tracks,
+                                error = null,
+                            )
+                        }
+                    }
+                    .onFailure { err ->
+                        _serverBrowserState.update {
+                            it.copy(loading = false, error = err.message)
+                        }
+                    }
+                return@launch
+            }
+
+            coroutineScope {
+                val libsDef = async { runSuspendCatching { engine.listServerLibraries(server.id) } }
+                val playlistsDef = async { runSuspendCatching { engine.listServerPlaylists(server.id) } }
+                val albumsDef = async { runSuspendCatching { engine.listServerAlbums(server.id, null, null) } }
+                val artistsDef = async { runSuspendCatching { engine.listServerArtists(server.id, null) } }
+
+                val libsRes = libsDef.await()
+                val playlistsRes = playlistsDef.await()
+                val albumsRes = albumsDef.await()
+                val artistsRes = artistsDef.await()
+                val firstErr = libsRes.exceptionOrNull()
+                    ?: playlistsRes.exceptionOrNull()
+                    ?: albumsRes.exceptionOrNull()
+                    ?: artistsRes.exceptionOrNull()
+
+                _serverBrowserState.update {
+                    it.copy(
+                        loading = false,
+                        libraries = libsRes.getOrDefault(emptyList()),
+                        playlists = playlistsRes.getOrDefault(emptyList()),
+                        albums = albumsRes.getOrDefault(emptyList()),
+                        artists = artistsRes.getOrDefault(emptyList()),
+                        error = if (libsRes.isFailure && playlistsRes.isFailure && albumsRes.isFailure) {
+                            firstErr?.message
+                        } else {
+                            null
+                        },
+                    )
+                }
+            }
+        }
+    }
+
+    fun closeServerBrowser() {
+        serverBrowseJob?.cancel()
+        serverSearchJob?.cancel()
+        _serverBrowserState.value = ServerBrowserState()
+    }
+
+    fun selectServerLibrary(libraryId: String?) {
+        val server = _serverBrowserState.value.activeServer ?: return
+        if (server.kind == AndroidServerKind.WEB_DAV) {
+            openWebDavFolder(libraryId, libraryId ?: uiStrings().servers.rootFolder)
+            return
+        }
+        serverBrowseJob?.cancel()
+        _serverBrowserState.update {
+            it.copy(
+                selectedLibraryId = libraryId,
+                selectedArtistName = null,
+                artistAlbums = emptyList(),
+                loading = true,
+                error = null,
+            )
+        }
+        serverBrowseJob = viewModelScope.launch(Dispatchers.IO) {
+            val engine = requireEngine()
+            coroutineScope {
+                val albumsDef = async {
+                    runSuspendCatching { engine.listServerAlbums(server.id, libraryId, null) }
+                }
+                val artistsDef = async {
+                    runSuspendCatching { engine.listServerArtists(server.id, libraryId) }
+                }
+                val albumsRes = albumsDef.await()
+                val artistsRes = artistsDef.await()
+                _serverBrowserState.update {
+                    it.copy(
+                        loading = false,
+                        albums = albumsRes.getOrDefault(emptyList()),
+                        artists = artistsRes.getOrDefault(emptyList()),
+                        error = albumsRes.exceptionOrNull()?.message,
+                    )
+                }
+            }
+        }
+    }
+
+    fun openServerArtist(artist: AndroidHomeCard) {
+        val server = _serverBrowserState.value.activeServer ?: return
+        serverBrowseJob?.cancel()
+        _serverBrowserState.update {
+            it.copy(
+                selectedArtistName = artist.title,
+                artistAlbums = emptyList(),
+                loading = true,
+                error = null,
+            )
+        }
+        serverBrowseJob = viewModelScope.launch(Dispatchers.IO) {
+            val engine = requireEngine()
+            runSuspendCatching { engine.listServerAlbums(server.id, null, artist.id) }
+                .onSuccess { albums ->
+                    _serverBrowserState.update {
+                        it.copy(loading = false, artistAlbums = albums, error = null)
+                    }
+                }
+                .onFailure { err ->
+                    _serverBrowserState.update {
+                        it.copy(loading = false, error = err.message)
+                    }
+                }
+        }
+    }
+
+    fun closeServerArtist() {
+        _serverBrowserState.update {
+            it.copy(selectedArtistName = null, artistAlbums = emptyList())
+        }
+    }
+
+    fun openWebDavFolder(folderIdOrPath: String?, label: String) {
+        val server = _serverBrowserState.value.activeServer ?: return
+        serverBrowseJob?.cancel()
+        val updatedStack = if (folderIdOrPath == null) {
+            listOf(null to uiStrings().servers.rootFolder)
+        } else {
+            _serverBrowserState.value.webdavPathStack + (folderIdOrPath to label)
+        }
+        _serverBrowserState.update {
+            it.copy(
+                webdavPathStack = updatedStack,
+                loading = true,
+                error = null,
+            )
+        }
+        serverBrowseJob = viewModelScope.launch(Dispatchers.IO) {
+            val engine = requireEngine()
+            runSuspendCatching { engine.browseWebdavFolder(server.id, folderIdOrPath) }
+                .onSuccess { listing ->
+                    _serverBrowserState.update {
+                        it.copy(
+                            loading = false,
+                            webdavFolders = listing.folders,
+                            webdavTracks = listing.tracks,
+                            error = null,
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    _serverBrowserState.update {
+                        it.copy(loading = false, error = err.message)
+                    }
+                }
+        }
+    }
+
+    fun navigateWebDavBack(): Boolean {
+        val stack = _serverBrowserState.value.webdavPathStack
+        if (stack.size <= 1) return false
+        val server = _serverBrowserState.value.activeServer ?: return false
+        val trimmedStack = stack.dropLast(1)
+        val targetPath = trimmedStack.lastOrNull()?.first
+        serverBrowseJob?.cancel()
+        _serverBrowserState.update {
+            it.copy(
+                webdavPathStack = trimmedStack,
+                loading = true,
+                error = null,
+            )
+        }
+        serverBrowseJob = viewModelScope.launch(Dispatchers.IO) {
+            val engine = requireEngine()
+            runSuspendCatching { engine.browseWebdavFolder(server.id, targetPath) }
+                .onSuccess { listing ->
+                    _serverBrowserState.update {
+                        it.copy(
+                            loading = false,
+                            webdavFolders = listing.folders,
+                            webdavTracks = listing.tracks,
+                            error = null,
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    _serverBrowserState.update {
+                        it.copy(loading = false, error = err.message)
+                    }
+                }
+        }
+        return true
+    }
+
+    fun searchInsideServer(query: String) {
+        val server = _serverBrowserState.value.activeServer ?: return
+        val clean = query.trim()
+        serverSearchJob?.cancel()
+        if (clean.isEmpty()) {
+            _serverBrowserState.update {
+                it.copy(serverSearchQuery = "", serverSearchResult = null)
+            }
+            return
+        }
+        _serverBrowserState.update { it.copy(serverSearchQuery = query, loading = true, error = null) }
+        serverSearchJob = viewModelScope.launch(Dispatchers.IO) {
+            delay(250L)
+            val engine = requireEngine()
+            runSuspendCatching { engine.searchServer(server.id, clean, 40u) }
+                .onSuccess { res ->
+                    _serverBrowserState.update {
+                        it.copy(loading = false, serverSearchResult = res, error = null)
+                    }
+                }
+                .onFailure { err ->
+                    _serverBrowserState.update {
+                        it.copy(loading = false, error = err.message)
+                    }
+                }
+        }
+    }
+
+    fun openServerAlbum(card: AndroidHomeCard) {
+        openServerAlbumById(
+            albumId = card.id,
+            albumTitle = card.title,
+            artistName = card.subtitle,
+            coverUrl = card.thumbnailUrl,
+        )
+    }
+
+    private fun openServerAlbumById(
+        albumId: String,
+        albumTitle: String,
+        artistName: String = "",
+        coverUrl: String? = null,
+        year: String? = null,
+    ) {
+        val s = uiStrings()
+        collectionJob?.cancel()
+        collectionJob = viewModelScope.launch(Dispatchers.IO) {
+            val engine = requireEngine()
+            _uiState.update {
+                it.copy(
+                    artistPage = null,
+                    artistLoading = false,
+                    moodCategoryTitle = null,
+                    moodCategoryShelves = emptyList(),
+                    moodCategoryLoading = false,
+                    collectionBrowseId = albumId,
+                    collectionTitle = albumTitle,
+                    collectionCoverUrl = coverUrl,
+                    collectionSubtitle = artistName.takeIf { sub -> sub.isNotBlank() },
+                    collectionKindLabel = s.albumLabel,
+                    collectionYear = year,
+                    collectionTracks = emptyList(),
+                    loading = true,
+                    status = s.loadingNamedStatus(albumTitle),
+                )
+            }
+            runSuspendCatching { engine.getServerAlbum(albumId) }
+                .onSuccess { detail ->
+                    val resolvedCover = detail.coverUrl ?: coverUrl
+                    val resolvedTitle = detail.title.ifBlank { albumTitle }
+                    val resolvedSubtitle = detail.subtitle.ifBlank { artistName }.takeIf { it.isNotBlank() }
+                    _uiState.update { state ->
+                        state.copy(
+                            loading = false,
+                            collectionBrowseId = detail.id,
+                            collectionTitle = resolvedTitle,
+                            collectionCoverUrl = resolvedCover,
+                            collectionSubtitle = resolvedSubtitle,
+                            collectionYear = detail.year ?: year,
+                            collectionTracks = detail.tracks,
+                            status = s.tracksInCollectionStatus(detail.tracks.size, resolvedTitle),
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    _uiState.update {
+                        it.copy(loading = false, status = s.collectionErrorStatus(err.message.orEmpty()))
+                    }
+                }
+        }
+    }
+
     fun updateSettings(transform: (SonataSettingsState) -> SonataSettingsState) {
         preferences.update(transform)
         applyAudioSettings(preferences.state.value)
@@ -2349,7 +2850,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                 .getOrNull() ?: return null
         }
 
-        if (!track.id.startsWith("jiosaavn:") && wantsHighOrHighest) {
+        if (!track.id.startsWith("jiosaavn:") && !isSelfHostedId(track.id) && wantsHighOrHighest) {
             if (shouldUpgradeStreamBadge(stream.badge, _uiState.value.signedIn)) {
                 runSuspendCatching { engine.resolveHifiUpgrade(track, stream) }
                     .getOrNull()
@@ -2467,10 +2968,12 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                 exportToMusic = exportExternal,
                 collectionId = collectionId,
                 wifiOnly = wifiOnly,
+                headers = stream.headers.associate { it.name to it.value },
             )
             if (result.isFailure &&
                 result.exceptionOrNull() !is SonataDownloadManager.WifiOnlyNetworkException &&
-                !track.id.startsWith("jiosaavn:")
+                !track.id.startsWith("jiosaavn:") &&
+                !isSelfHostedId(track.id)
             ) {
                 val recovered = runSuspendCatching { engine.resolveRecovery(track) }.getOrNull()
                 if (recovered != null) {
@@ -2481,11 +2984,12 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                         exportToMusic = exportExternal,
                         collectionId = collectionId,
                         wifiOnly = wifiOnly,
+                        headers = recovered.headers.associate { it.name to it.value },
                     )
                 }
             }
             result.onSuccess {
-                if (settings.value.downloadVideosIfAvailable && !track.id.startsWith("local:")) {
+                if (settings.value.downloadVideosIfAvailable && !track.id.startsWith("local:") && !isSelfHostedId(track.id)) {
                     _uiState.update {
                         it.copy(
                             status = s.downloadingVideoStatus,
@@ -2585,12 +3089,13 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                         exportToMusic = exportExternal,
                         collectionId = collectionId,
                         wifiOnly = wifiOnly,
+                        headers = stream.headers.associate { it.name to it.value },
                     )
                     if (res.exceptionOrNull() is SonataDownloadManager.WifiOnlyNetworkException) {
                         blockedByWifi = true
                         break
                     }
-                    if (res.isFailure && !track.id.startsWith("jiosaavn:")) {
+                    if (res.isFailure && !track.id.startsWith("jiosaavn:") && !isSelfHostedId(track.id)) {
                         val recovered = runSuspendCatching { engine.resolveRecovery(track) }.getOrNull()
                         if (recovered != null) {
                             putCachedStream(track.id, recovered)
@@ -2600,6 +3105,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                                 exportToMusic = exportExternal,
                                 collectionId = collectionId,
                                 wifiOnly = wifiOnly,
+                                headers = recovered.headers.associate { it.name to it.value },
                             )
                         }
                     }
@@ -2614,7 +3120,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                         Log.w("SonataDownload", "downloadCollection track failed id=${track.id}: ${res.exceptionOrNull()?.message}")
                     }
                 }
-                if (audioReady && wantsVideos && !track.id.startsWith("local:") &&
+                if (audioReady && wantsVideos && !track.id.startsWith("local:") && !isSelfHostedId(track.id) &&
                     downloadManager.localVideoFor(track.id) == null
                 ) {
                     val videoOk = downloadCompanionMusicVideoIfEnabled(engine, track, wifiOnly)
@@ -3604,6 +4110,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
             val engine = requireEngine()
             val s = uiStrings()
             val includeJioSaavn = settings.value.jioSaavnEnabled
+            val hasEnabledServers = _uiState.value.servers.any { it.enabled }
             _uiState.update { state ->
                 val updatedHistory = (listOf(q) + state.recentSearches.filterNot { it.equals(q, ignoreCase = true) }).take(12)
                 state.copy(
@@ -3622,8 +4129,27 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                     query = q,
                     recentSearches = updatedHistory,
                     loading = true,
+                    serverSearchLoading = hasEnabledServers,
+                    serverSearchResult = if (hasEnabledServers) state.serverSearchResult else null,
                     status = s.searchingQueryStatus(q)
                 )
+            }
+            val serverJob = if (hasEnabledServers) {
+                launch {
+                    val srvResult = withTimeoutOrNull(8_000L) {
+                        runSuspendCatching { engine.searchAllServers(q, 20u) }.getOrNull()
+                    }
+                    if (!isActive) return@launch
+                    _uiState.update { state ->
+                        if (state.query == q) {
+                            state.copy(serverSearchResult = srvResult, serverSearchLoading = false)
+                        } else {
+                            state
+                        }
+                    }
+                }
+            } else {
+                null
             }
             val (ytResult, jioTracks) = coroutineScope {
                 val ytDeferred = async { runSuspendCatching { engine.searchSongs(q) } }
@@ -3638,7 +4164,10 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                 }
                 ytDeferred.await() to (jioDeferred?.await().orEmpty())
             }
-            if (!isActive) return@launch
+            if (!isActive) {
+                serverJob?.cancel()
+                return@launch
+            }
             ytResult
                 .onSuccess { ytTracks ->
                     val merged = if (jioTracks.isEmpty()) {
@@ -3869,6 +4398,27 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
     ) {
         val isAlbumKind = kindLabel.equals("Album", ignoreCase = true) ||
             kindLabel.equals(uiStrings().albumLabel, ignoreCase = true)
+        if (isSelfHostedId(id)) {
+            if (isAlbumKind) {
+                openServerAlbumById(
+                    albumId = id,
+                    albumTitle = title,
+                    artistName = subtitle.orEmpty(),
+                    coverUrl = coverUrl,
+                    year = year,
+                )
+            } else {
+                openCollectionById(
+                    id = id,
+                    title = title,
+                    coverUrl = coverUrl,
+                    subtitle = subtitle,
+                    kindLabel = kindLabel,
+                    year = year,
+                )
+            }
+            return
+        }
         if (isAlbumKind &&
             !id.startsWith("MPRE") &&
             !id.startsWith("OLAK") &&
@@ -3904,6 +4454,16 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         val s = uiStrings()
         val cleanId = albumId.trim()
         val cleanTitle = albumTitle.trim()
+        if (isSelfHostedId(cleanId)) {
+            openServerAlbumById(
+                albumId = cleanId,
+                albumTitle = cleanTitle.ifBlank { s.albumLabel },
+                artistName = artistName,
+                coverUrl = coverUrl,
+                year = year,
+            )
+            return
+        }
         if (cleanId.startsWith("MPRE") ||
             cleanId.startsWith("OLAK") ||
             cleanId.startsWith("VL") ||
@@ -4371,7 +4931,13 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                     status = s.loadingNamedStatus(title)
                 )
             }
-            runSuspendCatching { engine.fetchCollectionTracksFresh(id) }
+            runSuspendCatching {
+                if (isSelfHostedId(id)) {
+                    engine.getServerPlaylistTracks(id)
+                } else {
+                    engine.fetchCollectionTracksFresh(id)
+                }
+            }
                 .onSuccess { rawTracks ->
                     val firstLiveTrackCover = rawTracks.firstNotNullOfOrNull { resolveTrackCoverUrl(it) }
                     val fallbackCover = if (isLikedMusicPlaylistId(id)) {
@@ -4672,6 +5238,14 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                     }.onSuccess { putCachedStream(track.id, it) }
                 }
                 Triple(track, updatedQueue, resolved)
+            } else if (isSelfHostedId(track.id)) {
+                val resolved = if (cachedStream != null) {
+                    Result.success(cachedStream)
+                } else {
+                    runSuspendCatching { engine.resolveStream(track) }
+                        .onSuccess { putCachedStream(track.id, it) }
+                }
+                Triple(track, updatedQueue, resolved)
             } else coroutineScope {
                 val baseStreamDeferred = async {
                     if (cachedStream != null) {
@@ -4832,6 +5406,12 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
 
     @OptIn(UnstableApi::class)
     private fun buildMediaItem(track: AndroidTrack, stream: AndroidResolvedStream): MediaItem {
+        if (stream.headers.isNotEmpty()) {
+            PlaybackAudioBridge.registerStreamHeaders(
+                url = stream.url,
+                headers = stream.headers.associate { it.name to it.value },
+            )
+        }
         val uri = if (stream.url.startsWith("http")) Uri.parse(stream.url) else Uri.fromFile(File(stream.url))
         return MediaItem.Builder()
             .setMediaId(track.id)
@@ -4857,6 +5437,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         currentStream: AndroidResolvedStream,
     ) {
         if (_uiState.value.videoModeEnabled) return
+        if (isSelfHostedId(effectiveTrack.id)) return
         val qualityTier = settings.value.audioQuality
         if (!_uiState.value.preferHighQuality || qualityTier == AudioQualityTier.LOW) return
 
@@ -5035,7 +5616,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         val start = currentIndex.coerceIn(0, (queue.size - 1).coerceAtLeast(0))
         for (i in start downTo 0) {
             val t = queue[i]
-            if (t.id.isBlank() || t.id.startsWith("local:")) continue
+            if (t.id.isBlank() || t.id.startsWith("local:") || isSelfHostedId(t.id)) continue
             val key = t.artist.trim().lowercase()
             if (out.isEmpty() || key.isBlank() || seenArtists.add(key)) {
                 if (!out.contains(t.id)) {
@@ -5046,8 +5627,9 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
         if (out.isEmpty()) {
-            _lastPlayedTracks.value.firstOrNull { it.id.isNotBlank() && !it.id.startsWith("local:") }
-                ?.let { out.add(it.id) }
+            _lastPlayedTracks.value.firstOrNull {
+                it.id.isNotBlank() && !it.id.startsWith("local:") && !isSelfHostedId(it.id)
+            }?.let { out.add(it.id) }
         }
         return out
     }
@@ -5477,7 +6059,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
     ) {
         musicVideoProbeJob?.cancel()
         val trackId = track.id.trim()
-        if (trackId.isBlank() || trackId.startsWith("local:")) {
+        if (trackId.isBlank() || trackId.startsWith("local:") || isSelfHostedId(trackId)) {
             _uiState.update { state ->
                 if (isGenerationActive(generation, track.id)) {
                     state.copy(musicVideoCandidate = null)
