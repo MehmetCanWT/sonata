@@ -895,6 +895,18 @@ internal open class UniffiVTableCallbackInterfaceAndroidJsCipherSolver(
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -974,6 +986,8 @@ fun uniffi_sonata_android_checksum_method_sonataandroidengine_get_cached_account
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_get_cached_library_playlists(
 ): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_get_scrobble_config(
+): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_get_server_album(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_get_server_playlist_tracks(
@@ -993,6 +1007,10 @@ fun uniffi_sonata_android_checksum_method_sonataandroidengine_list_server_playli
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_list_servers(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_probe_server_health(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_query_listening_stats(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_record_listening_stat(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_remove_track_from_personal_playlist(
 ): Short
@@ -1023,6 +1041,12 @@ fun uniffi_sonata_android_checksum_method_sonataandroidengine_resolve_server_str
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_resolve_stream(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_run_server_speed_test(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_save_scrobble_config(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_scrobble_now_playing(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_scrobble_submit(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_search_all_servers(
 ): Short
@@ -1180,6 +1204,8 @@ fun uniffi_sonata_android_fn_method_sonataandroidengine_get_cached_account_profi
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_get_cached_library_playlists(`ptr`: Pointer,
 ): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_get_scrobble_config(`ptr`: Pointer,
+): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_get_server_album(`ptr`: Pointer,`albumId`: RustBuffer.ByValue,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_get_server_playlist_tracks(`ptr`: Pointer,`playlistId`: RustBuffer.ByValue,
@@ -1199,6 +1225,10 @@ fun uniffi_sonata_android_fn_method_sonataandroidengine_list_server_playlists(`p
 fun uniffi_sonata_android_fn_method_sonataandroidengine_list_servers(`ptr`: Pointer,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_probe_server_health(`ptr`: Pointer,`serverId`: RustBuffer.ByValue,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_query_listening_stats(`ptr`: Pointer,`window`: RustBuffer.ByValue,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_record_listening_stat(`ptr`: Pointer,`track`: RustBuffer.ByValue,`sourceTag`: RustBuffer.ByValue,`playedSecs`: Long,`playedAtUnix`: RustBuffer.ByValue,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_remove_track_from_personal_playlist(`ptr`: Pointer,`playlistId`: RustBuffer.ByValue,`trackId`: RustBuffer.ByValue,
 ): Long
@@ -1229,6 +1259,12 @@ fun uniffi_sonata_android_fn_method_sonataandroidengine_resolve_server_stream(`p
 fun uniffi_sonata_android_fn_method_sonataandroidengine_resolve_stream(`ptr`: Pointer,`track`: RustBuffer.ByValue,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_run_server_speed_test(`ptr`: Pointer,`serverId`: RustBuffer.ByValue,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_save_scrobble_config(`ptr`: Pointer,`config`: RustBuffer.ByValue,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_scrobble_now_playing(`ptr`: Pointer,`track`: RustBuffer.ByValue,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_scrobble_submit(`ptr`: Pointer,`track`: RustBuffer.ByValue,`timestampUnix`: RustBuffer.ByValue,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_search_all_servers(`ptr`: Pointer,`query`: RustBuffer.ByValue,`limitPerServer`: Int,
 ): Long
@@ -1484,6 +1520,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_get_cached_library_playlists() != 9821.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_get_scrobble_config() != 33606.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_get_server_album() != 21834.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1512,6 +1551,12 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_probe_server_health() != 17782.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_query_listening_stats() != 60007.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_record_listening_stat() != 23470.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_remove_track_from_personal_playlist() != 19078.toShort()) {
@@ -1557,6 +1602,15 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_run_server_speed_test() != 36370.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_save_scrobble_config() != 12903.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_scrobble_now_playing() != 55690.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_scrobble_submit() != 48306.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_search_all_servers() != 32685.toShort()) {
@@ -2259,6 +2313,11 @@ public interface SonataAndroidEngineInterface {
     suspend fun `getCachedLibraryPlaylists`(): List<AndroidPlaylist>
     
     /**
+     * Loads persisted Last.fm and ListenBrainz scrobbling configuration (`scrobble.json`).
+     */
+    suspend fun `getScrobbleConfig`(): AndroidScrobbleConfig
+    
+    /**
      * Fetches album metadata and tracks for a prefixed self-hosted `album_id`.
      */
     suspend fun `getServerAlbum`(`albumId`: kotlin.String): AndroidServerAlbum
@@ -2307,6 +2366,16 @@ public interface SonataAndroidEngineInterface {
      * Probes reachability and measures round-trip ping latency for a persisted server.
      */
     suspend fun `probeServerHealth`(`serverId`: kotlin.String): AndroidServerHealthReport
+    
+    /**
+     * Queries on-device listening statistics from SQLite `stats.db` for the requested time window.
+     */
+    suspend fun `queryListeningStats`(`window`: AndroidStatsWindow): AndroidStatsSummary
+    
+    /**
+     * Records a single on-device listening event into SQLite `stats.db` via `spawn_blocking`.
+     */
+    suspend fun `recordListeningStat`(`track`: AndroidTrack, `sourceTag`: kotlin.String, `playedSecs`: kotlin.ULong, `playedAtUnix`: kotlin.ULong?)
     
     /**
      * Removes a track by ID from a locally persisted personal playlist.
@@ -2383,6 +2452,21 @@ public interface SonataAndroidEngineInterface {
      * Runs a real sample download/read throughput benchmark (`Mbps`) against a persisted server.
      */
     suspend fun `runServerSpeedTest`(`serverId`: kotlin.String): AndroidServerSpeedTestReport
+    
+    /**
+     * Atomically saves Last.fm and ListenBrainz scrobbling configuration (`0o700` dir / `0o600` file).
+     */
+    suspend fun `saveScrobbleConfig`(`config`: AndroidScrobbleConfig): AndroidScrobbleConfig
+    
+    /**
+     * Sends a `Now Playing` update to configured Last.fm / ListenBrainz scrobblers.
+     */
+    suspend fun `scrobbleNowPlaying`(`track`: AndroidTrack)
+    
+    /**
+     * Submits a completed scrobble to configured Last.fm / ListenBrainz scrobblers.
+     */
+    suspend fun `scrobbleSubmit`(`track`: AndroidTrack, `timestampUnix`: kotlin.ULong?)
     
     /**
      * Searches all enabled self-hosted servers concurrently and merges results.
@@ -3325,6 +3409,30 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
 
     
     /**
+     * Loads persisted Last.fm and ListenBrainz scrobbling configuration (`scrobble.json`).
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `getScrobbleConfig`() : AndroidScrobbleConfig {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_get_scrobble_config(
+                thisPtr,
+                
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterTypeAndroidScrobbleConfig.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
      * Fetches album metadata and tracks for a prefixed self-hosted `album_id`.
      */
     @Throws(SonataAndroidException::class)
@@ -3549,6 +3657,55 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
         { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
         // lift function
         { FfiConverterTypeAndroidServerHealthReport.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Queries on-device listening statistics from SQLite `stats.db` for the requested time window.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `queryListeningStats`(`window`: AndroidStatsWindow) : AndroidStatsSummary {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_query_listening_stats(
+                thisPtr,
+                FfiConverterTypeAndroidStatsWindow.lower(`window`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterTypeAndroidStatsSummary.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Records a single on-device listening event into SQLite `stats.db` via `spawn_blocking`.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `recordListeningStat`(`track`: AndroidTrack, `sourceTag`: kotlin.String, `playedSecs`: kotlin.ULong, `playedAtUnix`: kotlin.ULong?) {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_record_listening_stat(
+                thisPtr,
+                FfiConverterTypeAndroidTrack.lower(`track`),FfiConverterString.lower(`sourceTag`),FfiConverterULong.lower(`playedSecs`),FfiConverterOptionalULong.lower(`playedAtUnix`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_void(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_void(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_void(future) },
+        // lift function
+        { Unit },
+        
         // Error FFI converter
         SonataAndroidException.ErrorHandler,
     )
@@ -3908,6 +4065,80 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
         { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
         // lift function
         { FfiConverterTypeAndroidServerSpeedTestReport.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Atomically saves Last.fm and ListenBrainz scrobbling configuration (`0o700` dir / `0o600` file).
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `saveScrobbleConfig`(`config`: AndroidScrobbleConfig) : AndroidScrobbleConfig {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_save_scrobble_config(
+                thisPtr,
+                FfiConverterTypeAndroidScrobbleConfig.lower(`config`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterTypeAndroidScrobbleConfig.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Sends a `Now Playing` update to configured Last.fm / ListenBrainz scrobblers.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `scrobbleNowPlaying`(`track`: AndroidTrack) {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_scrobble_now_playing(
+                thisPtr,
+                FfiConverterTypeAndroidTrack.lower(`track`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_void(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_void(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_void(future) },
+        // lift function
+        { Unit },
+        
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Submits a completed scrobble to configured Last.fm / ListenBrainz scrobblers.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `scrobbleSubmit`(`track`: AndroidTrack, `timestampUnix`: kotlin.ULong?) {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_scrobble_submit(
+                thisPtr,
+                FfiConverterTypeAndroidTrack.lower(`track`),FfiConverterOptionalULong.lower(`timestampUnix`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_void(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_void(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_void(future) },
+        // lift function
+        { Unit },
+        
         // Error FFI converter
         SonataAndroidException.ErrorHandler,
     )
@@ -4344,6 +4575,46 @@ public object FfiConverterTypeAndroidAccountProfile: FfiConverterRustBuffer<Andr
 
 
 
+data class AndroidAlbumStat (
+    var `album`: kotlin.String, 
+    var `artist`: kotlin.String, 
+    var `plays`: kotlin.ULong, 
+    var `minutes`: kotlin.ULong
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAndroidAlbumStat: FfiConverterRustBuffer<AndroidAlbumStat> {
+    override fun read(buf: ByteBuffer): AndroidAlbumStat {
+        return AndroidAlbumStat(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AndroidAlbumStat) = (
+            FfiConverterString.allocationSize(value.`album`) +
+            FfiConverterString.allocationSize(value.`artist`) +
+            FfiConverterULong.allocationSize(value.`plays`) +
+            FfiConverterULong.allocationSize(value.`minutes`)
+    )
+
+    override fun write(value: AndroidAlbumStat, buf: ByteBuffer) {
+            FfiConverterString.write(value.`album`, buf)
+            FfiConverterString.write(value.`artist`, buf)
+            FfiConverterULong.write(value.`plays`, buf)
+            FfiConverterULong.write(value.`minutes`, buf)
+    }
+}
+
+
+
 data class AndroidArtistPage (
     var `id`: kotlin.String, 
     var `name`: kotlin.String, 
@@ -4415,6 +4686,42 @@ public object FfiConverterTypeAndroidArtistPage: FfiConverterRustBuffer<AndroidA
             FfiConverterSequenceTypeAndroidTrack.write(value.`popularTracks`, buf)
             FfiConverterSequenceTypeAndroidHomeCard.write(value.`releases`, buf)
             FfiConverterSequenceTypeAndroidHomeCard.write(value.`relatedArtists`, buf)
+    }
+}
+
+
+
+data class AndroidArtistStat (
+    var `artist`: kotlin.String, 
+    var `plays`: kotlin.ULong, 
+    var `minutes`: kotlin.ULong
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAndroidArtistStat: FfiConverterRustBuffer<AndroidArtistStat> {
+    override fun read(buf: ByteBuffer): AndroidArtistStat {
+        return AndroidArtistStat(
+            FfiConverterString.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AndroidArtistStat) = (
+            FfiConverterString.allocationSize(value.`artist`) +
+            FfiConverterULong.allocationSize(value.`plays`) +
+            FfiConverterULong.allocationSize(value.`minutes`)
+    )
+
+    override fun write(value: AndroidArtistStat, buf: ByteBuffer) {
+            FfiConverterString.write(value.`artist`, buf)
+            FfiConverterULong.write(value.`plays`, buf)
+            FfiConverterULong.write(value.`minutes`, buf)
     }
 }
 
@@ -4651,6 +4958,86 @@ public object FfiConverterTypeAndroidJioSaavnStream: FfiConverterRustBuffer<Andr
             FfiConverterString.write(value.`title`, buf)
             FfiConverterString.write(value.`artist`, buf)
             FfiConverterULong.write(value.`durationSecs`, buf)
+    }
+}
+
+
+
+data class AndroidLastFmConfig (
+    var `enabled`: kotlin.Boolean, 
+    var `apiKey`: kotlin.String, 
+    var `apiSecret`: kotlin.String, 
+    var `sessionKey`: kotlin.String, 
+    var `username`: kotlin.String
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAndroidLastFmConfig: FfiConverterRustBuffer<AndroidLastFmConfig> {
+    override fun read(buf: ByteBuffer): AndroidLastFmConfig {
+        return AndroidLastFmConfig(
+            FfiConverterBoolean.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AndroidLastFmConfig) = (
+            FfiConverterBoolean.allocationSize(value.`enabled`) +
+            FfiConverterString.allocationSize(value.`apiKey`) +
+            FfiConverterString.allocationSize(value.`apiSecret`) +
+            FfiConverterString.allocationSize(value.`sessionKey`) +
+            FfiConverterString.allocationSize(value.`username`)
+    )
+
+    override fun write(value: AndroidLastFmConfig, buf: ByteBuffer) {
+            FfiConverterBoolean.write(value.`enabled`, buf)
+            FfiConverterString.write(value.`apiKey`, buf)
+            FfiConverterString.write(value.`apiSecret`, buf)
+            FfiConverterString.write(value.`sessionKey`, buf)
+            FfiConverterString.write(value.`username`, buf)
+    }
+}
+
+
+
+data class AndroidListenBrainzConfig (
+    var `enabled`: kotlin.Boolean, 
+    var `token`: kotlin.String, 
+    var `username`: kotlin.String
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAndroidListenBrainzConfig: FfiConverterRustBuffer<AndroidListenBrainzConfig> {
+    override fun read(buf: ByteBuffer): AndroidListenBrainzConfig {
+        return AndroidListenBrainzConfig(
+            FfiConverterBoolean.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AndroidListenBrainzConfig) = (
+            FfiConverterBoolean.allocationSize(value.`enabled`) +
+            FfiConverterString.allocationSize(value.`token`) +
+            FfiConverterString.allocationSize(value.`username`)
+    )
+
+    override fun write(value: AndroidListenBrainzConfig, buf: ByteBuffer) {
+            FfiConverterBoolean.write(value.`enabled`, buf)
+            FfiConverterString.write(value.`token`, buf)
+            FfiConverterString.write(value.`username`, buf)
     }
 }
 
@@ -5092,6 +5479,38 @@ public object FfiConverterTypeAndroidResolvedStream: FfiConverterRustBuffer<Andr
 
 
 
+data class AndroidScrobbleConfig (
+    var `lastfm`: AndroidLastFmConfig, 
+    var `listenbrainz`: AndroidListenBrainzConfig
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAndroidScrobbleConfig: FfiConverterRustBuffer<AndroidScrobbleConfig> {
+    override fun read(buf: ByteBuffer): AndroidScrobbleConfig {
+        return AndroidScrobbleConfig(
+            FfiConverterTypeAndroidLastFmConfig.read(buf),
+            FfiConverterTypeAndroidListenBrainzConfig.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AndroidScrobbleConfig) = (
+            FfiConverterTypeAndroidLastFmConfig.allocationSize(value.`lastfm`) +
+            FfiConverterTypeAndroidListenBrainzConfig.allocationSize(value.`listenbrainz`)
+    )
+
+    override fun write(value: AndroidScrobbleConfig, buf: ByteBuffer) {
+            FfiConverterTypeAndroidLastFmConfig.write(value.`lastfm`, buf)
+            FfiConverterTypeAndroidListenBrainzConfig.write(value.`listenbrainz`, buf)
+    }
+}
+
+
+
 data class AndroidServerAlbum (
     var `id`: kotlin.String, 
     var `title`: kotlin.String, 
@@ -5460,6 +5879,102 @@ public object FfiConverterTypeAndroidSolvedCipher: FfiConverterRustBuffer<Androi
 
 
 
+data class AndroidSourceStat (
+    var `sourceTag`: kotlin.String, 
+    var `plays`: kotlin.ULong, 
+    var `minutes`: kotlin.ULong
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAndroidSourceStat: FfiConverterRustBuffer<AndroidSourceStat> {
+    override fun read(buf: ByteBuffer): AndroidSourceStat {
+        return AndroidSourceStat(
+            FfiConverterString.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AndroidSourceStat) = (
+            FfiConverterString.allocationSize(value.`sourceTag`) +
+            FfiConverterULong.allocationSize(value.`plays`) +
+            FfiConverterULong.allocationSize(value.`minutes`)
+    )
+
+    override fun write(value: AndroidSourceStat, buf: ByteBuffer) {
+            FfiConverterString.write(value.`sourceTag`, buf)
+            FfiConverterULong.write(value.`plays`, buf)
+            FfiConverterULong.write(value.`minutes`, buf)
+    }
+}
+
+
+
+data class AndroidStatsSummary (
+    var `totalPlays`: kotlin.ULong, 
+    var `totalMinutes`: kotlin.ULong, 
+    var `uniqueTracks`: kotlin.ULong, 
+    var `uniqueArtists`: kotlin.ULong, 
+    var `streakDays`: kotlin.ULong, 
+    var `topArtists`: List<AndroidArtistStat>, 
+    var `topTracks`: List<AndroidTrackStat>, 
+    var `topAlbums`: List<AndroidAlbumStat>, 
+    var `sourceBreakdown`: List<AndroidSourceStat>
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAndroidStatsSummary: FfiConverterRustBuffer<AndroidStatsSummary> {
+    override fun read(buf: ByteBuffer): AndroidStatsSummary {
+        return AndroidStatsSummary(
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterSequenceTypeAndroidArtistStat.read(buf),
+            FfiConverterSequenceTypeAndroidTrackStat.read(buf),
+            FfiConverterSequenceTypeAndroidAlbumStat.read(buf),
+            FfiConverterSequenceTypeAndroidSourceStat.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AndroidStatsSummary) = (
+            FfiConverterULong.allocationSize(value.`totalPlays`) +
+            FfiConverterULong.allocationSize(value.`totalMinutes`) +
+            FfiConverterULong.allocationSize(value.`uniqueTracks`) +
+            FfiConverterULong.allocationSize(value.`uniqueArtists`) +
+            FfiConverterULong.allocationSize(value.`streakDays`) +
+            FfiConverterSequenceTypeAndroidArtistStat.allocationSize(value.`topArtists`) +
+            FfiConverterSequenceTypeAndroidTrackStat.allocationSize(value.`topTracks`) +
+            FfiConverterSequenceTypeAndroidAlbumStat.allocationSize(value.`topAlbums`) +
+            FfiConverterSequenceTypeAndroidSourceStat.allocationSize(value.`sourceBreakdown`)
+    )
+
+    override fun write(value: AndroidStatsSummary, buf: ByteBuffer) {
+            FfiConverterULong.write(value.`totalPlays`, buf)
+            FfiConverterULong.write(value.`totalMinutes`, buf)
+            FfiConverterULong.write(value.`uniqueTracks`, buf)
+            FfiConverterULong.write(value.`uniqueArtists`, buf)
+            FfiConverterULong.write(value.`streakDays`, buf)
+            FfiConverterSequenceTypeAndroidArtistStat.write(value.`topArtists`, buf)
+            FfiConverterSequenceTypeAndroidTrackStat.write(value.`topTracks`, buf)
+            FfiConverterSequenceTypeAndroidAlbumStat.write(value.`topAlbums`, buf)
+            FfiConverterSequenceTypeAndroidSourceStat.write(value.`sourceBreakdown`, buf)
+    }
+}
+
+
+
 data class AndroidTrack (
     var `id`: kotlin.String, 
     var `title`: kotlin.String, 
@@ -5515,6 +6030,58 @@ public object FfiConverterTypeAndroidTrack: FfiConverterRustBuffer<AndroidTrack>
             FfiConverterBoolean.write(value.`liked`, buf)
             FfiConverterOptionalString.write(value.`albumId`, buf)
             FfiConverterBoolean.write(value.`isExplicit`, buf)
+    }
+}
+
+
+
+data class AndroidTrackStat (
+    var `trackId`: kotlin.String, 
+    var `title`: kotlin.String, 
+    var `artist`: kotlin.String, 
+    var `album`: kotlin.String, 
+    var `sourceTag`: kotlin.String, 
+    var `plays`: kotlin.ULong, 
+    var `minutes`: kotlin.ULong
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAndroidTrackStat: FfiConverterRustBuffer<AndroidTrackStat> {
+    override fun read(buf: ByteBuffer): AndroidTrackStat {
+        return AndroidTrackStat(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AndroidTrackStat) = (
+            FfiConverterString.allocationSize(value.`trackId`) +
+            FfiConverterString.allocationSize(value.`title`) +
+            FfiConverterString.allocationSize(value.`artist`) +
+            FfiConverterString.allocationSize(value.`album`) +
+            FfiConverterString.allocationSize(value.`sourceTag`) +
+            FfiConverterULong.allocationSize(value.`plays`) +
+            FfiConverterULong.allocationSize(value.`minutes`)
+    )
+
+    override fun write(value: AndroidTrackStat, buf: ByteBuffer) {
+            FfiConverterString.write(value.`trackId`, buf)
+            FfiConverterString.write(value.`title`, buf)
+            FfiConverterString.write(value.`artist`, buf)
+            FfiConverterString.write(value.`album`, buf)
+            FfiConverterString.write(value.`sourceTag`, buf)
+            FfiConverterULong.write(value.`plays`, buf)
+            FfiConverterULong.write(value.`minutes`, buf)
     }
 }
 
@@ -5710,6 +6277,38 @@ public object FfiConverterTypeAndroidServerKind: FfiConverterRustBuffer<AndroidS
     override fun allocationSize(value: AndroidServerKind) = 4UL
 
     override fun write(value: AndroidServerKind, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+
+enum class AndroidStatsWindow {
+    
+    WEEK,
+    MONTH,
+    YEAR,
+    ALL_TIME;
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAndroidStatsWindow: FfiConverterRustBuffer<AndroidStatsWindow> {
+    override fun read(buf: ByteBuffer) = try {
+        AndroidStatsWindow.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: AndroidStatsWindow) = 4UL
+
+    override fun write(value: AndroidStatsWindow, buf: ByteBuffer) {
         buf.putInt(value.ordinal + 1)
     }
 }
@@ -6484,6 +7083,62 @@ public object FfiConverterSequenceString: FfiConverterRustBuffer<List<kotlin.Str
 /**
  * @suppress
  */
+public object FfiConverterSequenceTypeAndroidAlbumStat: FfiConverterRustBuffer<List<AndroidAlbumStat>> {
+    override fun read(buf: ByteBuffer): List<AndroidAlbumStat> {
+        val len = buf.getInt()
+        return List<AndroidAlbumStat>(len) {
+            FfiConverterTypeAndroidAlbumStat.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<AndroidAlbumStat>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeAndroidAlbumStat.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<AndroidAlbumStat>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeAndroidAlbumStat.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeAndroidArtistStat: FfiConverterRustBuffer<List<AndroidArtistStat>> {
+    override fun read(buf: ByteBuffer): List<AndroidArtistStat> {
+        val len = buf.getInt()
+        return List<AndroidArtistStat>(len) {
+            FfiConverterTypeAndroidArtistStat.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<AndroidArtistStat>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeAndroidArtistStat.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<AndroidArtistStat>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeAndroidArtistStat.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterSequenceTypeAndroidHeader: FfiConverterRustBuffer<List<AndroidHeader>> {
     override fun read(buf: ByteBuffer): List<AndroidHeader> {
         val len = buf.getInt()
@@ -6820,6 +7475,34 @@ public object FfiConverterSequenceTypeAndroidServerProfile: FfiConverterRustBuff
 /**
  * @suppress
  */
+public object FfiConverterSequenceTypeAndroidSourceStat: FfiConverterRustBuffer<List<AndroidSourceStat>> {
+    override fun read(buf: ByteBuffer): List<AndroidSourceStat> {
+        val len = buf.getInt()
+        return List<AndroidSourceStat>(len) {
+            FfiConverterTypeAndroidSourceStat.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<AndroidSourceStat>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeAndroidSourceStat.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<AndroidSourceStat>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeAndroidSourceStat.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterSequenceTypeAndroidTrack: FfiConverterRustBuffer<List<AndroidTrack>> {
     override fun read(buf: ByteBuffer): List<AndroidTrack> {
         val len = buf.getInt()
@@ -6838,6 +7521,34 @@ public object FfiConverterSequenceTypeAndroidTrack: FfiConverterRustBuffer<List<
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeAndroidTrack.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeAndroidTrackStat: FfiConverterRustBuffer<List<AndroidTrackStat>> {
+    override fun read(buf: ByteBuffer): List<AndroidTrackStat> {
+        val len = buf.getInt()
+        return List<AndroidTrackStat>(len) {
+            FfiConverterTypeAndroidTrackStat.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<AndroidTrackStat>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeAndroidTrackStat.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<AndroidTrackStat>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeAndroidTrackStat.write(it, buf)
         }
     }
 }

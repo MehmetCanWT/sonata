@@ -2,12 +2,16 @@ package dev.sonata.android.data
 
 import kotlinx.coroutines.CancellationException
 import uniffi.sonata_android.AndroidAccountProfile
+import uniffi.sonata_android.AndroidAlbumStat
 import uniffi.sonata_android.AndroidArtistPage
+import uniffi.sonata_android.AndroidArtistStat
 import uniffi.sonata_android.AndroidExploreFeed
 import uniffi.sonata_android.AndroidHomeShelf
 import uniffi.sonata_android.AndroidJellyfinAuth
 import uniffi.sonata_android.AndroidJioSaavnStream
 import uniffi.sonata_android.AndroidJsCipherSolver
+import uniffi.sonata_android.AndroidLastFmConfig
+import uniffi.sonata_android.AndroidListenBrainzConfig
 import uniffi.sonata_android.AndroidLyricLine
 import uniffi.sonata_android.AndroidMoodCategory
 import uniffi.sonata_android.AndroidMoodChip
@@ -17,6 +21,7 @@ import uniffi.sonata_android.AndroidPersonalPlaylist
 import uniffi.sonata_android.AndroidPlaylist
 import uniffi.sonata_android.AndroidResolvedMusicVideo
 import uniffi.sonata_android.AndroidResolvedStream
+import uniffi.sonata_android.AndroidScrobbleConfig
 import uniffi.sonata_android.AndroidServerAlbum
 import uniffi.sonata_android.AndroidServerHealthReport
 import uniffi.sonata_android.AndroidServerLibrary
@@ -24,7 +29,11 @@ import uniffi.sonata_android.AndroidServerProfile
 import uniffi.sonata_android.AndroidServerSearchResult
 import uniffi.sonata_android.AndroidServerSpeedTestReport
 import uniffi.sonata_android.AndroidServerStream
+import uniffi.sonata_android.AndroidSourceStat
+import uniffi.sonata_android.AndroidStatsSummary
+import uniffi.sonata_android.AndroidStatsWindow
 import uniffi.sonata_android.AndroidTrack
+import uniffi.sonata_android.AndroidTrackStat
 import uniffi.sonata_android.AndroidUpdateInfo
 import uniffi.sonata_android.AndroidWebDavListing
 import uniffi.sonata_android.SonataAndroidEngine
@@ -164,6 +173,19 @@ interface SonataEngineGateway {
     suspend fun removeTrackFromPersonalPlaylist(playlistId: String, trackId: String): AndroidPersonalPlaylist
 
     suspend fun attributePersonalTrackToYtm(track: AndroidTrack): String?
+
+    suspend fun getScrobbleConfig(): AndroidScrobbleConfig
+    suspend fun saveScrobbleConfig(config: AndroidScrobbleConfig): AndroidScrobbleConfig
+    suspend fun scrobbleNowPlaying(track: AndroidTrack)
+    suspend fun scrobbleSubmit(track: AndroidTrack, timestampUnix: ULong?)
+
+    suspend fun recordListeningStat(
+        track: AndroidTrack,
+        sourceTag: String,
+        playedSecs: ULong,
+        playedAtUnix: ULong?,
+    )
+    suspend fun queryListeningStats(window: AndroidStatsWindow): AndroidStatsSummary
 }
 
 /** Production [SonataEngineGateway] backed directly by UniFFI async [SonataAndroidEngine]. */
@@ -429,4 +451,26 @@ class NativeSonataEngineGateway(
 
     override suspend fun attributePersonalTrackToYtm(track: AndroidTrack): String? =
         engine.attributePersonalTrackToYtm(track)
+
+    override suspend fun getScrobbleConfig(): AndroidScrobbleConfig =
+        engine.getScrobbleConfig()
+
+    override suspend fun saveScrobbleConfig(config: AndroidScrobbleConfig): AndroidScrobbleConfig =
+        engine.saveScrobbleConfig(config)
+
+    override suspend fun scrobbleNowPlaying(track: AndroidTrack) =
+        engine.scrobbleNowPlaying(track)
+
+    override suspend fun scrobbleSubmit(track: AndroidTrack, timestampUnix: ULong?) =
+        engine.scrobbleSubmit(track, timestampUnix)
+
+    override suspend fun recordListeningStat(
+        track: AndroidTrack,
+        sourceTag: String,
+        playedSecs: ULong,
+        playedAtUnix: ULong?,
+    ) = engine.recordListeningStat(track, sourceTag, playedSecs, playedAtUnix)
+
+    override suspend fun queryListeningStats(window: AndroidStatsWindow): AndroidStatsSummary =
+        engine.queryListeningStats(window)
 }

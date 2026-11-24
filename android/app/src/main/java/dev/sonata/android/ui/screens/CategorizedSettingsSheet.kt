@@ -47,14 +47,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -79,6 +83,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil3.compose.AsyncImage
+import dev.sonata.android.connect.ConnectUiState
 import dev.sonata.android.data.AppLanguage
 import dev.sonata.android.data.AudioQualityTier
 import dev.sonata.android.data.DesignTheme
@@ -99,14 +104,20 @@ import dev.sonata.android.ui.PillSegmentedControl
 import dev.sonata.android.ui.SonataIcons
 import dev.sonata.android.ui.rememberArtworkRequest
 import dev.sonata.android.ui.rememberSafeTopInset
+import dev.sonata.android.ui.i18n.EcosystemStrings
 import dev.sonata.android.ui.i18n.LocalSonataStrings
 import dev.sonata.android.ui.i18n.SonataStrings
 import dev.sonata.android.ui.i18n.SourcesStrings
+import dev.sonata.android.ui.i18n.ecosystemStrings
 import dev.sonata.android.ui.i18n.sourcesStrings
 import dev.sonata.android.ui.theme.BasicPalette
 import dev.sonata.android.ui.theme.LocalLunariaColors
 import uniffi.sonata_android.AndroidAccountProfile
+import uniffi.sonata_android.AndroidLastFmConfig
+import uniffi.sonata_android.AndroidListenBrainzConfig
+import uniffi.sonata_android.AndroidScrobbleConfig
 import uniffi.sonata_android.AndroidServerProfile
+import uniffi.sonata_android.AndroidStatsSummary
 import uniffi.sonata_android.AndroidUpdateInfo
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -128,6 +139,8 @@ enum class SettingsCategory(
     SOURCES("Sources", SonataIcons.Folder),
     DOWNLOADS("Downloads", SonataIcons.Download),
     PLAYBACK("Playback", SonataIcons.Play),
+    CONNECT("Sonata Connect", SonataIcons.Wifi),
+    SCROBBLING("Scrobbling", SonataIcons.MusicNote),
     CONTENT("Content Preferences", SonataIcons.TabExplore),
     APPEARANCE("Appearance", SonataIcons.Sparkles),
     PERFORMANCE("Performance", SonataIcons.GraphicEq),
@@ -162,10 +175,16 @@ private fun SettingsChoiceKind.localizedTitle(strings: SonataStrings): String = 
     SettingsChoiceKind.DISCORD_ACTIVITY_TYPE -> strings.discordActivityType
 }
 
-private fun SettingsCategory.localizedTitle(strings: SonataStrings, sources: SourcesStrings): String = when (this) {
+private fun SettingsCategory.localizedTitle(
+    strings: SonataStrings,
+    sources: SourcesStrings,
+    eco: EcosystemStrings,
+): String = when (this) {
     SettingsCategory.SOURCES -> sources.sourcesTitle
     SettingsCategory.DOWNLOADS -> strings.catDownloads
     SettingsCategory.PLAYBACK -> strings.catPlayback
+    SettingsCategory.CONNECT -> eco.connectTitle
+    SettingsCategory.SCROBBLING -> eco.scrobblingTitle
     SettingsCategory.CONTENT -> strings.catContent
     SettingsCategory.APPEARANCE -> strings.catAppearance
     SettingsCategory.PERFORMANCE -> strings.catPerformance
@@ -255,9 +274,19 @@ fun SonataSettingsScreen(
     onProbeServerHealth: (String) -> Unit = {},
     onRunServerSpeedTest: (String) -> Unit = {},
     onOpenServer: (String?) -> Unit = { onOpenServers() },
+    scrobbleConfig: AndroidScrobbleConfig = AndroidScrobbleConfig(
+        lastfm = AndroidLastFmConfig(false, "", "", "", ""),
+        listenbrainz = AndroidListenBrainzConfig(false, "", ""),
+    ),
+    onSaveScrobbleConfig: (AndroidScrobbleConfig) -> Unit = {},
+    connectState: ConnectUiState = ConnectUiState(),
+    onOpenConnect: () -> Unit = {},
+    statsSummary: AndroidStatsSummary? = null,
+    onOpenStats: () -> Unit = {},
 ) {
     val strings = LocalSonataStrings.current
     val srcStrings = remember(settings.appLanguage) { sourcesStrings(settings.appLanguage) }
+    val ecoStrings = remember(settings.appLanguage) { ecosystemStrings(settings.appLanguage) }
     val tokens = LocalLunariaColors.current
     val statusTop = rememberSafeTopInset()
     var route by remember { mutableStateOf<SettingsRoute>(SettingsRoute.Root) }
@@ -392,7 +421,7 @@ fun SonataSettingsScreen(
                     is SettingsRoute.Category -> strings.settingsTitle
                     is SettingsRoute.Choice -> when (val p = current.parent) {
                         SettingsRoute.Root -> strings.settingsTitle
-                        is SettingsRoute.Category -> p.category.localizedTitle(strings, srcStrings)
+                        is SettingsRoute.Category -> p.category.localizedTitle(strings, srcStrings, ecoStrings)
                         is SettingsRoute.Choice -> p.kind.localizedTitle(strings)
                     }
                 }
@@ -460,7 +489,7 @@ fun SonataSettingsScreen(
                                 SettingsSearchMatcher(if (activeCategory == null) searchQuery else "")
                             }
 
-                            val pageTitle = activeCategory?.localizedTitle(strings, srcStrings) ?: strings.settingsTitle
+                            val pageTitle = activeCategory?.localizedTitle(strings, srcStrings, ecoStrings) ?: strings.settingsTitle
                             SettingsPageTitle(title = pageTitle, color = primaryText)
 
                             if (activeCategory == null) {
@@ -596,6 +625,16 @@ fun SonataSettingsScreen(
                                                 SettingsCategory.DOWNLOADS ->
                                                     "${strings.tracksCount(downloadStorageStats.trackCount)} · ${formatStorageBytes(downloadStorageStats.downloadedBytes)}"
                                                 SettingsCategory.PLAYBACK -> strings.playbackSummary
+                                                SettingsCategory.CONNECT ->
+                                                    connectState.activePeer?.let { ecoStrings.connectConnectedTo(it.deviceName) }
+                                                        ?: ecoStrings.connectSubtitle
+                                                SettingsCategory.SCROBBLING -> {
+                                                    val activeCount = listOf(
+                                                        scrobbleConfig.lastfm.enabled,
+                                                        scrobbleConfig.listenbrainz.enabled,
+                                                    ).count { it }
+                                                    if (activeCount > 0) ecoStrings.scrobbleThresholdHint else ecoStrings.scrobblingSubtitle
+                                                }
                                                 SettingsCategory.CONTENT -> strings.contentSummary
                                                 SettingsCategory.APPEARANCE ->
                                                     "${designThemeLabel(settings.resolvedDesignTheme())} · ${appLanguageLabel(settings.appLanguage, strings)}"
@@ -614,7 +653,7 @@ fun SonataSettingsScreen(
                                             }
                                             SettingsRow(
                                                 icon = cat.icon,
-                                                title = cat.localizedTitle(strings, srcStrings),
+                                                title = cat.localizedTitle(strings, srcStrings, ecoStrings),
                                                 subtitle = subtitle,
                                                 primaryText = primaryText,
                                                 secondaryText = secondaryText,
@@ -725,10 +764,15 @@ fun SonataSettingsScreen(
 
                                     if (search.matches(
                                             "Playback",
+                                            "Gapless",
+                                            "Aralıksız",
+                                            "Непрерывное",
                                             "Autoplay",
                                             "Loudness",
                                             "Normalization",
                                             "Crossfade",
+                                            "Geçiş",
+                                            "Кроссфейд",
                                             "Skip Silence",
                                             "Sleep Timer",
                                             "Fade Out",
@@ -740,6 +784,7 @@ fun SonataSettingsScreen(
                                         matchCount++
                                         PlaybackCategoryContent(
                                             settings = settings,
+                                            eco = ecoStrings,
                                             search = search,
                                             cardBg = cardBg,
                                             dividerColor = dividerColor,
@@ -747,6 +792,56 @@ fun SonataSettingsScreen(
                                             secondaryText = secondaryText,
                                             accentTint = accentTint,
                                             onUpdateSettings = onUpdateSettings,
+                                        )
+                                        Spacer(Modifier.height(14.dp))
+                                    }
+
+                                    if (search.matches(
+                                            "Connect",
+                                            "Sonata Connect",
+                                            "LAN",
+                                            "PIN",
+                                            "Transfer",
+                                            "Aktar",
+                                            "Передать",
+                                            "Pair",
+                                            "Eşleştir",
+                                        )
+                                    ) {
+                                        matchCount++
+                                        ConnectCategoryContent(
+                                            settings = settings,
+                                            eco = ecoStrings,
+                                            connectState = connectState,
+                                            cardBg = cardBg,
+                                            dividerColor = dividerColor,
+                                            primaryText = primaryText,
+                                            secondaryText = secondaryText,
+                                            onUpdateSettings = onUpdateSettings,
+                                            onOpenConnect = onOpenConnect,
+                                        )
+                                        Spacer(Modifier.height(14.dp))
+                                    }
+
+                                    if (search.matches(
+                                            "Scrobble",
+                                            "Scrobbling",
+                                            "Skroplama",
+                                            "Скробблинг",
+                                            "Last.fm",
+                                            "ListenBrainz",
+                                        )
+                                    ) {
+                                        matchCount++
+                                        ScrobblingCategoryContent(
+                                            eco = ecoStrings,
+                                            scrobbleConfig = scrobbleConfig,
+                                            cardBg = cardBg,
+                                            dividerColor = dividerColor,
+                                            primaryText = primaryText,
+                                            secondaryText = secondaryText,
+                                            accentTint = accentTint,
+                                            onSaveScrobbleConfig = onSaveScrobbleConfig,
                                         )
                                         Spacer(Modifier.height(14.dp))
                                     }
@@ -860,13 +955,16 @@ fun SonataSettingsScreen(
                                         Spacer(Modifier.height(14.dp))
                                     }
 
-                                    if (search.matches("Backup", "Export", "Import", "JSON", "Data")) {
+                                    if (search.matches("Backup", "Export", "Import", "JSON", "Data", "Stats", "Listening", "İstatistik", "Статистика")) {
                                         matchCount++
                                         YourDataCategoryContent(
+                                            eco = ecoStrings,
+                                            statsSummary = statsSummary,
                                             cardBg = cardBg,
                                             dividerColor = dividerColor,
                                             primaryText = primaryText,
                                             secondaryText = secondaryText,
+                                            onOpenStats = onOpenStats,
                                             onExportBackup = onExportBackup,
                                             onImportBackup = onImportBackup,
                                         )
@@ -1012,6 +1110,7 @@ fun SonataSettingsScreen(
 
                                     SettingsCategory.PLAYBACK -> PlaybackCategoryContent(
                                         settings = settings,
+                                        eco = ecoStrings,
                                         search = search,
                                         cardBg = cardBg,
                                         dividerColor = dividerColor,
@@ -1019,6 +1118,29 @@ fun SonataSettingsScreen(
                                         secondaryText = secondaryText,
                                         accentTint = accentTint,
                                         onUpdateSettings = onUpdateSettings,
+                                    )
+
+                                    SettingsCategory.CONNECT -> ConnectCategoryContent(
+                                        settings = settings,
+                                        eco = ecoStrings,
+                                        connectState = connectState,
+                                        cardBg = cardBg,
+                                        dividerColor = dividerColor,
+                                        primaryText = primaryText,
+                                        secondaryText = secondaryText,
+                                        onUpdateSettings = onUpdateSettings,
+                                        onOpenConnect = onOpenConnect,
+                                    )
+
+                                    SettingsCategory.SCROBBLING -> ScrobblingCategoryContent(
+                                        eco = ecoStrings,
+                                        scrobbleConfig = scrobbleConfig,
+                                        cardBg = cardBg,
+                                        dividerColor = dividerColor,
+                                        primaryText = primaryText,
+                                        secondaryText = secondaryText,
+                                        accentTint = accentTint,
+                                        onSaveScrobbleConfig = onSaveScrobbleConfig,
                                     )
 
                                     SettingsCategory.CONTENT -> ContentPreferencesCategoryContent(
@@ -1069,10 +1191,13 @@ fun SonataSettingsScreen(
                                     )
 
                                     SettingsCategory.YOUR_DATA -> YourDataCategoryContent(
+                                        eco = ecoStrings,
+                                        statsSummary = statsSummary,
                                         cardBg = cardBg,
                                         dividerColor = dividerColor,
                                         primaryText = primaryText,
                                         secondaryText = secondaryText,
+                                        onOpenStats = onOpenStats,
                                         onExportBackup = onExportBackup,
                                         onImportBackup = onImportBackup,
                                     )
@@ -1362,6 +1487,7 @@ private fun DownloadsCategoryContent(
 @Composable
 private fun PlaybackCategoryContent(
     settings: SonataSettingsState,
+    eco: EcosystemStrings,
     search: SettingsSearchMatcher,
     cardBg: Color,
     dividerColor: Color,
@@ -1377,6 +1503,16 @@ private fun PlaybackCategoryContent(
         header = strings.hdrQueueTransitions,
         secondaryText = secondaryText,
     ) {
+        if (search.matches("Gapless", "Aralıksız", "Непрерывное", "Queue", "Transitions")) {
+            SettingsSwitchRow(
+                title = eco.gaplessPlaybackTitle,
+                subtitle = eco.gaplessPlaybackDescription,
+                checked = settings.gaplessEnabled,
+                primaryText = primaryText,
+                secondaryText = secondaryText,
+                onCheckedChange = { enabled -> onUpdateSettings { it.copy(gaplessEnabled = enabled) } },
+            )
+        }
         if (search.matches("Autoplay", "Sonsuz", "Бесконечный", "Queue", "Similar")) {
             SettingsSwitchRow(
                 title = strings.autoplay,
@@ -1398,43 +1534,55 @@ private fun PlaybackCategoryContent(
             )
         }
         if (search.matches("Crossfade", "Blend", "Transitions", "Geçiş", "Кроссфейд")) {
+            val effectiveSeconds = if (settings.crossfadeEnabled) settings.crossfadeSeconds.coerceIn(1, 12) else 0
             SettingsSwitchRow(
-                title = strings.crossfade,
-                subtitle = if (settings.crossfadeEnabled) strings.crossfadeSecondsOverlap(settings.crossfadeSeconds) else strings.off,
+                title = eco.crossfadeTitle,
+                subtitle = if (effectiveSeconds > 0) eco.crossfadeSecondsValue(effectiveSeconds) else eco.crossfadeOff,
                 checked = settings.crossfadeEnabled,
                 primaryText = primaryText,
                 secondaryText = secondaryText,
                 onCheckedChange = { enabled -> onUpdateSettings { it.copy(crossfadeEnabled = enabled) } },
             )
-            if (settings.crossfadeEnabled) {
-                addRow(dividerStart = ROW_INSET) {
+            addRow(dividerStart = ROW_INSET) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = ROW_INSET, vertical = 10.dp),
                 ) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text(strings.durationLabel, style = MaterialTheme.typography.bodySmall, color = secondaryText)
+                        Text(eco.crossfadeDescription, style = MaterialTheme.typography.bodySmall, color = secondaryText, modifier = Modifier.weight(1f))
+                        Spacer(Modifier.width(8.dp))
                         Text(
-                            "${settings.crossfadeSeconds}s",
+                            eco.crossfadeSecondsValue(effectiveSeconds),
                             style = MaterialTheme.typography.labelMedium,
                             color = primaryText,
                         )
                     }
                     Slider(
-                        value = settings.crossfadeSeconds.toFloat(),
+                        value = effectiveSeconds.toFloat(),
                         onValueChange = { value ->
-                            onUpdateSettings { it.copy(crossfadeSeconds = value.roundToInt().coerceIn(1, 12)) }
+                            val sec = value.roundToInt().coerceIn(0, 12)
+                            onUpdateSettings { current ->
+                                if (sec == 0) {
+                                    current.copy(crossfadeEnabled = false)
+                                } else {
+                                    current.copy(crossfadeEnabled = true, crossfadeSeconds = sec)
+                                }
+                            }
                         },
-                        valueRange = 1f..12f,
-                        steps = 10,
+                        valueRange = 0f..12f,
+                        steps = 11,
                         colors = SliderDefaults.colors(
                             thumbColor = accentTint,
                             activeTrackColor = accentTint,
                             inactiveTrackColor = dividerColor,
                         ),
                     )
-                }
+                    Text(
+                        text = eco.crossfadeVideoBypassHint,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = secondaryText,
+                    )
                 }
             }
         }
@@ -2155,14 +2303,37 @@ private fun StorageCategoryContent(
 
 @Composable
 private fun YourDataCategoryContent(
+    eco: EcosystemStrings,
+    statsSummary: AndroidStatsSummary?,
     cardBg: Color,
     dividerColor: Color,
     primaryText: Color,
     secondaryText: Color,
+    onOpenStats: () -> Unit,
     onExportBackup: () -> Unit,
     onImportBackup: () -> Unit,
 ) {
     val strings = LocalSonataStrings.current
+    SettingsGroup(
+        cardBg = cardBg,
+        dividerColor = dividerColor,
+        header = eco.listeningStatsTitle,
+        footer = eco.statsPrivacyNote,
+        secondaryText = secondaryText,
+    ) {
+        SettingsRow(
+            icon = SonataIcons.Sparkles,
+            title = eco.listeningStatsTitle,
+            subtitle = eco.listeningStatsSubtitle,
+            value = statsSummary?.let { "${it.totalPlays} · ${it.totalMinutes}m" } ?: "",
+            primaryText = primaryText,
+            secondaryText = secondaryText,
+            onClick = onOpenStats,
+        )
+    }
+
+    Spacer(Modifier.height(14.dp))
+
     SettingsGroup(
         cardBg = cardBg,
         dividerColor = dividerColor,
@@ -2184,6 +2355,261 @@ private fun YourDataCategoryContent(
             secondaryText = secondaryText,
             onClick = onImportBackup,
         )
+    }
+}
+
+@Composable
+private fun ConnectCategoryContent(
+    settings: SonataSettingsState,
+    eco: EcosystemStrings,
+    connectState: ConnectUiState,
+    cardBg: Color,
+    dividerColor: Color,
+    primaryText: Color,
+    secondaryText: Color,
+    onUpdateSettings: ((SonataSettingsState) -> SonataSettingsState) -> Unit,
+    onOpenConnect: () -> Unit,
+) {
+    val strings = LocalSonataStrings.current
+    var nameDraft by remember(settings.connectDeviceName) { mutableStateOf(settings.connectDeviceName) }
+    SettingsGroup(
+        cardBg = cardBg,
+        dividerColor = dividerColor,
+        header = eco.connectTitle,
+        footer = eco.connectSubtitle,
+        secondaryText = secondaryText,
+    ) {
+        SettingsSwitchRow(
+            title = eco.connectEnableTitle,
+            subtitle = connectState.activePeer?.let { eco.connectConnectedTo(it.deviceName) }
+                ?: if (settings.connectEnabled) eco.connectScanning else eco.connectNoDevices,
+            checked = settings.connectEnabled,
+            primaryText = primaryText,
+            secondaryText = secondaryText,
+            onCheckedChange = { enabled -> onUpdateSettings { it.copy(connectEnabled = enabled) } },
+        )
+        addRow(dividerStart = ROW_INSET) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = ROW_INSET, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedTextField(
+                    value = nameDraft,
+                    onValueChange = { nameDraft = it },
+                    label = { Text(eco.connectDeviceNameLabel) },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(
+                    onClick = {
+                        val cleaned = nameDraft.trim().ifEmpty { "Sonata Android" }
+                        onUpdateSettings { it.copy(connectDeviceName = cleaned) }
+                    },
+                ) {
+                    Text(strings.save, color = primaryText, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+        SettingsRow(
+            icon = SonataIcons.Wifi,
+            title = eco.connectDiscoverTitle,
+            subtitle = eco.connectPairPinHint,
+            value = connectState.discoveredDevices.size.toString(),
+            primaryText = primaryText,
+            secondaryText = secondaryText,
+            onClick = onOpenConnect,
+        )
+    }
+}
+
+@Composable
+private fun ScrobblingCategoryContent(
+    eco: EcosystemStrings,
+    scrobbleConfig: AndroidScrobbleConfig,
+    cardBg: Color,
+    dividerColor: Color,
+    primaryText: Color,
+    secondaryText: Color,
+    accentTint: Color,
+    onSaveScrobbleConfig: (AndroidScrobbleConfig) -> Unit,
+) {
+    val strings = LocalSonataStrings.current
+    var lfmEnabled by remember(scrobbleConfig.lastfm) { mutableStateOf(scrobbleConfig.lastfm.enabled) }
+    var lfmUser by remember(scrobbleConfig.lastfm) { mutableStateOf(scrobbleConfig.lastfm.username) }
+    var lfmApiKey by remember(scrobbleConfig.lastfm) { mutableStateOf(scrobbleConfig.lastfm.apiKey) }
+    var lfmApiSecret by remember(scrobbleConfig.lastfm) { mutableStateOf(scrobbleConfig.lastfm.apiSecret) }
+    var lfmSessionKey by remember(scrobbleConfig.lastfm) { mutableStateOf(scrobbleConfig.lastfm.sessionKey) }
+
+    var lbEnabled by remember(scrobbleConfig.listenbrainz) { mutableStateOf(scrobbleConfig.listenbrainz.enabled) }
+    var lbUser by remember(scrobbleConfig.listenbrainz) { mutableStateOf(scrobbleConfig.listenbrainz.username) }
+    var lbToken by remember(scrobbleConfig.listenbrainz) { mutableStateOf(scrobbleConfig.listenbrainz.token) }
+
+    val saveCurrent: () -> Unit = {
+        onSaveScrobbleConfig(
+            AndroidScrobbleConfig(
+                lastfm = AndroidLastFmConfig(
+                    enabled = lfmEnabled,
+                    apiKey = lfmApiKey.trim(),
+                    apiSecret = lfmApiSecret.trim(),
+                    sessionKey = lfmSessionKey.trim(),
+                    username = lfmUser.trim(),
+                ),
+                listenbrainz = AndroidListenBrainzConfig(
+                    enabled = lbEnabled,
+                    token = lbToken.trim(),
+                    username = lbUser.trim(),
+                ),
+            ),
+        )
+    }
+
+    SettingsGroup(
+        cardBg = cardBg,
+        dividerColor = dividerColor,
+        header = eco.lastFmTitle,
+        footer = eco.scrobbleThresholdHint,
+        secondaryText = secondaryText,
+    ) {
+        SettingsSwitchRow(
+            title = eco.lastFmTitle,
+            subtitle = if (lfmEnabled && lfmUser.isNotBlank()) {
+                eco.scrobbleStatusConnected(lfmUser)
+            } else {
+                eco.lastFmDescription
+            },
+            checked = lfmEnabled,
+            primaryText = primaryText,
+            secondaryText = secondaryText,
+            onCheckedChange = { checked ->
+                lfmEnabled = checked
+                onSaveScrobbleConfig(
+                    scrobbleConfig.copy(
+                        lastfm = AndroidLastFmConfig(
+                            enabled = checked,
+                            apiKey = lfmApiKey.trim(),
+                            apiSecret = lfmApiSecret.trim(),
+                            sessionKey = lfmSessionKey.trim(),
+                            username = lfmUser.trim(),
+                        ),
+                    ),
+                )
+            },
+        )
+        addRow(dividerStart = ROW_INSET) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = ROW_INSET, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedTextField(
+                    value = lfmUser,
+                    onValueChange = { lfmUser = it },
+                    label = { Text("Username") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = lfmApiKey,
+                    onValueChange = { lfmApiKey = it },
+                    label = { Text("API Key") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = lfmApiSecret,
+                    onValueChange = { lfmApiSecret = it },
+                    label = { Text("API Secret") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = lfmSessionKey,
+                    onValueChange = { lfmSessionKey = it },
+                    label = { Text("Session Key") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Button(
+                    onClick = saveCurrent,
+                    colors = ButtonDefaults.buttonColors(containerColor = accentTint),
+                    modifier = Modifier.align(Alignment.End),
+                ) {
+                    Text(strings.save, color = cardBg)
+                }
+            }
+        }
+    }
+
+    Spacer(Modifier.height(14.dp))
+
+    SettingsGroup(
+        cardBg = cardBg,
+        dividerColor = dividerColor,
+        header = eco.listenBrainzTitle,
+        footer = eco.listenBrainzDescription,
+        secondaryText = secondaryText,
+    ) {
+        SettingsSwitchRow(
+            title = eco.listenBrainzTitle,
+            subtitle = if (lbEnabled && lbToken.isNotBlank()) {
+                eco.scrobbleStatusConnected(lbUser.ifBlank { eco.listenBrainzTitle })
+            } else {
+                eco.scrobbleStatusNotSignedIn
+            },
+            checked = lbEnabled,
+            primaryText = primaryText,
+            secondaryText = secondaryText,
+            onCheckedChange = { checked ->
+                lbEnabled = checked
+                onSaveScrobbleConfig(
+                    scrobbleConfig.copy(
+                        listenbrainz = AndroidListenBrainzConfig(
+                            enabled = checked,
+                            token = lbToken.trim(),
+                            username = lbUser.trim(),
+                        ),
+                    ),
+                )
+            },
+        )
+        addRow(dividerStart = ROW_INSET) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = ROW_INSET, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedTextField(
+                    value = lbUser,
+                    onValueChange = { lbUser = it },
+                    label = { Text("Username") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = lbToken,
+                    onValueChange = { lbToken = it },
+                    label = { Text(eco.listenBrainzTokenHint) },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Button(
+                    onClick = saveCurrent,
+                    colors = ButtonDefaults.buttonColors(containerColor = accentTint),
+                    modifier = Modifier.align(Alignment.End),
+                ) {
+                    Text(strings.save, color = cardBg)
+                }
+            }
+        }
     }
 }
 

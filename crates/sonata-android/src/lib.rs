@@ -36,12 +36,19 @@ use sonata_core::providers::ytmusic::{
     MusicVideoSyncSegment, YtAccountProfile, YtMusicClient,
 };
 use sonata_core::providers::{Playlist, ProviderSource, Track};
+use sonata_core::scrobble::{
+    LastFmConfig, ListenBrainzConfig, ScrobbleClient, ScrobbleConfig, ScrobbleTrack,
+};
+use sonata_core::stats::{
+    AlbumStat, ArtistStat, SourceStat, StatsDb, StatsSummary, StatsWindow, TrackStat,
+};
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const CACHE_PROFILE_FILE: &str = "android_profile.json";
 const CACHE_HOME_FILE: &str = "android_home.json";
@@ -1005,6 +1012,266 @@ impl std::fmt::Debug for AndroidJellyfinAuth {
     }
 }
 
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+pub struct AndroidLastFmConfig {
+    pub enabled: bool,
+    pub api_key: String,
+    pub api_secret: String,
+    pub session_key: String,
+    pub username: String,
+}
+
+impl std::fmt::Debug for AndroidLastFmConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let redact = |v: &str| -> &'static str {
+            if v.trim().is_empty() {
+                "<none>"
+            } else {
+                "[redacted]"
+            }
+        };
+        f.debug_struct("AndroidLastFmConfig")
+            .field("enabled", &self.enabled)
+            .field("api_key", &redact(&self.api_key))
+            .field("api_secret", &redact(&self.api_secret))
+            .field("session_key", &redact(&self.session_key))
+            .field("username", &self.username)
+            .finish()
+    }
+}
+
+impl From<LastFmConfig> for AndroidLastFmConfig {
+    fn from(c: LastFmConfig) -> Self {
+        Self {
+            enabled: c.enabled,
+            api_key: c.api_key,
+            api_secret: c.api_secret,
+            session_key: c.session_key,
+            username: c.username,
+        }
+    }
+}
+
+impl From<AndroidLastFmConfig> for LastFmConfig {
+    fn from(c: AndroidLastFmConfig) -> Self {
+        Self {
+            enabled: c.enabled,
+            api_key: c.api_key.trim().to_string(),
+            api_secret: c.api_secret.trim().to_string(),
+            session_key: c.session_key.trim().to_string(),
+            username: c.username.trim().to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+pub struct AndroidListenBrainzConfig {
+    pub enabled: bool,
+    pub token: String,
+    pub username: String,
+}
+
+impl std::fmt::Debug for AndroidListenBrainzConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let token_status = if self.token.trim().is_empty() {
+            "<none>"
+        } else {
+            "[redacted]"
+        };
+        f.debug_struct("AndroidListenBrainzConfig")
+            .field("enabled", &self.enabled)
+            .field("token", &token_status)
+            .field("username", &self.username)
+            .finish()
+    }
+}
+
+impl From<ListenBrainzConfig> for AndroidListenBrainzConfig {
+    fn from(c: ListenBrainzConfig) -> Self {
+        Self {
+            enabled: c.enabled,
+            token: c.token,
+            username: c.username,
+        }
+    }
+}
+
+impl From<AndroidListenBrainzConfig> for ListenBrainzConfig {
+    fn from(c: AndroidListenBrainzConfig) -> Self {
+        Self {
+            enabled: c.enabled,
+            token: c.token.trim().to_string(),
+            username: c.username.trim().to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+pub struct AndroidScrobbleConfig {
+    pub lastfm: AndroidLastFmConfig,
+    pub listenbrainz: AndroidListenBrainzConfig,
+}
+
+impl From<ScrobbleConfig> for AndroidScrobbleConfig {
+    fn from(c: ScrobbleConfig) -> Self {
+        Self {
+            lastfm: AndroidLastFmConfig::from(c.lastfm),
+            listenbrainz: AndroidListenBrainzConfig::from(c.listenbrainz),
+        }
+    }
+}
+
+impl From<AndroidScrobbleConfig> for ScrobbleConfig {
+    fn from(c: AndroidScrobbleConfig) -> Self {
+        Self {
+            lastfm: LastFmConfig::from(c.lastfm),
+            listenbrainz: ListenBrainzConfig::from(c.listenbrainz),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, uniffi::Enum)]
+pub enum AndroidStatsWindow {
+    Week,
+    Month,
+    Year,
+    AllTime,
+}
+
+impl From<AndroidStatsWindow> for StatsWindow {
+    fn from(w: AndroidStatsWindow) -> Self {
+        match w {
+            AndroidStatsWindow::Week => Self::Week,
+            AndroidStatsWindow::Month => Self::Month,
+            AndroidStatsWindow::Year => Self::Year,
+            AndroidStatsWindow::AllTime => Self::AllTime,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+pub struct AndroidArtistStat {
+    pub artist: String,
+    pub plays: u64,
+    pub minutes: u64,
+}
+
+impl From<ArtistStat> for AndroidArtistStat {
+    fn from(s: ArtistStat) -> Self {
+        Self {
+            artist: s.artist,
+            plays: s.plays,
+            minutes: s.minutes,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+pub struct AndroidTrackStat {
+    pub track_id: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub source_tag: String,
+    pub plays: u64,
+    pub minutes: u64,
+}
+
+impl From<TrackStat> for AndroidTrackStat {
+    fn from(s: TrackStat) -> Self {
+        Self {
+            track_id: s.track_id,
+            title: s.title,
+            artist: s.artist,
+            album: s.album,
+            source_tag: s.source_tag,
+            plays: s.plays,
+            minutes: s.minutes,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+pub struct AndroidAlbumStat {
+    pub album: String,
+    pub artist: String,
+    pub plays: u64,
+    pub minutes: u64,
+}
+
+impl From<AlbumStat> for AndroidAlbumStat {
+    fn from(s: AlbumStat) -> Self {
+        Self {
+            album: s.album,
+            artist: s.artist,
+            plays: s.plays,
+            minutes: s.minutes,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+pub struct AndroidSourceStat {
+    pub source_tag: String,
+    pub plays: u64,
+    pub minutes: u64,
+}
+
+impl From<SourceStat> for AndroidSourceStat {
+    fn from(s: SourceStat) -> Self {
+        Self {
+            source_tag: s.source_tag,
+            plays: s.plays,
+            minutes: s.minutes,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+pub struct AndroidStatsSummary {
+    pub total_plays: u64,
+    pub total_minutes: u64,
+    pub unique_tracks: u64,
+    pub unique_artists: u64,
+    pub streak_days: u64,
+    pub top_artists: Vec<AndroidArtistStat>,
+    pub top_tracks: Vec<AndroidTrackStat>,
+    pub top_albums: Vec<AndroidAlbumStat>,
+    pub source_breakdown: Vec<AndroidSourceStat>,
+}
+
+impl From<StatsSummary> for AndroidStatsSummary {
+    fn from(s: StatsSummary) -> Self {
+        Self {
+            total_plays: s.total_plays,
+            total_minutes: s.total_minutes,
+            unique_tracks: s.unique_tracks,
+            unique_artists: s.unique_artists,
+            streak_days: s.streak_days,
+            top_artists: s
+                .top_artists
+                .into_iter()
+                .map(AndroidArtistStat::from)
+                .collect(),
+            top_tracks: s
+                .top_tracks
+                .into_iter()
+                .map(AndroidTrackStat::from)
+                .collect(),
+            top_albums: s
+                .top_albums
+                .into_iter()
+                .map(AndroidAlbumStat::from)
+                .collect(),
+            source_breakdown: s
+                .source_breakdown
+                .into_iter()
+                .map(AndroidSourceStat::from)
+                .collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct AndroidSolvedCipher {
     pub sig: Option<String>,
@@ -1074,6 +1341,9 @@ pub struct SonataAndroidEngine {
     server_lock: Arc<tokio::sync::Mutex<()>>,
     server_id_seq: std::sync::atomic::AtomicU64,
     personal_playlists: PersonalPlaylistStore,
+    scrobble_lock: Arc<tokio::sync::Mutex<()>>,
+    scrobble_client: ScrobbleClient,
+    stats_db: Arc<std::sync::Mutex<Option<StatsDb>>>,
 }
 
 impl SonataAndroidEngine {
@@ -1246,6 +1516,59 @@ impl SonataAndroidEngine {
             resolver,
         }
     }
+
+    async fn load_scrobble_config_internal(&self) -> Result<ScrobbleConfig, SonataAndroidError> {
+        let paths = self.paths.clone();
+        let cfg = tokio::task::spawn_blocking(move || ScrobbleConfig::load_from_paths(&paths))
+            .await
+            .map_err(|err| SonataAndroidError::Internal {
+                reason: format!("Scrobble config read task failed: {err}"),
+            })??;
+        Ok(cfg)
+    }
+
+    fn open_or_get_stats_db_blocking(
+        stats_db: &Arc<std::sync::Mutex<Option<StatsDb>>>,
+        paths: &CorePaths,
+    ) -> Result<StatsDb, SonataAndroidError> {
+        let mut guard = stats_db
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(existing) = guard.as_ref() {
+            return Ok(existing.clone());
+        }
+        let opened = StatsDb::open_with_paths(paths)?;
+        *guard = Some(opened.clone());
+        Ok(opened)
+    }
+
+    fn infer_source_tag(track_id: &str, explicit_tag: &str) -> String {
+        let trimmed = explicit_tag.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+        if track_id.starts_with("local:") {
+            "LOC".to_string()
+        } else if track_id.starts_with("jellyfin:") {
+            "JFN".to_string()
+        } else if track_id.starts_with("subsonic:") {
+            "SUB".to_string()
+        } else if track_id.starts_with("smb:") {
+            "SMB".to_string()
+        } else if track_id.starts_with("webdav:") {
+            "DAV".to_string()
+        } else if track_id.starts_with("jiosaavn:") {
+            "JIO".to_string()
+        } else {
+            "YTM".to_string()
+        }
+    }
+
+    fn current_unix_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs())
+    }
 }
 
 #[uniffi::export(async_runtime = "tokio")]
@@ -1272,6 +1595,7 @@ impl SonataAndroidEngine {
         let cookies = ExtractedCookies::load_saved_ytm_header(&paths).unwrap_or_default();
         let session = Self::build_session(&http, &paths, cache_db.clone(), cookies, None, "en");
         let personal_playlists = PersonalPlaylistStore::new(&paths);
+        let scrobble_client = ScrobbleClient::new();
 
         Ok(Self {
             http,
@@ -1283,6 +1607,9 @@ impl SonataAndroidEngine {
             server_lock: Arc::new(tokio::sync::Mutex::new(())),
             server_id_seq: std::sync::atomic::AtomicU64::new(1),
             personal_playlists,
+            scrobble_lock: Arc::new(tokio::sync::Mutex::new(())),
+            scrobble_client,
+            stats_db: Arc::new(std::sync::Mutex::new(None)),
         })
     }
 
@@ -2468,6 +2795,127 @@ impl SonataAndroidEngine {
         let matched = ytm.attribute_personal_track_to_ytm(&core_track).await?;
         Ok(matched)
     }
+
+    /// Loads persisted Last.fm and ListenBrainz scrobbling configuration (`scrobble.json`).
+    pub async fn get_scrobble_config(&self) -> Result<AndroidScrobbleConfig, SonataAndroidError> {
+        let _guard = self.scrobble_lock.lock().await;
+        let cfg = self.load_scrobble_config_internal().await?;
+        Ok(AndroidScrobbleConfig::from(cfg))
+    }
+
+    /// Atomically saves Last.fm and ListenBrainz scrobbling configuration (`0o700` dir / `0o600` file).
+    pub async fn save_scrobble_config(
+        &self,
+        config: AndroidScrobbleConfig,
+    ) -> Result<AndroidScrobbleConfig, SonataAndroidError> {
+        let _guard = self.scrobble_lock.lock().await;
+        let paths = self.paths.clone();
+        let core_cfg: ScrobbleConfig = config.into();
+        let saved = tokio::task::spawn_blocking(move || -> Result<ScrobbleConfig, CoreError> {
+            core_cfg.save_to_paths(&paths)?;
+            Ok(core_cfg)
+        })
+        .await
+        .map_err(|err| SonataAndroidError::Internal {
+            reason: format!("Scrobble config write task failed: {err}"),
+        })??;
+        Ok(AndroidScrobbleConfig::from(saved))
+    }
+
+    /// Sends a `Now Playing` update to configured Last.fm / ListenBrainz scrobblers.
+    pub async fn scrobble_now_playing(
+        &self,
+        track: AndroidTrack,
+    ) -> Result<(), SonataAndroidError> {
+        let cfg = {
+            let _guard = self.scrobble_lock.lock().await;
+            self.load_scrobble_config_internal().await?
+        };
+        if !cfg.any_configured() {
+            return Ok(());
+        }
+        let core_track: Track = track.into();
+        let scrobble_track = ScrobbleTrack::from_track(&core_track);
+        self.scrobble_client
+            .update_now_playing(&cfg, &scrobble_track)
+            .await?;
+        Ok(())
+    }
+
+    /// Submits a completed scrobble to configured Last.fm / ListenBrainz scrobblers.
+    pub async fn scrobble_submit(
+        &self,
+        track: AndroidTrack,
+        timestamp_unix: Option<u64>,
+    ) -> Result<(), SonataAndroidError> {
+        let cfg = {
+            let _guard = self.scrobble_lock.lock().await;
+            self.load_scrobble_config_internal().await?
+        };
+        if !cfg.any_configured() {
+            return Ok(());
+        }
+        let core_track: Track = track.into();
+        let scrobble_track = ScrobbleTrack::from_track(&core_track);
+        self.scrobble_client
+            .scrobble(&cfg, &scrobble_track, timestamp_unix)
+            .await?;
+        Ok(())
+    }
+
+    /// Records a single on-device listening event into SQLite `stats.db` via `spawn_blocking`.
+    pub async fn record_listening_stat(
+        &self,
+        track: AndroidTrack,
+        source_tag: String,
+        played_secs: u64,
+        played_at_unix: Option<u64>,
+    ) -> Result<(), SonataAndroidError> {
+        let stats_db = Arc::clone(&self.stats_db);
+        let paths = self.paths.clone();
+        let resolved_tag = Self::infer_source_tag(&track.id, &source_tag);
+        let duration_secs = track.duration_secs.unwrap_or(0);
+        let timestamp = played_at_unix.unwrap_or_else(Self::current_unix_secs);
+        tokio::task::spawn_blocking(move || {
+            let db = Self::open_or_get_stats_db_blocking(&stats_db, &paths)?;
+            db.record_play(
+                &track.id,
+                &track.title,
+                &track.artist,
+                &track.album,
+                &resolved_tag,
+                duration_secs,
+                played_secs,
+                timestamp,
+            )?;
+            Ok::<(), SonataAndroidError>(())
+        })
+        .await
+        .map_err(|err| SonataAndroidError::Internal {
+            reason: format!("Listening stats record task failed: {err}"),
+        })??;
+        Ok(())
+    }
+
+    /// Queries on-device listening statistics from SQLite `stats.db` for the requested time window.
+    pub async fn query_listening_stats(
+        &self,
+        window: AndroidStatsWindow,
+    ) -> Result<AndroidStatsSummary, SonataAndroidError> {
+        let stats_db = Arc::clone(&self.stats_db);
+        let paths = self.paths.clone();
+        let core_window: StatsWindow = window.into();
+        let summary = tokio::task::spawn_blocking(move || {
+            let db = Self::open_or_get_stats_db_blocking(&stats_db, &paths)?;
+            db.query_summary(core_window)
+                .map_err(SonataAndroidError::from)
+        })
+        .await
+        .map_err(|err| SonataAndroidError::Internal {
+            reason: format!("Listening stats query task failed: {err}"),
+        })??;
+        Ok(AndroidStatsSummary::from(summary))
+    }
 }
 
 #[cfg(test)]
@@ -3280,6 +3728,144 @@ mod tests {
             .await
             .expect("attribute_personal_track_to_ytm");
         assert!(attributed.is_none());
+
+        let _ = fs::remove_dir_all(&base_dir);
+    }
+
+    #[tokio::test]
+    async fn scrobble_config_redaction_and_listening_stats_windows() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let base_dir = std::env::temp_dir().join(format!(
+            "sonata_android_faz4_test_{}_{}",
+            std::process::id(),
+            nanos
+        ));
+        let engine = SonataAndroidEngine::new(
+            base_dir.join("cfg").to_string_lossy().into_owned(),
+            base_dir.join("cache").to_string_lossy().into_owned(),
+        )
+        .expect("engine should initialize");
+
+        // Default scrobble config is disabled/empty.
+        let initial_cfg = engine
+            .get_scrobble_config()
+            .await
+            .expect("get default scrobble config");
+        assert!(!initial_cfg.lastfm.enabled);
+        assert!(!initial_cfg.listenbrainz.enabled);
+
+        let scrobble_cfg = AndroidScrobbleConfig {
+            lastfm: AndroidLastFmConfig {
+                enabled: true,
+                api_key: "secret-lfm-key".to_string(),
+                api_secret: "secret-lfm-sec".to_string(),
+                session_key: "secret-lfm-sk".to_string(),
+                username: "alice".to_string(),
+            },
+            listenbrainz: AndroidListenBrainzConfig {
+                enabled: true,
+                token: "secret-lb-tok".to_string(),
+                username: "alice_lb".to_string(),
+            },
+        };
+        let dbg = format!("{scrobble_cfg:?}");
+        assert!(!dbg.contains("secret-lfm-key"));
+        assert!(!dbg.contains("secret-lfm-sec"));
+        assert!(!dbg.contains("secret-lfm-sk"));
+        assert!(!dbg.contains("secret-lb-tok"));
+        assert!(dbg.contains("alice"));
+        assert!(dbg.contains("[redacted]"));
+
+        let saved_cfg = engine
+            .save_scrobble_config(scrobble_cfg.clone())
+            .await
+            .expect("save scrobble config");
+        assert_eq!(saved_cfg, scrobble_cfg);
+        assert_eq!(
+            engine.get_scrobble_config().await.expect("reload scrobble"),
+            scrobble_cfg
+        );
+
+        // Unconfigured scrobble calls are no-ops without network.
+        let track = AndroidTrack {
+            id: "yt_faz4_1".to_string(),
+            title: "Midnight City".to_string(),
+            artist: "M83".to_string(),
+            album: "Hurry Up".to_string(),
+            duration_secs: Some(240),
+            thumbnail_url: None,
+            liked: true,
+            album_id: None,
+            is_explicit: false,
+        };
+        engine
+            .save_scrobble_config(AndroidScrobbleConfig::default())
+            .await
+            .expect("reset scrobble config");
+        engine
+            .scrobble_now_playing(track.clone())
+            .await
+            .expect("unconfigured now playing succeeds");
+        engine
+            .scrobble_submit(track.clone(), Some(1_700_000_000))
+            .await
+            .expect("unconfigured submit succeeds");
+
+        // Listening stats record + window queries.
+        let now = SonataAndroidEngine::current_unix_secs();
+        let day = 86_400u64;
+        engine
+            .record_listening_stat(track.clone(), String::new(), 240, Some(now - 60))
+            .await
+            .expect("record ytm stat");
+        engine
+            .record_listening_stat(
+                AndroidTrack {
+                    id: "local:9".to_string(),
+                    title: "Local Echo".to_string(),
+                    artist: "Studio Artist".to_string(),
+                    album: "Sessions".to_string(),
+                    duration_secs: Some(180),
+                    thumbnail_url: None,
+                    liked: false,
+                    album_id: None,
+                    is_explicit: false,
+                },
+                String::new(),
+                180,
+                Some(now - 20 * day),
+            )
+            .await
+            .expect("record local stat");
+
+        let week = engine
+            .query_listening_stats(AndroidStatsWindow::Week)
+            .await
+            .expect("query week");
+        assert_eq!(week.total_plays, 1);
+        assert_eq!(week.total_minutes, 4);
+        assert_eq!(week.unique_tracks, 1);
+        assert_eq!(week.source_breakdown[0].source_tag, "YTM");
+
+        let month = engine
+            .query_listening_stats(AndroidStatsWindow::Month)
+            .await
+            .expect("query month");
+        assert_eq!(month.total_plays, 2);
+        assert_eq!(month.total_minutes, 7);
+        assert_eq!(month.unique_artists, 2);
+        assert!(month
+            .source_breakdown
+            .iter()
+            .any(|s| s.source_tag == "LOC" && s.plays == 1));
+
+        let all = engine
+            .query_listening_stats(AndroidStatsWindow::AllTime)
+            .await
+            .expect("query all time");
+        assert_eq!(all.total_plays, 2);
 
         let _ = fs::remove_dir_all(&base_dir);
     }

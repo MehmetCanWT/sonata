@@ -254,10 +254,12 @@ import dev.sonata.android.data.SonataSettingsState
 import dev.sonata.android.data.SonataThumbnailInterceptor
 import dev.sonata.android.data.ThemeMode
 import dev.sonata.android.data.isPersonalTrackId
+import dev.sonata.android.ui.i18n.ecosystemStrings
 import dev.sonata.android.ui.i18n.sourcesStrings
 import dev.sonata.android.ui.screens.ServerDiagnosticState
 import uniffi.sonata_android.AndroidServerKind
 import uniffi.sonata_android.AndroidServerProfile
+import uniffi.sonata_android.AndroidStatsSummary
 import dev.sonata.android.ui.components.AddToPlaylistSheet
 import dev.sonata.android.ui.components.HeldContextMenu
 import dev.sonata.android.ui.components.HeldContextTarget
@@ -424,11 +426,16 @@ internal fun LibraryTabContent(
     onOpenAlbumOrPlaylist: (id: String, title: String, coverUrl: String?, subtitle: String?, kindLabel: String?) -> Unit = { _, _, _, _, _ -> },
     onTrackOptions: (AndroidTrack, Rect?) -> Unit = { _, _ -> },
     onTrackLongClick: (AndroidTrack, Rect?) -> Unit = { _, _ -> },
+    statsSummary: AndroidStatsSummary? = null,
+    connectDeviceLabel: String? = null,
+    onOpenStats: () -> Unit = {},
+    onOpenConnect: () -> Unit = {},
 ) {
     val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
     val tokens = LocalLunariaColors.current
     val accent = sonataThemeAccent()
     val srcStrings = remember(appLanguage) { sourcesStrings(appLanguage) }
+    val ecoStrings = remember(appLanguage) { ecosystemStrings(appLanguage) }
     val visibleTabs = remember(state.personalOnlyMode, localMusicEnabled, state.servers) {
         buildVisibleLibrarySourceTabs(
             personalOnlyMode = state.personalOnlyMode,
@@ -742,6 +749,25 @@ internal fun LibraryTabContent(
                             modifier = Modifier.width(300.dp),
                         )
                     }
+                    item(key = "replay_card_stats", contentType = "replay_card") {
+                        val playsCount = statsSummary?.totalPlays ?: 0uL
+                        val minutesCount = statsSummary?.totalMinutes ?: 0uL
+                        val streakDays = statsSummary?.streakDays?.toInt() ?: 0
+                        ReplayCreditCard(
+                            label = ecoStrings.listeningStatsTitle,
+                            value = "$playsCount · ${minutesCount}m",
+                            detail = if (streakDays > 0) {
+                                ecoStrings.statsStreakDays(streakDays)
+                            } else {
+                                ecoStrings.listeningStatsSubtitle
+                            },
+                            artworkUrl = replayArt.artworkAt(CARD_ART_PX),
+                            holder = holderName,
+                            cardIndex = 2,
+                            onClick = onOpenStats,
+                            modifier = Modifier.width(300.dp),
+                        )
+                    }
                 }
                 Spacer(Modifier.height(10.dp))
             }
@@ -756,6 +782,21 @@ internal fun LibraryTabContent(
                             label = strings.downloads,
                             subtitle = if (downloadsCount > 0) strings.tracksCount(downloadsCount) else strings.offlineLabel,
                             onClick = onOpenDownloads,
+                        )
+                        LibraryNavRow(
+                            icon = SonataIcons.Sparkles,
+                            label = ecoStrings.listeningStatsTitle,
+                            subtitle = statsSummary?.let {
+                                "${it.totalPlays} · ${it.totalMinutes}m · ${ecoStrings.statsStreakDays(it.streakDays.toInt())}"
+                            } ?: ecoStrings.listeningStatsSubtitle,
+                            onClick = onOpenStats,
+                        )
+                        LibraryNavRow(
+                            icon = SonataIcons.Wifi,
+                            label = ecoStrings.connectTitle,
+                            subtitle = connectDeviceLabel?.let { ecoStrings.connectConnectedTo(it) }
+                                ?: ecoStrings.connectSubtitle,
+                            onClick = onOpenConnect,
                         )
                         LibraryNavRow(
                             icon = SonataIcons.Folder,

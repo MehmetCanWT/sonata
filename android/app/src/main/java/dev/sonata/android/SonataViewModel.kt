@@ -87,19 +87,28 @@ import org.json.JSONTokener
 import dev.sonata.android.data.NativeSonataEngineGateway
 import dev.sonata.android.data.SonataEngineGateway
 import dev.sonata.android.data.runSuspendCatching
+import dev.sonata.android.connect.ConnectBeacon
+import dev.sonata.android.connect.ConnectCommand
+import dev.sonata.android.connect.ConnectController
+import dev.sonata.android.connect.ConnectUiState
+import dev.sonata.android.connect.SharedPrefsConnectSecretStore
+import dev.sonata.android.connect.SonataConnectClient
 import dev.sonata.android.ui.components.PERSONAL_PLAYLIST_ID_PREFIX
 import dev.sonata.android.ui.components.isEditableUserPlaylist
 import dev.sonata.android.ui.components.normalizeCollectionId
 import dev.sonata.android.ui.i18n.EnglishSonataStrings
 import dev.sonata.android.ui.i18n.SonataStrings
+import dev.sonata.android.ui.i18n.ecosystemStrings
 import dev.sonata.android.ui.i18n.localizeMoodTitle
 import dev.sonata.android.ui.i18n.resolveSonataStrings
 import dev.sonata.android.ui.i18n.sourcesStrings
 import dev.sonata.android.ui.screens.ServerDiagnosticState
+import dev.sonata.android.playback.LiveAutoDataProvider
 import dev.sonata.android.playback.PlaybackEligibility
 import dev.sonata.android.playback.PlaybackGenerationCounter
 import dev.sonata.android.playback.RateLimitPolicy
 import dev.sonata.android.playback.RecoveryBudget
+import dev.sonata.android.playback.ScrobbleAndStatsTracker
 import dev.sonata.android.playback.StreamSwapPlayer
 import dev.sonata.android.playback.mapMusicToVideoMs
 import dev.sonata.android.playback.mapVideoToMusicMs
@@ -111,6 +120,8 @@ import uniffi.sonata_android.AndroidHomeCard
 import uniffi.sonata_android.AndroidHomeCardKind
 import uniffi.sonata_android.AndroidHomeShelf
 import uniffi.sonata_android.AndroidJsCipherSolver
+import uniffi.sonata_android.AndroidLastFmConfig
+import uniffi.sonata_android.AndroidListenBrainzConfig
 import uniffi.sonata_android.AndroidLyricLine
 import uniffi.sonata_android.AndroidMoodCategory
 import uniffi.sonata_android.AndroidMoodChip
@@ -119,10 +130,13 @@ import uniffi.sonata_android.AndroidPersonalPlaylist
 import uniffi.sonata_android.AndroidPlaylist
 import uniffi.sonata_android.AndroidResolvedMusicVideo
 import uniffi.sonata_android.AndroidResolvedStream
+import uniffi.sonata_android.AndroidScrobbleConfig
 import uniffi.sonata_android.AndroidServerKind
 import uniffi.sonata_android.AndroidServerLibrary
 import uniffi.sonata_android.AndroidServerProfile
 import uniffi.sonata_android.AndroidServerSearchResult
+import uniffi.sonata_android.AndroidStatsSummary
+import uniffi.sonata_android.AndroidStatsWindow
 import uniffi.sonata_android.AndroidVideoQualityStream
 import uniffi.sonata_android.AndroidSolvedCipher
 import uniffi.sonata_android.AndroidTrack
@@ -130,6 +144,7 @@ import uniffi.sonata_android.AndroidUpdateInfo
 import uniffi.sonata_android.SonataAndroidEngine
 import java.io.File
 import java.util.Locale
+import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -380,6 +395,8 @@ data class SonataUiState(
     val showLoginSheet: Boolean = false,
     val showSettingsSheet: Boolean = false,
     val showServersSheet: Boolean = false,
+    val showStatsScreen: Boolean = false,
+    val showConnectSheet: Boolean = false,
     val servers: List<AndroidServerProfile> = emptyList(),
     val serverDiagnostics: Map<String, ServerDiagnosticState> = emptyMap(),
     val serverSourceSnapshots: Map<String, ServerSourceSummary> = emptyMap(),
@@ -439,7 +456,26 @@ data class SonataUiState(
     val activeVideoQualityHeight: Int = 0,
     val preferHighQuality: Boolean = true,
     val animatedArtwork: Boolean = true,
+    val gaplessEnabled: Boolean = true,
     val crossfadeEnabled: Boolean = false,
+    val crossfadeSeconds: Int = 4,
+    val statsWindow: AndroidStatsWindow = AndroidStatsWindow.WEEK,
+    val statsSummary: AndroidStatsSummary? = null,
+    val statsLoading: Boolean = false,
+    val scrobbleConfig: AndroidScrobbleConfig = AndroidScrobbleConfig(
+        lastfm = AndroidLastFmConfig(
+            enabled = false,
+            apiKey = "",
+            apiSecret = "",
+            sessionKey = "",
+            username = "",
+        ),
+        listenbrainz = AndroidListenBrainzConfig(
+            enabled = false,
+            token = "",
+            username = "",
+        ),
+    ),
     val liquidGlassEnabled: Boolean = true,
     val fpsLimit: Int = 60,
     val supports120Hz: Boolean = false,
@@ -512,6 +548,8 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
     private val localContentUrisByTrackId = ConcurrentHashMap<String, String>()
     private val localTracksById = ConcurrentHashMap<String, LocalAudioTrack>()
     @Volatile private var personalPlaylistsCache: List<AndroidPersonalPlaylist> = emptyList()
+    @Volatile private var likedTracksCache: List<AndroidTrack> = emptyList()
+    private val autoPlaylistTracksCache = ConcurrentHashMap<String, List<AndroidTrack>>()
     private var localScanJob: Job? = null
     private val serverHealthJobs = ConcurrentHashMap<String, Job>()
     private val serverSpeedJobs = ConcurrentHashMap<String, Job>()
@@ -564,6 +602,24 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
     val discordConnected: StateFlow<Boolean> = preferences.discordToken
         .map { !it.isNullOrBlank() }
         .stateIn(viewModelScope, SharingStarted.Eagerly, preferences.hasDiscordToken())
+
+    private val scrobbleAndStatsTracker = ScrobbleAndStatsTracker()
+    private var statsLoadJob: Job? = null
+    private val connectDeviceId: String by lazy {
+        prefs.getString("connect_device_id", null)?.takeIf { it.isNotBlank() }
+            ?: UUID.randomUUID().toString().also { id ->
+                prefs.edit().putString("connect_device_id", id).apply()
+            }
+    }
+    private val connectController: ConnectController by lazy {
+        ConnectController(
+            client = SonataConnectClient(localDeviceId = connectDeviceId),
+            secretStore = SharedPrefsConnectSecretStore(application),
+            scope = viewModelScope,
+            deviceNameProvider = { preferences.state.value.connectDeviceName },
+        )
+    }
+    val connectState: StateFlow<ConnectUiState> get() = connectController.state
 
     private val playbackGeneration = PlaybackGenerationCounter()
     private val recoveryBudget = RecoveryBudget(MAX_RECOVERY_ATTEMPTS)
@@ -1413,13 +1469,16 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
             shuffleEnabled = initialSettings.shuffleEnabled,
             preferHighQuality = initialSettings.preferHighQuality,
             animatedArtwork = initialSettings.animatedArtwork,
+            gaplessEnabled = initialSettings.gaplessEnabled,
             crossfadeEnabled = initialSettings.crossfadeEnabled,
+            crossfadeSeconds = initialSettings.crossfadeSeconds,
             liquidGlassEnabled = initialSettings.liquidGlassEnabled,
             fpsLimit = resolvedFps,
             supports120Hz = supports120Hz,
         )
 
         applyAudioSettings(initialSettings)
+        connectController.setEnabled(initialSettings.connectEnabled)
         observePreferences(supports120Hz)
         observeAudioPipelineTelemetry()
         observeDiscordPresence()
@@ -1562,7 +1621,9 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         PlaybackAudioBridge.applySkipSilence(state.skipSilenceEnabled)
         PlaybackAudioBridge.applyEqualizer(state.eqEnabled, state.eqBandsDb)
         PlaybackAudioBridge.applyLoudnessNormalization(state.loudnessNormEnabled)
-        PlaybackAudioBridge.applyCrossfade(state.crossfadeEnabled, state.crossfadeSeconds)
+        PlaybackAudioBridge.applyGapless(state.gaplessEnabled)
+        val effectiveCrossfade = state.crossfadeEnabled && !_uiState.value.videoModeEnabled
+        PlaybackAudioBridge.applyCrossfade(effectiveCrossfade, state.crossfadeSeconds)
         PlaybackAudioBridge.stopMusicOnClose = state.stopMusicOnClose
     }
 
@@ -1574,7 +1635,9 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                 _uiState.update { ui ->
                     if (ui.preferHighQuality == prefsState.preferHighQuality &&
                         ui.animatedArtwork == prefsState.animatedArtwork &&
+                        ui.gaplessEnabled == prefsState.gaplessEnabled &&
                         ui.crossfadeEnabled == prefsState.crossfadeEnabled &&
+                        ui.crossfadeSeconds == prefsState.crossfadeSeconds &&
                         ui.liquidGlassEnabled == prefsState.liquidGlassEnabled &&
                         ui.repeatMode == prefsState.repeatMode &&
                         ui.shuffleEnabled == prefsState.shuffleEnabled &&
@@ -1588,7 +1651,9 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                         ui.copy(
                             preferHighQuality = prefsState.preferHighQuality,
                             animatedArtwork = prefsState.animatedArtwork,
+                            gaplessEnabled = prefsState.gaplessEnabled,
                             crossfadeEnabled = prefsState.crossfadeEnabled,
+                            crossfadeSeconds = prefsState.crossfadeSeconds,
                             liquidGlassEnabled = prefsState.liquidGlassEnabled,
                             repeatMode = prefsState.repeatMode,
                             shuffleEnabled = prefsState.shuffleEnabled,
@@ -1600,6 +1665,12 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 }
                 val previous = prevPrefs
+                if (previous != null && previous.connectEnabled != prefsState.connectEnabled) {
+                    connectController.setEnabled(prefsState.connectEnabled)
+                }
+                if (previous != null && previous.connectDeviceName != prefsState.connectDeviceName) {
+                    connectController.updateDeviceName(prefsState.connectDeviceName)
+                }
                 if (previous != null && previous.localMusicEnabled != prefsState.localMusicEnabled) {
                     if (prefsState.localMusicEnabled) {
                         scanLocalMusic()
@@ -1635,6 +1706,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                     old.eqEnabled != prefsState.eqEnabled ||
                     old.eqBandsDb != prefsState.eqBandsDb ||
                     old.loudnessNormEnabled != prefsState.loudnessNormEnabled ||
+                    old.gaplessEnabled != prefsState.gaplessEnabled ||
                     old.crossfadeEnabled != prefsState.crossfadeEnabled ||
                     old.crossfadeSeconds != prefsState.crossfadeSeconds ||
                     old.stopMusicOnClose != prefsState.stopMusicOnClose
@@ -1748,6 +1820,10 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
             val ownedIds = if (signedIn) computeOwnedPlaylistIds(cachedPlaylists, savedExternalIds) else emptySet()
             val mergedCachedPlaylists = mergePlaylistsWithLocal(cachedPlaylists, personalList)
             val initialServers = runSuspendCatching { engine.listServers() }.getOrDefault(emptyList())
+            val initialScrobbleCfg = runSuspendCatching { engine.getScrobbleConfig() }.getOrNull()
+            val initialStatsSummary = runSuspendCatching {
+                engine.queryListeningStats(_uiState.value.statsWindow)
+            }.getOrNull()
 
             _uiState.update {
                 it.copy(
@@ -1759,6 +1835,8 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                     personalPlaylists = personalList,
                     playlists = if (it.playlists.isEmpty()) mergedCachedPlaylists else it.playlists,
                     servers = initialServers,
+                    scrobbleConfig = initialScrobbleCfg ?: it.scrobbleConfig,
+                    statsSummary = initialStatsSummary ?: it.statsSummary,
                     personalOnlyMode = preferences.state.value.personalOnlyMode,
                     localMusicEnabled = preferences.state.value.localMusicEnabled,
                     attributePersonalToYtm = preferences.state.value.attributePersonalToYtm,
@@ -1907,7 +1985,63 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    private val autoDataProvider: LiveAutoDataProvider by lazy {
+        LiveAutoDataProvider(
+            likedTracksProvider = {
+                likedTracksCache.ifEmpty {
+                    val state = _uiState.value
+                    (state.tracks + state.lastPlayedTracks)
+                        .filter { it.id in state.likedTrackIds }
+                        .distinctBy { it.id }
+                }
+            },
+            playlistsProvider = { _uiState.value.playlists },
+            playlistTracksProvider = { playlistId ->
+                when {
+                    playlistId == DOWNLOADS_PLAYLIST_ID -> downloads.value.map { it.toAndroidTrack() }
+                    playlistId.startsWith(PERSONAL_PLAYLIST_ID_PREFIX) ->
+                        personalPlaylistsCache.firstOrNull { it.id == playlistId }?.tracks.orEmpty()
+                    playlistId.startsWith(LOCAL_PLAYLIST_PREFIX) -> getLocalPlaylistTracks(playlistId)
+                    else -> autoPlaylistTracksCache[playlistId].orEmpty()
+                }
+            },
+            downloadedTracksProvider = { downloads.value.map { it.toAndroidTrack() } },
+            localTracksProvider = { _uiState.value.localMusicLibrary.tracks.map { it.toAndroidTrack() } },
+            recentTracksProvider = { _lastPlayedTracks.value },
+            fallbackTracksProvider = { _uiState.value.tracks + _uiState.value.collectionTracks },
+        )
+    }
+
+    fun playAutoMediaId(mediaId: String) {
+        if (mediaId.isBlank()) return
+        val resolved = autoDataProvider.resolvePlaybackTarget(mediaId)
+        if (resolved != null) {
+            playTrack(resolved.first, resolved.second)
+            return
+        }
+        if (mediaId.startsWith(dev.sonata.android.playback.SonataAutoBrowser.PLAYLIST_PREFIX)) {
+            val playlistId = mediaId.removePrefix(dev.sonata.android.playback.SonataAutoBrowser.PLAYLIST_PREFIX)
+            viewModelScope.launch(Dispatchers.IO) {
+                val engine = requireEngine()
+                val tracks = fetchTracksForCollectionAction(engine, playlistId)
+                if (tracks.isNotEmpty()) {
+                    autoPlaylistTracksCache[playlistId] = tracks
+                    withContext(Dispatchers.Main) {
+                        playTrack(tracks.first(), tracks)
+                    }
+                }
+            }
+            return
+        }
+        val active = _uiState.value.activeTrack
+        if (active != null && active.id == mediaId) {
+            playTrack(active, _uiState.value.queue)
+        }
+    }
+
     private fun registerQueueBridge() {
+        PlaybackAudioBridge.registerAutoDataProvider(autoDataProvider)
+        PlaybackAudioBridge.registerAutoStringsProvider { ecosystemStrings(preferences.state.value.appLanguage) }
         PlaybackQueueBridge.canSkipNext = { _uiState.value.hasNext }
         PlaybackQueueBridge.canSkipPrevious = { _uiState.value.hasPrevious(playbackClock.positionMs) }
         PlaybackQueueBridge.shouldAutoAdvanceOnEnd = {
@@ -1930,6 +2064,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         PlaybackQueueBridge.onSkipNext = { viewModelScope.launch { nextTrack() } }
         PlaybackQueueBridge.onSkipPrevious = { viewModelScope.launch { prevTrack() } }
         PlaybackQueueBridge.onPlayFromEmpty = { viewModelScope.launch { togglePlayPause() } }
+        PlaybackQueueBridge.onPlayMediaId = { mediaId -> playAutoMediaId(mediaId) }
         PlaybackQueueBridge.onTrackEnded = {
             val gen = playbackGeneration.current
             viewModelScope.launch { onTrackEnded(gen) }
@@ -2070,6 +2205,9 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                         runSuspendCatching { engine.fetchCollectionTracks("VLLM") }
                             .onSuccess { likedTracks ->
                                 if (likedTracks.isNotEmpty()) {
+                                    likedTracksCache = likedTracks
+                                    autoPlaylistTracksCache["VLLM"] = likedTracks
+                                    autoPlaylistTracksCache["LM"] = likedTracks
                                     val likedIds = likedTracks.mapNotNull { t -> t.id.takeIf { it.isNotBlank() } }
                                     if (likedIds.isNotEmpty()) {
                                         _uiState.update { state ->
@@ -2484,10 +2622,16 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                 .distinctUntilChanged()
                 .collectLatest { activelyPlaying ->
                     if (!activelyPlaying) return@collectLatest
+                    var lastTickMs = SystemClock.elapsedRealtime()
                     while (isActive) {
                         val ctrl = controller
-                        val activeId = _uiState.value.activeTrack?.id
+                        val activeTrack = _uiState.value.activeTrack
+                        val activeId = activeTrack?.id
+                        val nowMs = SystemClock.elapsedRealtime()
+                        val deltaMs = (nowMs - lastTickMs).coerceIn(0L, 1_000L)
+                        lastTickMs = nowMs
                         if (ctrl != null &&
+                            activeTrack != null &&
                             activeId != null &&
                             ctrl.currentMediaItem?.mediaId == activeId &&
                             ctrl.playbackState == Player.STATE_READY &&
@@ -2497,6 +2641,25 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                                 positionMs = ctrl.currentPosition.coerceAtLeast(0L),
                                 durationMs = ctrl.duration.coerceAtLeast(0L),
                             )
+                            val gen = playbackGeneration.current
+                            scrobbleAndStatsTracker.consumeNowPlaying(gen)?.let { startedTrack ->
+                                dispatchScrobbleNowPlaying(startedTrack)
+                            }
+                            val outcome = scrobbleAndStatsTracker.advance(gen, deltaMs)
+                            val scrobbleTs = outcome.scrobbleTriggerTimestampUnix
+                            val playedSecs = outcome.statsPlayedSecs
+                            val triggeredTrack = outcome.track
+                            if (triggeredTrack != null && scrobbleTs != null) {
+                                dispatchScrobbleSubmit(triggeredTrack, scrobbleTs.toULong())
+                            }
+                            if (triggeredTrack != null && playedSecs != null) {
+                                dispatchRecordListeningStat(
+                                    track = triggeredTrack,
+                                    sourceTag = outcome.sourceTag,
+                                    playedSecs = playedSecs.toULong(),
+                                    playedAtUnix = scrobbleTs?.toULong(),
+                                )
+                            }
                         }
                         delay(200L)
                     }
@@ -5722,6 +5885,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                         coverUrl = fallbackCover,
                     )
                     if (isLikedMusicPlaylistId(id)) {
+                        likedTracksCache = tracks
                         val likedIds = tracks.mapNotNull { t -> t.id.takeIf { it.isNotBlank() } }
                         if (likedIds.isNotEmpty()) {
                             _uiState.update { state ->
@@ -5731,6 +5895,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                         }
                         updateLatestLikedCover(fallbackCover, clearIfNull = tracks.isEmpty())
                     }
+                    autoPlaylistTracksCache[id] = tracks
                     if (trackCollectionContext.size > 512) {
                         trackCollectionContext.clear()
                     }
@@ -5847,9 +6012,19 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         musicVideoProbeJob?.cancel()
         videoSwitchJob?.cancel()
         val generation = playbackGeneration.next()
+        scrobbleAndStatsTracker.onTrackStarted(
+            generation = generation,
+            track = track,
+            sourceTag = ScrobbleAndStatsTracker.inferSourceTag(track.id),
+            startedAtUnixSecs = System.currentTimeMillis() / 1000L,
+        )
         val wasVideoMode = _uiState.value.videoModeEnabled
         if (wasVideoMode) {
             PlaybackAudioBridge.setVideoModePlayback(false)
+            PlaybackAudioBridge.applyCrossfade(
+                settings.value.crossfadeEnabled,
+                settings.value.crossfadeSeconds,
+            )
         }
         _uiState.update { state ->
             if (!state.videoModeEnabled &&
@@ -6942,6 +7117,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         val generation = playbackGeneration.current
         videoSwitchJob?.cancel()
         upgradeJob?.cancel()
+        PlaybackAudioBridge.applyCrossfade(false, settings.value.crossfadeSeconds)
         videoSwitchJob = viewModelScope.launch(Dispatchers.IO) {
             _uiState.update {
                 if (isGenerationActive(generation, track.id)) {
@@ -7225,6 +7401,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         }
         if (track == null) {
             PlaybackAudioBridge.setVideoModePlayback(false)
+            applyAudioSettings(settings.value)
             return
         }
         if (settings.value.animatedArtwork && _currentCanvas.value == null) {
@@ -7248,6 +7425,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                 val offlineItem = buildOfflineMediaItem(track, offlineUri)
                 withContext(Dispatchers.Main) {
                     PlaybackAudioBridge.setVideoModePlayback(false)
+                    applyAudioSettings(settings.value)
                     if (isGenerationActive(generation, track.id)) {
                         controller?.apply {
                             setMediaItem(offlineItem, mappedMusicPosMs)
@@ -7289,6 +7467,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
             val mediaItem = buildMediaItem(track, stream)
             withContext(Dispatchers.Main) {
                 PlaybackAudioBridge.setVideoModePlayback(false)
+                applyAudioSettings(settings.value)
                 if (isGenerationActive(generation, track.id)) {
                     controller?.apply {
                         setMediaItem(mediaItem, mappedMusicPosMs)
@@ -7331,10 +7510,184 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         return fetched
     }
 
+    fun openStatsScreen() {
+        _uiState.update { it.copy(showStatsScreen = true) }
+        refreshListeningStats()
+    }
+
+    fun dismissStatsScreen() {
+        _uiState.update { it.copy(showStatsScreen = false) }
+    }
+
+    fun selectStatsWindow(window: AndroidStatsWindow) {
+        _uiState.update { it.copy(statsWindow = window) }
+        refreshListeningStats(window)
+    }
+
+    fun refreshListeningStats(window: AndroidStatsWindow = _uiState.value.statsWindow) {
+        statsLoadJob?.cancel()
+        statsLoadJob = viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update { it.copy(statsLoading = true) }
+            val engine = requireEngine()
+            runSuspendCatching { engine.queryListeningStats(window) }
+                .onSuccess { summary ->
+                    _uiState.update {
+                        if (it.statsWindow == window) {
+                            it.copy(statsSummary = summary, statsLoading = false)
+                        } else {
+                            it.copy(statsLoading = false)
+                        }
+                    }
+                }
+                .onFailure {
+                    _uiState.update { it.copy(statsLoading = false) }
+                }
+        }
+    }
+
+    fun saveScrobbleConfig(config: AndroidScrobbleConfig) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val engine = requireEngine()
+            runSuspendCatching { engine.saveScrobbleConfig(config) }
+                .onSuccess { saved ->
+                    preferences.setLastFmEnabled(saved.lastfm.enabled)
+                    preferences.setListenBrainzEnabled(saved.listenbrainz.enabled)
+                    _uiState.update { it.copy(scrobbleConfig = saved) }
+                }
+                .onFailure { err ->
+                    Log.w("SonataScrobble", "Failed saving scrobble config: ${err.message}")
+                }
+        }
+    }
+
+    private fun dispatchScrobbleNowPlaying(track: AndroidTrack) {
+        val cfg = _uiState.value.scrobbleConfig
+        if (!cfg.lastfm.enabled && !cfg.listenbrainz.enabled) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val engine = requireEngine()
+            runSuspendCatching { engine.scrobbleNowPlaying(track) }
+                .onFailure { err ->
+                    Log.w("SonataScrobble", "Now playing scrobble failed: ${err.message}")
+                }
+        }
+    }
+
+    private fun dispatchScrobbleSubmit(track: AndroidTrack, timestampUnix: ULong) {
+        val cfg = _uiState.value.scrobbleConfig
+        if (!cfg.lastfm.enabled && !cfg.listenbrainz.enabled) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val engine = requireEngine()
+            runSuspendCatching { engine.scrobbleSubmit(track, timestampUnix) }
+                .onFailure { err ->
+                    Log.w("SonataScrobble", "Scrobble submit failed: ${err.message}")
+                }
+        }
+    }
+
+    private fun dispatchRecordListeningStat(
+        track: AndroidTrack,
+        sourceTag: String,
+        playedSecs: ULong,
+        playedAtUnix: ULong?,
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val engine = requireEngine()
+            runSuspendCatching {
+                engine.recordListeningStat(
+                    track = track,
+                    sourceTag = sourceTag,
+                    playedSecs = playedSecs,
+                    playedAtUnix = playedAtUnix,
+                )
+            }.onSuccess {
+                runSuspendCatching { engine.queryListeningStats(_uiState.value.statsWindow) }
+                    .onSuccess { summary ->
+                        _uiState.update { it.copy(statsSummary = summary) }
+                    }
+            }.onFailure { err ->
+                Log.w("SonataStats", "Recording listening stat failed: ${err.message}")
+            }
+        }
+    }
+
+    fun openConnectSheet() {
+        _uiState.update { it.copy(showConnectSheet = true) }
+        if (preferences.state.value.connectEnabled) {
+            connectController.refreshDiscovery()
+        }
+    }
+
+    fun dismissConnectSheet() {
+        _uiState.update { it.copy(showConnectSheet = false) }
+    }
+
+    fun setConnectEnabled(enabled: Boolean) {
+        preferences.setConnectEnabled(enabled)
+        connectController.setEnabled(enabled)
+    }
+
+    fun setConnectDeviceName(name: String) {
+        preferences.setConnectDeviceName(name)
+        connectController.updateDeviceName(preferences.state.value.connectDeviceName)
+    }
+
+    fun refreshConnectDiscovery() {
+        if (!preferences.state.value.connectEnabled) {
+            preferences.setConnectEnabled(true)
+        }
+        connectController.refreshDiscovery()
+    }
+
+    fun pairConnectDevice(beacon: ConnectBeacon, pin: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            connectController.pairAndConnect(beacon, pin)
+        }
+    }
+
+    fun connectPairedDevice(beacon: ConnectBeacon) {
+        viewModelScope.launch(Dispatchers.IO) {
+            connectController.connectToPaired(beacon)
+        }
+    }
+
+    fun disconnectConnectDevice() {
+        connectController.disconnect()
+    }
+
+    fun forgetConnectDevice(deviceId: String) {
+        connectController.forgetDevice(deviceId)
+    }
+
+    fun sendConnectCommand(command: ConnectCommand) {
+        viewModelScope.launch(Dispatchers.IO) {
+            connectController.sendCommand(command)
+        }
+    }
+
+    fun transferQueueToConnectDevice() {
+        val state = _uiState.value
+        val queue = state.queue
+        if (queue.isEmpty()) return
+        val startIndex = state.queueIndex.coerceAtLeast(0)
+        val posMs = playbackClock.positionMs.coerceAtLeast(0L)
+        val isPlaying = state.isPlaying
+        viewModelScope.launch(Dispatchers.IO) {
+            connectController.transferQueue(
+                tracks = queue,
+                startIndex = startIndex,
+                positionMs = posMs,
+                playWhenReady = isPlaying,
+            )
+        }
+    }
+
     override fun onCleared() {
         PlaybackQueueBridge.reset()
         PlaybackAudioBridge.clearEndedTransitionSuppression()
         CanvasResolver.detachGateway()
+        statsLoadJob?.cancel()
+        statsLoadJob = null
+        connectController.close()
         listeningHistoryJob?.cancel()
         listeningHistoryJob = null
         speculativePrefetchJob?.cancel()

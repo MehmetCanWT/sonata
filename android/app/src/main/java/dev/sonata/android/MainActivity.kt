@@ -279,11 +279,13 @@ import dev.sonata.android.ui.screens.ArtistScreen
 import dev.sonata.android.ui.screens.ArtistScreenData
 import dev.sonata.android.ui.screens.ArtistSimilarItem
 import dev.sonata.android.ui.screens.ArtistTrackItem
+import dev.sonata.android.ui.screens.ConnectSheet
 import dev.sonata.android.ui.screens.DownloadsManagerSheet
 import dev.sonata.android.ui.screens.MoodCategoryScreen
 import dev.sonata.android.ui.screens.RadioMixesScreen
 import dev.sonata.android.ui.screens.ServersScreen
 import dev.sonata.android.ui.screens.SonataSettingsScreen
+import dev.sonata.android.ui.screens.StatsScreen
 import dev.sonata.android.ui.theme.SonataRadioWavesIcon
 import dev.sonata.android.ui.theme.SonataTabIconSize
 import dev.sonata.android.ui.trackColumnWidth
@@ -622,6 +624,8 @@ private fun SonataAppContent(
         heldContextTarget != null ||
         state.addToPlaylistTargets.isNotEmpty() ||
         state.showSettingsSheet ||
+        state.showStatsScreen ||
+        state.showConnectSheet ||
         state.artistPage != null ||
         state.artistLoading
 
@@ -1090,6 +1094,7 @@ private fun SonataAppContent(
 
                             AndroidTab.Library -> {
                                 val downloads by vm.downloads.collectAsStateWithLifecycle()
+                                val connectState by vm.connectState.collectAsStateWithLifecycle()
                                 val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
                                 val latestDownloadCoverUrl = remember(downloads) {
                                     downloads.maxByOrNull { it.downloadedAtMs }?.coverUrl?.takeIf { it.isNotBlank() }
@@ -1137,6 +1142,10 @@ private fun SonataAppContent(
                                     },
                                     onTrackOptions = { track, bounds -> trackOptionsTarget = TrackMenuRequest(track, bounds) },
                                     onTrackLongClick = { track, bounds -> openTrackHeldMenu(track, null, bounds) },
+                                    statsSummary = state.statsSummary,
+                                    connectDeviceLabel = connectState.activePeer?.deviceName,
+                                    onOpenStats = vm::openStatsScreen,
+                                    onOpenConnect = vm::openConnectSheet,
                                 )
                             }
 
@@ -1179,6 +1188,8 @@ private fun SonataAppContent(
             BackHandler(
                 enabled = !showNowPlaying &&
                     !state.showSettingsSheet &&
+                    !state.showStatsScreen &&
+                    !state.showConnectSheet &&
                     !showUserMenu &&
                     trackOptionsTarget == null &&
                     heldContextTarget == null &&
@@ -1639,6 +1650,7 @@ private fun SonataAppContent(
             }
             val discordConnected by vm.discordConnected.collectAsStateWithLifecycle()
             val discordStatus by vm.discordStatus.collectAsStateWithLifecycle()
+            val connectState by vm.connectState.collectAsStateWithLifecycle()
             SonataSettingsScreen(
                 settings = settings,
                 signedIn = state.signedIn,
@@ -1677,6 +1689,50 @@ private fun SonataAppContent(
                 onProbeServerHealth = vm::probeServerHealth,
                 onRunServerSpeedTest = vm::runServerSpeedTest,
                 onOpenServer = { srvId -> vm.openServersScreen(srvId) },
+                scrobbleConfig = state.scrobbleConfig,
+                onSaveScrobbleConfig = vm::saveScrobbleConfig,
+                connectState = connectState,
+                onOpenConnect = vm::openConnectSheet,
+                statsSummary = state.statsSummary,
+                onOpenStats = vm::openStatsScreen,
+            )
+        }
+
+        // Full-screen On-Device Listening Stats
+        AnimatedVisibility(
+            visible = state.showStatsScreen,
+            enter = slideInVertically(tween(240)) { it / 8 } + fadeIn(tween(180)),
+            exit = slideOutVertically(tween(200)) { it / 8 } + fadeOut(tween(150)),
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            BackHandler(enabled = state.showStatsScreen) { vm.dismissStatsScreen() }
+            StatsScreen(
+                window = state.statsWindow,
+                summary = state.statsSummary,
+                loading = state.statsLoading,
+                appLanguage = settings.appLanguage,
+                onSelectWindow = vm::selectStatsWindow,
+                onRefresh = { vm.refreshListeningStats() },
+                onBack = vm::dismissStatsScreen,
+            )
+        }
+
+        if (state.showConnectSheet) {
+            val connectState by vm.connectState.collectAsStateWithLifecycle()
+            ConnectSheet(
+                connectState = connectState,
+                hasLocalQueue = state.queue.isNotEmpty(),
+                appLanguage = settings.appLanguage,
+                onToggleEnabled = vm::setConnectEnabled,
+                onDeviceNameChange = vm::setConnectDeviceName,
+                onRefreshDiscovery = vm::refreshConnectDiscovery,
+                onPairDevice = vm::pairConnectDevice,
+                onConnectPaired = vm::connectPairedDevice,
+                onDisconnect = vm::disconnectConnectDevice,
+                onForgetDevice = vm::forgetConnectDevice,
+                onSendCommand = vm::sendConnectCommand,
+                onTransferQueue = vm::transferQueueToConnectDevice,
+                onDismiss = vm::dismissConnectSheet,
             )
         }
 

@@ -3,13 +3,17 @@ package dev.sonata.android
 import dev.sonata.android.data.SonataEngineGateway
 import kotlinx.coroutines.CancellationException
 import uniffi.sonata_android.AndroidAccountProfile
+import uniffi.sonata_android.AndroidAlbumStat
 import uniffi.sonata_android.AndroidArtistPage
+import uniffi.sonata_android.AndroidArtistStat
 import uniffi.sonata_android.AndroidExploreFeed
 import uniffi.sonata_android.AndroidHomeCard
 import uniffi.sonata_android.AndroidHomeShelf
 import uniffi.sonata_android.AndroidJellyfinAuth
 import uniffi.sonata_android.AndroidJioSaavnStream
 import uniffi.sonata_android.AndroidJsCipherSolver
+import uniffi.sonata_android.AndroidLastFmConfig
+import uniffi.sonata_android.AndroidListenBrainzConfig
 import uniffi.sonata_android.AndroidLyricLine
 import uniffi.sonata_android.AndroidMoodCategory
 import uniffi.sonata_android.AndroidMoodChip
@@ -19,6 +23,7 @@ import uniffi.sonata_android.AndroidPersonalPlaylist
 import uniffi.sonata_android.AndroidPlaylist
 import uniffi.sonata_android.AndroidResolvedMusicVideo
 import uniffi.sonata_android.AndroidResolvedStream
+import uniffi.sonata_android.AndroidScrobbleConfig
 import uniffi.sonata_android.AndroidServerAlbum
 import uniffi.sonata_android.AndroidServerHealthReport
 import uniffi.sonata_android.AndroidServerKind
@@ -27,7 +32,11 @@ import uniffi.sonata_android.AndroidServerProfile
 import uniffi.sonata_android.AndroidServerSearchResult
 import uniffi.sonata_android.AndroidServerSpeedTestReport
 import uniffi.sonata_android.AndroidServerStream
+import uniffi.sonata_android.AndroidSourceStat
+import uniffi.sonata_android.AndroidStatsSummary
+import uniffi.sonata_android.AndroidStatsWindow
 import uniffi.sonata_android.AndroidTrack
+import uniffi.sonata_android.AndroidTrackStat
 import uniffi.sonata_android.AndroidUpdateInfo
 import uniffi.sonata_android.AndroidWebDavListing
 import java.util.concurrent.atomic.AtomicInteger
@@ -568,5 +577,146 @@ class FakeSonataEngineGateway : SonataEngineGateway {
     override suspend fun attributePersonalTrackToYtm(track: AndroidTrack): String? {
         ytmAttributionLog.add(track)
         return attributePersonalTrackHandler(track)
+    }
+
+    var fakeScrobbleConfig = AndroidScrobbleConfig(
+        lastfm = AndroidLastFmConfig(
+            enabled = false,
+            apiKey = "",
+            apiSecret = "",
+            sessionKey = "",
+            username = "",
+        ),
+        listenbrainz = AndroidListenBrainzConfig(
+            enabled = false,
+            token = "",
+            username = "",
+        ),
+    )
+    val nowPlayingScrobblesLog = mutableListOf<AndroidTrack>()
+    val submittedScrobblesLog = mutableListOf<Pair<AndroidTrack, ULong?>>()
+
+    data class FakeStatEvent(
+        val track: AndroidTrack,
+        val sourceTag: String,
+        val playedSecs: ULong,
+        val playedAtUnix: ULong,
+    )
+
+    val recordedStatsLog = mutableListOf<FakeStatEvent>()
+    var fakeStatsNowUnix: ULong = 1_700_500_000uL
+
+    override suspend fun getScrobbleConfig(): AndroidScrobbleConfig = fakeScrobbleConfig
+
+    override suspend fun saveScrobbleConfig(config: AndroidScrobbleConfig): AndroidScrobbleConfig {
+        fakeScrobbleConfig = config
+        return config
+    }
+
+    override suspend fun scrobbleNowPlaying(track: AndroidTrack) {
+        nowPlayingScrobblesLog.add(track)
+    }
+
+    override suspend fun scrobbleSubmit(track: AndroidTrack, timestampUnix: ULong?) {
+        submittedScrobblesLog.add(track to timestampUnix)
+    }
+
+    override suspend fun recordListeningStat(
+        track: AndroidTrack,
+        sourceTag: String,
+        playedSecs: ULong,
+        playedAtUnix: ULong?,
+    ) {
+        val resolvedTag = sourceTag.trim().ifEmpty {
+            when {
+                track.id.startsWith("local:") -> "LOC"
+                track.id.startsWith("jellyfin:") -> "JFN"
+                track.id.startsWith("subsonic:") -> "SUB"
+                track.id.startsWith("smb:") -> "SMB"
+                track.id.startsWith("webdav:") -> "DAV"
+                track.id.startsWith("jiosaavn:") -> "JIO"
+                else -> "YTM"
+            }
+        }
+        recordedStatsLog.add(
+            FakeStatEvent(
+                track = track,
+                sourceTag = resolvedTag,
+                playedSecs = playedSecs,
+                playedAtUnix = playedAtUnix ?: fakeStatsNowUnix,
+            ),
+        )
+    }
+
+    override suspend fun queryListeningStats(window: AndroidStatsWindow): AndroidStatsSummary {
+        val now = fakeStatsNowUnix
+        val cutoff = when (window) {
+            AndroidStatsWindow.WEEK -> if (now > 7uL * 86_400uL) now - 7uL * 86_400uL else 0uL
+            AndroidStatsWindow.MONTH -> if (now > 30uL * 86_400uL) now - 30uL * 86_400uL else 0uL
+            AndroidStatsWindow.YEAR -> if (now > 365uL * 86_400uL) now - 365uL * 86_400uL else 0uL
+            AndroidStatsWindow.ALL_TIME -> 0uL
+        }
+        val filtered = recordedStatsLog.filter { it.playedAtUnix >= cutoff && it.playedAtUnix <= now }
+        val totalPlayedSecs = filtered.sumOf { it.playedSecs }
+        val topArtists = filtered
+            .filter { it.track.artist.isNotBlank() }
+            .groupBy { it.track.artist }
+            .map { (artist, events) ->
+                AndroidArtistStat(
+                    artist = artist,
+                    plays = events.size.toULong(),
+                    minutes = events.sumOf { it.playedSecs } / 60uL,
+                )
+            }
+            .sortedByDescending { it.plays }
+        val topTracks = filtered
+            .filter { it.track.title.isNotBlank() }
+            .groupBy { Triple(it.track.id, it.track.title, it.track.artist) }
+            .map { (_, events) ->
+                val sample = events.first()
+                AndroidTrackStat(
+                    trackId = sample.track.id,
+                    title = sample.track.title,
+                    artist = sample.track.artist,
+                    album = sample.track.album,
+                    sourceTag = sample.sourceTag,
+                    plays = events.size.toULong(),
+                    minutes = events.sumOf { it.playedSecs } / 60uL,
+                )
+            }
+            .sortedByDescending { it.plays }
+        val topAlbums = filtered
+            .filter { it.track.album.isNotBlank() }
+            .groupBy { it.track.album to it.track.artist }
+            .map { (key, events) ->
+                AndroidAlbumStat(
+                    album = key.first,
+                    artist = key.second,
+                    plays = events.size.toULong(),
+                    minutes = events.sumOf { it.playedSecs } / 60uL,
+                )
+            }
+            .sortedByDescending { it.plays }
+        val sourceBreakdown = filtered
+            .groupBy { it.sourceTag }
+            .map { (tag, events) ->
+                AndroidSourceStat(
+                    sourceTag = tag,
+                    plays = events.size.toULong(),
+                    minutes = events.sumOf { it.playedSecs } / 60uL,
+                )
+            }
+            .sortedByDescending { it.plays }
+        return AndroidStatsSummary(
+            totalPlays = filtered.size.toULong(),
+            totalMinutes = totalPlayedSecs / 60uL,
+            uniqueTracks = filtered.mapNotNull { it.track.id.takeIf(String::isNotBlank) }.toSet().size.toULong(),
+            uniqueArtists = filtered.mapNotNull { it.track.artist.takeIf(String::isNotBlank) }.toSet().size.toULong(),
+            streakDays = if (filtered.isEmpty()) 0uL else 1uL,
+            topArtists = topArtists,
+            topTracks = topTracks,
+            topAlbums = topAlbums,
+            sourceBreakdown = sourceBreakdown,
+        )
     }
 }
