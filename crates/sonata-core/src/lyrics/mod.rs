@@ -135,8 +135,191 @@ fn parse_enhanced_words(stripped: &str, re_word: &Regex) -> Vec<LyricWord> {
     words
 }
 
-/// Splits trailing parenthesized background vocals (e.g. `Lead text (ad-lib)`) from
-/// line-synced LRC rows into separate nested `(...)` [`LyricLine`] entries.
+fn split_word_synced_line(line: &LyricLine, out: &mut Vec<LyricLine>) -> bool {
+    if line.words.len() < 2 {
+        return false;
+    }
+
+    let mut cur_words = line.words.clone();
+    let mut cur_time = line.time_secs;
+    let mut split_any = false;
+
+    // 1. Extract leading parenthesized background vocal group: e.g. "(Ooh) Main lyric"
+    if cur_words[0].text.trim_start().starts_with('(') {
+        let mut depth = 0i32;
+        let mut close_idx = None;
+        for (j, w) in cur_words.iter().enumerate() {
+            for ch in w.text.chars() {
+                match ch {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+            }
+            if depth == 0 {
+                if j + 1 < cur_words.len() && w.text.trim_end().ends_with(')') {
+                    close_idx = Some(j);
+                }
+                break;
+            }
+            if depth < 0 {
+                break;
+            }
+        }
+        if let Some(end_idx) = close_idx {
+            let bg_words = cur_words[..=end_idx].to_vec();
+            let lead_words = cur_words[end_idx + 1..].to_vec();
+            let bg_text = bg_words
+                .iter()
+                .map(|w| w.text.trim())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let next_start = lead_words[0].start_secs.max(cur_time + 0.05);
+            out.push(LyricLine {
+                time_secs: cur_time,
+                text: bg_text,
+                words: bg_words,
+                voice: line.voice,
+            });
+            cur_words = lead_words;
+            cur_time = next_start;
+            split_any = true;
+        }
+    }
+
+    // 2. Extract trailing parenthesized background vocal group: e.g. "Main lyric (But who are you?)"
+    if cur_words.len() >= 2
+        && cur_words
+            .last()
+            .is_some_and(|w| w.text.trim_end().ends_with(')'))
+    {
+        let mut depth = 0i32;
+        let mut open_idx = None;
+        for (j, w) in cur_words.iter().enumerate().rev() {
+            for ch in w.text.chars().rev() {
+                match ch {
+                    ')' => depth += 1,
+                    '(' => depth -= 1,
+                    _ => {}
+                }
+            }
+            if depth == 0 {
+                if j > 0 && w.text.trim_start().starts_with('(') {
+                    open_idx = Some(j);
+                }
+                break;
+            }
+            if depth < 0 {
+                break;
+            }
+        }
+        if let Some(split_idx) = open_idx {
+            let lead_words = cur_words[..split_idx].to_vec();
+            let bg_words = cur_words[split_idx..].to_vec();
+            let lead_text = lead_words
+                .iter()
+                .map(|w| w.text.trim())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let bg_text = bg_words
+                .iter()
+                .map(|w| w.text.trim())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let bg_time = bg_words[0].start_secs.max(cur_time + 0.05);
+            out.push(LyricLine {
+                time_secs: cur_time,
+                text: lead_text,
+                words: lead_words,
+                voice: line.voice,
+            });
+            out.push(LyricLine {
+                time_secs: bg_time,
+                text: bg_text,
+                words: bg_words,
+                voice: line.voice,
+            });
+            return true;
+        }
+    }
+
+    if split_any {
+        let rest_text = cur_words
+            .iter()
+            .map(|w| w.text.trim())
+            .collect::<Vec<_>>()
+            .join(" ");
+        out.push(LyricLine {
+            time_secs: cur_time,
+            text: rest_text,
+            words: cur_words,
+            voice: line.voice,
+        });
+        return true;
+    }
+
+    false
+}
+
+fn split_trailing_paren_text(trimmed: &str) -> Option<(&str, &str)> {
+    if !trimmed.ends_with(')') {
+        return None;
+    }
+    let mut depth = 0i32;
+    let mut open_idx = None;
+    for (byte_idx, ch) in trimmed.char_indices().rev() {
+        match ch {
+            ')' => depth += 1,
+            '(' => {
+                depth -= 1;
+                if depth == 0 {
+                    open_idx = Some(byte_idx);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let open = open_idx?;
+    if open == 0 || !trimmed[..open].ends_with(char::is_whitespace) {
+        return None;
+    }
+    let lead = trimmed[..open].trim();
+    let inner = trimmed[open + 1..trimmed.len() - 1].trim();
+    (!lead.is_empty() && !inner.is_empty()).then_some((lead, inner))
+}
+
+fn split_leading_paren_text(trimmed: &str) -> Option<(&str, &str)> {
+    if !trimmed.starts_with('(') {
+        return None;
+    }
+    let mut depth = 0i32;
+    let mut close_idx = None;
+    for (byte_idx, ch) in trimmed.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    close_idx = Some(byte_idx);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let close = close_idx?;
+    let after = &trimmed[close + 1..];
+    if after.is_empty() || !after.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let inner = trimmed[1..close].trim();
+    let lead = after.trim();
+    (!inner.is_empty() && !lead.is_empty()).then_some((inner, lead))
+}
+
+/// Splits leading and trailing parenthesized background vocals (e.g. `Lead (ad-lib)` or
+/// `(Ooh) Lead`) from both word-synced and line-synced [`LyricLine`] entries.
 pub fn split_inline_background_vocals(mut lines: Vec<LyricLine>) -> Vec<LyricLine> {
     if lines.is_empty() {
         return lines;
@@ -146,67 +329,71 @@ pub fn split_inline_background_vocals(mut lines: Vec<LyricLine>) -> Vec<LyricLin
     for idx in 0..lines.len() {
         let line = &lines[idx];
         if !line.words.is_empty() {
-            out.push(line.clone());
-            continue;
-        }
-        let trimmed = line.text.trim();
-        if !trimmed.ends_with(')') {
-            out.push(line.clone());
-            continue;
-        }
-        let mut depth = 0i32;
-        let mut open_idx = None;
-        for (byte_idx, ch) in trimmed.char_indices().rev() {
-            match ch {
-                ')' => depth += 1,
-                '(' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        open_idx = Some(byte_idx);
-                        break;
-                    }
-                }
-                _ => {}
+            if !split_word_synced_line(line, &mut out) {
+                out.push(line.clone());
             }
-        }
-        let Some(open) = open_idx else {
-            out.push(line.clone());
-            continue;
-        };
-        if open == 0 || !trimmed[..open].ends_with(char::is_whitespace) {
-            out.push(line.clone());
             continue;
         }
-        let lead = trimmed[..open].trim();
-        let inner = trimmed[open + 1..trimmed.len() - 1].trim();
-        if lead.is_empty() || inner.is_empty() {
-            out.push(line.clone());
-            continue;
-        }
-
+        let mut remaining = line.text.trim();
+        let mut cur_time = line.time_secs;
         let next_t = lines.get(idx + 1).map(|n| n.time_secs);
-        let bg_time = match next_t {
-            Some(nt) if nt > line.time_secs + 0.25 => {
-                let lead_chars = lead.chars().count() as f64;
-                let bg_chars = inner.chars().count() as f64;
-                let ratio = (lead_chars / (lead_chars + bg_chars).max(1.0)).clamp(0.45, 0.72);
-                line.time_secs + (nt - line.time_secs) * ratio
-            }
-            _ => line.time_secs + 1.2,
-        };
+        let span_secs = next_t
+            .filter(|&nt| nt > cur_time + 0.25)
+            .map(|nt| nt - cur_time);
 
-        out.push(LyricLine {
-            time_secs: line.time_secs,
-            text: lead.to_string(),
-            words: Vec::new(),
-            voice: line.voice,
-        });
-        out.push(LyricLine {
-            time_secs: bg_time,
-            text: format!("({inner})"),
-            words: Vec::new(),
-            voice: line.voice,
-        });
+        if let Some((bg_inner, rest)) = split_leading_paren_text(remaining) {
+            let lead_offset = match span_secs {
+                Some(span) => {
+                    let bg_chars = bg_inner.chars().count() as f64;
+                    let rest_chars = rest.chars().count() as f64;
+                    let ratio = (bg_chars / (bg_chars + rest_chars).max(1.0)).clamp(0.25, 0.50);
+                    span * ratio
+                }
+                None => 0.9,
+            };
+            out.push(LyricLine {
+                time_secs: cur_time,
+                text: format!("({bg_inner})"),
+                words: Vec::new(),
+                voice: line.voice,
+            });
+            cur_time += lead_offset;
+            remaining = rest;
+        }
+
+        if let Some((lead, inner)) = split_trailing_paren_text(remaining) {
+            let rem_span = next_t
+                .filter(|&nt| nt > cur_time + 0.25)
+                .map(|nt| nt - cur_time);
+            let bg_time = match rem_span {
+                Some(span) => {
+                    let lead_chars = lead.chars().count() as f64;
+                    let bg_chars = inner.chars().count() as f64;
+                    let ratio = (lead_chars / (lead_chars + bg_chars).max(1.0)).clamp(0.45, 0.72);
+                    cur_time + span * ratio
+                }
+                None => cur_time + 1.2,
+            };
+            out.push(LyricLine {
+                time_secs: cur_time,
+                text: lead.to_string(),
+                words: Vec::new(),
+                voice: line.voice,
+            });
+            out.push(LyricLine {
+                time_secs: bg_time,
+                text: format!("({inner})"),
+                words: Vec::new(),
+                voice: line.voice,
+            });
+        } else {
+            out.push(LyricLine {
+                time_secs: cur_time,
+                text: remaining.to_string(),
+                words: Vec::new(),
+                voice: line.voice,
+            });
+        }
     }
     out.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
     out
@@ -220,7 +407,7 @@ pub fn parse_lyrics_auto(raw: &str) -> LyricsState {
     }
     if cleaned.starts_with('<') && cleaned.contains("<tt") {
         if let Some(lines) = ttml::parse_ttml(cleaned) {
-            return LyricsState::Synced(lines);
+            return LyricsState::Synced(split_inline_background_vocals(lines));
         }
     }
     let synced = parse_lrc(cleaned);
@@ -855,5 +1042,98 @@ mod tests {
             }
             other => panic!("expected Plain lines, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn splits_word_synced_trailing_and_leading_background_vocals() {
+        let lines = vec![
+            LyricLine {
+                time_secs: 22.0,
+                text: "Think of the consequence (But who are you?)".to_string(),
+                words: vec![
+                    LyricWord {
+                        start_secs: 22.0,
+                        end_secs: Some(22.4),
+                        text: "Think".to_string(),
+                    },
+                    LyricWord {
+                        start_secs: 22.4,
+                        end_secs: Some(22.6),
+                        text: "of".to_string(),
+                    },
+                    LyricWord {
+                        start_secs: 22.6,
+                        end_secs: Some(22.8),
+                        text: "the".to_string(),
+                    },
+                    LyricWord {
+                        start_secs: 22.8,
+                        end_secs: Some(23.7),
+                        text: "consequence".to_string(),
+                    },
+                    LyricWord {
+                        start_secs: 23.87,
+                        end_secs: Some(24.06),
+                        text: "(But".to_string(),
+                    },
+                    LyricWord {
+                        start_secs: 24.06,
+                        end_secs: Some(24.16),
+                        text: "who".to_string(),
+                    },
+                    LyricWord {
+                        start_secs: 24.16,
+                        end_secs: Some(24.27),
+                        text: "are".to_string(),
+                    },
+                    LyricWord {
+                        start_secs: 24.27,
+                        end_secs: Some(24.62),
+                        text: "you?)".to_string(),
+                    },
+                ],
+                voice: LyricVoice::Lead,
+            },
+            LyricLine {
+                time_secs: 25.0,
+                text: "(Ooh) Alright now".to_string(),
+                words: vec![
+                    LyricWord {
+                        start_secs: 25.0,
+                        end_secs: Some(25.4),
+                        text: "(Ooh)".to_string(),
+                    },
+                    LyricWord {
+                        start_secs: 25.5,
+                        end_secs: Some(26.0),
+                        text: "Alright".to_string(),
+                    },
+                    LyricWord {
+                        start_secs: 26.0,
+                        end_secs: Some(26.4),
+                        text: "now".to_string(),
+                    },
+                ],
+                voice: LyricVoice::Lead,
+            },
+        ];
+
+        let split = split_inline_background_vocals(lines);
+        assert_eq!(split.len(), 4);
+        assert_eq!(split[0].text, "Think of the consequence");
+        assert_eq!(split[0].words.len(), 4);
+        assert!((split[0].time_secs - 22.0).abs() < 0.01);
+
+        assert_eq!(split[1].text, "(But who are you?)");
+        assert_eq!(split[1].words.len(), 4);
+        assert!((split[1].time_secs - 23.87).abs() < 0.01);
+
+        assert_eq!(split[2].text, "(Ooh)");
+        assert_eq!(split[2].words.len(), 1);
+        assert!((split[2].time_secs - 25.0).abs() < 0.01);
+
+        assert_eq!(split[3].text, "Alright now");
+        assert_eq!(split[3].words.len(), 2);
+        assert!((split[3].time_secs - 25.5).abs() < 0.01);
     }
 }

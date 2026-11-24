@@ -238,6 +238,17 @@ class SmbClientTest {
         assertEquals(3.8, ttmlParsed[1].timeSecs, 0.01)
         assertEquals("Alright", ttmlParsed[2].text)
         assertTrue(ttmlParsed[2].isCounterVoice)
+
+        val wordSyncedInline = """
+            [00:22.00] <00:22.00>Think <00:22.50>twice <00:23.20>(who <00:23.60>are <00:23.90>you?)
+        """.trimIndent()
+        val splitWord = SmbClient.parseLyricsText(wordSyncedInline)
+        assertEquals(2, splitWord.size)
+        assertEquals("Think twice", splitWord[0].text)
+        assertEquals(2, splitWord[0].words.size)
+        assertEquals("(who are you?)", splitWord[1].text)
+        assertEquals(3, splitWord[1].words.size)
+        assertEquals(23.2, splitWord[1].timeSecs, 0.01)
     }
 
     @Test

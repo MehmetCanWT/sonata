@@ -1343,12 +1343,101 @@ object SmbClient {
 
         val hasTiming = out.any { it.timeSecs > 0.0 || it.words.isNotEmpty() }
         if (out.isEmpty() || !hasTiming) return emptyList()
-        return out.sortedBy { it.timeSecs }
+        return splitInlineBackgroundVocals(out)
+    }
+
+    private fun splitWordSyncedLine(line: AndroidLyricLine, out: MutableList<AndroidLyricLine>): Boolean {
+        if (line.words.size < 2) return false
+        var curWords = line.words.toList()
+        var curTime = line.timeSecs
+        var splitAny = false
+
+        if (curWords[0].text.trimStart().startsWith("(")) {
+            var depth = 0
+            var closeIdx = -1
+            for (j in curWords.indices) {
+                for (ch in curWords[j].text) {
+                    if (ch == '(') depth += 1 else if (ch == ')') depth -= 1
+                }
+                if (depth == 0) {
+                    if (j + 1 < curWords.size && curWords[j].text.trimEnd().endsWith(")")) {
+                        closeIdx = j
+                    }
+                    break
+                }
+                if (depth < 0) break
+            }
+            if (closeIdx >= 0) {
+                val bgWords = curWords.subList(0, closeIdx + 1).toList()
+                val leadWords = curWords.subList(closeIdx + 1, curWords.size).toList()
+                val bgText = bgWords.joinToString(" ") { it.text.trim() }
+                val nextStart = max(leadWords[0].startSecs, curTime + 0.05)
+                out += AndroidLyricLine(
+                    timeSecs = curTime,
+                    text = bgText,
+                    words = bgWords,
+                    isCounterVoice = line.isCounterVoice,
+                )
+                curWords = leadWords
+                curTime = nextStart
+                splitAny = true
+            }
+        }
+
+        if (curWords.size >= 2 && curWords.last().text.trimEnd().endsWith(")")) {
+            var depth = 0
+            var openIdx = -1
+            for (j in curWords.size - 1 downTo 0) {
+                val text = curWords[j].text
+                for (k in text.length - 1 downTo 0) {
+                    val ch = text[k]
+                    if (ch == ')') depth += 1 else if (ch == '(') depth -= 1
+                }
+                if (depth == 0) {
+                    if (j > 0 && text.trimStart().startsWith("(")) {
+                        openIdx = j
+                    }
+                    break
+                }
+                if (depth < 0) break
+            }
+            if (openIdx > 0) {
+                val leadWords = curWords.subList(0, openIdx).toList()
+                val bgWords = curWords.subList(openIdx, curWords.size).toList()
+                val leadText = leadWords.joinToString(" ") { it.text.trim() }
+                val bgText = bgWords.joinToString(" ") { it.text.trim() }
+                val bgTime = max(bgWords[0].startSecs, curTime + 0.05)
+                out += AndroidLyricLine(
+                    timeSecs = curTime,
+                    text = leadText,
+                    words = leadWords,
+                    isCounterVoice = line.isCounterVoice,
+                )
+                out += AndroidLyricLine(
+                    timeSecs = bgTime,
+                    text = bgText,
+                    words = bgWords,
+                    isCounterVoice = line.isCounterVoice,
+                )
+                return true
+            }
+        }
+
+        if (splitAny) {
+            out += AndroidLyricLine(
+                timeSecs = curTime,
+                text = curWords.joinToString(" ") { it.text.trim() },
+                words = curWords,
+                isCounterVoice = line.isCounterVoice,
+            )
+            return true
+        }
+        return false
     }
 
     /**
-     * Splits trailing parenthesized background vocals (e.g. `Lead text (ad-lib)`) from
-     * line-synced LRC rows into separate nested `(...)` [AndroidLyricLine] entries.
+     * Splits leading and trailing parenthesized background vocals (e.g. `Lead text (ad-lib)` or
+     * `(Ooh) Lead text`) from both word-synced and line-synced [AndroidLyricLine] entries.
      */
     fun splitInlineBackgroundVocals(lines: List<AndroidLyricLine>): List<AndroidLyricLine> {
         if (lines.isEmpty()) return lines
@@ -1357,50 +1446,101 @@ object SmbClient {
         for (idx in sorted.indices) {
             val line = sorted[idx]
             if (line.words.isNotEmpty()) {
-                out += line
+                if (!splitWordSyncedLine(line, out)) {
+                    out += line
+                }
                 continue
             }
-            val trimmed = line.text.trim()
-            if (!trimmed.endsWith(")")) {
-                out += line
-                continue
-            }
-            var depth = 0
-            var openIdx = -1
-            for (pos in trimmed.length - 1 downTo 0) {
-                when (trimmed[pos]) {
-                    ')' -> depth += 1
-                    '(' -> {
-                        depth -= 1
-                        if (depth == 0) {
-                            openIdx = pos
-                            break
+            var remaining = line.text.trim()
+            var curTime = line.timeSecs
+            val nextT = sorted.getOrNull(idx + 1)?.timeSecs
+            val totalSpan = nextT?.takeIf { it > curTime + 0.25 }?.let { it - curTime }
+
+            if (remaining.startsWith("(")) {
+                var depth = 0
+                var closeIdx = -1
+                for (pos in remaining.indices) {
+                    when (remaining[pos]) {
+                        '(' -> depth += 1
+                        ')' -> {
+                            depth -= 1
+                            if (depth == 0) {
+                                closeIdx = pos
+                                break
+                            }
                         }
                     }
                 }
+                if (closeIdx > 0 && closeIdx + 1 < remaining.length && remaining[closeIdx + 1].isWhitespace()) {
+                    val bgInner = remaining.substring(1, closeIdx).trim()
+                    val rest = remaining.substring(closeIdx + 1).trim()
+                    if (bgInner.isNotEmpty() && rest.isNotEmpty()) {
+                        val leadOffset = if (totalSpan != null) {
+                            val ratio = (bgInner.length.toDouble() / (bgInner.length + rest.length).coerceAtLeast(1))
+                                .coerceIn(0.25, 0.50)
+                            totalSpan * ratio
+                        } else {
+                            0.9
+                        }
+                        out += AndroidLyricLine(
+                            timeSecs = curTime,
+                            text = "($bgInner)",
+                            words = emptyList(),
+                            isCounterVoice = line.isCounterVoice,
+                        )
+                        curTime += leadOffset
+                        remaining = rest
+                    }
+                }
             }
-            if (openIdx <= 0 || !trimmed[openIdx - 1].isWhitespace()) {
-                out += line
-                continue
+
+            if (remaining.endsWith(")")) {
+                var depth = 0
+                var openIdx = -1
+                for (pos in remaining.length - 1 downTo 0) {
+                    when (remaining[pos]) {
+                        ')' -> depth += 1
+                        '(' -> {
+                            depth -= 1
+                            if (depth == 0) {
+                                openIdx = pos
+                                break
+                            }
+                        }
+                    }
+                }
+                if (openIdx > 0 && remaining[openIdx - 1].isWhitespace()) {
+                    val lead = remaining.substring(0, openIdx).trim()
+                    val inner = remaining.substring(openIdx + 1, remaining.length - 1).trim()
+                    if (lead.isNotEmpty() && inner.isNotEmpty()) {
+                        val remSpan = nextT?.takeIf { it > curTime + 0.25 }?.let { it - curTime }
+                        val bgTime = if (remSpan != null) {
+                            val ratio = (lead.length.toDouble() / (lead.length + inner.length).coerceAtLeast(1))
+                                .coerceIn(0.45, 0.72)
+                            curTime + remSpan * ratio
+                        } else {
+                            curTime + 1.2
+                        }
+                        out += AndroidLyricLine(
+                            timeSecs = curTime,
+                            text = lead,
+                            words = emptyList(),
+                            isCounterVoice = line.isCounterVoice,
+                        )
+                        out += AndroidLyricLine(
+                            timeSecs = bgTime,
+                            text = "($inner)",
+                            words = emptyList(),
+                            isCounterVoice = line.isCounterVoice,
+                        )
+                        continue
+                    }
+                }
             }
-            val lead = trimmed.substring(0, openIdx).trim()
-            val inner = trimmed.substring(openIdx + 1, trimmed.length - 1).trim()
-            if (lead.isEmpty() || inner.isEmpty()) {
-                out += line
-                continue
-            }
-            val nextT = sorted.getOrNull(idx + 1)?.timeSecs
-            val bgTime = if (nextT != null && nextT > line.timeSecs + 0.25) {
-                val ratio = (lead.length.toDouble() / (lead.length + inner.length).coerceAtLeast(1))
-                    .coerceIn(0.45, 0.72)
-                line.timeSecs + (nextT - line.timeSecs) * ratio
-            } else {
-                line.timeSecs + 1.2
-            }
-            out += line.copy(text = lead)
+
             out += AndroidLyricLine(
-                timeSecs = bgTime,
-                text = "($inner)",
+                timeSecs = curTime,
+                text = remaining,
                 words = emptyList(),
                 isCounterVoice = line.isCounterVoice,
             )

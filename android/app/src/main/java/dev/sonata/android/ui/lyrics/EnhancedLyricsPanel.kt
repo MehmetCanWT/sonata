@@ -424,7 +424,7 @@ fun EnhancedLyricsPanel(
                                 .padding(vertical = 4.dp),
                             horizontalAlignment = if (isCounter) Alignment.End else Alignment.Start,
                         ) {
-                            if (prioritizeWordSync && line.words.isNotEmpty()) {
+                            if (prioritizeWordSync) {
                                 SweptKaraokeLyricText(
                                     text = cleanText,
                                     lineStartMs = lineStartMs,

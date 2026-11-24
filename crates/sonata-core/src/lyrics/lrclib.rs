@@ -580,11 +580,12 @@ fn parse_lrclib_item(item: &Value) -> LrclibParsed {
 }
 
 fn usable_synced_lyrics(lines: Vec<LyricLine>, track: &Track) -> Option<Vec<LyricLine>> {
-    let lines: Vec<_> = lines
+    let filtered: Vec<_> = lines
         .into_iter()
         .filter(|line| !is_metadata_line(&line.text, track))
         .collect();
-    (lines.len() >= 2 && synced_lyrics_match_duration(&lines, track.duration_secs)).then_some(lines)
+    let split = crate::lyrics::split_inline_background_vocals(filtered);
+    (split.len() >= 2 && synced_lyrics_match_duration(&split, track.duration_secs)).then_some(split)
 }
 
 fn usable_plain_lyrics(
