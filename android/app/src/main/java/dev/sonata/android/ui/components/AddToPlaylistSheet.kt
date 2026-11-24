@@ -64,16 +64,45 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import dev.sonata.android.SonataViewModel
+import dev.sonata.android.data.AppLanguage
+import dev.sonata.android.data.isPersonalTrackId
 import dev.sonata.android.ui.PAGE_GUTTER
 import dev.sonata.android.ui.ROW_ART_PX
 import dev.sonata.android.ui.SearchField
 import dev.sonata.android.ui.SonataAccent
 import dev.sonata.android.ui.SonataIcons
 import dev.sonata.android.ui.artworkAt
+import dev.sonata.android.ui.i18n.sourcesStrings
 import dev.sonata.android.ui.rememberArtworkRequest
 import dev.sonata.android.ui.theme.LocalLunariaColors
 import uniffi.sonata_android.AndroidPlaylist
 import uniffi.sonata_android.AndroidTrack
+
+internal const val PERSONAL_PLAYLIST_ID_PREFIX = "personal:"
+
+/**
+ * Filters [playlists] for [targets]: personal/local/FLAC/server tracks (`isPersonalTrackId`)
+ * are routed exclusively to [PERSONAL_PLAYLIST_ID_PREFIX] playlists and never to YTM playlists,
+ * while YTM/streaming tracks may target either YTM or personal playlists.
+ */
+internal fun filterEditablePlaylistsForTargets(
+    playlists: List<AndroidPlaylist>,
+    targets: List<AndroidTrack>,
+    searchQuery: String = "",
+): List<AndroidPlaylist> {
+    val requiresPersonalOnly = targets.any { isPersonalTrackId(it.id) }
+    val base = playlists
+        .filterNot { it.id == SonataViewModel.DOWNLOADS_PLAYLIST_ID }
+        .filter { pl ->
+            if (requiresPersonalOnly) pl.id.startsWith(PERSONAL_PLAYLIST_ID_PREFIX) else true
+        }
+    val q = searchQuery.trim()
+    return if (q.isEmpty()) {
+        base
+    } else {
+        base.filter { it.name.contains(q, ignoreCase = true) }
+    }
+}
 
 @Composable
 fun AddToPlaylistSheet(
@@ -87,6 +116,7 @@ fun AddToPlaylistSheet(
     onConfirmAdd: (playlistIds: List<String>, tracks: List<AndroidTrack>) -> Unit,
     onCreatePlaylist: (title: String, tracks: List<AndroidTrack>) -> Unit,
     modifier: Modifier = Modifier,
+    appLanguage: AppLanguage = AppLanguage.SYSTEM,
 ) {
     if (visible) {
         BackHandler(onBack = onDismiss)
@@ -102,13 +132,14 @@ fun AddToPlaylistSheet(
         var searchQuery by remember(targets) { mutableStateOf("") }
         var showCreateDialog by remember { mutableStateOf(false) }
 
-        val editablePlaylists = remember(playlists, searchQuery) {
-            val base = playlists.filterNot { it.id == SonataViewModel.DOWNLOADS_PLAYLIST_ID }
-            if (searchQuery.isBlank()) {
-                base
-            } else {
-                base.filter { it.name.contains(searchQuery.trim(), ignoreCase = true) }
-            }
+        val srcStrings = remember(appLanguage) { sourcesStrings(appLanguage) }
+        val hasPersonalTrack = remember(targets) { targets.any { isPersonalTrackId(it.id) } }
+        val editablePlaylists = remember(playlists, targets, searchQuery) {
+            filterEditablePlaylistsForTargets(
+                playlists = playlists,
+                targets = targets,
+                searchQuery = searchQuery,
+            )
         }
 
         val headerTitle = remember(targets, overrideTitle) {
@@ -229,7 +260,7 @@ fun AddToPlaylistSheet(
 
             val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
             Text(
-                text = strings.addToPlaylist.uppercase(),
+                text = (if (hasPersonalTrack) srcStrings.addToPersonalPlaylist else strings.addToPlaylist).uppercase(),
                 style = MaterialTheme.typography.labelSmall.copy(
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -254,13 +285,13 @@ fun AddToPlaylistSheet(
                 ) {
                     Icon(
                         imageVector = PlaylistPlusIcon,
-                        contentDescription = strings.newPlaylist,
+                        contentDescription = if (hasPersonalTrack) srcStrings.addPersonalPlaylist else strings.newPlaylist,
                         tint = themeTokens.petalLavender,
                         modifier = Modifier.size(22.dp),
                     )
                 }
                 Text(
-                    text = strings.newPlaylist,
+                    text = if (hasPersonalTrack) srcStrings.addPersonalPlaylist else strings.newPlaylist,
                     style = MaterialTheme.typography.titleMedium.copy(
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Medium,
@@ -356,10 +387,10 @@ fun AddToPlaylistSheet(
                                 overflow = TextOverflow.Ellipsis,
                             )
                             val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
-                            val subtitleText = if (playlist.id.startsWith("local:")) {
-                                strings.offlineLabel
-                            } else {
-                                strings.playlistLabel
+                            val subtitleText = when {
+                                playlist.id.startsWith(PERSONAL_PLAYLIST_ID_PREFIX) -> srcStrings.personalPlaylistsTitle
+                                playlist.id.startsWith("local:") -> strings.offlineLabel
+                                else -> strings.playlistLabel
                             }
                             Text(
                                 text = subtitleText,

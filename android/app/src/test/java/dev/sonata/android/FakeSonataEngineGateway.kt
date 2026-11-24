@@ -15,14 +15,17 @@ import uniffi.sonata_android.AndroidMoodCategory
 import uniffi.sonata_android.AndroidMoodChip
 import uniffi.sonata_android.AndroidMotionMedia
 import uniffi.sonata_android.AndroidMusicVideoCandidate
+import uniffi.sonata_android.AndroidPersonalPlaylist
 import uniffi.sonata_android.AndroidPlaylist
 import uniffi.sonata_android.AndroidResolvedMusicVideo
 import uniffi.sonata_android.AndroidResolvedStream
 import uniffi.sonata_android.AndroidServerAlbum
+import uniffi.sonata_android.AndroidServerHealthReport
 import uniffi.sonata_android.AndroidServerKind
 import uniffi.sonata_android.AndroidServerLibrary
 import uniffi.sonata_android.AndroidServerProfile
 import uniffi.sonata_android.AndroidServerSearchResult
+import uniffi.sonata_android.AndroidServerSpeedTestReport
 import uniffi.sonata_android.AndroidServerStream
 import uniffi.sonata_android.AndroidTrack
 import uniffi.sonata_android.AndroidUpdateInfo
@@ -176,13 +179,22 @@ class FakeSonataEngineGateway : SonataEngineGateway {
         durationSecs: ULong?,
     ) = Unit
 
-    override suspend fun addTracksToPlaylist(playlistId: String, videoIds: List<String>) = Unit
+    val ytmPlaylistAddsLog = mutableListOf<Pair<String, List<String>>>()
+    val ytmPlaylistCreatesLog = mutableListOf<Pair<String, List<String>>>()
+    val ytmAttributionLog = mutableListOf<AndroidTrack>()
+
+    override suspend fun addTracksToPlaylist(playlistId: String, videoIds: List<String>) {
+        ytmPlaylistAddsLog.add(playlistId to videoIds)
+    }
 
     override suspend fun createPlaylist(
         title: String,
         description: String,
         videoIds: List<String>,
-    ): String = "PL_FAKE"
+    ): String {
+        ytmPlaylistCreatesLog.add(title to videoIds)
+        return "PL_FAKE"
+    }
 
     override suspend fun setPlaylistSaved(playlistId: String, saved: Boolean) {
         savedPlaylistsLog.add(playlistId to saved)
@@ -366,6 +378,7 @@ class FakeSonataEngineGateway : SonataEngineGateway {
                 AndroidServerKind.JELLYFIN -> "jf"
                 AndroidServerKind.SUBSONIC -> "sub"
                 AndroidServerKind.WEB_DAV -> "dav"
+                AndroidServerKind.SMB -> "smb"
             }
             profile.copy(id = "$prefix-${fakeServers.size + 1}")
         } else {
@@ -447,4 +460,113 @@ class FakeSonataEngineGateway : SonataEngineGateway {
 
     override suspend fun resolveServerStream(track: AndroidTrack): AndroidServerStream =
         serverStreamHandler(track)
+
+    var serverHealthHandler: suspend (String) -> AndroidServerHealthReport = { serverId ->
+        val exists = fakeServers.any { it.id == serverId }
+        AndroidServerHealthReport(
+            alive = exists,
+            latencyMs = if (exists) 12uL else null,
+            message = if (exists) "OK" else "Not found",
+        )
+    }
+
+    var serverSpeedTestHandler: suspend (String) -> AndroidServerSpeedTestReport = { serverId ->
+        val exists = fakeServers.any { it.id == serverId }
+        AndroidServerSpeedTestReport(
+            alive = exists,
+            latencyMs = if (exists) 14uL else 0uL,
+            downloadMbps = if (exists) 184.5 else null,
+            bytesTested = if (exists) 1_048_576uL else 0uL,
+            sampleNote = if (exists) "Downloaded 1048576 bytes in 45ms" else "Not found",
+        )
+    }
+
+    val fakePersonalPlaylists = mutableListOf<AndroidPersonalPlaylist>()
+    private var nextPersonalPlaylistSeq = 1
+    var attributePersonalTrackHandler: suspend (AndroidTrack) -> String? = { track ->
+        if (signedIn) "ytm_${track.id}" else null
+    }
+
+    override suspend fun probeServerHealth(serverId: String): AndroidServerHealthReport =
+        serverHealthHandler(serverId)
+
+    override suspend fun runServerSpeedTest(serverId: String): AndroidServerSpeedTestReport =
+        serverSpeedTestHandler(serverId)
+
+    override suspend fun listPersonalPlaylists(): List<AndroidPersonalPlaylist> =
+        fakePersonalPlaylists.toList()
+
+    override suspend fun createPersonalPlaylist(name: String): AndroidPersonalPlaylist {
+        val clean = name.trim()
+        require(clean.isNotEmpty()) { "Personal playlist name cannot be empty" }
+        val now = (System.currentTimeMillis() / 1000L).toULong()
+        val created = AndroidPersonalPlaylist(
+            id = "personal:fake_${nextPersonalPlaylistSeq++}",
+            name = clean,
+            tracks = emptyList(),
+            createdAtEpochSecs = now,
+            updatedAtEpochSecs = now,
+        )
+        fakePersonalPlaylists.add(created)
+        return created
+    }
+
+    override suspend fun renamePersonalPlaylist(
+        playlistId: String,
+        newName: String,
+    ): AndroidPersonalPlaylist {
+        val clean = newName.trim()
+        require(clean.isNotEmpty()) { "Personal playlist name cannot be empty" }
+        val idx = fakePersonalPlaylists.indexOfFirst { it.id == playlistId }
+        require(idx >= 0) { "Personal playlist $playlistId not found" }
+        val updated = fakePersonalPlaylists[idx].copy(
+            name = clean,
+            updatedAtEpochSecs = (System.currentTimeMillis() / 1000L).toULong(),
+        )
+        fakePersonalPlaylists[idx] = updated
+        return updated
+    }
+
+    override suspend fun deletePersonalPlaylist(playlistId: String): Boolean =
+        fakePersonalPlaylists.removeAll { it.id == playlistId }
+
+    override suspend fun addTrackToPersonalPlaylist(
+        playlistId: String,
+        track: AndroidTrack,
+    ): AndroidPersonalPlaylist {
+        val idx = fakePersonalPlaylists.indexOfFirst { it.id == playlistId }
+        require(idx >= 0) { "Personal playlist $playlistId not found" }
+        val current = fakePersonalPlaylists[idx]
+        val nextTracks = if (current.tracks.any { it.id == track.id }) {
+            current.tracks
+        } else {
+            current.tracks + track
+        }
+        val updated = current.copy(
+            tracks = nextTracks,
+            updatedAtEpochSecs = (System.currentTimeMillis() / 1000L).toULong(),
+        )
+        fakePersonalPlaylists[idx] = updated
+        return updated
+    }
+
+    override suspend fun removeTrackFromPersonalPlaylist(
+        playlistId: String,
+        trackId: String,
+    ): AndroidPersonalPlaylist {
+        val idx = fakePersonalPlaylists.indexOfFirst { it.id == playlistId }
+        require(idx >= 0) { "Personal playlist $playlistId not found" }
+        val current = fakePersonalPlaylists[idx]
+        val updated = current.copy(
+            tracks = current.tracks.filterNot { it.id == trackId },
+            updatedAtEpochSecs = (System.currentTimeMillis() / 1000L).toULong(),
+        )
+        fakePersonalPlaylists[idx] = updated
+        return updated
+    }
+
+    override suspend fun attributePersonalTrackToYtm(track: AndroidTrack): String? {
+        ytmAttributionLog.add(track)
+        return attributePersonalTrackHandler(track)
+    }
 }

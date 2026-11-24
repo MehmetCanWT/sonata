@@ -303,6 +303,7 @@ internal fun SearchTabContent(
     listState: LazyListState,
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
+    appLanguage: dev.sonata.android.data.AppLanguage = dev.sonata.android.data.AppLanguage.SYSTEM,
     onSearchQuery: (String) -> Unit,
     onRemoveRecentSearch: (String) -> Unit,
     onClearRecentSearches: () -> Unit,
@@ -331,15 +332,22 @@ internal fun SearchTabContent(
     }
 
     val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
+    val primarySegmentLabel = remember(state.personalOnlyMode, appLanguage) {
+        if (state.personalOnlyMode) {
+            dev.sonata.android.ui.i18n.sourcesStrings(appLanguage).tabLocal
+        } else {
+            "YouTube"
+        }
+    }
     val hasEnabledServers = remember(state.servers, state.serverSearchResult) {
         state.servers.any { it.enabled } || state.serverSearchResult != null
     }
-    var selectedSegment by remember(hasEnabledServers) { mutableIntStateOf(0) }
-    val segments = remember(strings, hasEnabledServers) {
+    var selectedSegment by remember(hasEnabledServers, state.personalOnlyMode) { mutableIntStateOf(0) }
+    val segments = remember(strings, hasEnabledServers, primarySegmentLabel) {
         if (hasEnabledServers) {
-            listOf("YouTube", strings.servers.serversTab, strings.libraryHeading, strings.playlists)
+            listOf(primarySegmentLabel, strings.servers.serversTab, strings.libraryHeading, strings.playlists)
         } else {
-            listOf("YouTube", strings.libraryHeading, strings.playlists)
+            listOf(primarySegmentLabel, strings.libraryHeading, strings.playlists)
         }
     }
     val activeSegmentKey = remember(selectedSegment, hasEnabledServers) {

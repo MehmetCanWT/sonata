@@ -877,6 +877,24 @@ internal open class UniffiVTableCallbackInterfaceAndroidJsCipherSolver(
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -892,7 +910,11 @@ internal open class UniffiVTableCallbackInterfaceAndroidJsCipherSolver(
 // when the library is loaded.
 internal interface IntegrityCheckingUniffiLib : Library {
     // Integrity check functions only
-    fun uniffi_sonata_android_checksum_method_sonataandroidengine_add_tracks_to_playlist(
+    fun uniffi_sonata_android_checksum_method_sonataandroidengine_add_track_to_personal_playlist(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_add_tracks_to_playlist(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_attribute_personal_track_to_ytm(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_authenticate_jellyfin(
 ): Short
@@ -904,7 +926,11 @@ fun uniffi_sonata_android_checksum_method_sonataandroidengine_check_for_updates_
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_clear_lyrics_cache(
 ): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_create_personal_playlist(
+): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_create_playlist(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_delete_personal_playlist(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_delete_server(
 ): Short
@@ -954,6 +980,8 @@ fun uniffi_sonata_android_checksum_method_sonataandroidengine_get_server_playlis
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_is_signed_in(
 ): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_list_personal_playlists(
+): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_list_server_albums(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_list_server_artists(
@@ -963,6 +991,12 @@ fun uniffi_sonata_android_checksum_method_sonataandroidengine_list_server_librar
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_list_server_playlists(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_list_servers(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_probe_server_health(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_remove_track_from_personal_playlist(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_rename_personal_playlist(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_report_playback(
 ): Short
@@ -987,6 +1021,8 @@ fun uniffi_sonata_android_checksum_method_sonataandroidengine_resolve_recovery(
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_resolve_server_stream(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_resolve_stream(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_run_server_speed_test(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_search_all_servers(
 ): Short
@@ -1080,7 +1116,11 @@ fun uniffi_sonata_android_fn_free_sonataandroidengine(`ptr`: Pointer,uniffi_out_
 ): Unit
 fun uniffi_sonata_android_fn_constructor_sonataandroidengine_new(`configDir`: RustBuffer.ByValue,`cacheDir`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
+fun uniffi_sonata_android_fn_method_sonataandroidengine_add_track_to_personal_playlist(`ptr`: Pointer,`playlistId`: RustBuffer.ByValue,`track`: RustBuffer.ByValue,
+): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_add_tracks_to_playlist(`ptr`: Pointer,`playlistId`: RustBuffer.ByValue,`videoIds`: RustBuffer.ByValue,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_attribute_personal_track_to_ytm(`ptr`: Pointer,`track`: RustBuffer.ByValue,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_authenticate_jellyfin(`ptr`: Pointer,`baseUrl`: RustBuffer.ByValue,`username`: RustBuffer.ByValue,`password`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,
 ): Long
@@ -1092,7 +1132,11 @@ fun uniffi_sonata_android_fn_method_sonataandroidengine_check_for_updates_for_ve
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_clear_lyrics_cache(`ptr`: Pointer,
 ): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_create_personal_playlist(`ptr`: Pointer,`name`: RustBuffer.ByValue,
+): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_create_playlist(`ptr`: Pointer,`title`: RustBuffer.ByValue,`description`: RustBuffer.ByValue,`videoIds`: RustBuffer.ByValue,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_delete_personal_playlist(`ptr`: Pointer,`playlistId`: RustBuffer.ByValue,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_delete_server(`ptr`: Pointer,`serverId`: RustBuffer.ByValue,
 ): Long
@@ -1142,6 +1186,8 @@ fun uniffi_sonata_android_fn_method_sonataandroidengine_get_server_playlist_trac
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_is_signed_in(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Byte
+fun uniffi_sonata_android_fn_method_sonataandroidengine_list_personal_playlists(`ptr`: Pointer,
+): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_list_server_albums(`ptr`: Pointer,`serverId`: RustBuffer.ByValue,`libraryId`: RustBuffer.ByValue,`artistId`: RustBuffer.ByValue,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_list_server_artists(`ptr`: Pointer,`serverId`: RustBuffer.ByValue,`libraryId`: RustBuffer.ByValue,
@@ -1151,6 +1197,12 @@ fun uniffi_sonata_android_fn_method_sonataandroidengine_list_server_libraries(`p
 fun uniffi_sonata_android_fn_method_sonataandroidengine_list_server_playlists(`ptr`: Pointer,`serverId`: RustBuffer.ByValue,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_list_servers(`ptr`: Pointer,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_probe_server_health(`ptr`: Pointer,`serverId`: RustBuffer.ByValue,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_remove_track_from_personal_playlist(`ptr`: Pointer,`playlistId`: RustBuffer.ByValue,`trackId`: RustBuffer.ByValue,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_rename_personal_playlist(`ptr`: Pointer,`playlistId`: RustBuffer.ByValue,`newName`: RustBuffer.ByValue,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_report_playback(`ptr`: Pointer,`videoId`: RustBuffer.ByValue,`playlistId`: RustBuffer.ByValue,`durationSecs`: RustBuffer.ByValue,
 ): Long
@@ -1175,6 +1227,8 @@ fun uniffi_sonata_android_fn_method_sonataandroidengine_resolve_recovery(`ptr`: 
 fun uniffi_sonata_android_fn_method_sonataandroidengine_resolve_server_stream(`ptr`: Pointer,`track`: RustBuffer.ByValue,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_resolve_stream(`ptr`: Pointer,`track`: RustBuffer.ByValue,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_run_server_speed_test(`ptr`: Pointer,`serverId`: RustBuffer.ByValue,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_search_all_servers(`ptr`: Pointer,`query`: RustBuffer.ByValue,`limitPerServer`: Int,
 ): Long
@@ -1334,7 +1388,13 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_add_track_to_personal_playlist() != 48579.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_add_tracks_to_playlist() != 5157.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_attribute_personal_track_to_ytm() != 43060.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_authenticate_jellyfin() != 1906.toShort()) {
@@ -1352,7 +1412,13 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_clear_lyrics_cache() != 9624.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_create_personal_playlist() != 16441.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_create_playlist() != 31585.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_delete_personal_playlist() != 63445.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_delete_server() != 39641.toShort()) {
@@ -1427,6 +1493,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_is_signed_in() != 32775.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_list_personal_playlists() != 41757.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_list_server_albums() != 3979.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1439,7 +1508,16 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_list_server_playlists() != 18703.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_list_servers() != 18599.toShort()) {
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_list_servers() != 2407.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_probe_server_health() != 17782.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_remove_track_from_personal_playlist() != 19078.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_rename_personal_playlist() != 56253.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_report_playback() != 22899.toShort()) {
@@ -1476,6 +1554,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_resolve_stream() != 30833.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_run_server_speed_test() != 36370.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_search_all_servers() != 32685.toShort()) {
@@ -2016,9 +2097,19 @@ public object FfiConverterByteArray: FfiConverterRustBuffer<ByteArray> {
 public interface SonataAndroidEngineInterface {
     
     /**
+     * Appends a local, server, or streaming track to a personal playlist without calling YouTube Music APIs.
+     */
+    suspend fun `addTrackToPersonalPlaylist`(`playlistId`: kotlin.String, `track`: AndroidTrack): AndroidPersonalPlaylist
+    
+    /**
      * Appends one or more tracks to a YouTube Music playlist (strips `VL` prefix when needed).
      */
     suspend fun `addTracksToPlaylist`(`playlistId`: kotlin.String, `videoIds`: List<kotlin.String>)
+    
+    /**
+     * Attributes a local or self-hosted track play to YouTube Music listening history when signed in.
+     */
+    suspend fun `attributePersonalTrackToYtm`(`track`: AndroidTrack): kotlin.String?
     
     /**
      * Authenticates against a Jellyfin server using username and password, returning an access token and user ID.
@@ -2046,9 +2137,19 @@ public interface SonataAndroidEngineInterface {
     suspend fun `clearLyricsCache`()
     
     /**
+     * Creates a new locally persisted personal playlist.
+     */
+    suspend fun `createPersonalPlaylist`(`name`: kotlin.String): AndroidPersonalPlaylist
+    
+    /**
      * Creates a new private YouTube Music playlist and optionally seeds it with `video_ids`.
      */
     suspend fun `createPlaylist`(`title`: kotlin.String, `description`: kotlin.String, `videoIds`: List<kotlin.String>): kotlin.String
+    
+    /**
+     * Deletes a locally persisted personal playlist by ID.
+     */
+    suspend fun `deletePersonalPlaylist`(`playlistId`: kotlin.String): kotlin.Boolean
     
     /**
      * Deletes a configured self-hosted music server profile by `server_id`.
@@ -2173,6 +2274,11 @@ public interface SonataAndroidEngineInterface {
     fun `isSignedIn`(): kotlin.Boolean
     
     /**
+     * Lists all locally persisted personal playlists.
+     */
+    suspend fun `listPersonalPlaylists`(): List<AndroidPersonalPlaylist>
+    
+    /**
      * Lists albums from `server_id`, optionally filtered by `library_id` or `artist_id`.
      */
     suspend fun `listServerAlbums`(`serverId`: kotlin.String, `libraryId`: kotlin.String?, `artistId`: kotlin.String?): List<AndroidHomeCard>
@@ -2193,9 +2299,24 @@ public interface SonataAndroidEngineInterface {
     suspend fun `listServerPlaylists`(`serverId`: kotlin.String): List<AndroidPlaylist>
     
     /**
-     * Lists all configured self-hosted music servers (`Jellyfin`, `Subsonic`, `WebDAV`).
+     * Lists all configured self-hosted music servers (`Jellyfin`, `Subsonic`, `WebDAV`, `SMB`).
      */
     suspend fun `listServers`(): List<AndroidServerProfile>
+    
+    /**
+     * Probes reachability and measures round-trip ping latency for a persisted server.
+     */
+    suspend fun `probeServerHealth`(`serverId`: kotlin.String): AndroidServerHealthReport
+    
+    /**
+     * Removes a track by ID from a locally persisted personal playlist.
+     */
+    suspend fun `removeTrackFromPersonalPlaylist`(`playlistId`: kotlin.String, `trackId`: kotlin.String): AndroidPersonalPlaylist
+    
+    /**
+     * Renames an existing locally persisted personal playlist.
+     */
+    suspend fun `renamePersonalPlaylist`(`playlistId`: kotlin.String, `newName`: kotlin.String): AndroidPersonalPlaylist
     
     /**
      * Reports single-track playback and watchtime telemetry for `video_id`
@@ -2257,6 +2378,11 @@ public interface SonataAndroidEngineInterface {
      * Resolves a fast-start audio stream URL and HTTP headers for Media3 `ExoPlayer`.
      */
     suspend fun `resolveStream`(`track`: AndroidTrack): AndroidResolvedStream
+    
+    /**
+     * Runs a real sample download/read throughput benchmark (`Mbps`) against a persisted server.
+     */
+    suspend fun `runServerSpeedTest`(`serverId`: kotlin.String): AndroidServerSpeedTestReport
     
     /**
      * Searches all enabled self-hosted servers concurrently and merges results.
@@ -2431,6 +2557,30 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
 
     
     /**
+     * Appends a local, server, or streaming track to a personal playlist without calling YouTube Music APIs.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `addTrackToPersonalPlaylist`(`playlistId`: kotlin.String, `track`: AndroidTrack) : AndroidPersonalPlaylist {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_add_track_to_personal_playlist(
+                thisPtr,
+                FfiConverterString.lower(`playlistId`),FfiConverterTypeAndroidTrack.lower(`track`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterTypeAndroidPersonalPlaylist.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
      * Appends one or more tracks to a YouTube Music playlist (strips `VL` prefix when needed).
      */
     @Throws(SonataAndroidException::class)
@@ -2449,6 +2599,30 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
         // lift function
         { Unit },
         
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Attributes a local or self-hosted track play to YouTube Music listening history when signed in.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `attributePersonalTrackToYtm`(`track`: AndroidTrack) : kotlin.String? {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_attribute_personal_track_to_ytm(
+                thisPtr,
+                FfiConverterTypeAndroidTrack.lower(`track`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterOptionalString.lift(it) },
         // Error FFI converter
         SonataAndroidException.ErrorHandler,
     )
@@ -2576,6 +2750,30 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
 
     
     /**
+     * Creates a new locally persisted personal playlist.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `createPersonalPlaylist`(`name`: kotlin.String) : AndroidPersonalPlaylist {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_create_personal_playlist(
+                thisPtr,
+                FfiConverterString.lower(`name`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterTypeAndroidPersonalPlaylist.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
      * Creates a new private YouTube Music playlist and optionally seeds it with `video_ids`.
      */
     @Throws(SonataAndroidException::class)
@@ -2593,6 +2791,30 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
         { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
         // lift function
         { FfiConverterString.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Deletes a locally persisted personal playlist by ID.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `deletePersonalPlaylist`(`playlistId`: kotlin.String) : kotlin.Boolean {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_delete_personal_playlist(
+                thisPtr,
+                FfiConverterString.lower(`playlistId`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_i8(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_i8(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_i8(future) },
+        // lift function
+        { FfiConverterBoolean.lift(it) },
         // Error FFI converter
         SonataAndroidException.ErrorHandler,
     )
@@ -3166,6 +3388,30 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
 
     
     /**
+     * Lists all locally persisted personal playlists.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `listPersonalPlaylists`() : List<AndroidPersonalPlaylist> {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_list_personal_playlists(
+                thisPtr,
+                
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterSequenceTypeAndroidPersonalPlaylist.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
      * Lists albums from `server_id`, optionally filtered by `library_id` or `artist_id`.
      */
     @Throws(SonataAndroidException::class)
@@ -3262,7 +3508,7 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
 
     
     /**
-     * Lists all configured self-hosted music servers (`Jellyfin`, `Subsonic`, `WebDAV`).
+     * Lists all configured self-hosted music servers (`Jellyfin`, `Subsonic`, `WebDAV`, `SMB`).
      */
     @Throws(SonataAndroidException::class)
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
@@ -3279,6 +3525,78 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
         { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
         // lift function
         { FfiConverterSequenceTypeAndroidServerProfile.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Probes reachability and measures round-trip ping latency for a persisted server.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `probeServerHealth`(`serverId`: kotlin.String) : AndroidServerHealthReport {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_probe_server_health(
+                thisPtr,
+                FfiConverterString.lower(`serverId`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterTypeAndroidServerHealthReport.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Removes a track by ID from a locally persisted personal playlist.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `removeTrackFromPersonalPlaylist`(`playlistId`: kotlin.String, `trackId`: kotlin.String) : AndroidPersonalPlaylist {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_remove_track_from_personal_playlist(
+                thisPtr,
+                FfiConverterString.lower(`playlistId`),FfiConverterString.lower(`trackId`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterTypeAndroidPersonalPlaylist.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Renames an existing locally persisted personal playlist.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `renamePersonalPlaylist`(`playlistId`: kotlin.String, `newName`: kotlin.String) : AndroidPersonalPlaylist {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_rename_personal_playlist(
+                thisPtr,
+                FfiConverterString.lower(`playlistId`),FfiConverterString.lower(`newName`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterTypeAndroidPersonalPlaylist.lift(it) },
         // Error FFI converter
         SonataAndroidException.ErrorHandler,
     )
@@ -3566,6 +3884,30 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
         { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
         // lift function
         { FfiConverterTypeAndroidResolvedStream.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Runs a real sample download/read throughput benchmark (`Mbps`) against a persisted server.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `runServerSpeedTest`(`serverId`: kotlin.String) : AndroidServerSpeedTestReport {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_run_server_speed_test(
+                thisPtr,
+                FfiConverterString.lower(`serverId`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterTypeAndroidServerSpeedTestReport.lift(it) },
         // Error FFI converter
         SonataAndroidException.ErrorHandler,
     )
@@ -4586,6 +4928,50 @@ public object FfiConverterTypeAndroidMusicVideoSyncSegment: FfiConverterRustBuff
 
 
 
+data class AndroidPersonalPlaylist (
+    var `id`: kotlin.String, 
+    var `name`: kotlin.String, 
+    var `tracks`: List<AndroidTrack>, 
+    var `createdAtEpochSecs`: kotlin.ULong, 
+    var `updatedAtEpochSecs`: kotlin.ULong
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAndroidPersonalPlaylist: FfiConverterRustBuffer<AndroidPersonalPlaylist> {
+    override fun read(buf: ByteBuffer): AndroidPersonalPlaylist {
+        return AndroidPersonalPlaylist(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterSequenceTypeAndroidTrack.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AndroidPersonalPlaylist) = (
+            FfiConverterString.allocationSize(value.`id`) +
+            FfiConverterString.allocationSize(value.`name`) +
+            FfiConverterSequenceTypeAndroidTrack.allocationSize(value.`tracks`) +
+            FfiConverterULong.allocationSize(value.`createdAtEpochSecs`) +
+            FfiConverterULong.allocationSize(value.`updatedAtEpochSecs`)
+    )
+
+    override fun write(value: AndroidPersonalPlaylist, buf: ByteBuffer) {
+            FfiConverterString.write(value.`id`, buf)
+            FfiConverterString.write(value.`name`, buf)
+            FfiConverterSequenceTypeAndroidTrack.write(value.`tracks`, buf)
+            FfiConverterULong.write(value.`createdAtEpochSecs`, buf)
+            FfiConverterULong.write(value.`updatedAtEpochSecs`, buf)
+    }
+}
+
+
+
 data class AndroidPlaylist (
     var `id`: kotlin.String, 
     var `name`: kotlin.String, 
@@ -4754,6 +5140,42 @@ public object FfiConverterTypeAndroidServerAlbum: FfiConverterRustBuffer<Android
 
 
 
+data class AndroidServerHealthReport (
+    var `alive`: kotlin.Boolean, 
+    var `latencyMs`: kotlin.ULong?, 
+    var `message`: kotlin.String
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAndroidServerHealthReport: FfiConverterRustBuffer<AndroidServerHealthReport> {
+    override fun read(buf: ByteBuffer): AndroidServerHealthReport {
+        return AndroidServerHealthReport(
+            FfiConverterBoolean.read(buf),
+            FfiConverterOptionalULong.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AndroidServerHealthReport) = (
+            FfiConverterBoolean.allocationSize(value.`alive`) +
+            FfiConverterOptionalULong.allocationSize(value.`latencyMs`) +
+            FfiConverterString.allocationSize(value.`message`)
+    )
+
+    override fun write(value: AndroidServerHealthReport, buf: ByteBuffer) {
+            FfiConverterBoolean.write(value.`alive`, buf)
+            FfiConverterOptionalULong.write(value.`latencyMs`, buf)
+            FfiConverterString.write(value.`message`, buf)
+    }
+}
+
+
+
 data class AndroidServerLibrary (
     var `id`: kotlin.String, 
     var `name`: kotlin.String, 
@@ -4802,7 +5224,10 @@ data class AndroidServerProfile (
     var `accessToken`: kotlin.String?, 
     var `userId`: kotlin.String?, 
     var `bearerToken`: kotlin.String?, 
-    var `libraryIds`: List<kotlin.String>
+    var `libraryIds`: List<kotlin.String>, 
+    var `share`: kotlin.String? = null, 
+    var `domain`: kotlin.String? = null, 
+    var `localMountPath`: kotlin.String? = null
 ) {
     
     companion object
@@ -4826,6 +5251,9 @@ public object FfiConverterTypeAndroidServerProfile: FfiConverterRustBuffer<Andro
             FfiConverterOptionalString.read(buf),
             FfiConverterOptionalString.read(buf),
             FfiConverterSequenceString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
         )
     }
 
@@ -4841,7 +5269,10 @@ public object FfiConverterTypeAndroidServerProfile: FfiConverterRustBuffer<Andro
             FfiConverterOptionalString.allocationSize(value.`accessToken`) +
             FfiConverterOptionalString.allocationSize(value.`userId`) +
             FfiConverterOptionalString.allocationSize(value.`bearerToken`) +
-            FfiConverterSequenceString.allocationSize(value.`libraryIds`)
+            FfiConverterSequenceString.allocationSize(value.`libraryIds`) +
+            FfiConverterOptionalString.allocationSize(value.`share`) +
+            FfiConverterOptionalString.allocationSize(value.`domain`) +
+            FfiConverterOptionalString.allocationSize(value.`localMountPath`)
     )
 
     override fun write(value: AndroidServerProfile, buf: ByteBuffer) {
@@ -4857,6 +5288,9 @@ public object FfiConverterTypeAndroidServerProfile: FfiConverterRustBuffer<Andro
             FfiConverterOptionalString.write(value.`userId`, buf)
             FfiConverterOptionalString.write(value.`bearerToken`, buf)
             FfiConverterSequenceString.write(value.`libraryIds`, buf)
+            FfiConverterOptionalString.write(value.`share`, buf)
+            FfiConverterOptionalString.write(value.`domain`, buf)
+            FfiConverterOptionalString.write(value.`localMountPath`, buf)
     }
 }
 
@@ -4897,6 +5331,50 @@ public object FfiConverterTypeAndroidServerSearchResult: FfiConverterRustBuffer<
             FfiConverterSequenceTypeAndroidHomeCard.write(value.`albums`, buf)
             FfiConverterSequenceTypeAndroidHomeCard.write(value.`artists`, buf)
             FfiConverterSequenceTypeAndroidHomeCard.write(value.`playlists`, buf)
+    }
+}
+
+
+
+data class AndroidServerSpeedTestReport (
+    var `alive`: kotlin.Boolean, 
+    var `latencyMs`: kotlin.ULong, 
+    var `downloadMbps`: kotlin.Double?, 
+    var `bytesTested`: kotlin.ULong, 
+    var `sampleNote`: kotlin.String
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAndroidServerSpeedTestReport: FfiConverterRustBuffer<AndroidServerSpeedTestReport> {
+    override fun read(buf: ByteBuffer): AndroidServerSpeedTestReport {
+        return AndroidServerSpeedTestReport(
+            FfiConverterBoolean.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterOptionalDouble.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AndroidServerSpeedTestReport) = (
+            FfiConverterBoolean.allocationSize(value.`alive`) +
+            FfiConverterULong.allocationSize(value.`latencyMs`) +
+            FfiConverterOptionalDouble.allocationSize(value.`downloadMbps`) +
+            FfiConverterULong.allocationSize(value.`bytesTested`) +
+            FfiConverterString.allocationSize(value.`sampleNote`)
+    )
+
+    override fun write(value: AndroidServerSpeedTestReport, buf: ByteBuffer) {
+            FfiConverterBoolean.write(value.`alive`, buf)
+            FfiConverterULong.write(value.`latencyMs`, buf)
+            FfiConverterOptionalDouble.write(value.`downloadMbps`, buf)
+            FfiConverterULong.write(value.`bytesTested`, buf)
+            FfiConverterString.write(value.`sampleNote`, buf)
     }
 }
 
@@ -5213,7 +5691,8 @@ enum class AndroidServerKind {
     
     JELLYFIN,
     SUBSONIC,
-    WEB_DAV;
+    WEB_DAV,
+    SMB;
     companion object
 }
 
@@ -6219,6 +6698,34 @@ public object FfiConverterSequenceTypeAndroidMusicVideoSyncSegment: FfiConverter
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeAndroidMusicVideoSyncSegment.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeAndroidPersonalPlaylist: FfiConverterRustBuffer<List<AndroidPersonalPlaylist>> {
+    override fun read(buf: ByteBuffer): List<AndroidPersonalPlaylist> {
+        val len = buf.getInt()
+        return List<AndroidPersonalPlaylist>(len) {
+            FfiConverterTypeAndroidPersonalPlaylist.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<AndroidPersonalPlaylist>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeAndroidPersonalPlaylist.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<AndroidPersonalPlaylist>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeAndroidPersonalPlaylist.write(it, buf)
         }
     }
 }

@@ -13,13 +13,16 @@ import uniffi.sonata_android.AndroidMoodCategory
 import uniffi.sonata_android.AndroidMoodChip
 import uniffi.sonata_android.AndroidMotionMedia
 import uniffi.sonata_android.AndroidMusicVideoCandidate
+import uniffi.sonata_android.AndroidPersonalPlaylist
 import uniffi.sonata_android.AndroidPlaylist
 import uniffi.sonata_android.AndroidResolvedMusicVideo
 import uniffi.sonata_android.AndroidResolvedStream
 import uniffi.sonata_android.AndroidServerAlbum
+import uniffi.sonata_android.AndroidServerHealthReport
 import uniffi.sonata_android.AndroidServerLibrary
 import uniffi.sonata_android.AndroidServerProfile
 import uniffi.sonata_android.AndroidServerSearchResult
+import uniffi.sonata_android.AndroidServerSpeedTestReport
 import uniffi.sonata_android.AndroidServerStream
 import uniffi.sonata_android.AndroidTrack
 import uniffi.sonata_android.AndroidUpdateInfo
@@ -150,6 +153,17 @@ interface SonataEngineGateway {
     suspend fun searchServer(serverId: String, query: String, limit: UInt): AndroidServerSearchResult
     suspend fun searchAllServers(query: String, limitPerServer: UInt): AndroidServerSearchResult
     suspend fun resolveServerStream(track: AndroidTrack): AndroidServerStream
+    suspend fun probeServerHealth(serverId: String): AndroidServerHealthReport
+    suspend fun runServerSpeedTest(serverId: String): AndroidServerSpeedTestReport
+
+    suspend fun listPersonalPlaylists(): List<AndroidPersonalPlaylist>
+    suspend fun createPersonalPlaylist(name: String): AndroidPersonalPlaylist
+    suspend fun renamePersonalPlaylist(playlistId: String, newName: String): AndroidPersonalPlaylist
+    suspend fun deletePersonalPlaylist(playlistId: String): Boolean
+    suspend fun addTrackToPersonalPlaylist(playlistId: String, track: AndroidTrack): AndroidPersonalPlaylist
+    suspend fun removeTrackFromPersonalPlaylist(playlistId: String, trackId: String): AndroidPersonalPlaylist
+
+    suspend fun attributePersonalTrackToYtm(track: AndroidTrack): String?
 }
 
 /** Production [SonataEngineGateway] backed directly by UniFFI async [SonataAndroidEngine]. */
@@ -382,4 +396,37 @@ class NativeSonataEngineGateway(
 
     override suspend fun resolveServerStream(track: AndroidTrack): AndroidServerStream =
         engine.resolveServerStream(track)
+
+    override suspend fun probeServerHealth(serverId: String): AndroidServerHealthReport =
+        engine.probeServerHealth(serverId)
+
+    override suspend fun runServerSpeedTest(serverId: String): AndroidServerSpeedTestReport =
+        engine.runServerSpeedTest(serverId)
+
+    override suspend fun listPersonalPlaylists(): List<AndroidPersonalPlaylist> =
+        engine.listPersonalPlaylists()
+
+    override suspend fun createPersonalPlaylist(name: String): AndroidPersonalPlaylist =
+        engine.createPersonalPlaylist(name)
+
+    override suspend fun renamePersonalPlaylist(
+        playlistId: String,
+        newName: String,
+    ): AndroidPersonalPlaylist = engine.renamePersonalPlaylist(playlistId, newName)
+
+    override suspend fun deletePersonalPlaylist(playlistId: String): Boolean =
+        engine.deletePersonalPlaylist(playlistId)
+
+    override suspend fun addTrackToPersonalPlaylist(
+        playlistId: String,
+        track: AndroidTrack,
+    ): AndroidPersonalPlaylist = engine.addTrackToPersonalPlaylist(playlistId, track)
+
+    override suspend fun removeTrackFromPersonalPlaylist(
+        playlistId: String,
+        trackId: String,
+    ): AndroidPersonalPlaylist = engine.removeTrackFromPersonalPlaylist(playlistId, trackId)
+
+    override suspend fun attributePersonalTrackToYtm(track: AndroidTrack): String? =
+        engine.attributePersonalTrackToYtm(track)
 }

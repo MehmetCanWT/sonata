@@ -536,6 +536,18 @@ private fun SonataAppContent(
             }
         }
     }
+    val localAudioPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            vm.scanLocalMusic()
+        }
+    }
+    val requestLocalAudioPermission: () -> Unit = {
+        localAudioPermissionLauncher.launch(
+            dev.sonata.android.data.LocalMusicScanner.requiredReadAudioPermission(),
+        )
+    }
 
     val homeListState = rememberLazyListState()
     val exploreListState = rememberLazyListState()
@@ -1038,6 +1050,7 @@ private fun SonataAppContent(
                                 listState = exploreListState,
                                 contentPadding = contentPadding,
                                 modifier = Modifier.nestedScroll(navBarScroll),
+                                appLanguage = settings.appLanguage,
                                 onRefresh = vm::loadHome,
                                 onOpenMood = vm::openMood,
                                 onOpenMoodCategory = vm::openMoodCategory,
@@ -1070,6 +1083,8 @@ private fun SonataAppContent(
                                     onStartTrackRadio = { tr -> vm.startQuickRadio(tr) },
                                     onStartPersonalStation = vm::startPersonalStation,
                                     onStartDiscoveryStation = vm::startDiscoveryStation,
+                                    personalOnlyMode = state.personalOnlyMode,
+                                    appLanguage = settings.appLanguage,
                                 )
                             }
 
@@ -1087,6 +1102,8 @@ private fun SonataAppContent(
                                     listState = libraryListState,
                                     contentPadding = contentPadding,
                                     modifier = Modifier.nestedScroll(navBarScroll),
+                                    appLanguage = settings.appLanguage,
+                                    localMusicEnabled = settings.localMusicEnabled,
                                     onSignIn = vm::openLoginSheet,
                                     onOpenPlaylist = vm::openPlaylist,
                                     onPlaylistLongClick = { playlist, bounds ->
@@ -1105,6 +1122,21 @@ private fun SonataAppContent(
                                     onOpenDownloads = vm::openDownloadsPlaylist,
                                     onOpenServers = { srvId -> vm.openServersScreen(srvId) },
                                     onOpenArtist = { id, name -> vm.openArtist(id, name) },
+                                    onRequestLocalPermission = requestLocalAudioPermission,
+                                    onRescanLocalMusic = vm::scanLocalMusic,
+                                    onCreatePersonalPlaylist = vm::createPersonalPlaylist,
+                                    onLoadServerSource = { srvId -> vm.loadServerSourceSummary(srvId) },
+                                    onOpenAlbumOrPlaylist = { id, title, cover, sub, kind ->
+                                        vm.openAlbumOrPlaylist(
+                                            id = id,
+                                            title = title,
+                                            coverUrl = cover,
+                                            subtitle = sub,
+                                            kindLabel = kind,
+                                        )
+                                    },
+                                    onTrackOptions = { track, bounds -> trackOptionsTarget = TrackMenuRequest(track, bounds) },
+                                    onTrackLongClick = { track, bounds -> openTrackHeldMenu(track, null, bounds) },
                                 )
                             }
 
@@ -1113,6 +1145,7 @@ private fun SonataAppContent(
                                 listState = searchListState,
                                 contentPadding = contentPadding,
                                 modifier = Modifier.nestedScroll(navBarScroll),
+                                appLanguage = settings.appLanguage,
                                 onSearchQuery = { q -> vm.searchDebounced(q) },
                                 onRemoveRecentSearch = vm::removeRecentSearch,
                                 onClearRecentSearches = vm::clearRecentSearches,
@@ -1635,6 +1668,15 @@ private fun SonataAppContent(
                 serverCount = state.servers.size,
                 enabledServerCount = state.servers.count { it.enabled },
                 onOpenServers = { vm.openServersScreen() },
+                localTrackCount = state.localMusicLibrary.tracks.size,
+                localPermissionGranted = state.localMusicLibrary.permissionGranted,
+                servers = state.servers,
+                serverDiagnostics = state.serverDiagnostics,
+                onRequestLocalPermission = requestLocalAudioPermission,
+                onRescanLocalMusic = vm::scanLocalMusic,
+                onProbeServerHealth = vm::probeServerHealth,
+                onRunServerSpeedTest = vm::runServerSpeedTest,
+                onOpenServer = { srvId -> vm.openServersScreen(srvId) },
             )
         }
 
@@ -1668,6 +1710,10 @@ private fun SonataAppContent(
                 onSetServerEnabled = vm::setServerEnabled,
                 onTestConnection = vm::testServerConnection,
                 onClearTestResult = vm::clearServerTestResult,
+                appLanguage = settings.appLanguage,
+                serverDiagnostics = state.serverDiagnostics,
+                onProbeServerHealth = vm::probeServerHealth,
+                onRunServerSpeedTest = vm::runServerSpeedTest,
             )
         }
 
@@ -1810,6 +1856,7 @@ private fun SonataAppContent(
                 collectionPickerMeta = null
                 vm.createPlaylistWithTracks(title, tracks)
             },
+            appLanguage = settings.appLanguage,
         )
 
         // Brief floating feedback pill when tracks are added to a playlist

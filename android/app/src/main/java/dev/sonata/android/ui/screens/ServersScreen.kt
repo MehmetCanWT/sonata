@@ -62,6 +62,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil3.compose.AsyncImage
 import dev.sonata.android.ServerBrowserState
+import dev.sonata.android.data.AppLanguage
 import dev.sonata.android.ui.CARD_ART_PX
 import dev.sonata.android.ui.PAGE_GUTTER
 import dev.sonata.android.ui.PillSegmentedControl
@@ -71,6 +72,8 @@ import dev.sonata.android.ui.SonataIcons
 import dev.sonata.android.ui.artworkAt
 import dev.sonata.android.ui.i18n.LocalSonataStrings
 import dev.sonata.android.ui.i18n.ServerStrings
+import dev.sonata.android.ui.i18n.SourcesStrings
+import dev.sonata.android.ui.i18n.sourcesStrings
 import dev.sonata.android.ui.rememberArtworkRequest
 import dev.sonata.android.ui.rememberSafeTopInset
 import dev.sonata.android.ui.sonataThemeAccent
@@ -85,7 +88,7 @@ import uniffi.sonata_android.AndroidTrack
 
 /**
  * Full-screen self-hosted music server manager and media browser supporting Jellyfin,
- * Subsonic / OpenSubsonic, and WebDAV servers.
+ * Subsonic / OpenSubsonic, SMB, and WebDAV servers.
  */
 @Composable
 fun ServersScreen(
@@ -111,9 +114,14 @@ fun ServersScreen(
     onTestConnection: (AndroidServerProfile) -> Unit,
     onClearTestResult: () -> Unit,
     modifier: Modifier = Modifier,
+    appLanguage: AppLanguage = AppLanguage.SYSTEM,
+    serverDiagnostics: Map<String, ServerDiagnosticState> = emptyMap(),
+    onProbeServerHealth: (String) -> Unit = {},
+    onRunServerSpeedTest: (String) -> Unit = {},
 ) {
     val strings = LocalSonataStrings.current
     val s = strings.servers
+    val src = remember(appLanguage) { sourcesStrings(appLanguage) }
     val tokens = LocalLunariaColors.current
     val statusTop = rememberSafeTopInset()
     val accent = sonataThemeAccent()
@@ -170,6 +178,7 @@ fun ServersScreen(
     if (showAddDialog || editingTarget != null) {
         ServerEditorDialog(
             initialProfile = editingTarget,
+            src = src,
             testingConnection = browserState.testingConnection,
             testResultMessage = browserState.testResultMessage,
             testResultIsError = browserState.testResultIsError,
@@ -242,7 +251,7 @@ fun ServersScreen(
                     )
                     if (activeServer != null) {
                         Text(
-                            text = serverKindLabel(activeServer.kind, s),
+                            text = serverKindLabel(activeServer.kind, s, src),
                             style = MaterialTheme.typography.labelSmall,
                             color = secondaryText,
                             maxLines = 1,
@@ -294,7 +303,9 @@ fun ServersScreen(
             if (activeServer == null) {
                 ServersListContent(
                     servers = servers,
+                    serverDiagnostics = serverDiagnostics,
                     s = s,
+                    src = src,
                     cardBg = cardBg,
                     dividerColor = dividerColor,
                     primaryText = primaryText,
@@ -312,6 +323,8 @@ fun ServersScreen(
                     },
                     onDeleteServer = { srv -> pendingDeleteServer = srv },
                     onToggleEnabled = onSetServerEnabled,
+                    onProbeHealth = onProbeServerHealth,
+                    onRunSpeedTest = onRunServerSpeedTest,
                 )
             } else {
                 ServerBrowserContent(
@@ -341,7 +354,9 @@ fun ServersScreen(
 @Composable
 private fun ServersListContent(
     servers: List<AndroidServerProfile>,
+    serverDiagnostics: Map<String, ServerDiagnosticState>,
     s: ServerStrings,
+    src: SourcesStrings,
     cardBg: Color,
     dividerColor: Color,
     primaryText: Color,
@@ -352,6 +367,8 @@ private fun ServersListContent(
     onEditServer: (AndroidServerProfile) -> Unit,
     onDeleteServer: (AndroidServerProfile) -> Unit,
     onToggleEnabled: (String, Boolean) -> Unit,
+    onProbeHealth: (String) -> Unit,
+    onRunSpeedTest: (String) -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -406,7 +423,9 @@ private fun ServersListContent(
             items(servers, key = { it.id }) { server ->
                 ServerProfileCard(
                     server = server,
+                    diagnostic = serverDiagnostics[server.id] ?: ServerDiagnosticState(),
                     s = s,
+                    src = src,
                     cardBg = cardBg,
                     dividerColor = dividerColor,
                     primaryText = primaryText,
@@ -416,6 +435,8 @@ private fun ServersListContent(
                     onEdit = { onEditServer(server) },
                     onDelete = { onDeleteServer(server) },
                     onToggleEnabled = { enabled -> onToggleEnabled(server.id, enabled) },
+                    onProbeHealth = { onProbeHealth(server.id) },
+                    onRunSpeedTest = { onRunSpeedTest(server.id) },
                 )
             }
         }
@@ -434,7 +455,9 @@ private fun ServersListContent(
 @Composable
 private fun ServerProfileCard(
     server: AndroidServerProfile,
+    diagnostic: ServerDiagnosticState,
     s: ServerStrings,
+    src: SourcesStrings,
     cardBg: Color,
     dividerColor: Color,
     primaryText: Color,
@@ -444,8 +467,15 @@ private fun ServerProfileCard(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onToggleEnabled: (Boolean) -> Unit,
+    onProbeHealth: () -> Unit,
+    onRunSpeedTest: () -> Unit,
 ) {
     val strings = LocalSonataStrings.current
+    val endpointSummary = remember(server) {
+        server.baseUrl.takeIf { it.isNotBlank() }
+            ?: server.localMountPath?.takeIf { it.isNotBlank() }
+            ?: server.share.orEmpty()
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -482,7 +512,7 @@ private fun ServerProfileCard(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = server.baseUrl,
+                    text = endpointSummary,
                     style = MaterialTheme.typography.bodySmall,
                     color = secondaryText,
                     maxLines = 1,
@@ -499,27 +529,113 @@ private fun ServerProfileCard(
             )
         }
 
+        // Reachability badge + measured Speed Test output
+        val health = diagnostic.healthReport
+        val speed = diagnostic.speedTestReport
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = if (server.enabled) s.serverStatusConnected else s.serverStatusDisabled,
-                style = MaterialTheme.typography.labelSmall,
-                color = if (server.enabled) Color(0xFF34C759) else secondaryText,
-                modifier = Modifier.weight(1f),
-            )
+            when {
+                diagnostic.checkingHealth -> {
+                    Text(
+                        text = src.statusChecking,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = secondaryText,
+                    )
+                }
+                health != null && health.alive -> {
+                    val lat = health.latencyMs?.let { " · ${src.latencyMs(it.toLong())}" }.orEmpty()
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFF34C759).copy(alpha = 0.16f))
+                            .padding(horizontal = 8.dp, vertical = 3.dp),
+                    ) {
+                        Text(
+                            text = "${src.statusAlive}$lat",
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = Color(0xFF34C759),
+                        )
+                    }
+                }
+                health != null && !health.alive || diagnostic.healthError != null -> {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(BasicPalette.AccentRed.copy(alpha = 0.14f))
+                            .padding(horizontal = 8.dp, vertical = 3.dp),
+                    ) {
+                        Text(
+                            text = src.statusOffline,
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = BasicPalette.AccentRed,
+                        )
+                    }
+                }
+                else -> {
+                    Text(
+                        text = if (server.enabled) s.serverStatusConnected else s.serverStatusDisabled,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (server.enabled) Color(0xFF34C759) else secondaryText,
+                    )
+                }
+            }
+            if (speed != null && speed.alive) {
+                Text(
+                    text = src.speedTestResult(speed.latencyMs.toLong(), speed.downloadMbps),
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = accent,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Spacer(Modifier.weight(1f))
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(dividerColor.copy(alpha = 0.35f))
+                    .clickable(enabled = !diagnostic.checkingHealth, onClick = onProbeHealth)
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+            ) {
+                Text(
+                    text = if (diagnostic.checkingHealth) src.statusChecking else src.checkHealth,
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                    color = primaryText,
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(accent.copy(alpha = 0.16f))
+                    .clickable(enabled = !diagnostic.runningSpeedTest, onClick = onRunSpeedTest)
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+            ) {
+                Text(
+                    text = if (diagnostic.runningSpeedTest) src.runningSpeedTest else src.speedTest,
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = accent,
+                )
+            }
+            Spacer(Modifier.weight(1f))
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
                     .background(dividerColor.copy(alpha = 0.4f))
                     .clickable(onClick = onEdit)
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
             ) {
                 Text(
                     text = s.editServer,
-                    style = MaterialTheme.typography.labelMedium,
+                    style = MaterialTheme.typography.labelSmall,
                     color = primaryText,
                 )
             }
@@ -528,11 +644,11 @@ private fun ServerProfileCard(
                     .clip(RoundedCornerShape(8.dp))
                     .background(BasicPalette.AccentRed.copy(alpha = 0.14f))
                     .clickable(onClick = onDelete)
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
             ) {
                 Text(
                     text = strings.remove,
-                    style = MaterialTheme.typography.labelMedium,
+                    style = MaterialTheme.typography.labelSmall,
                     color = BasicPalette.AccentRed,
                 )
             }
@@ -1118,6 +1234,7 @@ private fun ServerTrackRow(
         when {
             track.id.startsWith("jellyfin:") -> "JFN"
             track.id.startsWith("subsonic:") -> "SUB"
+            track.id.startsWith("smb:") -> "SMB"
             track.id.startsWith("webdav:") -> "DAV"
             else -> null
         }
@@ -1206,6 +1323,7 @@ private fun ServerTrackRow(
 @Composable
 private fun ServerEditorDialog(
     initialProfile: AndroidServerProfile?,
+    src: SourcesStrings,
     testingConnection: Boolean,
     testResultMessage: String?,
     testResultIsError: Boolean,
@@ -1235,17 +1353,26 @@ private fun ServerEditorDialog(
     var accessToken by rememberSaveable(initialProfile?.id) { mutableStateOf("") }
     var userId by rememberSaveable(initialProfile?.id) { mutableStateOf(initialProfile?.userId.orEmpty()) }
     var bearerToken by rememberSaveable(initialProfile?.id) { mutableStateOf("") }
+    var smbShare by rememberSaveable(initialProfile?.id) { mutableStateOf(initialProfile?.share.orEmpty()) }
+    var smbDomain by rememberSaveable(initialProfile?.id) { mutableStateOf(initialProfile?.domain.orEmpty()) }
+    var smbMountPath by rememberSaveable(initialProfile?.id) { mutableStateOf(initialProfile?.localMountPath.orEmpty()) }
     var enabled by rememberSaveable(initialProfile?.id) { mutableStateOf(initialProfile?.enabled ?: true) }
     var validationError by remember { mutableStateOf<String?>(null) }
 
     fun buildCandidate(): AndroidServerProfile? {
         val cleanName = name.trim()
         val cleanUrl = baseUrl.trim().trimEnd('/')
+        val cleanMount = smbMountPath.trim().takeIf { it.isNotEmpty() }
         if (cleanName.isBlank()) {
             validationError = s.validationNameRequired
             return null
         }
-        if (!cleanUrl.startsWith("http://") && !cleanUrl.startsWith("https://")) {
+        if (kind == AndroidServerKind.SMB) {
+            if (cleanUrl.isBlank() && cleanMount == null) {
+                validationError = s.validationUrlRequired
+                return null
+            }
+        } else if (!cleanUrl.startsWith("http://") && !cleanUrl.startsWith("https://")) {
             validationError = s.validationUrlRequired
             return null
         }
@@ -1263,6 +1390,9 @@ private fun ServerEditorDialog(
             userId = userId.trim().takeIf { it.isNotEmpty() },
             bearerToken = bearerToken.trim().takeIf { it.isNotEmpty() } ?: initialProfile?.bearerToken,
             libraryIds = initialProfile?.libraryIds.orEmpty(),
+            share = if (kind == AndroidServerKind.SMB) smbShare.trim().takeIf { it.isNotEmpty() } else null,
+            domain = if (kind == AndroidServerKind.SMB) smbDomain.trim().takeIf { it.isNotEmpty() } else null,
+            localMountPath = if (kind == AndroidServerKind.SMB) cleanMount else null,
         )
     }
 
@@ -1328,7 +1458,7 @@ private fun ServerEditorDialog(
                 }
             }
             Text(
-                text = serverKindLabel(kind, s),
+                text = serverKindLabel(kind, s, src),
                 style = MaterialTheme.typography.bodySmall,
                 color = secondaryText,
             )
@@ -1347,7 +1477,12 @@ private fun ServerEditorDialog(
                 value = baseUrl,
                 onValueChange = { baseUrl = it },
                 label = { Text(s.serverBaseUrlLabel) },
-                placeholder = { Text(s.serverBaseUrlPlaceholder) },
+                placeholder = {
+                    Text(
+                        if (kind == AndroidServerKind.SMB) "smb://192.168.1.20/Music"
+                        else s.serverBaseUrlPlaceholder,
+                    )
+                },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                 colors = fieldColors,
@@ -1428,6 +1563,34 @@ private fun ServerEditorDialog(
                     },
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
+                    colors = fieldColors,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            } else if (kind == AndroidServerKind.SMB) {
+                OutlinedTextField(
+                    value = smbShare,
+                    onValueChange = { smbShare = it },
+                    label = { Text(src.smbShareLabel) },
+                    placeholder = { Text("Music") },
+                    singleLine = true,
+                    colors = fieldColors,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = smbDomain,
+                    onValueChange = { smbDomain = it },
+                    label = { Text(src.smbDomainLabel) },
+                    placeholder = { Text("WORKGROUP") },
+                    singleLine = true,
+                    colors = fieldColors,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = smbMountPath,
+                    onValueChange = { smbMountPath = it },
+                    label = { Text("Local Mount Path (optional)") },
+                    placeholder = { Text("/mnt/music") },
+                    singleLine = true,
                     colors = fieldColors,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -1525,10 +1688,12 @@ private fun serverKindShortTag(kind: AndroidServerKind): String = when (kind) {
     AndroidServerKind.JELLYFIN -> "JFN"
     AndroidServerKind.SUBSONIC -> "SUB"
     AndroidServerKind.WEB_DAV -> "DAV"
+    AndroidServerKind.SMB -> "SMB"
 }
 
-private fun serverKindLabel(kind: AndroidServerKind, s: ServerStrings): String = when (kind) {
+private fun serverKindLabel(kind: AndroidServerKind, s: ServerStrings, src: SourcesStrings): String = when (kind) {
     AndroidServerKind.JELLYFIN -> s.kindJellyfin
     AndroidServerKind.SUBSONIC -> s.kindSubsonic
     AndroidServerKind.WEB_DAV -> s.kindWebDav
+    AndroidServerKind.SMB -> src.protocolSmb
 }

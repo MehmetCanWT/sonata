@@ -101,9 +101,12 @@ import dev.sonata.android.ui.rememberArtworkRequest
 import dev.sonata.android.ui.rememberSafeTopInset
 import dev.sonata.android.ui.i18n.LocalSonataStrings
 import dev.sonata.android.ui.i18n.SonataStrings
+import dev.sonata.android.ui.i18n.SourcesStrings
+import dev.sonata.android.ui.i18n.sourcesStrings
 import dev.sonata.android.ui.theme.BasicPalette
 import dev.sonata.android.ui.theme.LocalLunariaColors
 import uniffi.sonata_android.AndroidAccountProfile
+import uniffi.sonata_android.AndroidServerProfile
 import uniffi.sonata_android.AndroidUpdateInfo
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -122,6 +125,7 @@ enum class SettingsCategory(
     val title: String,
     val icon: ImageVector,
 ) {
+    SOURCES("Sources", SonataIcons.Folder),
     DOWNLOADS("Downloads", SonataIcons.Download),
     PLAYBACK("Playback", SonataIcons.Play),
     CONTENT("Content Preferences", SonataIcons.TabExplore),
@@ -158,7 +162,8 @@ private fun SettingsChoiceKind.localizedTitle(strings: SonataStrings): String = 
     SettingsChoiceKind.DISCORD_ACTIVITY_TYPE -> strings.discordActivityType
 }
 
-private fun SettingsCategory.localizedTitle(strings: SonataStrings): String = when (this) {
+private fun SettingsCategory.localizedTitle(strings: SonataStrings, sources: SourcesStrings): String = when (this) {
+    SettingsCategory.SOURCES -> sources.sourcesTitle
     SettingsCategory.DOWNLOADS -> strings.catDownloads
     SettingsCategory.PLAYBACK -> strings.catPlayback
     SettingsCategory.CONTENT -> strings.catContent
@@ -241,8 +246,18 @@ fun SonataSettingsScreen(
     serverCount: Int = 0,
     enabledServerCount: Int = 0,
     onOpenServers: () -> Unit = {},
+    localTrackCount: Int = 0,
+    localPermissionGranted: Boolean = true,
+    servers: List<AndroidServerProfile> = emptyList(),
+    serverDiagnostics: Map<String, ServerDiagnosticState> = emptyMap(),
+    onRequestLocalPermission: () -> Unit = {},
+    onRescanLocalMusic: () -> Unit = {},
+    onProbeServerHealth: (String) -> Unit = {},
+    onRunServerSpeedTest: (String) -> Unit = {},
+    onOpenServer: (String?) -> Unit = { onOpenServers() },
 ) {
     val strings = LocalSonataStrings.current
+    val srcStrings = remember(settings.appLanguage) { sourcesStrings(settings.appLanguage) }
     val tokens = LocalLunariaColors.current
     val statusTop = rememberSafeTopInset()
     var route by remember { mutableStateOf<SettingsRoute>(SettingsRoute.Root) }
@@ -377,7 +392,7 @@ fun SonataSettingsScreen(
                     is SettingsRoute.Category -> strings.settingsTitle
                     is SettingsRoute.Choice -> when (val p = current.parent) {
                         SettingsRoute.Root -> strings.settingsTitle
-                        is SettingsRoute.Category -> p.category.localizedTitle(strings)
+                        is SettingsRoute.Category -> p.category.localizedTitle(strings, srcStrings)
                         is SettingsRoute.Choice -> p.kind.localizedTitle(strings)
                     }
                 }
@@ -445,7 +460,7 @@ fun SonataSettingsScreen(
                                 SettingsSearchMatcher(if (activeCategory == null) searchQuery else "")
                             }
 
-                            val pageTitle = activeCategory?.localizedTitle(strings) ?: strings.settingsTitle
+                            val pageTitle = activeCategory?.localizedTitle(strings, srcStrings) ?: strings.settingsTitle
                             SettingsPageTitle(title = pageTitle, color = primaryText)
 
                             if (activeCategory == null) {
@@ -492,7 +507,6 @@ fun SonataSettingsScreen(
                                         "Ses Kalitesi",
                                         "Streaming",
                                         "Download Quality",
-                                        "JioSaavn",
                                         "320 kbps",
                                         "Lossless",
                                         "MB",
@@ -534,54 +548,31 @@ fun SonataSettingsScreen(
                                                 },
                                             )
                                         }
-                                        if (search.matches("JioSaavn", "Hi-Fi", "320 kbps", "Include")) {
-                                            SettingsSwitchRow(
-                                                title = strings.jioSaavnFallback,
-                                                subtitle = strings.jioSaavnFallbackDesc,
-                                                checked = settings.jioSaavnEnabled,
-                                                primaryText = primaryText,
-                                                secondaryText = secondaryText,
-                                                onCheckedChange = { enabled ->
-                                                    onUpdateSettings { it.copy(jioSaavnEnabled = enabled) }
-                                                },
-                                            )
-                                        }
                                     }
                                     Spacer(Modifier.height(14.dp))
                                 }
 
-                                // Self-Hosted Music Servers quick access row
-                                if (search.matches(
-                                        "Server",
-                                        "Servers",
-                                        "Music Server",
-                                        "Self-Hosted",
-                                        "Jellyfin",
-                                        "Subsonic",
-                                        "OpenSubsonic",
-                                        "Navidrome",
-                                        "WebDAV",
-                                        "Sunucu",
-                                        "Сервер",
-                                    )
-                                ) {
+                                // Sources / Kaynaklar quick access row
+                                if (!search.active) {
+                                    val sourcesValue = when {
+                                        settings.personalOnlyMode -> srcStrings.personalOnlyModeBadge
+                                        servers.isNotEmpty() -> strings.servers.enabledCountSummary(enabledServerCount, servers.size)
+                                        else -> srcStrings.localTracksCount(localTrackCount)
+                                    }
                                     SettingsGroup(
                                         cardBg = cardBg,
                                         dividerColor = dividerColor,
-                                        header = strings.servers.headerServers,
+                                        header = srcStrings.sourcesTitle,
                                         secondaryText = secondaryText,
                                     ) {
                                         SettingsRow(
                                             icon = SonataIcons.Folder,
-                                            title = strings.servers.manageServers,
-                                            subtitle = if (serverCount > 0) {
-                                                strings.servers.enabledCountSummary(enabledServerCount, serverCount)
-                                            } else {
-                                                strings.servers.manageServersSummary
-                                            },
+                                            title = srcStrings.sourcesTitle,
+                                            subtitle = srcStrings.sourcesSubtitle,
+                                            value = sourcesValue,
                                             primaryText = primaryText,
                                             secondaryText = secondaryText,
-                                            onClick = onOpenServers,
+                                            onClick = { route = SettingsRoute.Category(SettingsCategory.SOURCES) },
                                         )
                                     }
                                     Spacer(Modifier.height(14.dp))
@@ -596,6 +587,12 @@ fun SonataSettingsScreen(
                                     ) {
                                         SettingsCategory.entries.forEach { cat ->
                                             val subtitle = when (cat) {
+                                                SettingsCategory.SOURCES ->
+                                                    if (settings.personalOnlyMode) {
+                                                        srcStrings.personalOnlyModeBadge
+                                                    } else {
+                                                        srcStrings.sourcesSubtitle
+                                                    }
                                                 SettingsCategory.DOWNLOADS ->
                                                     "${strings.tracksCount(downloadStorageStats.trackCount)} · ${formatStorageBytes(downloadStorageStats.downloadedBytes)}"
                                                 SettingsCategory.PLAYBACK -> strings.playbackSummary
@@ -617,7 +614,7 @@ fun SonataSettingsScreen(
                                             }
                                             SettingsRow(
                                                 icon = cat.icon,
-                                                title = cat.localizedTitle(strings),
+                                                title = cat.localizedTitle(strings, srcStrings),
                                                 subtitle = subtitle,
                                                 primaryText = primaryText,
                                                 secondaryText = secondaryText,
@@ -628,6 +625,65 @@ fun SonataSettingsScreen(
                                 } else {
                                     // Live Search Results across all categories
                                     var matchCount = 0
+
+                                    if (search.matches(
+                                            "Sources",
+                                            "Kaynaklar",
+                                            "Источники",
+                                            "Personal",
+                                            "Kişisel",
+                                            "Личное",
+                                            "Modules",
+                                            "Modüller",
+                                            "JioSaavn",
+                                            "Local",
+                                            "Yerel",
+                                            "Server",
+                                            "Sunucu",
+                                            "Сервер",
+                                            "Jellyfin",
+                                            "Subsonic",
+                                            "SMB",
+                                            "WebDAV",
+                                            "Speed Test",
+                                            "Hız Testi",
+                                            "Report",
+                                            "History",
+                                        )
+                                    ) {
+                                        matchCount++
+                                        SourcesHubContent(
+                                            settings = settings,
+                                            signedIn = signedIn,
+                                            localTrackCount = localTrackCount,
+                                            localPermissionGranted = localPermissionGranted,
+                                            servers = servers,
+                                            serverDiagnostics = serverDiagnostics,
+                                            cardBg = cardBg,
+                                            dividerColor = dividerColor,
+                                            primaryText = primaryText,
+                                            secondaryText = secondaryText,
+                                            onTogglePersonalOnlyMode = { enabled ->
+                                                onUpdateSettings { it.copy(personalOnlyMode = enabled) }
+                                            },
+                                            onToggleJioSaavn = { enabled ->
+                                                onUpdateSettings { it.copy(jioSaavnEnabled = enabled) }
+                                            },
+                                            onToggleAttributePersonalToYtm = { enabled ->
+                                                onUpdateSettings { it.copy(attributePersonalToYtm = enabled) }
+                                            },
+                                            onToggleLocalMusic = { enabled ->
+                                                onUpdateSettings { it.copy(localMusicEnabled = enabled) }
+                                            },
+                                            onRequestLocalPermission = onRequestLocalPermission,
+                                            onRescanLocalMusic = onRescanLocalMusic,
+                                            onProbeServerHealth = onProbeServerHealth,
+                                            onRunServerSpeedTest = onRunServerSpeedTest,
+                                            onOpenServers = onOpenServer,
+                                            searchQuery = searchQuery,
+                                        )
+                                        Spacer(Modifier.height(14.dp))
+                                    }
 
                                     if (search.matches(
                                             "Downloads",
@@ -908,6 +964,36 @@ fun SonataSettingsScreen(
                                 }
                             } else {
                                 when (activeCategory) {
+                                    SettingsCategory.SOURCES -> SourcesHubContent(
+                                        settings = settings,
+                                        signedIn = signedIn,
+                                        localTrackCount = localTrackCount,
+                                        localPermissionGranted = localPermissionGranted,
+                                        servers = servers,
+                                        serverDiagnostics = serverDiagnostics,
+                                        cardBg = cardBg,
+                                        dividerColor = dividerColor,
+                                        primaryText = primaryText,
+                                        secondaryText = secondaryText,
+                                        onTogglePersonalOnlyMode = { enabled ->
+                                            onUpdateSettings { it.copy(personalOnlyMode = enabled) }
+                                        },
+                                        onToggleJioSaavn = { enabled ->
+                                            onUpdateSettings { it.copy(jioSaavnEnabled = enabled) }
+                                        },
+                                        onToggleAttributePersonalToYtm = { enabled ->
+                                            onUpdateSettings { it.copy(attributePersonalToYtm = enabled) }
+                                        },
+                                        onToggleLocalMusic = { enabled ->
+                                            onUpdateSettings { it.copy(localMusicEnabled = enabled) }
+                                        },
+                                        onRequestLocalPermission = onRequestLocalPermission,
+                                        onRescanLocalMusic = onRescanLocalMusic,
+                                        onProbeServerHealth = onProbeServerHealth,
+                                        onRunServerSpeedTest = onRunServerSpeedTest,
+                                        onOpenServers = onOpenServer,
+                                    )
+
                                     SettingsCategory.DOWNLOADS -> DownloadsCategoryContent(
                                         settings = settings,
                                         downloadStorageStats = downloadStorageStats,

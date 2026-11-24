@@ -677,20 +677,11 @@ class PlaybackService : MediaSessionService() {
     }
 
     @OptIn(UnstableApi::class)
-    private fun resolvePipelineSourceLabel(mediaItem: MediaItem?): String {
-        val uriString = mediaItem?.localConfiguration?.uri?.toString().orEmpty()
-        val isOffline = uriString.startsWith("file://") || uriString.startsWith("content://")
-        val mediaId = mediaItem?.mediaId.orEmpty()
-        return when {
-            isOffline -> "Offline Download"
-            mediaId.startsWith("jellyfin:") -> "Jellyfin"
-            mediaId.startsWith("subsonic:") -> "Subsonic"
-            mediaId.startsWith("webdav:") -> "WebDAV"
-            uriString.contains("googlevideo.com", ignoreCase = true) -> "YouTube Music"
-            uriString.isNotBlank() -> "Audio Stream"
-            else -> "Idle"
-        }
-    }
+    private fun resolvePipelineSourceLabel(mediaItem: MediaItem?): String =
+        Companion.resolvePipelineSourceLabel(
+            mediaId = mediaItem?.mediaId.orEmpty(),
+            uriString = mediaItem?.localConfiguration?.uri?.toString().orEmpty(),
+        )
 
     @OptIn(UnstableApi::class)
     private fun publishFormatTelemetry(
@@ -1719,6 +1710,21 @@ class PlaybackService : MediaSessionService() {
             if (uri.isBlank() || bytes <= 0L) return
             synchronized(contentBytesLock) {
                 measuredContentBytesByUri[uri] = bytes
+            }
+        }
+
+        internal fun resolvePipelineSourceLabel(mediaId: String, uriString: String): String {
+            val isOffline = uriString.startsWith("file://") || uriString.startsWith("content://")
+            return when {
+                mediaId.startsWith("local:") -> "Local Music"
+                mediaId.startsWith("smb:") -> "SMB"
+                mediaId.startsWith("jellyfin:") -> "Jellyfin"
+                mediaId.startsWith("subsonic:") -> "Subsonic"
+                mediaId.startsWith("webdav:") -> "WebDAV"
+                isOffline -> "Offline Download"
+                uriString.contains("googlevideo.com", ignoreCase = true) -> "YouTube Music"
+                uriString.isNotBlank() -> "Audio Stream"
+                else -> "Idle"
             }
         }
 

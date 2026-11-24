@@ -111,9 +111,12 @@ fun isSaveableExternalCollection(
     if (isOwned || browseId.isNullOrBlank()) return false
     val trimmed = browseId.trim()
     if (trimmed == "__sonata_downloads__" ||
+        trimmed.startsWith("local:") ||
         trimmed.startsWith("local_pl_") ||
+        trimmed.startsWith("personal:") ||
         trimmed.startsWith("jellyfin:") ||
         trimmed.startsWith("subsonic:") ||
+        trimmed.startsWith("smb:") ||
         trimmed.startsWith("webdav:")
     ) {
         return false

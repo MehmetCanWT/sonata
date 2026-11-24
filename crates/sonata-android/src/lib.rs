@@ -20,6 +20,7 @@ use sonata_core::error::CoreError;
 use sonata_core::lyrics::{lrclib, LyricsState};
 use sonata_core::motion::{MotionMedia, MotionMediaKind};
 use sonata_core::paths::CorePaths;
+use sonata_core::playlists::{PersonalPlaylist, PersonalPlaylistStore};
 use sonata_core::providers::hifi::{
     FastStartMode, JsCipherBridge, ResolvedMusicVideo, ResolvedStream, ResolverProfile,
     SolvedCipherPair, StreamFallbackMode, StreamResolver, UpgradeDelivery, VideoQualityStream,
@@ -27,8 +28,8 @@ use sonata_core::providers::hifi::{
 use sonata_core::providers::jiosaavn::{self, ResolvedJioSaavnStream};
 use sonata_core::providers::servers::{
     encode_server_item_id, jellyfin, load_server_profiles, parse_server_item_id,
-    save_server_profiles, webdav, ServerClient, ServerKind, ServerLibrary, ServerProfile,
-    ServerSearchResult, ServerStream,
+    save_server_profiles, webdav, ServerClient, ServerHealthReport, ServerKind, ServerLibrary,
+    ServerProfile, ServerSearchResult, ServerSpeedTestReport, ServerStream,
 };
 use sonata_core::providers::ytmusic::{
     ArtistPage, HomeCard, HomeCardKind, HomeShelf, MoodCategoryTile, MoodChip, MusicVideoCandidate,
@@ -705,6 +706,7 @@ pub enum AndroidServerKind {
     Jellyfin,
     Subsonic,
     WebDav,
+    Smb,
 }
 
 impl From<ServerKind> for AndroidServerKind {
@@ -713,6 +715,7 @@ impl From<ServerKind> for AndroidServerKind {
             ServerKind::Jellyfin => Self::Jellyfin,
             ServerKind::Subsonic => Self::Subsonic,
             ServerKind::WebDav => Self::WebDav,
+            ServerKind::Smb => Self::Smb,
         }
     }
 }
@@ -723,6 +726,7 @@ impl From<AndroidServerKind> for ServerKind {
             AndroidServerKind::Jellyfin => Self::Jellyfin,
             AndroidServerKind::Subsonic => Self::Subsonic,
             AndroidServerKind::WebDav => Self::WebDav,
+            AndroidServerKind::Smb => Self::Smb,
         }
     }
 }
@@ -741,6 +745,15 @@ pub struct AndroidServerProfile {
     pub user_id: Option<String>,
     pub bearer_token: Option<String>,
     pub library_ids: Vec<String>,
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub share: Option<String>,
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub domain: Option<String>,
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub local_mount_path: Option<String>,
 }
 
 impl std::fmt::Debug for AndroidServerProfile {
@@ -768,6 +781,9 @@ impl std::fmt::Debug for AndroidServerProfile {
             .field("user_id", &self.user_id)
             .field("bearer_token", &redact(&self.bearer_token))
             .field("library_ids", &self.library_ids)
+            .field("share", &self.share)
+            .field("domain", &self.domain)
+            .field("local_mount_path", &self.local_mount_path)
             .finish()
     }
 }
@@ -787,12 +803,23 @@ impl From<ServerProfile> for AndroidServerProfile {
             user_id: p.user_id,
             bearer_token: p.bearer_token,
             library_ids: p.library_ids,
+            share: p.share,
+            domain: p.domain,
+            local_mount_path: p
+                .local_mount_path
+                .map(|path| path.to_string_lossy().into_owned()),
         }
     }
 }
 
 impl From<AndroidServerProfile> for ServerProfile {
     fn from(p: AndroidServerProfile) -> Self {
+        let clean_opt = |opt: Option<String>| -> Option<String> {
+            opt.and_then(|s| {
+                let trimmed = s.trim().to_string();
+                (!trimmed.is_empty()).then_some(trimmed)
+            })
+        };
         Self {
             id: p.id,
             name: p.name,
@@ -806,6 +833,72 @@ impl From<AndroidServerProfile> for ServerProfile {
             user_id: p.user_id,
             bearer_token: p.bearer_token,
             library_ids: p.library_ids,
+            share: clean_opt(p.share),
+            domain: clean_opt(p.domain),
+            local_mount_path: clean_opt(p.local_mount_path).map(PathBuf::from),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+pub struct AndroidServerHealthReport {
+    pub alive: bool,
+    pub latency_ms: Option<u64>,
+    pub message: String,
+}
+
+impl From<ServerHealthReport> for AndroidServerHealthReport {
+    fn from(report: ServerHealthReport) -> Self {
+        Self {
+            alive: report.alive,
+            latency_ms: report.latency_ms,
+            message: report.message,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, uniffi::Record)]
+pub struct AndroidServerSpeedTestReport {
+    pub alive: bool,
+    pub latency_ms: u64,
+    pub download_mbps: Option<f64>,
+    pub bytes_tested: u64,
+    pub sample_note: String,
+}
+
+impl From<ServerSpeedTestReport> for AndroidServerSpeedTestReport {
+    fn from(report: ServerSpeedTestReport) -> Self {
+        Self {
+            alive: report.alive,
+            latency_ms: report.latency_ms,
+            download_mbps: report.download_mbps,
+            bytes_tested: report.bytes_tested,
+            sample_note: report.sample_note,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct AndroidPersonalPlaylist {
+    pub id: String,
+    pub name: String,
+    pub tracks: Vec<AndroidTrack>,
+    pub created_at_epoch_secs: u64,
+    pub updated_at_epoch_secs: u64,
+}
+
+impl From<PersonalPlaylist> for AndroidPersonalPlaylist {
+    fn from(playlist: PersonalPlaylist) -> Self {
+        Self {
+            id: playlist.id,
+            name: playlist.name,
+            tracks: playlist
+                .tracks
+                .into_iter()
+                .map(AndroidTrack::from)
+                .collect(),
+            created_at_epoch_secs: playlist.created_at_epoch_secs,
+            updated_at_epoch_secs: playlist.updated_at_epoch_secs,
         }
     }
 }
@@ -980,6 +1073,7 @@ pub struct SonataAndroidEngine {
     session: RwLock<AuthSession>,
     server_lock: Arc<tokio::sync::Mutex<()>>,
     server_id_seq: std::sync::atomic::AtomicU64,
+    personal_playlists: PersonalPlaylistStore,
 }
 
 impl SonataAndroidEngine {
@@ -1047,6 +1141,7 @@ impl SonataAndroidEngine {
             ServerKind::Jellyfin => "jf",
             ServerKind::Subsonic => "sub",
             ServerKind::WebDav => "dav",
+            ServerKind::Smb => "smb",
         };
         format!("{prefix}-{nanos}-{seq}")
     }
@@ -1176,6 +1271,7 @@ impl SonataAndroidEngine {
         let cache_db = CacheDb::open_with_paths(&paths, true);
         let cookies = ExtractedCookies::load_saved_ytm_header(&paths).unwrap_or_default();
         let session = Self::build_session(&http, &paths, cache_db.clone(), cookies, None, "en");
+        let personal_playlists = PersonalPlaylistStore::new(&paths);
 
         Ok(Self {
             http,
@@ -1186,6 +1282,7 @@ impl SonataAndroidEngine {
             session: RwLock::new(session),
             server_lock: Arc::new(tokio::sync::Mutex::new(())),
             server_id_seq: std::sync::atomic::AtomicU64::new(1),
+            personal_playlists,
         })
     }
 
@@ -1920,7 +2017,7 @@ impl SonataAndroidEngine {
         Ok(found.map(AndroidMotionMedia::from))
     }
 
-    /// Lists all configured self-hosted music servers (`Jellyfin`, `Subsonic`, `WebDAV`).
+    /// Lists all configured self-hosted music servers (`Jellyfin`, `Subsonic`, `WebDAV`, `SMB`).
     pub async fn list_servers(&self) -> Result<Vec<AndroidServerProfile>, SonataAndroidError> {
         let _guard = self.server_lock.lock().await;
         let profiles = self.load_servers_internal().await?;
@@ -1944,7 +2041,12 @@ impl SonataAndroidEngine {
                 reason: "Server name must not be empty".to_string(),
             });
         }
-        if core_profile.base_url.is_empty() {
+        let has_smb_mount = core_profile.kind == ServerKind::Smb
+            && core_profile
+                .local_mount_path
+                .as_ref()
+                .is_some_and(|p| !p.as_os_str().is_empty());
+        if core_profile.base_url.is_empty() && !has_smb_mount {
             return Err(SonataAndroidError::InvalidResponse {
                 provider: "servers".to_string(),
                 reason: "Server base URL must not be empty".to_string(),
@@ -2036,6 +2138,26 @@ impl SonataAndroidEngine {
         core_profile = self.ensure_jellyfin_auth_if_needed(core_profile).await?;
         let status = self.server_client().ping(&core_profile).await?;
         Ok(status)
+    }
+
+    /// Probes reachability and measures round-trip ping latency for a persisted server.
+    pub async fn probe_server_health(
+        &self,
+        server_id: String,
+    ) -> Result<AndroidServerHealthReport, SonataAndroidError> {
+        let profile = self.find_server_profile(&server_id).await?;
+        let report = self.server_client().probe_server_health(&profile).await;
+        Ok(AndroidServerHealthReport::from(report))
+    }
+
+    /// Runs a real sample download/read throughput benchmark (`Mbps`) against a persisted server.
+    pub async fn run_server_speed_test(
+        &self,
+        server_id: String,
+    ) -> Result<AndroidServerSpeedTestReport, SonataAndroidError> {
+        let profile = self.find_server_profile(&server_id).await?;
+        let report = self.server_client().run_speed_test(&profile).await;
+        Ok(AndroidServerSpeedTestReport::from(report))
     }
 
     /// Authenticates against a Jellyfin server using username and password, returning an access token and user ID.
@@ -2242,6 +2364,109 @@ impl SonataAndroidEngine {
         let core_track: Track = track.into();
         let stream = self.server_client().resolve_stream(&profile, &core_track)?;
         Ok(AndroidServerStream::from(stream))
+    }
+
+    /// Lists all locally persisted personal playlists.
+    pub async fn list_personal_playlists(
+        &self,
+    ) -> Result<Vec<AndroidPersonalPlaylist>, SonataAndroidError> {
+        let store = self.personal_playlists.clone();
+        let items = tokio::task::spawn_blocking(move || store.list())
+            .await
+            .map_err(|err| SonataAndroidError::Internal {
+                reason: format!("Personal playlists read task failed: {err}"),
+            })??;
+        Ok(items
+            .into_iter()
+            .map(AndroidPersonalPlaylist::from)
+            .collect())
+    }
+
+    /// Creates a new locally persisted personal playlist.
+    pub async fn create_personal_playlist(
+        &self,
+        name: String,
+    ) -> Result<AndroidPersonalPlaylist, SonataAndroidError> {
+        let store = self.personal_playlists.clone();
+        let created = tokio::task::spawn_blocking(move || store.create(&name))
+            .await
+            .map_err(|err| SonataAndroidError::Internal {
+                reason: format!("Personal playlists create task failed: {err}"),
+            })??;
+        Ok(AndroidPersonalPlaylist::from(created))
+    }
+
+    /// Renames an existing locally persisted personal playlist.
+    pub async fn rename_personal_playlist(
+        &self,
+        playlist_id: String,
+        new_name: String,
+    ) -> Result<AndroidPersonalPlaylist, SonataAndroidError> {
+        let store = self.personal_playlists.clone();
+        let updated = tokio::task::spawn_blocking(move || store.rename(&playlist_id, &new_name))
+            .await
+            .map_err(|err| SonataAndroidError::Internal {
+                reason: format!("Personal playlists rename task failed: {err}"),
+            })??;
+        Ok(AndroidPersonalPlaylist::from(updated))
+    }
+
+    /// Deletes a locally persisted personal playlist by ID.
+    pub async fn delete_personal_playlist(
+        &self,
+        playlist_id: String,
+    ) -> Result<bool, SonataAndroidError> {
+        let store = self.personal_playlists.clone();
+        let removed = tokio::task::spawn_blocking(move || store.delete(&playlist_id))
+            .await
+            .map_err(|err| SonataAndroidError::Internal {
+                reason: format!("Personal playlists delete task failed: {err}"),
+            })??;
+        Ok(removed)
+    }
+
+    /// Appends a local, server, or streaming track to a personal playlist without calling YouTube Music APIs.
+    pub async fn add_track_to_personal_playlist(
+        &self,
+        playlist_id: String,
+        track: AndroidTrack,
+    ) -> Result<AndroidPersonalPlaylist, SonataAndroidError> {
+        let store = self.personal_playlists.clone();
+        let core_track: Track = track.into();
+        let updated =
+            tokio::task::spawn_blocking(move || store.add_track(&playlist_id, core_track))
+                .await
+                .map_err(|err| SonataAndroidError::Internal {
+                    reason: format!("Personal playlists add-track task failed: {err}"),
+                })??;
+        Ok(AndroidPersonalPlaylist::from(updated))
+    }
+
+    /// Removes a track by ID from a locally persisted personal playlist.
+    pub async fn remove_track_from_personal_playlist(
+        &self,
+        playlist_id: String,
+        track_id: String,
+    ) -> Result<AndroidPersonalPlaylist, SonataAndroidError> {
+        let store = self.personal_playlists.clone();
+        let updated =
+            tokio::task::spawn_blocking(move || store.remove_track(&playlist_id, &track_id))
+                .await
+                .map_err(|err| SonataAndroidError::Internal {
+                    reason: format!("Personal playlists remove-track task failed: {err}"),
+                })??;
+        Ok(AndroidPersonalPlaylist::from(updated))
+    }
+
+    /// Attributes a local or self-hosted track play to YouTube Music listening history when signed in.
+    pub async fn attribute_personal_track_to_ytm(
+        &self,
+        track: AndroidTrack,
+    ) -> Result<Option<String>, SonataAndroidError> {
+        let ytm = self.current_ytm();
+        let core_track: Track = track.into();
+        let matched = ytm.attribute_personal_track_to_ytm(&core_track).await?;
+        Ok(matched)
     }
 }
 
@@ -2790,6 +3015,9 @@ mod tests {
             user_id: Some("uid-1".to_string()),
             bearer_token: None,
             library_ids: vec!["lib-1".to_string()],
+            share: None,
+            domain: None,
+            local_mount_path: None,
         };
         let dav = AndroidServerProfile {
             id: "".to_string(),
@@ -2804,6 +3032,9 @@ mod tests {
             user_id: None,
             bearer_token: Some("dav-secret-bearer".to_string()),
             library_ids: vec![],
+            share: None,
+            domain: None,
+            local_mount_path: None,
         };
 
         let dbg_jf = format!("{jf:?}");
@@ -2909,6 +3140,146 @@ mod tests {
         let after_del = engine.delete_server(dav_id).await.expect("delete dav");
         assert_eq!(after_del.len(), 1);
         assert_eq!(after_del[0].id, "jf-home");
+
+        let _ = fs::remove_dir_all(&base_dir);
+    }
+
+    #[tokio::test]
+    async fn smb_health_speed_test_personal_playlists_and_attribution() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let base_dir = std::env::temp_dir().join(format!(
+            "sonata_android_faz3_test_{}_{}",
+            std::process::id(),
+            nanos
+        ));
+        let smb_mount = base_dir.join("smb_mount");
+        let album_dir = smb_mount.join("Artist").join("Album");
+        fs::create_dir_all(&album_dir).expect("create smb mount");
+        let sample_audio = album_dir.join("01 - Lossless.flac");
+        let payload = vec![0x66u8; 64 * 1024];
+        fs::write(&sample_audio, &payload).expect("write dummy flac");
+
+        let engine = SonataAndroidEngine::new(
+            base_dir.join("cfg").to_string_lossy().into_owned(),
+            base_dir.join("cache").to_string_lossy().into_owned(),
+        )
+        .expect("engine should initialize");
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral tcp listener");
+        let port = listener.local_addr().expect("local addr").port();
+        let accept_task = tokio::spawn(async move {
+            for _ in 0..3 {
+                let _ = listener.accept().await;
+            }
+        });
+
+        let smb = AndroidServerProfile {
+            id: String::new(),
+            name: "Home NAS SMB".to_string(),
+            kind: AndroidServerKind::Smb,
+            base_url: format!("smb://127.0.0.1:{port}/Music"),
+            enabled: true,
+            username: Some("nasuser".to_string()),
+            password: Some("nas-secret".to_string()),
+            api_key: None,
+            access_token: None,
+            user_id: None,
+            bearer_token: None,
+            library_ids: Vec::new(),
+            share: Some("Music".to_string()),
+            domain: Some("WORKGROUP".to_string()),
+            local_mount_path: Some(smb_mount.to_string_lossy().into_owned()),
+        };
+
+        let servers = engine.upsert_server(smb).await.expect("upsert smb");
+        assert_eq!(servers.len(), 1);
+        let smb_id = servers[0].id.clone();
+        assert!(smb_id.starts_with("smb-"));
+        assert_eq!(servers[0].kind, AndroidServerKind::Smb);
+        assert_eq!(servers[0].share.as_deref(), Some("Music"));
+        assert_eq!(servers[0].domain.as_deref(), Some("WORKGROUP"));
+
+        let health = engine
+            .probe_server_health(smb_id.clone())
+            .await
+            .expect("probe smb health");
+        assert!(health.alive, "expected SMB health alive: {health:?}");
+        assert!(health.latency_ms.is_some());
+
+        let speed = engine
+            .run_server_speed_test(smb_id.clone())
+            .await
+            .expect("run smb speed test");
+        assert!(speed.alive, "expected SMB speed test alive: {speed:?}");
+        assert_eq!(speed.bytes_tested, payload.len() as u64);
+        assert!(speed.download_mbps.is_some_and(|v| v > 0.0));
+
+        accept_task.abort();
+
+        // Personal playlists CRUD & track routing
+        assert!(engine
+            .list_personal_playlists()
+            .await
+            .expect("list empty personal playlists")
+            .is_empty());
+
+        let created = engine
+            .create_personal_playlist("FLAC Favorites".to_string())
+            .await
+            .expect("create personal playlist");
+        assert!(created.id.starts_with("personal:"));
+        assert_eq!(created.name, "FLAC Favorites");
+
+        let renamed = engine
+            .rename_personal_playlist(created.id.clone(), "Lossless Rotation".to_string())
+            .await
+            .expect("rename personal playlist");
+        assert_eq!(renamed.name, "Lossless Rotation");
+
+        let local_track = AndroidTrack {
+            id: "local:42".to_string(),
+            title: "Midnight Groove".to_string(),
+            artist: "Sonata Quartet".to_string(),
+            album: "Sessions".to_string(),
+            duration_secs: Some(215),
+            thumbnail_url: None,
+            liked: false,
+            album_id: None,
+            is_explicit: false,
+        };
+        let with_track = engine
+            .add_track_to_personal_playlist(created.id.clone(), local_track.clone())
+            .await
+            .expect("add track to personal playlist");
+        assert_eq!(with_track.tracks.len(), 1);
+        assert_eq!(with_track.tracks[0].id, "local:42");
+
+        let after_remove = engine
+            .remove_track_from_personal_playlist(created.id.clone(), "local:42".to_string())
+            .await
+            .expect("remove track from personal playlist");
+        assert!(after_remove.tracks.is_empty());
+
+        assert!(engine
+            .delete_personal_playlist(created.id.clone())
+            .await
+            .expect("delete personal playlist"));
+        assert!(engine
+            .list_personal_playlists()
+            .await
+            .expect("list after delete")
+            .is_empty());
+
+        // Unauthenticated YTM attribution returns Ok(None) cleanly without network calls.
+        let attributed = engine
+            .attribute_personal_track_to_ytm(local_track)
+            .await
+            .expect("attribute_personal_track_to_ytm");
+        assert!(attributed.is_none());
 
         let _ = fs::remove_dir_all(&base_dir);
     }

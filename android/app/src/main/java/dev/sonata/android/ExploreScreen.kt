@@ -371,6 +371,7 @@ internal fun ExploreTabContent(
     listState: LazyListState,
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
+    appLanguage: dev.sonata.android.data.AppLanguage = dev.sonata.android.data.AppLanguage.SYSTEM,
     onRefresh: () -> Unit = {},
     onOpenMood: (String) -> Unit,
     onOpenMoodCategory: (String, String, String) -> Unit = { title, _, _ -> onOpenMood(title) },
@@ -396,6 +397,51 @@ internal fun ExploreTabContent(
 
     val mergedSourceShelves = remember(state.exploreShelves, state.shelves) {
         state.exploreShelves + state.shelves
+    }
+    if (state.personalOnlyMode && mergedSourceShelves.isEmpty()) {
+        val tokens = LocalLunariaColors.current
+        val srcStrings = remember(appLanguage) { dev.sonata.android.ui.i18n.sourcesStrings(appLanguage) }
+        LazyColumn(
+            state = listState,
+            modifier = modifier.fillMaxSize(),
+            contentPadding = contentPadding,
+        ) {
+            item(key = "explore_heading", contentType = "tab_heading") {
+                Text(
+                    text = dev.sonata.android.ui.i18n.LocalSonataStrings.current.exploreHeading,
+                    style = MaterialTheme.typography.displayLarge.copy(
+                        fontSize = 34.sp,
+                        fontWeight = FontWeight.Bold,
+                    ),
+                    color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.padding(horizontal = PAGE_GUTTER, vertical = 10.dp),
+                )
+            }
+            item(key = "explore_personal_only") {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = PAGE_GUTTER, vertical = 12.dp)
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(tokens.eclipseSurface.copy(alpha = 0.72f))
+                        .border(0.75.dp, tokens.cardStroke, RoundedCornerShape(18.dp))
+                        .padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = srcStrings.personalOnlyModeBadge,
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = tokens.petalLavender,
+                    )
+                    Text(
+                        text = srcStrings.personalOnlyModeDescription,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = tokens.onSurfaceSecondary,
+                    )
+                }
+            }
+        }
+        return
     }
     val artPool = remember(mergedSourceShelves, state.tracks, state.playlists) {
         (

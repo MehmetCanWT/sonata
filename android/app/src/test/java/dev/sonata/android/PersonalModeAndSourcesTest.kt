@@ -12,16 +12,24 @@ import dev.sonata.android.data.SonataPreferences
 import dev.sonata.android.data.SonataSettingsState
 import dev.sonata.android.data.isPersonalTrackId
 import dev.sonata.android.data.resolveLocalBitrateKbps
+import dev.sonata.android.ui.components.filterEditablePlaylistsForTargets
 import dev.sonata.android.ui.i18n.EnglishSourcesStrings
 import dev.sonata.android.ui.i18n.RussianSourcesStrings
 import dev.sonata.android.ui.i18n.TurkishSourcesStrings
 import dev.sonata.android.ui.i18n.sourcesStrings
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import uniffi.sonata_android.AndroidPlaylist
+import uniffi.sonata_android.AndroidServerHealthReport
+import uniffi.sonata_android.AndroidServerKind
+import uniffi.sonata_android.AndroidServerProfile
+import uniffi.sonata_android.AndroidServerSpeedTestReport
+import uniffi.sonata_android.AndroidTrack
 import java.util.Locale
 
 class PersonalModeAndSourcesTest {
@@ -376,5 +384,269 @@ class PersonalModeAndSourcesTest {
         val emptyResult = LocalMusicScanner.scan(FakePreferencesContext())
         assertFalse(emptyResult.permissionGranted)
         assertTrue(emptyResult.tracks.isEmpty())
+    }
+
+    @Test
+    fun `personal playlists isolate local and server FLAC tracks from YTM playlists`() = runTest {
+        val gateway = FakeSonataEngineGateway()
+        val created = gateway.createPersonalPlaylist("Lossless Favorites")
+        assertTrue(created.id.startsWith("personal:"))
+        assertEquals("Lossless Favorites", created.name)
+
+        val localFlac = AndroidTrack(
+            id = "local:42",
+            title = "Midnight FLAC",
+            artist = "Artist One",
+            album = "Studio Master",
+            durationSecs = 215uL,
+            thumbnailUrl = null,
+            liked = false,
+            albumId = null,
+            isExplicit = false,
+        )
+        val smbTrack = AndroidTrack(
+            id = "smb:nas1:/Music/track.flac",
+            title = "SMB Track",
+            artist = "Artist Two",
+            album = "NAS Archive",
+            durationSecs = 180uL,
+            thumbnailUrl = null,
+            liked = false,
+            albumId = null,
+            isExplicit = false,
+        )
+        val ytmTrack = AndroidTrack(
+            id = "dQw4w9WgXcQ",
+            title = "Streaming Track",
+            artist = "Artist Three",
+            album = "Streaming Album",
+            durationSecs = 200uL,
+            thumbnailUrl = null,
+            liked = false,
+            albumId = null,
+            isExplicit = false,
+        )
+
+        val updated = gateway.addTrackToPersonalPlaylist(created.id, localFlac)
+        assertEquals(1, updated.tracks.size)
+        val afterSecond = gateway.addTrackToPersonalPlaylist(created.id, smbTrack)
+        assertEquals(2, afterSecond.tracks.size)
+        val renamed = gateway.renamePersonalPlaylist(created.id, "Personal HiFi")
+        assertEquals("Personal HiFi", renamed.name)
+
+        val listed = gateway.listPersonalPlaylists()
+        assertEquals(1, listed.size)
+        assertEquals("Personal HiFi", listed.first().name)
+
+        // Personal/FLAC/local/server tracks must ONLY see personal: playlists (never YTM PL... playlists)
+        val allPlaylists = listOf(
+            AndroidPlaylist(id = "PL_ytm_1", name = "YTM Mix", thumbnailUrl = null, isOwned = true),
+            AndroidPlaylist(id = created.id, name = "Personal HiFi", thumbnailUrl = null, isOwned = true),
+            AndroidPlaylist(id = SonataViewModel.DOWNLOADS_PLAYLIST_ID, name = "Downloads", thumbnailUrl = null, isOwned = true),
+        )
+        val personalTargetsOnly = filterEditablePlaylistsForTargets(
+            playlists = allPlaylists,
+            targets = listOf(localFlac, smbTrack),
+        )
+        assertEquals(listOf(created.id), personalTargetsOnly.map { it.id })
+
+        // Mixed queue containing a personal track also restricts to personal playlists only
+        val mixedTargets = filterEditablePlaylistsForTargets(
+            playlists = allPlaylists,
+            targets = listOf(ytmTrack, smbTrack),
+        )
+        assertEquals(listOf(created.id), mixedTargets.map { it.id })
+
+        // Pure YTM track can target both YTM and personal playlists
+        val ytmOnlyTargets = filterEditablePlaylistsForTargets(
+            playlists = allPlaylists,
+            targets = listOf(ytmTrack),
+        )
+        assertEquals(listOf("PL_ytm_1", created.id), ytmOnlyTargets.map { it.id })
+
+        // Verify zero YTM playlist mutations occurred during personal playlist flow
+        assertTrue(gateway.ytmPlaylistCreatesLog.isEmpty())
+        assertTrue(gateway.ytmPlaylistAddsLog.isEmpty())
+
+        val afterRemove = gateway.removeTrackFromPersonalPlaylist(created.id, localFlac.id)
+        assertEquals(listOf(smbTrack.id), afterRemove.tracks.map { it.id })
+        gateway.deletePersonalPlaylist(created.id)
+        assertTrue(gateway.listPersonalPlaylists().isEmpty())
+    }
+
+    @Test
+    fun `server health probe, SMB fields, and speed test Mbps report accurately`() = runTest {
+        val gateway = FakeSonataEngineGateway()
+        val smbProfile = AndroidServerProfile(
+            id = "srv-smb-1",
+            name = "Home NAS",
+            kind = AndroidServerKind.SMB,
+            baseUrl = "smb://192.168.1.50",
+            enabled = true,
+            username = "nasuser",
+            password = "secret",
+            apiKey = null,
+            accessToken = null,
+            userId = null,
+            bearerToken = null,
+            libraryIds = emptyList(),
+            share = "music",
+            domain = "WORKGROUP",
+            localMountPath = null,
+        )
+        gateway.fakeServers.add(smbProfile)
+
+        gateway.serverHealthHandler = { srvId ->
+            assertEquals("srv-smb-1", srvId)
+            AndroidServerHealthReport(alive = true, latencyMs = 14uL, message = "Reachable")
+        }
+        gateway.serverSpeedTestHandler = { srvId ->
+            assertEquals("srv-smb-1", srvId)
+            AndroidServerSpeedTestReport(
+                alive = true,
+                latencyMs = 14uL,
+                downloadMbps = 184.5,
+                bytesTested = 2_097_152uL,
+                sampleNote = "FLAC sample",
+            )
+        }
+
+        val health = gateway.probeServerHealth(smbProfile.id)
+        assertTrue(health.alive)
+        assertEquals(14uL, health.latencyMs)
+
+        val speed = gateway.runServerSpeedTest(smbProfile.id)
+        assertTrue(speed.alive)
+        assertEquals(184.5, speed.downloadMbps ?: 0.0, 0.01)
+        assertEquals(2_097_152uL, speed.bytesTested)
+
+        assertEquals("Local Music", PlaybackService.resolvePipelineSourceLabel("local:42", "content://media/external/audio/media/42"))
+        assertEquals("SMB", PlaybackService.resolvePipelineSourceLabel("smb:srv-smb-1:/a.flac", "https://127.0.0.1:8080/a.flac"))
+    }
+
+    @Test
+    fun `library source tabs filter tracks and playlists dynamically by personal mode and server kinds`() {
+        val servers = listOf(
+            AndroidServerProfile(id = "1", name = "JF", kind = AndroidServerKind.JELLYFIN, baseUrl = "https://jf", enabled = true, username = null, password = null, apiKey = null, accessToken = null, userId = null, bearerToken = null, libraryIds = emptyList()),
+            AndroidServerProfile(id = "2", name = "Sub", kind = AndroidServerKind.SUBSONIC, baseUrl = "https://sub", enabled = true, username = null, password = null, apiKey = null, accessToken = null, userId = null, bearerToken = null, libraryIds = emptyList()),
+            AndroidServerProfile(id = "3", name = "NAS", kind = AndroidServerKind.SMB, baseUrl = "smb://nas", enabled = true, username = null, password = null, apiKey = null, accessToken = null, userId = null, bearerToken = null, libraryIds = emptyList(), share = "audio"),
+            AndroidServerProfile(id = "4", name = "DAV", kind = AndroidServerKind.WEB_DAV, baseUrl = "https://dav", enabled = false, username = null, password = null, apiKey = null, accessToken = null, userId = null, bearerToken = null, libraryIds = emptyList()),
+        )
+
+        val onlineTabs = buildVisibleLibrarySourceTabs(
+            personalOnlyMode = false,
+            localMusicEnabled = true,
+            servers = servers,
+        )
+        assertEquals(
+            listOf(
+                LibrarySourceTab.ALL,
+                LibrarySourceTab.YOUTUBE,
+                LibrarySourceTab.LOCAL,
+                LibrarySourceTab.JELLYFIN,
+                LibrarySourceTab.SUBSONIC,
+                LibrarySourceTab.SMB,
+            ),
+            onlineTabs,
+        )
+
+        val personalTabs = buildVisibleLibrarySourceTabs(
+            personalOnlyMode = true,
+            localMusicEnabled = true,
+            servers = servers,
+        )
+        assertFalse(LibrarySourceTab.YOUTUBE in personalTabs)
+        assertTrue(LibrarySourceTab.LOCAL in personalTabs)
+        assertTrue(LibrarySourceTab.SMB in personalTabs)
+        assertFalse(LibrarySourceTab.WEB_DAV in personalTabs)
+
+        val tracks = listOf(
+            AndroidTrack("yt123", "YT", "Artist", "", null, null, false, null, false),
+            AndroidTrack("local:1", "Loc", "Artist", "", null, null, false, null, false),
+            AndroidTrack("jellyfin:s1:t1", "JF", "Artist", "", null, null, false, null, false),
+            AndroidTrack("smb:s3:t1", "SMB", "Artist", "", null, null, false, null, false),
+        )
+        assertEquals(listOf("yt123"), filterTracksForSourceTab(LibrarySourceTab.YOUTUBE, tracks, personalOnlyMode = false).map { it.id })
+        assertEquals(listOf("local:1"), filterTracksForSourceTab(LibrarySourceTab.LOCAL, tracks, personalOnlyMode = true).map { it.id })
+        assertEquals(listOf("smb:s3:t1"), filterTracksForSourceTab(LibrarySourceTab.SMB, tracks, personalOnlyMode = true).map { it.id })
+        assertEquals(
+            listOf("local:1", "jellyfin:s1:t1", "smb:s3:t1"),
+            filterTracksForSourceTab(LibrarySourceTab.ALL, tracks, personalOnlyMode = true).map { it.id },
+        )
+
+        val playlists = listOf(
+            AndroidPlaylist("PL_ytm", "YTM", null, true),
+            AndroidPlaylist("personal:p1", "Personal", null, true),
+            AndroidPlaylist("jellyfin:p2", "JF Pl", null, false),
+            AndroidPlaylist(SonataViewModel.DOWNLOADS_PLAYLIST_ID, "Downloads", null, true),
+        )
+        assertEquals(
+            listOf("personal:p1", "jellyfin:p2", SonataViewModel.DOWNLOADS_PLAYLIST_ID),
+            filterPlaylistsForSourceTab(LibrarySourceTab.ALL, playlists, personalOnlyMode = true).map { it.id },
+        )
+        assertEquals(
+            listOf("personal:p1", SonataViewModel.DOWNLOADS_PLAYLIST_ID),
+            filterPlaylistsForSourceTab(LibrarySourceTab.LOCAL, playlists, personalOnlyMode = false).map { it.id },
+        )
+    }
+
+    @Test
+    fun `optional YTM attribution runs only when signed in, opted in, online, and playing personal tracks`() = runTest {
+        assertTrue(
+            SonataViewModel.shouldAttributePersonalPlay(
+                personalOnlyMode = false,
+                attributePersonalToYtm = true,
+                signedIn = true,
+                trackId = "local:123",
+            ),
+        )
+        assertTrue(
+            SonataViewModel.shouldAttributePersonalPlay(
+                personalOnlyMode = false,
+                attributePersonalToYtm = true,
+                signedIn = true,
+                trackId = "smb:nas:/song.flac",
+            ),
+        )
+        assertFalse(
+            SonataViewModel.shouldAttributePersonalPlay(
+                personalOnlyMode = true,
+                attributePersonalToYtm = true,
+                signedIn = true,
+                trackId = "local:123",
+            ),
+        )
+        assertFalse(
+            SonataViewModel.shouldAttributePersonalPlay(
+                personalOnlyMode = false,
+                attributePersonalToYtm = false,
+                signedIn = true,
+                trackId = "local:123",
+            ),
+        )
+        assertFalse(
+            SonataViewModel.shouldAttributePersonalPlay(
+                personalOnlyMode = false,
+                attributePersonalToYtm = true,
+                signedIn = false,
+                trackId = "local:123",
+            ),
+        )
+        assertFalse(
+            SonataViewModel.shouldAttributePersonalPlay(
+                personalOnlyMode = false,
+                attributePersonalToYtm = true,
+                signedIn = true,
+                trackId = "dQw4w9WgXcQ",
+            ),
+        )
+
+        val gateway = FakeSonataEngineGateway()
+        gateway.attributePersonalTrackHandler = { tr -> "matched_${tr.id}" }
+        val matchId = gateway.attributePersonalTrackToYtm(
+            AndroidTrack("local:123", "Song", "Artist", "Album", 180uL, null, false, null, false),
+        )
+        assertEquals("matched_local:123", matchId)
+        assertEquals(listOf("local:123"), gateway.ytmAttributionLog.map { it.id })
     }
 }

@@ -648,12 +648,38 @@ internal fun HomeTabContent(
                             )
                         }
                     }
-                    if (state.authInitialized && !state.signedIn) {
+                    if (state.authInitialized && !state.signedIn && !state.personalOnlyMode) {
                         item(key = "home_sign_in_banner", contentType = "sign_in_banner") {
                             SignInBanner(
                                 onSignIn = onSignIn,
                                 modifier = Modifier.padding(top = 56.dp, bottom = 14.dp),
                             )
+                        }
+                    }
+                    if (state.personalOnlyMode && state.shelves.isEmpty()) {
+                        item(key = "home_personal_only_notice", contentType = "personal_only_notice") {
+                            val srcStrings = dev.sonata.android.ui.i18n.sourcesStrings(settings.appLanguage)
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = PAGE_GUTTER, vertical = 20.dp)
+                                    .clip(RoundedCornerShape(18.dp))
+                                    .background(tokens.eclipseSurface.copy(alpha = 0.72f))
+                                    .border(0.75.dp, tokens.cardStroke, RoundedCornerShape(18.dp))
+                                    .padding(18.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text(
+                                    text = srcStrings.personalOnlyModeBadge,
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                    color = tokens.petalLavender,
+                                )
+                                Text(
+                                    text = srcStrings.personalOnlyModeDescription,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = tokens.onSurfaceSecondary,
+                                )
+                            }
                         }
                     }
 
