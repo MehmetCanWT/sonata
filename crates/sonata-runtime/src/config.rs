@@ -194,9 +194,18 @@ pub struct AppConfig {
     /// Preferred video playback quality (`"Auto"`, `"1080p"`, `"720p"`, etc.).
     #[serde(default = "default_video_quality")]
     pub video_quality: String,
-    /// Whether plays from self-hosted servers should scrobble back to YouTube Music history.
-    #[serde(default)]
+    /// Whether plays from local/self-hosted personal sources should be reported to YouTube Music history.
+    #[serde(default, alias = "attribute_personal_to_ytm")]
     pub scrobble_servers_to_ytm: bool,
+    /// Whether Personal Only Mode is active (hides streaming catalogs without altering saved streaming preferences).
+    #[serde(default)]
+    pub personal_only_mode: bool,
+    /// Whether local music directory scanning is enabled.
+    #[serde(default = "default_true")]
+    pub local_music_enabled: bool,
+    /// Custom local music directories to scan (empty falls back to the user's audio directory).
+    #[serde(default)]
+    pub local_music_dirs: Vec<PathBuf>,
 }
 
 impl Default for AppConfig {
@@ -235,11 +244,46 @@ impl Default for AppConfig {
             lyrics_romanize: false,
             video_quality: DEFAULT_VIDEO_QUALITY.to_string(),
             scrobble_servers_to_ytm: false,
+            personal_only_mode: false,
+            local_music_enabled: true,
+            local_music_dirs: Vec::new(),
         }
     }
 }
 
 impl AppConfig {
+    /// Returns whether streaming providers are active (`false` in Personal Only Mode).
+    pub fn streaming_enabled(&self) -> bool {
+        !self.personal_only_mode
+    }
+
+    /// Returns whether the optional JioSaavn module is effectively active.
+    pub fn effective_jiosaavn_enabled(&self) -> bool {
+        !self.personal_only_mode && self.jiosaavn_enabled
+    }
+
+    /// Returns whether local/server playback should be attributed to YouTube Music history.
+    pub fn effective_attribute_personal_to_ytm(&self) -> bool {
+        !self.personal_only_mode && self.scrobble_servers_to_ytm
+    }
+
+    /// Returns active local music directories, falling back to `dirs::audio_dir()` when enabled and empty.
+    pub fn effective_local_music_dirs(&self) -> Vec<PathBuf> {
+        if !self.local_music_enabled {
+            return Vec::new();
+        }
+        let configured: Vec<PathBuf> = self
+            .local_music_dirs
+            .iter()
+            .filter(|path| !path.as_os_str().is_empty())
+            .cloned()
+            .collect();
+        if configured.is_empty() {
+            dirs::audio_dir().into_iter().collect()
+        } else {
+            configured
+        }
+    }
     /// Returns the configured disk cache budget in bytes for this config instance.
     pub fn cache_limit_bytes(&self) -> u64 {
         u64::from(self.cache_limit_gb.min(MAX_CACHE_LIMIT_GB)) * GIGABYTE
@@ -577,5 +621,109 @@ mod tests {
         let clamped = AppConfig::load_from(&clamped_path);
         assert!((clamped.playback_speed - 2.0).abs() < 1e-6);
         assert_eq!(clamped.video_quality, "Auto");
+    }
+
+    #[test]
+    fn personal_only_mode_defaults_and_non_destructive_toggle_preserves_streaming_prefs() {
+        use super::ProviderMode;
+
+        let default_cfg = AppConfig::default();
+        assert!(!default_cfg.personal_only_mode);
+        assert!(default_cfg.local_music_enabled);
+        assert!(default_cfg.local_music_dirs.is_empty());
+        assert!(default_cfg.streaming_enabled());
+        assert!(!default_cfg.effective_jiosaavn_enabled());
+        assert!(!default_cfg.effective_attribute_personal_to_ytm());
+        assert_eq!(
+            default_cfg.effective_local_music_dirs(),
+            dirs::audio_dir().into_iter().collect::<Vec<_>>()
+        );
+
+        let legacy: AppConfig = toml::from_str("").expect("legacy empty config should parse");
+        assert!(!legacy.personal_only_mode);
+        assert!(legacy.local_music_enabled);
+        assert!(legacy.local_music_dirs.is_empty());
+        assert!(legacy.streaming_enabled());
+
+        let dir = TempTestDir::new("cfg_personal_only");
+        let cfg_path = dir.path().join("config.toml");
+        let custom_dir_a = dir.path().join("music-a");
+        let custom_dir_b = dir.path().join("music-b");
+
+        let mut cfg = AppConfig {
+            provider_mode: ProviderMode::Spotify,
+            hifi_substitution: true,
+            jiosaavn_enabled: true,
+            preferred_browser: Some("firefox".to_string()),
+            desktop_ytm_browser: Some("chromium".to_string()),
+            spotify_playlists: vec!["pl-123".to_string()],
+            scrobble_servers_to_ytm: true,
+            personal_only_mode: false,
+            local_music_enabled: true,
+            local_music_dirs: vec![custom_dir_a.clone(), custom_dir_b.clone()],
+            ..AppConfig::default()
+        };
+
+        assert!(cfg.streaming_enabled());
+        assert!(cfg.effective_jiosaavn_enabled());
+        assert!(cfg.effective_attribute_personal_to_ytm());
+        assert_eq!(
+            cfg.effective_local_music_dirs(),
+            vec![custom_dir_a.clone(), custom_dir_b.clone()]
+        );
+
+        // Enabling Personal Only Mode suppresses streaming helpers without mutating underlying prefs.
+        cfg.personal_only_mode = true;
+        cfg.save_to(&cfg_path).expect("save personal-only config");
+        let reloaded = AppConfig::load_from(&cfg_path);
+        assert!(reloaded.personal_only_mode);
+        assert!(!reloaded.streaming_enabled());
+        assert!(!reloaded.effective_jiosaavn_enabled());
+        assert!(!reloaded.effective_attribute_personal_to_ytm());
+        assert!(reloaded.jiosaavn_enabled);
+        assert!(reloaded.hifi_substitution);
+        assert!(reloaded.scrobble_servers_to_ytm);
+        assert_eq!(reloaded.provider_mode, ProviderMode::Spotify);
+        assert_eq!(reloaded.preferred_browser.as_deref(), Some("firefox"));
+        assert_eq!(reloaded.desktop_ytm_browser.as_deref(), Some("chromium"));
+        assert_eq!(reloaded.spotify_playlists, vec!["pl-123".to_string()]);
+        assert_eq!(
+            reloaded.effective_local_music_dirs(),
+            vec![custom_dir_a.clone(), custom_dir_b.clone()]
+        );
+
+        // Toggling Personal Only Mode back off restores streaming preferences intact.
+        let mut restored = reloaded;
+        restored.personal_only_mode = false;
+        restored.save_to(&cfg_path).expect("save restored config");
+        let final_cfg = AppConfig::load_from(&cfg_path);
+        assert!(!final_cfg.personal_only_mode);
+        assert!(final_cfg.streaming_enabled());
+        assert!(final_cfg.effective_jiosaavn_enabled());
+        assert!(final_cfg.effective_attribute_personal_to_ytm());
+        assert!(final_cfg.jiosaavn_enabled);
+        assert_eq!(final_cfg.preferred_browser.as_deref(), Some("firefox"));
+        assert_eq!(final_cfg.spotify_playlists, vec!["pl-123".to_string()]);
+
+        // Disabling local music returns an empty list, while blank entries fall back to audio_dir.
+        let mut disabled_local = final_cfg.clone();
+        disabled_local.local_music_enabled = false;
+        assert!(disabled_local.effective_local_music_dirs().is_empty());
+
+        let blank_dirs = AppConfig {
+            local_music_enabled: true,
+            local_music_dirs: vec![PathBuf::from("")],
+            ..AppConfig::default()
+        };
+        assert_eq!(
+            blank_dirs.effective_local_music_dirs(),
+            dirs::audio_dir().into_iter().collect::<Vec<_>>()
+        );
+
+        // Verify attribute_personal_to_ytm TOML alias maps cleanly to scrobble_servers_to_ytm.
+        let aliased: AppConfig = toml::from_str("attribute_personal_to_ytm = true\n")
+            .expect("attribute_personal_to_ytm alias should parse");
+        assert!(aliased.scrobble_servers_to_ytm);
+        assert!(aliased.effective_attribute_personal_to_ytm());
     }
 }

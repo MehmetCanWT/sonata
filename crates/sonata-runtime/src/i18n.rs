@@ -309,6 +309,34 @@ pub struct UiStrings {
     pub auto_label: &'static str,
     pub loading_video: &'static str,
     pub video_unavailable: &'static str,
+
+    // Sources, Modules, Personal Only Mode & Personal Playlists
+    pub sources: &'static str,
+    pub sources_desc: &'static str,
+    pub modules: &'static str,
+    pub modules_desc: &'static str,
+    pub personal_only_mode: &'static str,
+    pub personal_only_mode_desc: &'static str,
+    pub local_music: &'static str,
+    pub local_music_desc: &'static str,
+    pub local_music_dirs: &'static str,
+    pub add_folder: &'static str,
+    pub smb: &'static str,
+    pub webdav: &'static str,
+    pub jellyfin: &'static str,
+    pub subsonic: &'static str,
+    pub server_alive: &'static str,
+    pub server_online: &'static str,
+    pub server_offline: &'static str,
+    pub speed_test: &'static str,
+    pub latency: &'static str,
+    pub latency_ms: &'static str,
+    pub throughput: &'static str,
+    pub throughput_mbps: &'static str,
+    pub personal_playlists: &'static str,
+    pub personal_playlists_desc: &'static str,
+    pub attribute_personal_to_ytm: &'static str,
+    pub attribute_personal_to_ytm_desc: &'static str,
 }
 
 /// Translates common YouTube Music mood and genre chip/tile titles into `Tr` / `Ru`.
@@ -709,6 +737,37 @@ pub const EN: UiStrings = UiStrings {
     auto_label: "Auto",
     loading_video: "Loading video...",
     video_unavailable: "Video unavailable",
+
+    sources: "Sources",
+    sources_desc: "Manage streaming catalogs, local folders, self-hosted servers, and modules.",
+    modules: "Modules",
+    modules_desc: "Optional provider modules that extend search and playback quality.",
+    personal_only_mode: "Personal Only Mode",
+    personal_only_mode_desc:
+        "Hide streaming catalogs and use only local files and personal servers. Your streaming settings remain preserved.",
+    local_music: "Local Music",
+    local_music_desc:
+        "Scan audio folders on this device (defaults to your Music folder when empty).",
+    local_music_dirs: "Local Music Folders",
+    add_folder: "Add folder",
+    smb: "SMB",
+    webdav: "WebDAV",
+    jellyfin: "Jellyfin",
+    subsonic: "Subsonic",
+    server_alive: "Alive",
+    server_online: "Online",
+    server_offline: "Offline",
+    speed_test: "Speed Test",
+    latency: "Latency",
+    latency_ms: "ms",
+    throughput: "Throughput",
+    throughput_mbps: "Mbps",
+    personal_playlists: "Personal Playlists",
+    personal_playlists_desc:
+        "Local playlists stored on this device that mix local, server, and streaming tracks.",
+    attribute_personal_to_ytm: "Report local/server plays to YouTube Music",
+    attribute_personal_to_ytm_desc:
+        "When signed in and not in Personal Only Mode, log matching local or server plays to YouTube Music history.",
 };
 
 pub const TR: UiStrings = UiStrings {
@@ -949,6 +1008,37 @@ pub const TR: UiStrings = UiStrings {
     auto_label: "Otomatik",
     loading_video: "Video yükleniyor...",
     video_unavailable: "Video kullanılamıyor",
+
+    sources: "Kaynaklar",
+    sources_desc: "Akış kataloglarını, yerel klasörleri, kendi sunucularını ve modülleri yönet.",
+    modules: "Modüller",
+    modules_desc: "Arama ve oynatma kalitesini genişleten isteğe bağlı sağlayıcı modülleri.",
+    personal_only_mode: "Yalnızca Kişisel Mod",
+    personal_only_mode_desc:
+        "Akış kataloglarını gizleyip yalnızca yerel dosyaları ve kişisel sunucuları kullan. Akış ayarların korunur.",
+    local_music: "Yerel Müzik",
+    local_music_desc:
+        "Bu cihazdaki ses klasörlerini tara (boş bırakılırsa Müzik klasörü kullanılır).",
+    local_music_dirs: "Yerel Müzik Klasörleri",
+    add_folder: "Klasör ekle",
+    smb: "SMB",
+    webdav: "WebDAV",
+    jellyfin: "Jellyfin",
+    subsonic: "Subsonic",
+    server_alive: "Erişilebilir",
+    server_online: "Çevrimiçi",
+    server_offline: "Çevrimdışı",
+    speed_test: "Hız Testi",
+    latency: "Gecikme",
+    latency_ms: "ms",
+    throughput: "Aktarım Hızı",
+    throughput_mbps: "Mbps",
+    personal_playlists: "Kişisel Listeler",
+    personal_playlists_desc:
+        "Bu cihazda saklanan; yerel, sunucu ve akış parçalarını birleştirebilen listeler.",
+    attribute_personal_to_ytm: "Yerel/sunucu çalmalarını YouTube Music geçmişine işle",
+    attribute_personal_to_ytm_desc:
+        "Oturum açıkken ve Yalnızca Kişisel Mod kapalıyken eşleşen yerel veya sunucu çalmalarını YouTube Music geçmişine kaydet.",
 };
 
 pub const RU: UiStrings = UiStrings {
@@ -1190,6 +1280,37 @@ pub const RU: UiStrings = UiStrings {
     auto_label: "Авто",
     loading_video: "Загрузка видео...",
     video_unavailable: "Видео недоступно",
+
+    sources: "Источники",
+    sources_desc: "Управление каталогами, локальными папками, серверами и модулями.",
+    modules: "Модули",
+    modules_desc: "Дополнительные модули провайдеров для поиска и качества звука.",
+    personal_only_mode: "Только личный режим",
+    personal_only_mode_desc:
+        "Скрыть потоковые каталоги и использовать только локальные файлы и серверы. Ваши настройки стриминга сохраняются.",
+    local_music: "Локальная музыка",
+    local_music_desc:
+        "Сканировать папки с аудио на устройстве (по умолчанию папка «Музыка»).",
+    local_music_dirs: "Папки локальной музыки",
+    add_folder: "Добавить папку",
+    smb: "SMB",
+    webdav: "WebDAV",
+    jellyfin: "Jellyfin",
+    subsonic: "Subsonic",
+    server_alive: "Доступен",
+    server_online: "В сети",
+    server_offline: "Не в сети",
+    speed_test: "Тест скорости",
+    latency: "Задержка",
+    latency_ms: "ms",
+    throughput: "Пропускная способность",
+    throughput_mbps: "Mbps",
+    personal_playlists: "Личные плейлисты",
+    personal_playlists_desc:
+        "Локальные плейлисты на устройстве с локальными, серверными и потоковыми треками.",
+    attribute_personal_to_ytm: "Отправлять локальные/серверные прослушивания в YouTube Music",
+    attribute_personal_to_ytm_desc:
+        "При входе и выключенном личном режиме записывать совпавшие треки в историю YouTube Music.",
 };
 
 #[cfg(test)]
@@ -1264,5 +1385,65 @@ mod tests {
         assert_eq!(strings(AppLanguage::En).video_quality, "Video quality");
         assert_eq!(strings(AppLanguage::Tr).translate_lyrics, "Sözleri çevir");
         assert_eq!(strings(AppLanguage::Ru).sleep_timer, "Таймер сна");
+
+        // Faz 3 Sources, Modules, Personal Only Mode & Personal Playlists strings
+        assert_eq!(strings(AppLanguage::En).sources, "Sources");
+        assert_eq!(strings(AppLanguage::Tr).sources, "Kaynaklar");
+        assert_eq!(strings(AppLanguage::Ru).sources, "Источники");
+        assert_eq!(strings(AppLanguage::En).modules, "Modules");
+        assert_eq!(strings(AppLanguage::Tr).modules, "Modüller");
+        assert_eq!(strings(AppLanguage::Ru).modules, "Модули");
+        assert_eq!(
+            strings(AppLanguage::En).personal_only_mode,
+            "Personal Only Mode"
+        );
+        assert_eq!(
+            strings(AppLanguage::Tr).personal_only_mode,
+            "Yalnızca Kişisel Mod"
+        );
+        assert!(strings(AppLanguage::En)
+            .personal_only_mode_desc
+            .contains("preserved"));
+        assert!(strings(AppLanguage::Tr)
+            .personal_only_mode_desc
+            .contains("korunur"));
+        assert_eq!(strings(AppLanguage::En).local_music, "Local Music");
+        assert_eq!(strings(AppLanguage::Tr).local_music, "Yerel Müzik");
+        assert_eq!(strings(AppLanguage::Ru).local_music, "Локальная музыка");
+        assert_eq!(strings(AppLanguage::En).smb, "SMB");
+        assert_eq!(strings(AppLanguage::En).webdav, "WebDAV");
+        assert_eq!(strings(AppLanguage::En).jellyfin, "Jellyfin");
+        assert_eq!(strings(AppLanguage::En).subsonic, "Subsonic");
+        assert_eq!(strings(AppLanguage::En).server_alive, "Alive");
+        assert_eq!(strings(AppLanguage::En).server_online, "Online");
+        assert_eq!(strings(AppLanguage::Tr).server_offline, "Çevrimdışı");
+        assert_eq!(strings(AppLanguage::En).speed_test, "Speed Test");
+        assert_eq!(strings(AppLanguage::Tr).speed_test, "Hız Testi");
+        assert_eq!(strings(AppLanguage::Ru).speed_test, "Тест скорости");
+        assert_eq!(strings(AppLanguage::En).latency_ms, "ms");
+        assert_eq!(strings(AppLanguage::En).throughput_mbps, "Mbps");
+        assert_eq!(
+            strings(AppLanguage::En).personal_playlists,
+            "Personal Playlists"
+        );
+        assert_eq!(
+            strings(AppLanguage::Tr).personal_playlists,
+            "Kişisel Listeler"
+        );
+        assert_eq!(
+            strings(AppLanguage::Ru).personal_playlists,
+            "Личные плейлисты"
+        );
+        assert_eq!(
+            strings(AppLanguage::En).attribute_personal_to_ytm,
+            "Report local/server plays to YouTube Music"
+        );
+        assert_eq!(
+            strings(AppLanguage::Tr).attribute_personal_to_ytm,
+            "Yerel/sunucu çalmalarını YouTube Music geçmişine işle"
+        );
+        assert!(!strings(AppLanguage::Ru)
+            .attribute_personal_to_ytm
+            .is_empty());
     }
 }

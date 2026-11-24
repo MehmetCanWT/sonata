@@ -10,6 +10,9 @@
 
 use crate::config::{resolve_distro_binary, AppConfig};
 use crate::downloads::DownloadStore;
+use crate::player::mpv::{
+    compute_local_file_bitrate_kbps, format_measured_audio_badge, normalize_audio_codec_label,
+};
 use crate::process::CliJsCipherBridge;
 use anyhow::{anyhow, Result};
 use reqwest::Client;
@@ -33,7 +36,7 @@ use std::fs::OpenOptions;
 use std::io::Write as _;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt as _;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::process::Command;
@@ -235,6 +238,14 @@ impl LinuxStreamResolver {
             return Ok(offline);
         }
 
+        if is_local_track_id(&track.id) {
+            return self.resolve_local_file_stream(track).await;
+        }
+
+        if is_smb_track_id(&track.id) {
+            return self.resolve_smb_stream(track).await;
+        }
+
         if track.is_self_hosted() {
             return self.resolve_self_hosted_stream(track).await;
         }
@@ -279,6 +290,14 @@ impl LinuxStreamResolver {
     /// Recovery after `mpv` rejects a stream. Never repeats the cached stream URL.
     #[tracing::instrument(level = "debug", skip(self, track), fields(track_id = %track.id, provider = ?track.source))]
     pub async fn resolve_recovery(&self, track: &Track) -> Result<ResolvedStream> {
+        if is_local_track_id(&track.id) {
+            return self.resolve_local_file_stream(track).await;
+        }
+
+        if is_smb_track_id(&track.id) {
+            return self.resolve_smb_stream(track).await;
+        }
+
         if track.is_self_hosted() {
             return self.resolve_self_hosted_stream(track).await;
         }
@@ -335,7 +354,7 @@ impl LinuxStreamResolver {
             return None;
         }
 
-        if track.is_self_hosted() {
+        if is_local_or_smb_track_id(&track.id) || track.is_self_hosted() {
             return None;
         }
 
@@ -481,7 +500,7 @@ impl LinuxStreamResolver {
             return Some(offline);
         }
 
-        if track.is_self_hosted() {
+        if is_local_or_smb_track_id(&track.id) || track.is_self_hosted() {
             return None;
         }
 
@@ -536,6 +555,55 @@ impl LinuxStreamResolver {
         self.precache_hifi_audio(track, allow_hifi).await
     }
 
+    async fn resolve_local_file_stream(&self, track: &Track) -> Result<ResolvedStream> {
+        let track_clone = track.clone();
+        tokio::task::spawn_blocking(move || {
+            let raw = track_clone
+                .id
+                .strip_prefix("local:")
+                .unwrap_or(&track_clone.id);
+            let path = resolve_existing_local_path(raw).ok_or_else(|| {
+                anyhow!("Local audio file not found for track '{}'", track_clone.id)
+            })?;
+            let stream = build_local_resolved_stream(&path, &track_clone, "Local");
+            tracing::debug!(
+                "[sonata:resolver] result=ok method=local path={} badge={}",
+                redact_stream_url(&stream.url),
+                stream.badge
+            );
+            Ok(stream)
+        })
+        .await
+        .map_err(|err| anyhow!("Local file resolve task panicked: {err}"))?
+    }
+
+    async fn resolve_smb_stream(&self, track: &Track) -> Result<ResolvedStream> {
+        let paths = self.paths().clone();
+        let track_clone = track.clone();
+        let mounted =
+            tokio::task::spawn_blocking(move || resolve_smb_mounted_sync(&paths, &track_clone))
+                .await
+                .map_err(|err| anyhow!("SMB file resolve task panicked: {err}"))??;
+
+        if let Some(stream) = mounted {
+            tracing::debug!(
+                "[sonata:resolver] result=ok method=smb-local path={} badge={}",
+                redact_stream_url(&stream.url),
+                stream.badge
+            );
+            return Ok(stream);
+        }
+
+        if track.is_self_hosted() {
+            return self.resolve_self_hosted_stream(track).await;
+        }
+
+        Err(anyhow!(
+            "SMB audio file not found or share is not mounted for track '{}'",
+            track.id
+        ))
+    }
+
     async fn resolve_self_hosted_stream(&self, track: &Track) -> Result<ResolvedStream> {
         let item_ref = parse_server_item_id(&track.id)
             .ok_or_else(|| anyhow!("Track is not a self-hosted server item"))?;
@@ -555,19 +623,46 @@ impl LinuxStreamResolver {
         let stream = client
             .resolve_stream(&profile, track)
             .map_err(|err| anyhow!("{err}"))?;
-        let badge = stream
+        let source_label = profile.kind.display_name().to_string();
+        let base_badge = stream
             .audio_badge
+            .clone()
             .or_else(|| track.audio_badge.clone())
-            .unwrap_or_else(|| profile.kind.display_name().to_string());
+            .unwrap_or_else(|| source_label.clone());
+
+        if stream.url.starts_with("file://") || stream.url.starts_with('/') {
+            let track_clone = track.clone();
+            let raw_url = stream.url.clone();
+            let headers = stream.headers.clone();
+            if let Ok(Some(local_stream)) = tokio::task::spawn_blocking(move || {
+                resolve_existing_local_path(&raw_url).map(|path| {
+                    let mut resolved =
+                        build_local_resolved_stream(&path, &track_clone, &source_label);
+                    resolved.headers = headers;
+                    resolved
+                })
+            })
+            .await
+            {
+                tracing::debug!(
+                    "[sonata:resolver] result=ok method=self-hosted-local kind={:?} url={} badge={}",
+                    profile.kind,
+                    redact_stream_url(&local_stream.url),
+                    local_stream.badge
+                );
+                return Ok(local_stream);
+            }
+        }
+
         tracing::debug!(
             "[sonata:resolver] result=ok method=self-hosted kind={:?} url={} badge={}",
             profile.kind,
             redact_stream_url(&stream.url),
-            badge
+            base_badge
         );
         Ok(ResolvedStream {
             url: stream.url,
-            badge,
+            badge: base_badge,
             headers: stream.headers,
         })
     }
@@ -868,6 +963,192 @@ pub fn parse_ytdlp_audio_line(line: &str) -> Option<YtdlpAudioMetadata> {
     })
 }
 
+fn is_local_track_id(track_id: &str) -> bool {
+    track_id.starts_with("local:") || track_id.starts_with("file://")
+}
+
+fn is_smb_track_id(track_id: &str) -> bool {
+    track_id.starts_with("smb:")
+}
+
+fn is_local_or_smb_track_id(track_id: &str) -> bool {
+    is_local_track_id(track_id) || is_smb_track_id(track_id)
+}
+
+fn strip_file_scheme(raw: &str) -> &str {
+    if raw.starts_with("file://localhost/") {
+        // Re-anchor to root `/` when stripping `file://localhost`.
+        &raw["file://localhost".len()..]
+    } else if let Some(rest) = raw.strip_prefix("file://") {
+        rest
+    } else {
+        raw
+    }
+}
+
+fn percent_decode_str(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let h1 = (bytes[i + 1] as char).to_digit(16);
+            let h2 = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(hi), Some(lo)) = (h1, h2) {
+                out.push(((hi << 4) | lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn resolve_existing_local_path(raw: &str) -> Option<PathBuf> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let stripped = strip_file_scheme(trimmed);
+    if !stripped.is_empty() && Path::new(stripped).is_file() {
+        return Some(PathBuf::from(stripped));
+    }
+    let decoded = percent_decode_str(stripped);
+    let decoded_stripped = strip_file_scheme(decoded.trim());
+    if !decoded_stripped.is_empty() && Path::new(decoded_stripped).is_file() {
+        return Some(PathBuf::from(decoded_stripped));
+    }
+    None
+}
+
+fn join_mounted_relative_path(mount_root: &Path, raw_item: &str) -> Option<PathBuf> {
+    let try_join = |candidate: &str| -> Option<PathBuf> {
+        let rel = candidate.trim().trim_start_matches('/');
+        if rel.is_empty() {
+            return None;
+        }
+        let mut joined = mount_root.to_path_buf();
+        for comp in Path::new(rel).components() {
+            match comp {
+                Component::Normal(part) => joined.push(part),
+                Component::CurDir => {}
+                Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+            }
+        }
+        joined.is_file().then_some(joined)
+    };
+
+    try_join(raw_item).or_else(|| {
+        let decoded = percent_decode_str(raw_item);
+        try_join(&decoded)
+    })
+}
+
+fn infer_local_codec(path: &Path) -> Option<String> {
+    let ext = path.extension()?.to_str()?.trim();
+    if ext.is_empty() {
+        return None;
+    }
+    let ext_lower = ext.to_ascii_lowercase();
+    let mapped = match ext_lower.as_str() {
+        "ogg" | "oga" => "vorbis",
+        "m4a" => "aac",
+        other => other,
+    };
+    Some(normalize_audio_codec_label(mapped))
+}
+
+fn build_local_resolved_stream(path: &Path, track: &Track, source_label: &str) -> ResolvedStream {
+    let codec = infer_local_codec(path);
+    let measured_kbps = track
+        .duration_secs
+        .filter(|&secs| secs > 0)
+        .and_then(|secs| compute_local_file_bitrate_kbps(path, secs as f64));
+    let badge = format_measured_audio_badge(
+        codec.as_deref(),
+        measured_kbps,
+        None,
+        None,
+        track.audio_badge.as_deref(),
+    )
+    .or_else(|| track.audio_badge.clone())
+    .or_else(|| codec.map(|c| format!("{c} · {source_label}")))
+    .unwrap_or_else(|| source_label.to_string());
+    ResolvedStream {
+        url: path.to_string_lossy().into_owned(),
+        badge,
+        headers: Vec::new(),
+    }
+}
+
+fn resolve_smb_mounted_sync(paths: &CorePaths, track: &Track) -> Result<Option<ResolvedStream>> {
+    let rest = track
+        .id
+        .strip_prefix("smb:")
+        .ok_or_else(|| anyhow!("Track is not an SMB item"))?;
+
+    if rest.starts_with("file://") || rest.starts_with('/') {
+        return Ok(resolve_existing_local_path(rest)
+            .map(|path| build_local_resolved_stream(&path, track, "SMB")));
+    }
+
+    let Some((raw_server_id, raw_item_id)) = rest.split_once(':') else {
+        return Ok(None);
+    };
+    let server_id = percent_decode_str(raw_server_id);
+    let mut mount_root: Option<PathBuf> = None;
+
+    let servers_path = paths.servers_config_path();
+    if servers_path.is_file() {
+        if let Ok(raw_json) = std::fs::read_to_string(&servers_path) {
+            if let Ok(parsed) = serde_json::from_str::<Value>(&raw_json) {
+                if let Some(entries) = parsed.get("servers").and_then(Value::as_array) {
+                    if let Some(profile) = entries
+                        .iter()
+                        .find(|entry| entry.get("id").and_then(Value::as_str) == Some(&server_id))
+                    {
+                        if profile.get("enabled").and_then(Value::as_bool) == Some(false) {
+                            let name = profile
+                                .get("name")
+                                .and_then(Value::as_str)
+                                .unwrap_or(&server_id);
+                            return Err(anyhow!("Server '{name}' is disabled"));
+                        }
+                        mount_root = profile
+                            .get("local_mount_path")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(PathBuf::from)
+                            .or_else(|| {
+                                profile
+                                    .get("base_url")
+                                    .and_then(Value::as_str)
+                                    .map(str::trim)
+                                    .filter(|s| s.starts_with("file://") || s.starts_with('/'))
+                                    .map(strip_file_scheme)
+                                    .filter(|s| !s.is_empty())
+                                    .map(PathBuf::from)
+                            });
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(path) = resolve_existing_local_path(raw_item_id) {
+        return Ok(Some(build_local_resolved_stream(&path, track, "SMB")));
+    }
+    if let Some(root) = mount_root {
+        if let Some(path) = join_mounted_relative_path(&root, raw_item_id) {
+            return Ok(Some(build_local_resolved_stream(&path, track, "SMB")));
+        }
+    }
+    Ok(None)
+}
+
 /// Keeps only ordinary media request headers. Never forwards cookies or credentials.
 fn safe_stream_headers(value: Value) -> Vec<(String, String)> {
     let Some(headers) = value.as_object() else {
@@ -1088,5 +1369,192 @@ mod tests {
             .headers
             .iter()
             .any(|(k, v)| k == "Authorization" && v.starts_with("Basic ")));
+    }
+
+    #[tokio::test]
+    async fn resolve_fast_resolves_local_files_with_measured_bitrate_without_network() {
+        use crate::downloads::test_support::TempTestDir;
+        use sonata_core::providers::profile::{FastStartMode, StreamFallbackMode, UpgradeDelivery};
+
+        let core_dir = TempTestDir::new("ytdlp_local_core");
+        let music_dir = TempTestDir::new("ytdlp_local_music");
+        let flac_path = music_dir.path().join("01 Test Song.flac");
+        // 220,000 bytes over 2 seconds = 880 kbps exact
+        std::fs::write(&flac_path, vec![0u8; 220_000]).expect("write test flac");
+
+        let http = sonata_core::providers::build_http_client();
+        let cookies = ExtractedCookies::default();
+        let ytm = YtMusicClient::new(http.clone(), cookies.clone());
+        let paths = CorePaths::for_app_roots(core_dir.path(), core_dir.path());
+        let profile = ResolverProfile {
+            fast_start: FastStartMode::BoundedRange,
+            upgrade_delivery: UpgradeDelivery::CacheBeforeReturn,
+            fallback: StreamFallbackMode::InnerTubeOnly,
+            bootstrap_timeout: Duration::from_millis(500),
+            jiosaavn_enabled: false,
+            cache_limit_bytes: 1024 * 1024,
+        };
+        let resolver = LinuxStreamResolver::with_profile(http, ytm, cookies, None, paths, profile);
+
+        let encoded_path = flac_path.to_string_lossy().replace(' ', "%20");
+        let track = Track {
+            id: format!("local:{encoded_path}"),
+            title: "Test Song".to_string(),
+            artist: "Local Artist".to_string(),
+            album: "Local Album".to_string(),
+            duration_secs: Some(2),
+            thumbnail_url: None,
+            source: ProviderSource::YouTubeMusic,
+            audio_badge: Some("FLAC · Local".to_string()),
+            set_video_id: None,
+            liked: false,
+            album_id: None,
+            is_explicit: false,
+        };
+
+        let resolved = resolver
+            .resolve_fast(&track)
+            .await
+            .expect("local file should resolve offline");
+        assert_eq!(resolved.url, flac_path.to_string_lossy());
+        assert_eq!(resolved.badge, "FLAC · 880 kbps");
+        assert!(resolved.headers.is_empty());
+
+        let recovered = resolver
+            .resolve_recovery(&track)
+            .await
+            .expect("local recovery should resolve offline");
+        assert_eq!(recovered.url, flac_path.to_string_lossy());
+        assert_eq!(recovered.badge, "FLAC · 880 kbps");
+
+        assert!(resolver
+            .resolve_hifi_upgrade(&track, &resolved, true)
+            .await
+            .is_none());
+        assert!(resolver.precache_hifi_audio(&track, true).await.is_none());
+
+        // Also accept `local:file://...` URI form.
+        let file_uri_track = Track {
+            id: format!("local:file://{encoded_path}"),
+            ..track.clone()
+        };
+        let uri_resolved = resolver
+            .resolve_fast(&file_uri_track)
+            .await
+            .expect("file:// local track should resolve");
+        assert_eq!(uri_resolved.url, flac_path.to_string_lossy());
+        assert_eq!(uri_resolved.badge, "FLAC · 880 kbps");
+
+        // Missing local file must error cleanly without invoking yt-dlp.
+        let missing = Track {
+            id: format!("local:{}/missing.flac", music_dir.path().display()),
+            ..track
+        };
+        assert!(resolver.resolve_fast(&missing).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn resolve_fast_resolves_mounted_smb_files_and_rejects_disabled_or_missing() {
+        use crate::downloads::test_support::TempTestDir;
+        use sonata_core::providers::profile::{FastStartMode, StreamFallbackMode, UpgradeDelivery};
+
+        let core_dir = TempTestDir::new("ytdlp_smb_core");
+        let smb_mount = TempTestDir::new("ytdlp_smb_mount");
+        let album_dir = smb_mount.path().join("Artist/Album");
+        std::fs::create_dir_all(&album_dir).expect("create album dir");
+        let mp3_path = album_dir.join("02 Track.mp3");
+        // 80,000 bytes over 2 seconds = 320 kbps exact
+        std::fs::write(&mp3_path, vec![0u8; 80_000]).expect("write test mp3");
+
+        let paths = CorePaths::for_app_roots(core_dir.path(), core_dir.path());
+        std::fs::create_dir_all(&paths.config_dir).expect("create config dir");
+        let servers_json = serde_json::json!({
+            "version": 1,
+            "servers": [
+                {
+                    "id": "nas-smb",
+                    "name": "Home NAS",
+                    "kind": "smb",
+                    "base_url": "smb://nas.local/music",
+                    "enabled": true,
+                    "local_mount_path": smb_mount.path().to_string_lossy(),
+                },
+                {
+                    "id": "nas-disabled",
+                    "name": "Disabled NAS",
+                    "kind": "smb",
+                    "base_url": "smb://nas.local/disabled",
+                    "enabled": false,
+                    "local_mount_path": smb_mount.path().to_string_lossy(),
+                }
+            ]
+        });
+        std::fs::write(
+            paths.servers_config_path(),
+            serde_json::to_string_pretty(&servers_json).expect("serialize servers"),
+        )
+        .expect("write servers.json");
+
+        let http = sonata_core::providers::build_http_client();
+        let cookies = ExtractedCookies::default();
+        let ytm = YtMusicClient::new(http.clone(), cookies.clone());
+        let profile = ResolverProfile {
+            fast_start: FastStartMode::BoundedRange,
+            upgrade_delivery: UpgradeDelivery::CacheBeforeReturn,
+            fallback: StreamFallbackMode::InnerTubeOnly,
+            bootstrap_timeout: Duration::from_millis(500),
+            jiosaavn_enabled: false,
+            cache_limit_bytes: 1024 * 1024,
+        };
+        let resolver = LinuxStreamResolver::with_profile(http, ytm, cookies, None, paths, profile);
+
+        let smb_track = Track {
+            id: "smb:nas-smb:Artist/Album/02%20Track.mp3".to_string(),
+            title: "Track".to_string(),
+            artist: "Artist".to_string(),
+            album: "Album".to_string(),
+            duration_secs: Some(2),
+            thumbnail_url: None,
+            source: ProviderSource::YouTubeMusic,
+            audio_badge: Some("MP3 · SMB".to_string()),
+            set_video_id: None,
+            liked: false,
+            album_id: None,
+            is_explicit: false,
+        };
+
+        let resolved = resolver
+            .resolve_fast(&smb_track)
+            .await
+            .expect("mounted SMB track should resolve offline");
+        assert_eq!(resolved.url, mp3_path.to_string_lossy());
+        assert_eq!(resolved.badge, "MP3 · 320 kbps");
+        assert!(resolved.headers.is_empty());
+        assert!(resolver
+            .resolve_hifi_upgrade(&smb_track, &resolved, true)
+            .await
+            .is_none());
+        assert!(resolver
+            .precache_hifi_audio(&smb_track, true)
+            .await
+            .is_none());
+
+        // Path traversal must be rejected.
+        let traversal_track = Track {
+            id: "smb:nas-smb:../etc/passwd".to_string(),
+            ..smb_track.clone()
+        };
+        assert!(resolver.resolve_fast(&traversal_track).await.is_err());
+
+        // Disabled SMB server must return an error.
+        let disabled_track = Track {
+            id: "smb:nas-disabled:Artist/Album/02%20Track.mp3".to_string(),
+            ..smb_track
+        };
+        let err = resolver
+            .resolve_fast(&disabled_track)
+            .await
+            .expect_err("disabled SMB server must fail");
+        assert!(err.to_string().contains("disabled"));
     }
 }
