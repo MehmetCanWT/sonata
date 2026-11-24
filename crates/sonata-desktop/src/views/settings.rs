@@ -37,10 +37,11 @@ impl SonataDesktopView {
         let active_tab = match self.settings_tab {
             SettingsTab::Appearance => 0,
             SettingsTab::Playback => 1,
-            SettingsTab::Library => 2,
-            SettingsTab::System => 3,
-            SettingsTab::Account => 4,
-            SettingsTab::About => 5,
+            SettingsTab::Sources => 2,
+            SettingsTab::Library => 3,
+            SettingsTab::System => 4,
+            SettingsTab::Account => 5,
+            SettingsTab::About => 6,
         };
         let scroll_fades = self.settings.scroll_fades;
 
@@ -52,16 +53,21 @@ impl SonataDesktopView {
             .on_click(cx.listener(|this, idx: &usize, _, cx| {
                 this.settings_tab = match *idx {
                     1 => SettingsTab::Playback,
-                    2 => SettingsTab::Library,
-                    3 => SettingsTab::System,
-                    4 => SettingsTab::Account,
-                    5 => SettingsTab::About,
+                    2 => {
+                        this.backend.send(BackendCmd::RefreshServers);
+                        SettingsTab::Sources
+                    }
+                    3 => SettingsTab::Library,
+                    4 => SettingsTab::System,
+                    5 => SettingsTab::Account,
+                    6 => SettingsTab::About,
                     _ => SettingsTab::Appearance,
                 };
                 cx.notify();
             }))
             .child(Tab::new().label(s.tab_appearance))
             .child(Tab::new().label(s.tab_playback))
+            .child(Tab::new().label(s.sources))
             .child(Tab::new().label(s.tab_library))
             .child(Tab::new().label(s.tab_system))
             .child(Tab::new().label(s.tab_account))
@@ -70,6 +76,7 @@ impl SonataDesktopView {
         let body = match self.settings_tab {
             SettingsTab::Appearance => self.render_settings_appearance(cx),
             SettingsTab::Playback => self.render_settings_playback(cx),
+            SettingsTab::Sources => self.render_settings_sources(cx),
             SettingsTab::Library => self.render_settings_library(cx),
             SettingsTab::System => self.render_settings_system(cx),
             SettingsTab::Account => self.render_settings_account(cx),
@@ -566,12 +573,12 @@ impl SonataDesktopView {
             )
             .child(
                 self.settings_row(
-                    s.jiosaavn_module,
-                    s.jiosaavn_module_desc,
-                    Switch::new("sw-jio")
-                        .checked(cfg.jiosaavn_enabled)
+                    s.attribute_personal_to_ytm,
+                    s.attribute_personal_to_ytm_desc,
+                    Switch::new("sw-pb-attr-ytm")
+                        .checked(cfg.scrobble_servers_to_ytm)
                         .on_change(cx.listener(|this, _, _, _| {
-                            this.backend.send(BackendCmd::ToggleJioSaavn);
+                            this.backend.send(BackendCmd::ToggleAttributePersonalToYtm);
                         }))
                         .into_any_element(),
                 ),
@@ -612,6 +619,460 @@ impl SonataDesktopView {
                         .into_any_element(),
                 ),
             )
+            .into_any_element()
+    }
+
+    fn render_settings_sources(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let s = strings(self.settings.language);
+        let cfg = &self.snapshot.config;
+        let personal_only = cfg.personal_only_mode;
+        let jio_status = if personal_only && cfg.jiosaavn_enabled {
+            format!("{} (Paused)", s.enabled_320k)
+        } else if cfg.jiosaavn_enabled {
+            s.enabled_320k.to_string()
+        } else {
+            s.disabled.to_string()
+        };
+
+        let modules_card = div()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .pt(px(6.0))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(self.palette.text)
+                            .child(s.modules),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(self.palette.secondary)
+                            .child(s.modules_desc),
+                    ),
+            )
+            .child(
+                self.settings_row(
+                    s.jiosaavn_module,
+                    s.jiosaavn_module_desc,
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(10.0))
+                        .child(
+                            div()
+                                .px(px(8.0))
+                                .py(px(3.0))
+                                .rounded(px(self.palette.radii.small))
+                                .bg(if cfg.effective_jiosaavn_enabled() {
+                                    self.palette.accent.opacity(0.16)
+                                } else {
+                                    self.palette.surface
+                                })
+                                .text_size(px(11.5))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(if cfg.effective_jiosaavn_enabled() {
+                                    self.palette.accent
+                                } else {
+                                    self.palette.secondary
+                                })
+                                .child(jio_status),
+                        )
+                        .child(
+                            Switch::new("sw-src-jio")
+                                .checked(cfg.jiosaavn_enabled)
+                                .on_change(cx.listener(|this, _, _, _| {
+                                    this.backend.send(BackendCmd::ToggleJioSaavn);
+                                })),
+                        )
+                        .into_any_element(),
+                ),
+            )
+            .child(
+                self.settings_row(
+                    s.attribute_personal_to_ytm,
+                    s.attribute_personal_to_ytm_desc,
+                    Switch::new("sw-src-attr-ytm")
+                        .checked(cfg.scrobble_servers_to_ytm)
+                        .on_change(cx.listener(|this, _, _, _| {
+                            this.backend.send(BackendCmd::ToggleAttributePersonalToYtm);
+                        }))
+                        .into_any_element(),
+                ),
+            );
+
+        let local_summary = if !cfg.local_music_enabled {
+            s.disabled.to_string()
+        } else if self.snapshot.local_scanning {
+            format!("{}...", s.scan)
+        } else {
+            format!(
+                "{} {} • {} {}",
+                self.snapshot.local_scan.tracks.len(),
+                s.tracks,
+                self.snapshot.local_scan.albums.len(),
+                s.albums
+            )
+        };
+        let local_dirs = cfg.local_music_dirs.clone();
+        let effective_dirs = cfg.effective_local_music_dirs();
+
+        let mut local_section = div().flex().flex_col().gap(px(8.0)).pt(px(6.0)).child(
+            self.settings_row(
+                s.local_music,
+                s.local_music_desc,
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(self.palette.secondary)
+                            .child(local_summary),
+                    )
+                    .child(
+                        Button::new("set-local-scan")
+                            .secondary()
+                            .small()
+                            .icon(IconName::RefreshCw)
+                            .label(s.scan)
+                            .on_click(cx.listener(|this, _, _, _| {
+                                this.backend.send(BackendCmd::ScanLocalMusic);
+                            })),
+                    )
+                    .child(
+                        Switch::new("sw-local-music")
+                            .checked(cfg.local_music_enabled)
+                            .on_change(cx.listener(|this, _, _, _| {
+                                this.backend.send(BackendCmd::ToggleLocalMusicEnabled);
+                            })),
+                    )
+                    .into_any_element(),
+            ),
+        );
+
+        let add_folder_ctrl = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .child(
+                div()
+                    .w(px(210.0))
+                    .h(px(30.0))
+                    .px(px(8.0))
+                    .rounded(px(self.palette.radii.small))
+                    .bg(self.palette.surface)
+                    .border_1()
+                    .border_color(self.palette.outline)
+                    .flex()
+                    .items_center()
+                    .child(Input::new(&self.local_dir_input).appearance(false)),
+            )
+            .child(
+                Button::new("set-local-pick")
+                    .secondary()
+                    .small()
+                    .icon(IconName::Folder)
+                    .on_click(cx.listener(|_this, _, window, cx| {
+                        let rx = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
+                            files: false,
+                            directories: true,
+                            multiple: false,
+                            prompt: Some("Select local music folder".into()),
+                        });
+                        let weak_win = window.window_handle();
+                        cx.spawn(async move |weak, cx| {
+                            if let Ok(Ok(Some(paths))) = rx.await {
+                                if let Some(path) = paths.into_iter().next() {
+                                    let path_str = path.to_string_lossy().into_owned();
+                                    let _ = weak.update(cx, |this, cx| {
+                                        let _ = weak_win.update(cx, |_, window, cx| {
+                                            this.local_dir_input.update(cx, |st, cx| {
+                                                st.set_value(path_str, window, cx);
+                                            });
+                                        });
+                                        this.backend.send(BackendCmd::AddLocalMusicDir(path));
+                                        cx.notify();
+                                    });
+                                }
+                            }
+                        })
+                        .detach();
+                    })),
+            )
+            .child(
+                Button::new("set-local-add")
+                    .primary()
+                    .small()
+                    .icon(IconName::Plus)
+                    .label(s.add_folder)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        let raw = this.local_dir_input.read(cx).value().trim().to_string();
+                        if !raw.is_empty() {
+                            this.backend
+                                .send(BackendCmd::AddLocalMusicDir(PathBuf::from(raw)));
+                            this.local_dir_input
+                                .update(cx, |st, cx| st.set_value("", window, cx));
+                        }
+                    })),
+            )
+            .into_any_element();
+
+        let default_dir_hint = if local_dirs.is_empty() {
+            effective_dirs
+                .first()
+                .map(|p| format!("Default: {}", p.display()))
+                .unwrap_or_else(|| s.local_music_desc.to_string())
+        } else {
+            format!("{} {}", local_dirs.len(), s.folders)
+        };
+        local_section = local_section.child(self.settings_row(
+            s.local_music_dirs,
+            default_dir_hint,
+            add_folder_ctrl,
+        ));
+        for (idx, dir) in local_dirs.into_iter().enumerate() {
+            let dir_rm = dir.clone();
+            local_section = local_section.child(
+                self.settings_row(
+                    dir.to_string_lossy().into_owned(),
+                    s.local_music_dirs,
+                    Button::new(("set-local-rm", idx))
+                        .ghost()
+                        .small()
+                        .icon(IconName::Trash)
+                        .on_click(cx.listener(move |this, _, _, _| {
+                            this.backend
+                                .send(BackendCmd::RemoveLocalMusicDir(dir_rm.clone()));
+                        }))
+                        .into_any_element(),
+                ),
+            );
+        }
+
+        let mut servers_section = div().flex().flex_col().gap(px(8.0)).child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .pt(px(8.0))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .child(
+                            div()
+                                .text_size(px(14.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(self.palette.text)
+                                .child(s.servers),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .text_color(self.palette.secondary)
+                                .child(s.servers_desc),
+                        ),
+                )
+                .child(
+                    Button::new("set-add-server")
+                        .primary()
+                        .small()
+                        .icon(IconName::Plus)
+                        .label(s.add_server)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_add_server_modal(window, cx);
+                        })),
+                ),
+        );
+
+        if self.snapshot.server_profiles.is_empty() {
+            servers_section = servers_section.child(
+                div()
+                    .px(px(14.0))
+                    .py(px(12.0))
+                    .rounded(px(self.palette.radii.control))
+                    .bg(self.palette.surface)
+                    .border_1()
+                    .border_color(self.palette.outline)
+                    .text_size(px(12.0))
+                    .text_color(self.palette.secondary)
+                    .child(s.no_servers),
+            );
+        } else {
+            for (idx, profile) in self.snapshot.server_profiles.iter().enumerate() {
+                let sid_health = profile.id.clone();
+                let sid_speed = profile.id.clone();
+                let sid_toggle = profile.id.clone();
+                let sid_remove = profile.id.clone();
+                let edit_profile = profile.clone();
+                let health = self.snapshot.server_health.get(&profile.id);
+                let speed = self.snapshot.server_speed_tests.get(&profile.id);
+                let speed_busy = self.snapshot.server_speed_testing.contains(&profile.id);
+
+                let (health_label, is_alive) = match health {
+                    Some(h) if h.alive => (
+                        match h.latency_ms {
+                            Some(ms) => format!("{} • {ms} {}", s.server_alive, s.latency_ms),
+                            None => s.server_alive.to_string(),
+                        },
+                        true,
+                    ),
+                    Some(_) => (s.server_offline.to_string(), false),
+                    None => (
+                        self.snapshot
+                            .server_statuses
+                            .get(&profile.id)
+                            .cloned()
+                            .unwrap_or_else(|| "...".to_string()),
+                        false,
+                    ),
+                };
+                let speed_label = if speed_busy {
+                    format!("{}...", s.speed_test)
+                } else if let Some(sp) = speed {
+                    crate::backend::format_server_speed_badge(sp)
+                } else {
+                    s.speed_test.to_string()
+                };
+                let target_desc =
+                    if profile.kind == sonata_core::providers::servers::ServerKind::Smb {
+                        profile
+                            .local_mount_path
+                            .as_ref()
+                            .map(|p| format!("{} • {}", profile.base_url, p.display()))
+                            .unwrap_or_else(|| profile.base_url.clone())
+                    } else {
+                        profile.base_url.clone()
+                    };
+                let subtitle = format!("[{}] {}", profile.kind.short_tag(), target_desc);
+
+                let ctrl = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .flex_wrap()
+                    .gap(px(6.0))
+                    .child(
+                        div()
+                            .px(px(8.0))
+                            .py(px(3.0))
+                            .rounded(px(self.palette.radii.small))
+                            .bg(if is_alive {
+                                self.palette.accent.opacity(0.16)
+                            } else {
+                                self.palette.surface
+                            })
+                            .text_size(px(11.5))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(if is_alive {
+                                self.palette.accent
+                            } else {
+                                self.palette.secondary
+                            })
+                            .child(health_label),
+                    )
+                    .child(
+                        Button::new(("set-srv-health", idx))
+                            .secondary()
+                            .small()
+                            .icon(IconName::RefreshCw)
+                            .on_click(cx.listener(move |this, _, _, _| {
+                                this.backend
+                                    .send(BackendCmd::ProbeServerHealth(sid_health.clone()));
+                            })),
+                    )
+                    .child(
+                        Button::new(("set-srv-speed", idx))
+                            .secondary()
+                            .small()
+                            .label(speed_label)
+                            .on_click(cx.listener(move |this, _, _, _| {
+                                if !speed_busy {
+                                    this.backend
+                                        .send(BackendCmd::RunServerSpeedTest(sid_speed.clone()));
+                                }
+                            })),
+                    )
+                    .child(
+                        Button::new(("set-srv-edit", idx))
+                            .secondary()
+                            .small()
+                            .icon(IconName::Pencil)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_edit_server_modal(&edit_profile, window, cx);
+                            })),
+                    )
+                    .child(
+                        Switch::new(("set-srv-en", idx))
+                            .checked(profile.enabled)
+                            .on_change(cx.listener(move |this, _, _, _| {
+                                this.backend
+                                    .send(BackendCmd::ToggleServerEnabled(sid_toggle.clone()));
+                            })),
+                    )
+                    .child(
+                        Button::new(("set-srv-rm", idx))
+                            .ghost()
+                            .small()
+                            .icon(IconName::Trash)
+                            .on_click(cx.listener(move |this, _, _, _| {
+                                this.backend
+                                    .send(BackendCmd::RemoveServerProfile(sid_remove.clone()));
+                            })),
+                    )
+                    .into_any_element();
+                servers_section =
+                    servers_section.child(self.settings_row(profile.name.clone(), subtitle, ctrl));
+            }
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .child(
+                self.settings_row(
+                    s.personal_only_mode,
+                    s.personal_only_mode_desc,
+                    Switch::new("sw-personal-only")
+                        .checked(personal_only)
+                        .on_change(cx.listener(|this, _, _, _| {
+                            this.backend.send(BackendCmd::TogglePersonalOnlyMode);
+                        }))
+                        .into_any_element(),
+                ),
+            )
+            .when(personal_only, |col| {
+                col.child(
+                    div()
+                        .px(px(14.0))
+                        .py(px(10.0))
+                        .rounded(px(self.palette.radii.control))
+                        .bg(self.palette.accent.opacity(0.14))
+                        .border_1()
+                        .border_color(self.palette.accent.opacity(0.35))
+                        .text_size(px(12.0))
+                        .text_color(self.palette.accent)
+                        .child(s.personal_only_active),
+                )
+            })
+            .child(modules_card)
+            .child(local_section)
+            .child(servers_section)
             .into_any_element()
     }
 
@@ -803,114 +1264,6 @@ impl SonataDesktopView {
             })
             .into_any_element();
 
-        let mut servers_section = div().flex().flex_col().gap(px(8.0)).child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .pt(px(8.0))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.0))
-                        .child(
-                            div()
-                                .text_size(px(14.0))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(self.palette.text)
-                                .child(s.servers),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(12.0))
-                                .text_color(self.palette.secondary)
-                                .child(s.servers_desc),
-                        ),
-                )
-                .child(
-                    Button::new("set-add-server")
-                        .primary()
-                        .small()
-                        .icon(IconName::Plus)
-                        .label(s.add_server)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.open_add_server_modal(window, cx);
-                        })),
-                ),
-        );
-
-        if self.snapshot.server_profiles.is_empty() {
-            servers_section = servers_section.child(
-                div()
-                    .px(px(14.0))
-                    .py(px(12.0))
-                    .rounded(px(self.palette.radii.control))
-                    .bg(self.palette.surface)
-                    .border_1()
-                    .border_color(self.palette.outline)
-                    .text_size(px(12.0))
-                    .text_color(self.palette.secondary)
-                    .child(s.no_servers),
-            );
-        } else {
-            for (idx, profile) in self.snapshot.server_profiles.iter().enumerate() {
-                let sid_test = profile.id.clone();
-                let sid_toggle = profile.id.clone();
-                let sid_remove = profile.id.clone();
-                let status = self
-                    .snapshot
-                    .server_statuses
-                    .get(&profile.id)
-                    .cloned()
-                    .unwrap_or_else(|| profile.base_url.clone());
-                let subtitle = format!(
-                    "[{}] {} • {}",
-                    profile.kind.short_tag(),
-                    profile.base_url,
-                    status
-                );
-                let ctrl = div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(6.0))
-                    .child(
-                        Button::new(("set-srv-test", idx))
-                            .secondary()
-                            .small()
-                            .icon(IconName::RefreshCw)
-                            .label(s.test_connection)
-                            .on_click(cx.listener(move |this, _, _, _| {
-                                this.backend
-                                    .send(BackendCmd::TestServerProfile(sid_test.clone()));
-                            })),
-                    )
-                    .child(
-                        Switch::new(("set-srv-en", idx))
-                            .checked(profile.enabled)
-                            .on_change(cx.listener(move |this, _, _, _| {
-                                this.backend
-                                    .send(BackendCmd::ToggleServerEnabled(sid_toggle.clone()));
-                            })),
-                    )
-                    .child(
-                        Button::new(("set-srv-rm", idx))
-                            .ghost()
-                            .small()
-                            .icon(IconName::Trash)
-                            .on_click(cx.listener(move |this, _, _, _| {
-                                this.backend
-                                    .send(BackendCmd::RemoveServerProfile(sid_remove.clone()));
-                            })),
-                    )
-                    .into_any_element();
-                servers_section =
-                    servers_section.child(self.settings_row(profile.name.clone(), subtitle, ctrl));
-            }
-        }
-
         div()
             .flex()
             .flex_col()
@@ -930,7 +1283,6 @@ impl SonataDesktopView {
                         .into_any_element(),
                 ),
             )
-            .child(servers_section)
             .into_any_element()
     }
 

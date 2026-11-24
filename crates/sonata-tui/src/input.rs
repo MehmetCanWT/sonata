@@ -9,7 +9,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    let writable_pl_count = app.writable_ytm_playlists().len();
+    let writable_pl_count = app.playlist_add_targets_for_selected().len();
     match &mut app.modal {
         ActiveModal::ImageWarning(sel) => {
             match key.code {
@@ -81,23 +81,27 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                 KeyCode::Up | KeyCode::Char('k') => *sel = (*sel + n - 1) % n,
                 KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter | KeyCode::Char(' ') => {
                     match *sel {
-                        0 => app.cycle_provider_mode(true),
-                        1 => app.toggle_hifi_substitution(),
-                        2 => app.toggle_jiosaavn(),
-                        3 => app.toggle_autoplay(),
-                        4 => app.step_playback_speed(true),
-                        5 => app.toggle_skip_silence(),
-                        6 => app.cycle_sleep_timer(true),
-                        7 => app.toggle_lyrics_translate(),
-                        8 => app.toggle_lyrics_romanize(),
-                        9 => app.cycle_language(true),
-                        10 => app.cycle_theme(true),
-                        11 => app.toggle_motion_covers(),
-                        12 => app.toggle_transparent_bg(),
-                        13 => app.cycle_hyprland_opacity(true),
-                        14 => app.step_cache_limit(true),
-                        15 => app.step_downloads_limit(true),
-                        16 => {
+                        0 => app.toggle_personal_only_mode(),
+                        1 => app.toggle_jiosaavn(),
+                        2 => app.toggle_attribute_personal_to_ytm(),
+                        3 => app.modal = ActiveModal::LocalMusicManager(0),
+                        4 => app.modal = ActiveModal::ServerManager(0),
+                        5 => app.cycle_provider_mode(true),
+                        6 => app.toggle_hifi_substitution(),
+                        7 => app.toggle_autoplay(),
+                        8 => app.step_playback_speed(true),
+                        9 => app.toggle_skip_silence(),
+                        10 => app.cycle_sleep_timer(true),
+                        11 => app.toggle_lyrics_translate(),
+                        12 => app.toggle_lyrics_romanize(),
+                        13 => app.cycle_language(true),
+                        14 => app.cycle_theme(true),
+                        15 => app.toggle_motion_covers(),
+                        16 => app.toggle_transparent_bg(),
+                        17 => app.cycle_hyprland_opacity(true),
+                        18 => app.step_cache_limit(true),
+                        19 => app.step_downloads_limit(true),
+                        20 => {
                             let s = sonata_runtime::i18n::strings(app.config.language);
                             let buf = app
                                 .config
@@ -112,10 +116,9 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                                 target: crate::app::TextInputTarget::DownloadsDir,
                             };
                         }
-                        17 => app.clear_all_downloads(),
-                        18 => app.modal = ActiveModal::ServerManager(0),
-                        19 => app.toggle_discord_rpc(),
-                        20 => {
+                        21 => app.clear_all_downloads(),
+                        22 => app.toggle_discord_rpc(),
+                        23 => {
                             let s = sonata_runtime::i18n::strings(app.config.language);
                             let buf = app.config.discord_app_id.clone().unwrap_or_default();
                             app.modal = ActiveModal::TextInput {
@@ -125,29 +128,32 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                                 target: crate::app::TextInputTarget::DiscordAppId,
                             };
                         }
-                        21 => app.refresh_account(),
-                        22 => app.check_for_updates(),
+                        24 => app.refresh_account(),
+                        25 => app.check_for_updates(),
                         _ => {}
                     }
                 }
                 KeyCode::Left | KeyCode::Char('h') => match *sel {
-                    0 => app.cycle_provider_mode(false),
-                    1 => app.toggle_hifi_substitution(),
-                    2 => app.toggle_jiosaavn(),
-                    3 => app.toggle_autoplay(),
-                    4 => app.step_playback_speed(false),
-                    5 => app.toggle_skip_silence(),
-                    6 => app.cycle_sleep_timer(false),
-                    7 => app.toggle_lyrics_translate(),
-                    8 => app.toggle_lyrics_romanize(),
-                    9 => app.cycle_language(false),
-                    10 => app.cycle_theme(false),
-                    11 => app.toggle_motion_covers(),
-                    12 => app.toggle_transparent_bg(),
-                    13 => app.cycle_hyprland_opacity(false),
-                    14 => app.step_cache_limit(false),
-                    15 => app.step_downloads_limit(false),
-                    19 => app.toggle_discord_rpc(),
+                    0 => app.toggle_personal_only_mode(),
+                    1 => app.toggle_jiosaavn(),
+                    2 => app.toggle_attribute_personal_to_ytm(),
+                    3 => app.toggle_local_music_enabled(),
+                    5 => app.cycle_provider_mode(false),
+                    6 => app.toggle_hifi_substitution(),
+                    7 => app.toggle_autoplay(),
+                    8 => app.step_playback_speed(false),
+                    9 => app.toggle_skip_silence(),
+                    10 => app.cycle_sleep_timer(false),
+                    11 => app.toggle_lyrics_translate(),
+                    12 => app.toggle_lyrics_romanize(),
+                    13 => app.cycle_language(false),
+                    14 => app.cycle_theme(false),
+                    15 => app.toggle_motion_covers(),
+                    16 => app.toggle_transparent_bg(),
+                    17 => app.cycle_hyprland_opacity(false),
+                    18 => app.step_cache_limit(false),
+                    19 => app.step_downloads_limit(false),
+                    22 => app.toggle_discord_rpc(),
                     _ => {}
                 },
                 _ => {}
@@ -188,16 +194,43 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             }
             return;
         }
-        ActiveModal::CreatePlaylist(buf) => {
+        ActiveModal::CreatePlaylist { buf, personal } => {
+            match key.code {
+                KeyCode::Esc => app.modal = ActiveModal::None,
+                KeyCode::Tab => {
+                    if !app.config.personal_only_mode && app.ytm.is_authenticated() {
+                        *personal = !*personal;
+                    }
+                }
+                KeyCode::Backspace => {
+                    buf.pop();
+                }
+                KeyCode::Enter => {
+                    let title = buf.clone();
+                    let is_personal = *personal;
+                    app.modal = ActiveModal::None;
+                    if is_personal {
+                        app.create_personal_playlist(&title);
+                    } else {
+                        app.create_ytm_playlist(&title);
+                    }
+                }
+                KeyCode::Char(c) => buf.push(c),
+                _ => {}
+            }
+            return;
+        }
+        ActiveModal::RenamePersonalPlaylist { playlist_id, buf } => {
             match key.code {
                 KeyCode::Esc => app.modal = ActiveModal::None,
                 KeyCode::Backspace => {
                     buf.pop();
                 }
                 KeyCode::Enter => {
-                    let title = buf.clone();
+                    let pid = playlist_id.clone();
+                    let name = buf.clone();
                     app.modal = ActiveModal::None;
-                    app.create_ytm_playlist(&title);
+                    app.rename_personal_playlist(&pid, &name);
                 }
                 KeyCode::Char(c) => buf.push(c),
                 _ => {}
@@ -208,18 +241,20 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             let target = *target;
             match key.code {
                 KeyCode::Esc => {
-                    let back = match target {
-                        crate::app::TextInputTarget::DownloadsDir => 16,
-                        crate::app::TextInputTarget::DiscordAppId => 20,
+                    app.modal = match target {
+                        crate::app::TextInputTarget::DownloadsDir => ActiveModal::Settings(20),
+                        crate::app::TextInputTarget::DiscordAppId => ActiveModal::Settings(23),
+                        crate::app::TextInputTarget::LocalMusicDir => {
+                            ActiveModal::LocalMusicManager(0)
+                        }
                     };
-                    app.modal = ActiveModal::Settings(back);
                 }
                 KeyCode::Backspace => {
                     buf.pop();
                 }
                 KeyCode::Enter => {
                     let val = buf.trim().to_string();
-                    let back = match target {
+                    app.modal = match target {
                         crate::app::TextInputTarget::DownloadsDir => {
                             let dir = if val.is_empty() {
                                 None
@@ -227,17 +262,53 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                                 Some(std::path::PathBuf::from(val))
                             };
                             app.set_downloads_dir(dir);
-                            16
+                            ActiveModal::Settings(20)
                         }
                         crate::app::TextInputTarget::DiscordAppId => {
                             let id = if val.is_empty() { None } else { Some(val) };
                             app.set_discord_app_id(id);
-                            20
+                            ActiveModal::Settings(23)
+                        }
+                        crate::app::TextInputTarget::LocalMusicDir => {
+                            if !val.is_empty() {
+                                app.add_local_music_dir(std::path::PathBuf::from(val));
+                            }
+                            ActiveModal::LocalMusicManager(0)
                         }
                     };
-                    app.modal = ActiveModal::Settings(back);
                 }
                 KeyCode::Char(c) => buf.push(c),
+                _ => {}
+            }
+            return;
+        }
+        ActiveModal::LocalMusicManager(sel) => {
+            let count = app.config.effective_local_music_dirs().len();
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => app.modal = ActiveModal::Settings(3),
+                KeyCode::Down | KeyCode::Char('j') if count > 0 => *sel = (*sel + 1) % count,
+                KeyCode::Up | KeyCode::Char('k') if count > 0 => *sel = (*sel + count - 1) % count,
+                KeyCode::Enter | KeyCode::Char(' ') => app.toggle_local_music_enabled(),
+                KeyCode::Char('s') => app.scan_local_music(),
+                KeyCode::Char('a') => {
+                    let s = sonata_runtime::i18n::strings(app.config.language);
+                    app.modal = ActiveModal::TextInput {
+                        title: s.folders.to_string(),
+                        prompt: "Local music folder path:".to_string(),
+                        buf: String::new(),
+                        target: crate::app::TextInputTarget::LocalMusicDir,
+                    };
+                }
+                KeyCode::Char('d') | KeyCode::Char('x') | KeyCode::Delete if count > 0 => {
+                    let idx = (*sel).min(count - 1);
+                    app.remove_local_music_dir(idx);
+                    let next_len = app.config.effective_local_music_dirs().len();
+                    app.modal = ActiveModal::LocalMusicManager(if next_len == 0 {
+                        0
+                    } else {
+                        idx.min(next_len - 1)
+                    });
+                }
                 _ => {}
             }
             return;
@@ -245,16 +316,26 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         ActiveModal::ServerManager(sel) => {
             let count = app.server_profiles.len();
             match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => app.modal = ActiveModal::Settings(18),
+                KeyCode::Esc | KeyCode::Char('q') => app.modal = ActiveModal::Settings(4),
                 KeyCode::Down | KeyCode::Char('j') if count > 0 => *sel = (*sel + 1) % count,
                 KeyCode::Up | KeyCode::Char('k') if count > 0 => *sel = (*sel + count - 1) % count,
                 KeyCode::Char('a') => {
                     app.modal = ActiveModal::AddServer(crate::app::ServerFormState::default());
                 }
+                KeyCode::Char('e') if count > 0 => {
+                    let idx = (*sel).min(count - 1);
+                    let form = crate::app::ServerFormState::from_profile(&app.server_profiles[idx]);
+                    app.modal = ActiveModal::AddServer(form);
+                }
                 KeyCode::Char('t') if count > 0 => {
                     let idx = (*sel).min(count - 1);
                     let id = app.server_profiles[idx].id.clone();
-                    app.test_server_profile(&id);
+                    app.probe_server_health(&id);
+                }
+                KeyCode::Char('s') if count > 0 => {
+                    let idx = (*sel).min(count - 1);
+                    let id = app.server_profiles[idx].id.clone();
+                    app.run_server_speed_test(&id);
                 }
                 KeyCode::Enter | KeyCode::Char(' ') if count > 0 => {
                     let idx = (*sel).min(count - 1);
@@ -289,27 +370,32 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                 app.test_server_form(&snapshot);
                 return;
             }
+            let cycle_kind = |kind: ServerKind, forward: bool| -> ServerKind {
+                match (kind, forward) {
+                    (ServerKind::Jellyfin, true) => ServerKind::Subsonic,
+                    (ServerKind::Subsonic, true) => ServerKind::Smb,
+                    (ServerKind::Smb, true) => ServerKind::WebDav,
+                    (ServerKind::WebDav, true) => ServerKind::Jellyfin,
+                    (ServerKind::Jellyfin, false) => ServerKind::WebDav,
+                    (ServerKind::Subsonic, false) => ServerKind::Jellyfin,
+                    (ServerKind::Smb, false) => ServerKind::Subsonic,
+                    (ServerKind::WebDav, false) => ServerKind::Smb,
+                }
+            };
             match key.code {
                 KeyCode::Esc => app.modal = ActiveModal::ServerManager(0),
-                KeyCode::Tab | KeyCode::Down => form.focused = form.focused.next(),
-                KeyCode::BackTab | KeyCode::Up => form.focused = form.focused.prev(),
+                KeyCode::Tab | KeyCode::Down => {
+                    form.focused = form.focused.next_for_kind(form.kind)
+                }
+                KeyCode::BackTab | KeyCode::Up => {
+                    form.focused = form.focused.prev_for_kind(form.kind)
+                }
                 KeyCode::Left | KeyCode::Right if form.focused == ServerFormField::Kind => {
-                    form.kind = match (form.kind, key.code == KeyCode::Right) {
-                        (ServerKind::Jellyfin, true) => ServerKind::Subsonic,
-                        (ServerKind::Subsonic, true) => ServerKind::WebDav,
-                        (ServerKind::WebDav, true) => ServerKind::Jellyfin,
-                        (ServerKind::Jellyfin, false) => ServerKind::WebDav,
-                        (ServerKind::Subsonic, false) => ServerKind::Jellyfin,
-                        (ServerKind::WebDav, false) => ServerKind::Subsonic,
-                    };
+                    form.kind = cycle_kind(form.kind, key.code == KeyCode::Right);
                 }
                 KeyCode::Enter => {
                     if form.focused == ServerFormField::Kind {
-                        form.kind = match form.kind {
-                            ServerKind::Jellyfin => ServerKind::Subsonic,
-                            ServerKind::Subsonic => ServerKind::WebDav,
-                            ServerKind::WebDav => ServerKind::Jellyfin,
-                        };
+                        form.kind = cycle_kind(form.kind, true);
                     } else {
                         let snapshot = form.clone();
                         app.modal = ActiveModal::ServerManager(0);
@@ -323,6 +409,15 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                     }
                     ServerFormField::BaseUrl => {
                         form.base_url.pop();
+                    }
+                    ServerFormField::Share => {
+                        form.share.pop();
+                    }
+                    ServerFormField::Domain => {
+                        form.domain.pop();
+                    }
+                    ServerFormField::MountPath => {
+                        form.mount_path.pop();
                     }
                     ServerFormField::Username => {
                         form.username.pop();
@@ -338,6 +433,9 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                     ServerFormField::Kind => {}
                     ServerFormField::Name => form.name.push(c),
                     ServerFormField::BaseUrl => form.base_url.push(c),
+                    ServerFormField::Share => form.share.push(c),
+                    ServerFormField::Domain => form.domain.push(c),
+                    ServerFormField::MountPath => form.mount_path.push(c),
                     ServerFormField::Username => form.username.push(c),
                     ServerFormField::Password => form.password.push(c),
                     ServerFormField::Token => form.token.push(c),
@@ -477,8 +575,37 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('D') => app.toggle_download_visible_collection(),
         KeyCode::Char('y') => app.toggle_like_selected(),
         KeyCode::Char('a') => app.open_add_to_playlist_modal(),
-        KeyCode::Char('x') | KeyCode::Delete => app.remove_selected_from_playlist(),
-        KeyCode::Char('c') => app.modal = ActiveModal::CreatePlaylist(String::new()),
+        KeyCode::Char('v') => app.cycle_library_source(true),
+        KeyCode::Char('e') => {
+            if let Some(crate::app::SidebarEntry::PersonalPlaylist(ppl)) =
+                app.sidebar_items.get(app.sidebar_idx).cloned()
+            {
+                app.modal = ActiveModal::RenamePersonalPlaylist {
+                    playlist_id: ppl.id,
+                    buf: ppl.name,
+                };
+            }
+        }
+        KeyCode::Char('x') | KeyCode::Delete => {
+            if app.focus == FocusPane::Sidebar {
+                if let Some(crate::app::SidebarEntry::PersonalPlaylist(ppl)) =
+                    app.sidebar_items.get(app.sidebar_idx).cloned()
+                {
+                    app.delete_personal_playlist(&ppl.id);
+                    return;
+                }
+            }
+            app.remove_selected_from_playlist();
+        }
+        KeyCode::Char('c') => {
+            let personal = app.config.personal_only_mode
+                || !app.ytm.is_authenticated()
+                || app.active_source != crate::app::TuiLibrarySource::YouTube;
+            app.modal = ActiveModal::CreatePlaylist {
+                buf: String::new(),
+                personal,
+            };
+        }
         KeyCode::Char('S') => app.modal = ActiveModal::Settings(0),
         KeyCode::Char('m') => app.toggle_mini_mode(),
         KeyCode::Char('R') => app.refresh_account(),
@@ -494,7 +621,7 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) {
             _ => return,
         };
         let theme_count = app.themes.len();
-        let writable_count = app.writable_ytm_playlists().len();
+        let writable_count = app.playlist_add_targets_for_selected().len();
         match &mut app.modal {
             ActiveModal::ThemePicker(sel, _) if theme_count > 0 => {
                 let next = ((*sel as isize + delta).rem_euclid(theme_count as isize)) as usize;

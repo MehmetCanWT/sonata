@@ -5,8 +5,10 @@
 //! 3. **Queue View**: renders a full-page queue inspection fallback.
 
 use super::home::TrackRowOpts;
-use super::{DesktopModal, LibraryTab, SonataDesktopView};
-use crate::backend::BackendCmd;
+use super::{DesktopModal, LibraryTab, LocalSubTab, SonataDesktopView};
+use crate::backend::{
+    format_server_health_badge, format_server_speed_badge, BackendCmd, LibrarySource,
+};
 use crate::settings::{CARD_W, PAGE_INSET_X};
 use crate::ui::components::{cover_art_tile, scroll_edge_fades};
 use gpui_kit::assets::IconName;
@@ -52,16 +54,88 @@ impl SonataDesktopView {
             .value()
             .trim()
             .to_ascii_lowercase();
-        let active_tab = match self.library_tab {
-            LibraryTab::Playlists => 0,
-            LibraryTab::Albums => 1,
-            LibraryTab::Artists => 2,
-            LibraryTab::Downloads => 3,
-            LibraryTab::Servers => 4,
-        };
+        let active_sources = self.snapshot.active_library_sources();
+        if !active_sources.contains(&self.library_source) {
+            self.library_source = active_sources
+                .first()
+                .copied()
+                .unwrap_or(LibrarySource::Downloads);
+        }
+        let active_source_idx = active_sources
+            .iter()
+            .position(|src| *src == self.library_source)
+            .unwrap_or(0);
         let scroll_fades = self.settings.scroll_fades;
 
         let s = sonata_runtime::i18n::strings(self.settings.language);
+        let source_label = |src: LibrarySource| -> &'static str {
+            match src {
+                LibrarySource::YouTube => s.youtube,
+                LibrarySource::Local => s.local,
+                LibrarySource::Jellyfin => s.jellyfin,
+                LibrarySource::Subsonic => s.subsonic,
+                LibrarySource::Smb => s.smb,
+                LibrarySource::WebDav => s.webdav,
+                LibrarySource::Downloads => s.downloads,
+            }
+        };
+        let sources_for_click = active_sources.clone();
+        let mut source_tabs = TabBar::new("lib-source-tabs")
+            .pill()
+            .small()
+            .selected_index(active_source_idx)
+            .on_click(cx.listener(move |this, idx: &usize, _, cx| {
+                if let Some(&src) = sources_for_click.get(*idx) {
+                    this.library_source = src;
+                    match src {
+                        LibrarySource::Downloads => {
+                            this.backend.send(BackendCmd::RefreshDownloads);
+                        }
+                        LibrarySource::Local => {
+                            if this.snapshot.local_scan.tracks.is_empty()
+                                && !this.snapshot.local_scanning
+                            {
+                                this.backend.send(BackendCmd::ScanLocalMusic);
+                            }
+                        }
+                        LibrarySource::Jellyfin
+                        | LibrarySource::Subsonic
+                        | LibrarySource::Smb
+                        | LibrarySource::WebDav => {
+                            if let Some(kind) = src.as_server_kind() {
+                                let already_selected = this
+                                    .snapshot
+                                    .active_server_id
+                                    .as_deref()
+                                    .and_then(|sid| {
+                                        this.snapshot.server_profiles.iter().find(|p| p.id == sid)
+                                    })
+                                    .is_some_and(|p| p.enabled && p.kind == kind);
+                                if !already_selected {
+                                    if let Some(first) = this
+                                        .snapshot
+                                        .server_profiles
+                                        .iter()
+                                        .find(|p| p.enabled && p.kind == kind)
+                                    {
+                                        this.backend.send(BackendCmd::SelectServer {
+                                            server_id: first.id.clone(),
+                                            library_id: None,
+                                            folder_path: None,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        LibrarySource::YouTube => {}
+                    }
+                    cx.notify();
+                }
+            }));
+        for src in &active_sources {
+            source_tabs = source_tabs.child(Tab::new().label(source_label(*src)));
+        }
+
         let header = div()
             .flex()
             .flex_row()
@@ -74,6 +148,7 @@ impl SonataDesktopView {
                     .flex()
                     .flex_row()
                     .items_center()
+                    .flex_wrap()
                     .gap(px(14.0))
                     .child(
                         div()
@@ -82,33 +157,7 @@ impl SonataDesktopView {
                             .text_color(self.palette.text)
                             .child(s.library),
                     )
-                    .child(
-                        TabBar::new("lib-tabs")
-                            .pill()
-                            .small()
-                            .selected_index(active_tab)
-                            .on_click(cx.listener(|this, idx: &usize, _, cx| {
-                                this.library_tab = match *idx {
-                                    1 => LibraryTab::Albums,
-                                    2 => LibraryTab::Artists,
-                                    3 => {
-                                        this.backend.send(BackendCmd::RefreshDownloads);
-                                        LibraryTab::Downloads
-                                    }
-                                    4 => {
-                                        this.backend.send(BackendCmd::RefreshServers);
-                                        LibraryTab::Servers
-                                    }
-                                    _ => LibraryTab::Playlists,
-                                };
-                                cx.notify();
-                            }))
-                            .child(Tab::new().label(s.playlists))
-                            .child(Tab::new().label(s.albums))
-                            .child(Tab::new().label(s.artists))
-                            .child(Tab::new().label(s.downloads))
-                            .child(Tab::new().label(s.servers)),
-                    ),
+                    .child(source_tabs),
             )
             .child(
                 div()
@@ -136,6 +185,10 @@ impl SonataDesktopView {
                             .icon(IconName::Plus)
                             .label(s.new_playlist)
                             .on_click(cx.listener(|this, _, window, cx| {
+                                this.create_playlist_personal = this.library_source
+                                    != LibrarySource::YouTube
+                                    || this.snapshot.config.personal_only_mode
+                                    || !this.snapshot.is_signed_in();
                                 this.modal = DesktopModal::CreatePlaylist;
                                 this.playlist_name_input
                                     .update(cx, |s, cx| s.set_value("", window, cx));
@@ -151,229 +204,20 @@ impl SonataDesktopView {
         let card_w = ((content_w - gap * (cols.saturating_sub(1) as f32)) / cols as f32)
             .clamp(CARD_W, 176.0);
 
-        let body: AnyElement = if self.library_tab == LibraryTab::Downloads {
-            self.render_library_downloads(&filter, card_w, gap, cx)
-        } else if self.library_tab == LibraryTab::Servers {
-            self.render_library_servers(&filter, card_w, gap, cx)
-        } else if !self.snapshot.is_signed_in() {
-            let dl_card = self.render_downloads_collection_card(card_w, cx);
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(18.0))
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .flex_wrap()
-                        .gap(px(gap))
-                        .child(dl_card),
-                )
-                .child(
-                    div()
-                        .p(px(28.0))
-                        .rounded(px(self.palette.radii.control))
-                        .bg(self.palette.surface)
-                        .flex()
-                        .flex_col()
-                        .items_start()
-                        .gap(px(12.0))
-                        .child(
-                            div()
-                                .text_size(px(16.0))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(s.sign_in_library_title),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(13.0))
-                                .text_color(self.palette.secondary)
-                                .child(s.sign_in_library_desc),
-                        )
-                        .child(
-                            Button::new("lib-signin-cta")
-                                .primary()
-                                .label(s.sign_in_browser)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.modal = DesktopModal::SignInBrowser;
-                                    cx.notify();
-                                })),
-                        ),
-                )
-                .into_any_element()
-        } else {
-            match self.library_tab {
-                LibraryTab::Playlists => {
-                    let playlists: Vec<_> = self
-                        .ordered_playlists()
-                        .into_iter()
-                        .filter(|p| {
-                            filter.is_empty() || p.name.to_ascii_lowercase().contains(&filter)
-                        })
-                        .collect();
-                    let mut grid = div().flex().flex_row().flex_wrap().gap(px(gap));
-                    if filter.is_empty() || s.downloads.to_ascii_lowercase().contains(&filter) {
-                        grid = grid.child(self.render_downloads_collection_card(card_w, cx));
-                    }
-                    for (i, pl) in playlists.into_iter().enumerate() {
-                        let cover = self.media_for_url(pl.thumbnail_url.as_deref(), cx);
-                        let is_liked = pl.id == "VLLM";
-                        let is_pinned = self.settings.is_pinned(&pl.id);
-                        let subtitle = {
-                            let base = match pl.track_count {
-                                Some(n) => format!("{n} tracks"),
-                                None if is_liked => s.liked_music.to_string(),
-                                None => s.playlist.to_string(),
-                            };
-                            if is_pinned {
-                                format!("{} • {base}", s.pinned)
-                            } else {
-                                base
-                            }
-                        };
-                        let pl_open = pl.clone();
-                        grid = grid.child(
-                            div()
-                                .id(SharedString::from(format!("lib-pl-{i}")))
-                                .w(px(card_w))
-                                .p(px(4.0))
-                                .rounded(px(self.palette.radii.control))
-                                .hover(|s| s.bg(self.palette.surface.opacity(0.45)))
-                                .cursor_pointer()
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.backend.send(BackendCmd::OpenCollection {
-                                        id: pl_open.id.clone(),
-                                        title: pl_open.name.clone(),
-                                        subtitle: "YouTube Music Playlist".to_string(),
-                                        thumbnail_url: pl_open.thumbnail_url.clone(),
-                                        editable: pl_open.is_owned && pl_open.id != "VLLM",
-                                    });
-                                    cx.notify();
-                                }))
-                                .flex()
-                                .flex_col()
-                                .gap(px(8.0))
-                                .child(if is_liked && cover.is_none() {
-                                    div()
-                                        .size(px(card_w))
-                                        .rounded(px(self.palette.radii.art(card_w)))
-                                        .bg(self.palette.accent.opacity(0.20))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .child(
-                                            Icon::new(IconName::Heart)
-                                                .size(px(42.0))
-                                                .text_color(self.palette.accent),
-                                        )
-                                        .into_any_element()
-                                } else {
-                                    cover_art_tile(
-                                        SharedString::from(format!("lib-pl-cov-{i}")),
-                                        cover.as_ref(),
-                                        card_w,
-                                        false,
-                                        &self.palette,
-                                        false,
-                                        None,
-                                    )
-                                })
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .gap(px(2.0))
-                                        .child(
-                                            div()
-                                                .text_size(px(13.0))
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .truncate()
-                                                .child(pl.name),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(px(12.0))
-                                                .text_color(self.palette.secondary)
-                                                .truncate()
-                                                .child(subtitle),
-                                        ),
-                                ),
-                        );
-                    }
-                    grid.into_any_element()
-                }
-                LibraryTab::Albums => {
-                    let albums: Vec<_> = self
-                        .snapshot
-                        .library_albums
-                        .iter()
-                        .filter(|a| {
-                            filter.is_empty()
-                                || a.title.to_ascii_lowercase().contains(&filter)
-                                || a.subtitle.to_ascii_lowercase().contains(&filter)
-                        })
-                        .cloned()
-                        .collect();
-                    if albums.is_empty() {
-                        div()
-                            .py(px(24.0))
-                            .text_size(px(13.0))
-                            .text_color(self.palette.dim)
-                            .child(if self.snapshot.library_extras_loading {
-                                "Loading saved albums..."
-                            } else {
-                                "No saved albums found."
-                            })
-                            .into_any_element()
-                    } else {
-                        let mut grid = div().flex().flex_row().flex_wrap().gap(px(gap));
-                        for (i, a) in albums.iter().enumerate() {
-                            grid = grid.child(self.render_card_tile(
-                                &format!("lib-alb-{i}"),
-                                a,
-                                card_w,
-                                cx,
-                            ));
-                        }
-                        grid.into_any_element()
-                    }
-                }
-                LibraryTab::Artists => {
-                    let artists: Vec<_> = self
-                        .snapshot
-                        .library_artists
-                        .iter()
-                        .filter(|a| {
-                            filter.is_empty() || a.title.to_ascii_lowercase().contains(&filter)
-                        })
-                        .cloned()
-                        .collect();
-                    if artists.is_empty() {
-                        div()
-                            .py(px(24.0))
-                            .text_size(px(13.0))
-                            .text_color(self.palette.dim)
-                            .child(if self.snapshot.library_extras_loading {
-                                "Loading artists..."
-                            } else {
-                                "No library artists found."
-                            })
-                            .into_any_element()
-                    } else {
-                        let mut grid = div().flex().flex_row().flex_wrap().gap(px(gap));
-                        for (i, a) in artists.iter().enumerate() {
-                            grid = grid.child(self.render_card_tile(
-                                &format!("lib-art-{i}"),
-                                a,
-                                card_w,
-                                cx,
-                            ));
-                        }
-                        grid.into_any_element()
-                    }
-                }
-                LibraryTab::Downloads | LibraryTab::Servers => unreachable!(),
+        let body: AnyElement = match self.library_source {
+            LibrarySource::Downloads => self.render_library_downloads(&filter, card_w, gap, cx),
+            LibrarySource::Local => self.render_library_local(&filter, card_w, gap, cx),
+            LibrarySource::Jellyfin
+            | LibrarySource::Subsonic
+            | LibrarySource::Smb
+            | LibrarySource::WebDav => {
+                let kind = self
+                    .library_source
+                    .as_server_kind()
+                    .unwrap_or(ServerKind::Jellyfin);
+                self.render_library_servers_for_kind(kind, &filter, card_w, gap, cx)
             }
+            LibrarySource::YouTube => self.render_library_youtube(&filter, card_w, gap, cx),
         };
 
         let page = div()
@@ -683,6 +527,744 @@ impl SonataDesktopView {
             .into_any_element()
     }
 
+    fn render_library_youtube(
+        &mut self,
+        filter: &str,
+        card_w: f32,
+        gap: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let s = sonata_runtime::i18n::strings(self.settings.language);
+        let sub_idx = match self.library_tab {
+            LibraryTab::Albums => 1,
+            LibraryTab::Artists => 2,
+            _ => 0,
+        };
+        let sub_tabs = TabBar::new("lib-ytm-subtabs")
+            .pill()
+            .small()
+            .selected_index(sub_idx)
+            .on_click(cx.listener(|this, idx: &usize, _, cx| {
+                this.library_tab = match *idx {
+                    1 => LibraryTab::Albums,
+                    2 => LibraryTab::Artists,
+                    _ => LibraryTab::Playlists,
+                };
+                cx.notify();
+            }))
+            .child(Tab::new().label(s.playlists))
+            .child(Tab::new().label(s.albums))
+            .child(Tab::new().label(s.artists));
+
+        let content = if !self.snapshot.is_signed_in() {
+            let dl_card = self.render_downloads_collection_card(card_w, cx);
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(18.0))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .flex_wrap()
+                        .gap(px(gap))
+                        .child(dl_card),
+                )
+                .child(
+                    div()
+                        .p(px(28.0))
+                        .rounded(px(self.palette.radii.control))
+                        .bg(self.palette.surface)
+                        .flex()
+                        .flex_col()
+                        .items_start()
+                        .gap(px(12.0))
+                        .child(
+                            div()
+                                .text_size(px(16.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(s.sign_in_library_title),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(13.0))
+                                .text_color(self.palette.secondary)
+                                .child(s.sign_in_library_desc),
+                        )
+                        .child(
+                            Button::new("lib-signin-cta")
+                                .primary()
+                                .label(s.sign_in_browser)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.modal = DesktopModal::SignInBrowser;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .into_any_element()
+        } else {
+            match sub_idx {
+                1 => {
+                    let albums: Vec<_> = self
+                        .snapshot
+                        .library_albums
+                        .iter()
+                        .filter(|a| {
+                            filter.is_empty()
+                                || a.title.to_ascii_lowercase().contains(filter)
+                                || a.subtitle.to_ascii_lowercase().contains(filter)
+                        })
+                        .cloned()
+                        .collect();
+                    if albums.is_empty() {
+                        div()
+                            .py(px(24.0))
+                            .text_size(px(13.0))
+                            .text_color(self.palette.dim)
+                            .child(if self.snapshot.library_extras_loading {
+                                "Loading saved albums..."
+                            } else {
+                                "No saved albums found."
+                            })
+                            .into_any_element()
+                    } else {
+                        let mut grid = div().flex().flex_row().flex_wrap().gap(px(gap));
+                        for (i, a) in albums.iter().enumerate() {
+                            grid = grid.child(self.render_card_tile(
+                                &format!("lib-alb-{i}"),
+                                a,
+                                card_w,
+                                cx,
+                            ));
+                        }
+                        grid.into_any_element()
+                    }
+                }
+                2 => {
+                    let artists: Vec<_> = self
+                        .snapshot
+                        .library_artists
+                        .iter()
+                        .filter(|a| {
+                            filter.is_empty() || a.title.to_ascii_lowercase().contains(filter)
+                        })
+                        .cloned()
+                        .collect();
+                    if artists.is_empty() {
+                        div()
+                            .py(px(24.0))
+                            .text_size(px(13.0))
+                            .text_color(self.palette.dim)
+                            .child(if self.snapshot.library_extras_loading {
+                                "Loading artists..."
+                            } else {
+                                "No library artists found."
+                            })
+                            .into_any_element()
+                    } else {
+                        let mut grid = div().flex().flex_row().flex_wrap().gap(px(gap));
+                        for (i, a) in artists.iter().enumerate() {
+                            grid = grid.child(self.render_card_tile(
+                                &format!("lib-art-{i}"),
+                                a,
+                                card_w,
+                                cx,
+                            ));
+                        }
+                        grid.into_any_element()
+                    }
+                }
+                _ => {
+                    let playlists: Vec<_> = self
+                        .ordered_playlists()
+                        .into_iter()
+                        .filter(|p| {
+                            filter.is_empty() || p.name.to_ascii_lowercase().contains(filter)
+                        })
+                        .collect();
+                    let mut grid = div().flex().flex_row().flex_wrap().gap(px(gap));
+                    if filter.is_empty() || s.downloads.to_ascii_lowercase().contains(filter) {
+                        grid = grid.child(self.render_downloads_collection_card(card_w, cx));
+                    }
+                    for (i, pl) in playlists.into_iter().enumerate() {
+                        let cover = self.media_for_url(pl.thumbnail_url.as_deref(), cx);
+                        let is_liked = pl.id == "VLLM";
+                        let is_personal = pl
+                            .id
+                            .starts_with(sonata_core::playlists::PERSONAL_PLAYLIST_ID_PREFIX);
+                        let is_pinned = self.settings.is_pinned(&pl.id);
+                        let subtitle = {
+                            let base = match pl.track_count {
+                                Some(n) if is_personal => {
+                                    format!("{} • {n} {}", s.personal_playlists, s.tracks)
+                                }
+                                Some(n) => format!("{n} tracks"),
+                                None if is_liked => s.liked_music.to_string(),
+                                None => s.playlist.to_string(),
+                            };
+                            if is_pinned {
+                                format!("{} • {base}", s.pinned)
+                            } else {
+                                base
+                            }
+                        };
+                        let pl_open = pl.clone();
+                        let open_sub = if is_personal {
+                            s.personal_playlists.to_string()
+                        } else {
+                            "YouTube Music Playlist".to_string()
+                        };
+                        grid = grid.child(
+                            div()
+                                .id(SharedString::from(format!("lib-pl-{i}")))
+                                .w(px(card_w))
+                                .p(px(4.0))
+                                .rounded(px(self.palette.radii.control))
+                                .hover(|s| s.bg(self.palette.surface.opacity(0.45)))
+                                .cursor_pointer()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.backend.send(BackendCmd::OpenCollection {
+                                        id: pl_open.id.clone(),
+                                        title: pl_open.name.clone(),
+                                        subtitle: open_sub.clone(),
+                                        thumbnail_url: pl_open.thumbnail_url.clone(),
+                                        editable: pl_open.is_owned && pl_open.id != "VLLM",
+                                    });
+                                    cx.notify();
+                                }))
+                                .flex()
+                                .flex_col()
+                                .gap(px(8.0))
+                                .child(if is_liked && cover.is_none() {
+                                    div()
+                                        .size(px(card_w))
+                                        .rounded(px(self.palette.radii.art(card_w)))
+                                        .bg(self.palette.accent.opacity(0.20))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(
+                                            Icon::new(IconName::Heart)
+                                                .size(px(42.0))
+                                                .text_color(self.palette.accent),
+                                        )
+                                        .into_any_element()
+                                } else {
+                                    cover_art_tile(
+                                        SharedString::from(format!("lib-pl-cov-{i}")),
+                                        cover.as_ref(),
+                                        card_w,
+                                        false,
+                                        &self.palette,
+                                        false,
+                                        None,
+                                    )
+                                })
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(2.0))
+                                        .child(
+                                            div()
+                                                .text_size(px(13.0))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .truncate()
+                                                .child(pl.name),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(12.0))
+                                                .text_color(self.palette.secondary)
+                                                .truncate()
+                                                .child(subtitle),
+                                        ),
+                                ),
+                        );
+                    }
+                    grid.into_any_element()
+                }
+            }
+        };
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(16.0))
+            .child(sub_tabs)
+            .child(content)
+            .into_any_element()
+    }
+
+    fn render_library_local(
+        &mut self,
+        filter: &str,
+        card_w: f32,
+        gap: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let s = sonata_runtime::i18n::strings(self.settings.language);
+        let sub_idx = match self.local_sub_tab {
+            LocalSubTab::Songs => 0,
+            LocalSubTab::Albums => 1,
+            LocalSubTab::Playlists => 2,
+            LocalSubTab::Folders => 3,
+        };
+        let tracks_all = self.snapshot.local_scan.tracks.clone();
+        let play_all = tracks_all.clone();
+        let shuf_all = tracks_all.clone();
+
+        let controls = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .flex_wrap()
+            .gap(px(10.0))
+            .child(
+                TabBar::new("lib-local-subtabs")
+                    .pill()
+                    .small()
+                    .selected_index(sub_idx)
+                    .on_click(cx.listener(|this, idx: &usize, _, cx| {
+                        this.local_sub_tab = match *idx {
+                            1 => LocalSubTab::Albums,
+                            2 => LocalSubTab::Playlists,
+                            3 => LocalSubTab::Folders,
+                            _ => LocalSubTab::Songs,
+                        };
+                        cx.notify();
+                    }))
+                    .child(Tab::new().label(s.songs))
+                    .child(Tab::new().label(s.albums))
+                    .child(Tab::new().label(s.personal_playlists))
+                    .child(Tab::new().label(s.folders)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.0))
+                    .when(!play_all.is_empty(), |row| {
+                        row.child(
+                            Button::new("loc-play-all")
+                                .primary()
+                                .small()
+                                .icon(IconName::Play)
+                                .label(s.play)
+                                .on_click(cx.listener(move |this, _, _, _| {
+                                    this.backend.send(BackendCmd::PlayTracks {
+                                        tracks: play_all.clone(),
+                                        start_index: 0,
+                                        shuffle: false,
+                                    });
+                                })),
+                        )
+                        .child(
+                            Button::new("loc-shuf-all")
+                                .secondary()
+                                .small()
+                                .icon(IconName::Shuffle)
+                                .label(s.shuffle)
+                                .on_click(cx.listener(move |this, _, _, _| {
+                                    this.backend.send(BackendCmd::PlayTracks {
+                                        tracks: shuf_all.clone(),
+                                        start_index: 0,
+                                        shuffle: true,
+                                    });
+                                })),
+                        )
+                    })
+                    .child(
+                        Button::new("loc-scan-btn")
+                            .secondary()
+                            .small()
+                            .icon(IconName::RefreshCw)
+                            .label(if self.snapshot.local_scanning {
+                                "..."
+                            } else {
+                                s.scan
+                            })
+                            .on_click(cx.listener(|this, _, _, _| {
+                                this.backend.send(BackendCmd::ScanLocalMusic);
+                            })),
+                    ),
+            );
+
+        let body: AnyElement = match self.local_sub_tab {
+            LocalSubTab::Songs => {
+                let filtered: Vec<_> = tracks_all
+                    .into_iter()
+                    .filter(|t| {
+                        filter.is_empty()
+                            || t.title.to_ascii_lowercase().contains(filter)
+                            || t.artist.to_ascii_lowercase().contains(filter)
+                            || t.album.to_ascii_lowercase().contains(filter)
+                    })
+                    .collect();
+                if filtered.is_empty() {
+                    div()
+                        .p(px(24.0))
+                        .rounded(px(self.palette.radii.control))
+                        .bg(self.palette.surface)
+                        .text_size(px(13.0))
+                        .text_color(self.palette.secondary)
+                        .child(if self.snapshot.local_scanning {
+                            "Scanning local music folders..."
+                        } else {
+                            "No local audio tracks found. Configure folders in Settings → Sources."
+                        })
+                        .into_any_element()
+                } else {
+                    let tracks_arc: std::sync::Arc<[sonata_core::providers::Track]> =
+                        std::sync::Arc::from(filtered.as_slice());
+                    let mut rows = div().flex().flex_col().gap(px(2.0));
+                    for i in 0..tracks_arc.len() {
+                        rows = rows.child(self.render_track_row(
+                            "loc-tr",
+                            i,
+                            &tracks_arc,
+                            TrackRowOpts {
+                                show_album: true,
+                                ..Default::default()
+                            },
+                            cx,
+                        ));
+                    }
+                    rows.into_any_element()
+                }
+            }
+            LocalSubTab::Albums => {
+                let albums: Vec<_> = self
+                    .snapshot
+                    .local_scan
+                    .albums
+                    .iter()
+                    .filter(|a| {
+                        filter.is_empty()
+                            || a.name.to_ascii_lowercase().contains(filter)
+                            || a.artist.to_ascii_lowercase().contains(filter)
+                    })
+                    .map(|a| a.to_home_card())
+                    .collect();
+                if albums.is_empty() {
+                    div()
+                        .py(px(24.0))
+                        .text_size(px(13.0))
+                        .text_color(self.palette.dim)
+                        .child("No local albums found.")
+                        .into_any_element()
+                } else {
+                    let mut grid = div().flex().flex_row().flex_wrap().gap(px(gap));
+                    for (i, a) in albums.iter().enumerate() {
+                        grid = grid.child(self.render_card_tile(
+                            &format!("loc-alb-{i}"),
+                            a,
+                            card_w,
+                            cx,
+                        ));
+                    }
+                    grid.into_any_element()
+                }
+            }
+            LocalSubTab::Playlists => {
+                let playlists: Vec<_> = self
+                    .snapshot
+                    .personal_playlists
+                    .iter()
+                    .filter(|p| filter.is_empty() || p.name.to_ascii_lowercase().contains(filter))
+                    .cloned()
+                    .collect();
+                if playlists.is_empty() {
+                    div()
+                        .p(px(24.0))
+                        .rounded(px(self.palette.radii.control))
+                        .bg(self.palette.surface)
+                        .flex()
+                        .flex_col()
+                        .items_start()
+                        .gap(px(10.0))
+                        .child(
+                            div()
+                                .text_size(px(13.0))
+                                .text_color(self.palette.secondary)
+                                .child(s.personal_playlists_desc),
+                        )
+                        .child(
+                            Button::new("loc-new-ppl")
+                                .primary()
+                                .small()
+                                .icon(IconName::Plus)
+                                .label(s.new_playlist)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.create_playlist_personal = true;
+                                    this.modal = DesktopModal::CreatePlaylist;
+                                    this.playlist_name_input
+                                        .update(cx, |st, cx| st.set_value("", window, cx));
+                                    this.playlist_name_input
+                                        .update(cx, |st, cx| st.focus(window, cx));
+                                    cx.notify();
+                                })),
+                        )
+                        .into_any_element()
+                } else {
+                    let mut grid = div().flex().flex_row().flex_wrap().gap(px(gap));
+                    for (i, ppl) in playlists.into_iter().enumerate() {
+                        let pl = ppl.to_playlist();
+                        let cover = self.media_for_url(pl.thumbnail_url.as_deref(), cx);
+                        let pid_open = pl.id.clone();
+                        let pname_open = pl.name.clone();
+                        let pthumb = pl.thumbnail_url.clone();
+                        let pid_del = pl.id.clone();
+                        let subtitle = format!("{} {}", ppl.tracks.len(), s.tracks);
+                        grid = grid.child(
+                            div()
+                                .id(SharedString::from(format!("loc-ppl-{i}")))
+                                .w(px(card_w))
+                                .p(px(6.0))
+                                .rounded(px(self.palette.radii.control))
+                                .bg(self.palette.surface.opacity(0.35))
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.0))
+                                .child(
+                                    div()
+                                        .id(SharedString::from(format!("loc-ppl-open-{i}")))
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.backend.send(BackendCmd::OpenCollection {
+                                                id: pid_open.clone(),
+                                                title: pname_open.clone(),
+                                                subtitle: s.personal_playlists.to_string(),
+                                                thumbnail_url: pthumb.clone(),
+                                                editable: true,
+                                            });
+                                            cx.notify();
+                                        }))
+                                        .child(cover_art_tile(
+                                            SharedString::from(format!("loc-ppl-cov-{i}")),
+                                            cover.as_ref(),
+                                            card_w - 12.0,
+                                            false,
+                                            &self.palette,
+                                            false,
+                                            None,
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(13.0))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .truncate()
+                                        .child(pl.name),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.5))
+                                        .text_color(self.palette.secondary)
+                                        .truncate()
+                                        .child(subtitle),
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!("loc-ppl-rm-{i}")))
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(IconName::Trash)
+                                        .label(s.delete)
+                                        .on_click(cx.listener(move |this, _, _, _| {
+                                            this.backend.send(BackendCmd::DeletePersonalPlaylist(
+                                                pid_del.clone(),
+                                            ));
+                                        })),
+                                ),
+                        );
+                    }
+                    grid.into_any_element()
+                }
+            }
+            LocalSubTab::Folders => {
+                if let Some(selected_dir) = self.selected_local_folder.clone() {
+                    let folder = self
+                        .snapshot
+                        .local_scan
+                        .folders
+                        .iter()
+                        .find(|f| f.path == selected_dir)
+                        .cloned();
+                    let folder_tracks: Vec<_> = folder
+                        .as_ref()
+                        .map(|f| {
+                            f.tracks
+                                .iter()
+                                .filter(|t| {
+                                    filter.is_empty()
+                                        || t.title.to_ascii_lowercase().contains(filter)
+                                        || t.artist.to_ascii_lowercase().contains(filter)
+                                })
+                                .cloned()
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let play_f = folder_tracks.clone();
+                    let tracks_arc: std::sync::Arc<[sonata_core::providers::Track]> =
+                        std::sync::Arc::from(folder_tracks.as_slice());
+                    let mut rows = div().flex().flex_col().gap(px(2.0));
+                    for i in 0..tracks_arc.len() {
+                        rows = rows.child(self.render_track_row(
+                            "loc-fld-tr",
+                            i,
+                            &tracks_arc,
+                            TrackRowOpts {
+                                show_album: true,
+                                ..Default::default()
+                            },
+                            cx,
+                        ));
+                    }
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(12.0))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap(px(8.0))
+                                        .child(
+                                            Button::new("loc-fld-back")
+                                                .secondary()
+                                                .small()
+                                                .icon(IconName::ChevronLeft)
+                                                .label(s.back)
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.selected_local_folder = None;
+                                                    cx.notify();
+                                                })),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(14.0))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .child(folder.map(|f| f.name).unwrap_or_else(
+                                                    || selected_dir.to_string_lossy().into_owned(),
+                                                )),
+                                        ),
+                                )
+                                .when(!play_f.is_empty(), |r| {
+                                    r.child(
+                                        Button::new("loc-fld-play")
+                                            .primary()
+                                            .small()
+                                            .icon(IconName::Play)
+                                            .label(s.play)
+                                            .on_click(cx.listener(move |this, _, _, _| {
+                                                this.backend.send(BackendCmd::PlayTracks {
+                                                    tracks: play_f.clone(),
+                                                    start_index: 0,
+                                                    shuffle: false,
+                                                });
+                                            })),
+                                    )
+                                }),
+                        )
+                        .child(rows)
+                        .into_any_element()
+                } else {
+                    let folders: Vec<_> = self
+                        .snapshot
+                        .local_scan
+                        .folders
+                        .iter()
+                        .filter(|f| {
+                            filter.is_empty()
+                                || f.name.to_ascii_lowercase().contains(filter)
+                                || f.path
+                                    .to_string_lossy()
+                                    .to_ascii_lowercase()
+                                    .contains(filter)
+                        })
+                        .cloned()
+                        .collect();
+                    if folders.is_empty() {
+                        div()
+                            .py(px(24.0))
+                            .text_size(px(13.0))
+                            .text_color(self.palette.dim)
+                            .child("No local folders found.")
+                            .into_any_element()
+                    } else {
+                        let mut grid = div().flex().flex_row().flex_wrap().gap(px(gap));
+                        for (i, fld) in folders.into_iter().enumerate() {
+                            let cov_str = fld
+                                .cover_path
+                                .as_ref()
+                                .map(|p| p.to_string_lossy().into_owned());
+                            let cover = self.media_for_url(cov_str.as_deref(), cx);
+                            let path_open = fld.path.clone();
+                            let sub = format!("{} {}", fld.tracks.len(), s.tracks);
+                            grid = grid.child(
+                                div()
+                                    .id(SharedString::from(format!("loc-fld-{i}")))
+                                    .w(px(card_w))
+                                    .p(px(4.0))
+                                    .rounded(px(self.palette.radii.control))
+                                    .hover(|st| st.bg(self.palette.surface.opacity(0.45)))
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.selected_local_folder = Some(path_open.clone());
+                                        cx.notify();
+                                    }))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(8.0))
+                                    .child(cover_art_tile(
+                                        SharedString::from(format!("loc-fld-cov-{i}")),
+                                        cover.as_ref(),
+                                        card_w,
+                                        false,
+                                        &self.palette,
+                                        false,
+                                        None,
+                                    ))
+                                    .child(
+                                        div()
+                                            .text_size(px(13.0))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .truncate()
+                                            .child(fld.name),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(12.0))
+                                            .text_color(self.palette.secondary)
+                                            .truncate()
+                                            .child(sub),
+                                    ),
+                            );
+                        }
+                        grid.into_any_element()
+                    }
+                }
+            }
+        };
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(16.0))
+            .child(controls)
+            .child(body)
+            .into_any_element()
+    }
+
     fn render_library_downloads(
         &mut self,
         filter: &str,
@@ -917,15 +1499,22 @@ impl SonataDesktopView {
         col.into_any_element()
     }
 
-    fn render_library_servers(
+    fn render_library_servers_for_kind(
         &mut self,
+        kind: ServerKind,
         filter: &str,
         card_w: f32,
         gap: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let s = sonata_runtime::i18n::strings(self.settings.language);
-        let profiles = self.snapshot.server_profiles.clone();
+        let profiles: Vec<_> = self
+            .snapshot
+            .server_profiles
+            .iter()
+            .filter(|p| p.enabled && p.kind == kind)
+            .cloned()
+            .collect();
         if profiles.is_empty() {
             return div()
                 .p(px(28.0))
@@ -963,6 +1552,7 @@ impl SonataDesktopView {
             .snapshot
             .active_server_id
             .clone()
+            .filter(|id| profiles.iter().any(|p| &p.id == id))
             .or_else(|| profiles.first().map(|p| p.id.clone()))
             .unwrap_or_default();
         let active_profile = profiles.iter().find(|p| p.id == active_id).cloned();
@@ -976,6 +1566,12 @@ impl SonataDesktopView {
         for (i, prof) in profiles.iter().enumerate() {
             let is_active = prof.id == active_id;
             let pid = prof.id.clone();
+            let health_suffix = self
+                .snapshot
+                .server_health
+                .get(&prof.id)
+                .map(|h| format!(" • {}", format_server_health_badge(h)))
+                .unwrap_or_default();
             server_pills = server_pills.child(
                 div()
                     .id(SharedString::from(format!("srv-pill-{i}")))
@@ -1013,18 +1609,29 @@ impl SonataDesktopView {
                         });
                         cx.notify();
                     }))
-                    .child(format!("[{}] {}", prof.kind.short_tag(), prof.name)),
+                    .child(format!("{}{}", prof.name, health_suffix)),
             );
         }
+        let active_for_speed = active_id.clone();
+        let speed_busy = self.snapshot.server_speed_testing.contains(&active_id);
+        let speed_btn_label = if speed_busy {
+            format!("{}...", s.speed_test)
+        } else if let Some(sp) = self.snapshot.server_speed_tests.get(&active_id) {
+            format_server_speed_badge(sp)
+        } else {
+            s.speed_test.to_string()
+        };
         server_pills = server_pills
             .child(
-                Button::new("srv-add-btn")
+                Button::new("srv-speed-btn")
                     .secondary()
                     .small()
-                    .icon(IconName::Plus)
-                    .label(s.add_server)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.open_add_server_modal(window, cx);
+                    .label(speed_btn_label)
+                    .on_click(cx.listener(move |this, _, _, _| {
+                        if !speed_busy && !active_for_speed.is_empty() {
+                            this.backend
+                                .send(BackendCmd::RunServerSpeedTest(active_for_speed.clone()));
+                        }
                     })),
             )
             .child(

@@ -8,8 +8,12 @@
 use sonata_core::auth::ExtractedCookies;
 use sonata_core::lyrics::{active_line_index, LyricsState};
 use sonata_core::player::RepeatMode;
+use sonata_core::playlists::{is_personal_track_id, PersonalPlaylist};
 use sonata_core::providers::hifi::{ResolvedMusicVideo, VideoQualityStream};
-use sonata_core::providers::servers::{ServerKind, ServerLibrary, ServerProfile};
+use sonata_core::providers::local::LocalScanResult;
+use sonata_core::providers::servers::{
+    ServerHealthReport, ServerKind, ServerLibrary, ServerProfile, ServerSpeedTestReport,
+};
 use sonata_core::providers::ytmusic::{
     AlbumDetail, ArtistPage, HomeCard, HomeShelf, MoodCategoryTile, MoodChip, MusicVideoCandidate,
     RichSearchResult, YtAccountProfile,
@@ -130,6 +134,12 @@ pub enum BackendCmd {
     ToggleAutoplay,
     ToggleHiFi,
     ToggleJioSaavn,
+    TogglePersonalOnlyMode,
+    ToggleLocalMusicEnabled,
+    AddLocalMusicDir(PathBuf),
+    RemoveLocalMusicDir(PathBuf),
+    ScanLocalMusic,
+    ToggleAttributePersonalToYtm,
     StepCacheLimit(bool),
     ToggleMotionCovers,
     ToggleReduceMotion,
@@ -151,6 +161,8 @@ pub enum BackendCmd {
         save: bool,
     },
     CreateYtmPlaylist(String),
+    CreatePersonalPlaylist(String),
+    DeletePersonalPlaylist(String),
     EditPlaylist {
         playlist_id: String,
         title: Option<String>,
@@ -160,6 +172,10 @@ pub enum BackendCmd {
         track: Track,
         playlist_id: String,
         playlist_name: String,
+    },
+    AddTrackToPersonalPlaylist {
+        track: Track,
+        playlist_id: String,
     },
     RemoveTrackFromPlaylist(usize),
     ClickLinkSpotify,
@@ -193,6 +209,9 @@ pub enum BackendCmd {
         password: Option<String>,
         api_key: Option<String>,
         bearer_token: Option<String>,
+        share: Option<String>,
+        domain: Option<String>,
+        local_mount_path: Option<PathBuf>,
     },
     TestServerDraft {
         name: String,
@@ -202,8 +221,12 @@ pub enum BackendCmd {
         password: Option<String>,
         api_key: Option<String>,
         bearer_token: Option<String>,
+        share: Option<String>,
+        domain: Option<String>,
+        local_mount_path: Option<PathBuf>,
     },
-    TestServerProfile(String),
+    ProbeServerHealth(String),
+    RunServerSpeedTest(String),
     ToggleServerEnabled(String),
     RemoveServerProfile(String),
     SelectServer {
@@ -308,6 +331,9 @@ pub struct DesktopSnapshot {
     pub discord_status: DiscordRpcStatus,
     pub server_profiles: Vec<ServerProfile>,
     pub server_statuses: HashMap<String, String>,
+    pub server_health: HashMap<String, ServerHealthReport>,
+    pub server_speed_tests: HashMap<String, ServerSpeedTestReport>,
+    pub server_speed_testing: HashSet<String>,
     pub active_server_id: Option<String>,
     pub server_libraries: Vec<ServerLibrary>,
     pub server_artists: Vec<HomeCard>,
@@ -317,6 +343,131 @@ pub struct DesktopSnapshot {
     pub server_current_folder: Option<String>,
     pub server_loading: bool,
     pub server_test_result: Option<Result<String, String>>,
+    pub local_scan: LocalScanResult,
+    pub local_scanning: bool,
+    pub personal_playlists: Vec<PersonalPlaylist>,
+}
+
+/// Active source tab shown in the Desktop Library view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LibrarySource {
+    YouTube,
+    Local,
+    Jellyfin,
+    Subsonic,
+    Smb,
+    WebDav,
+    Downloads,
+}
+
+impl LibrarySource {
+    pub fn from_server_kind(kind: ServerKind) -> Self {
+        match kind {
+            ServerKind::Jellyfin => Self::Jellyfin,
+            ServerKind::Subsonic => Self::Subsonic,
+            ServerKind::Smb => Self::Smb,
+            ServerKind::WebDav => Self::WebDav,
+        }
+    }
+
+    pub fn as_server_kind(self) -> Option<ServerKind> {
+        match self {
+            Self::Jellyfin => Some(ServerKind::Jellyfin),
+            Self::Subsonic => Some(ServerKind::Subsonic),
+            Self::Smb => Some(ServerKind::Smb),
+            Self::WebDav => Some(ServerKind::WebDav),
+            Self::YouTube | Self::Local | Self::Downloads => None,
+        }
+    }
+}
+
+/// Computes the ordered list of active Library source tabs for the current config and servers.
+pub fn compute_active_library_sources(
+    streaming_enabled: bool,
+    local_music_enabled: bool,
+    server_profiles: &[ServerProfile],
+) -> Vec<LibrarySource> {
+    let mut tabs = Vec::new();
+    if streaming_enabled {
+        tabs.push(LibrarySource::YouTube);
+    }
+    if local_music_enabled {
+        tabs.push(LibrarySource::Local);
+    }
+    for kind in [
+        ServerKind::Jellyfin,
+        ServerKind::Subsonic,
+        ServerKind::Smb,
+        ServerKind::WebDav,
+    ] {
+        if server_profiles.iter().any(|p| p.enabled && p.kind == kind) {
+            tabs.push(LibrarySource::from_server_kind(kind));
+        }
+    }
+    tabs.push(LibrarySource::Downloads);
+    tabs
+}
+
+/// Returns `true` when `track` is permitted for playback under the active Personal Only setting.
+pub fn can_play_track_in_mode(
+    track: &Track,
+    personal_only_mode: bool,
+    is_downloaded: bool,
+) -> bool {
+    !personal_only_mode || is_personal_track_id(&track.id) || is_downloaded
+}
+
+/// Separated playlist destinations for the Add-to-Playlist modal.
+#[derive(Debug, Clone, Default)]
+pub struct PlaylistAddTargets {
+    pub personal: Vec<PersonalPlaylist>,
+    pub ytm: Vec<Playlist>,
+}
+
+/// Routes personal/local/server tracks strictly to Personal Playlists while allowing YTM tracks
+/// into both Personal Playlists and YouTube Music playlists (when streaming and signed in).
+pub fn resolve_playlist_add_targets(
+    track: &Track,
+    personal_playlists: &[PersonalPlaylist],
+    ytm_playlists: &[Playlist],
+    personal_only_mode: bool,
+    signed_in: bool,
+) -> PlaylistAddTargets {
+    let personal = personal_playlists.to_vec();
+    let ytm = if is_personal_track_id(&track.id) || personal_only_mode || !signed_in {
+        Vec::new()
+    } else {
+        ytm_playlists
+            .iter()
+            .filter(|p| p.source == ProviderSource::YouTubeMusic && p.is_owned && p.id != "VLLM")
+            .cloned()
+            .collect()
+    };
+    PlaylistAddTargets { personal, ytm }
+}
+
+/// Formats a compact health indicator string from a [`ServerHealthReport`].
+pub fn format_server_health_badge(report: &ServerHealthReport) -> String {
+    if report.alive {
+        match report.latency_ms {
+            Some(ms) => format!("Alive • {ms} ms"),
+            None => "Alive".to_string(),
+        }
+    } else {
+        "Offline".to_string()
+    }
+}
+
+/// Formats a compact download speed string from a [`ServerSpeedTestReport`].
+pub fn format_server_speed_badge(report: &ServerSpeedTestReport) -> String {
+    if !report.alive {
+        return "Offline".to_string();
+    }
+    match report.download_mbps {
+        Some(mbps) if mbps >= 100.0 => format!("{mbps:.0} Mbps • {} ms", report.latency_ms),
+        Some(mbps) => format!("{mbps:.1} Mbps • {} ms", report.latency_ms),
+        None => format!("{} ms (no sample)", report.latency_ms),
+    }
 }
 
 impl DesktopSnapshot {
@@ -363,12 +514,22 @@ impl DesktopSnapshot {
         }
     }
 
-    pub fn writable_ytm_playlists(&self) -> Vec<Playlist> {
-        self.ytm_playlists
-            .iter()
-            .filter(|p| p.source == ProviderSource::YouTubeMusic && p.is_owned && p.id != "VLLM")
-            .cloned()
-            .collect()
+    pub fn active_library_sources(&self) -> Vec<LibrarySource> {
+        compute_active_library_sources(
+            self.config.streaming_enabled(),
+            self.config.local_music_enabled,
+            &self.server_profiles,
+        )
+    }
+
+    pub fn playlist_add_targets(&self, track: &Track) -> PlaylistAddTargets {
+        resolve_playlist_add_targets(
+            track,
+            &self.personal_playlists,
+            &self.ytm_playlists,
+            self.config.personal_only_mode,
+            self.is_signed_in(),
+        )
     }
 }
 
@@ -582,6 +743,16 @@ pub(super) enum InternalEvent {
         tracks: Vec<Track>,
         error: Option<String>,
     },
+    ServerHealthProbed {
+        server_id: String,
+        report: ServerHealthReport,
+    },
+    ServerSpeedTestFinished {
+        server_id: String,
+        report: ServerSpeedTestReport,
+    },
+    LocalMusicScanned(LocalScanResult),
+    PersonalPlaylistsLoaded(Vec<PersonalPlaylist>),
     StatusMessage(String),
 }
 
@@ -593,4 +764,203 @@ pub(super) struct ExportFingerprint {
     pub(super) art_path: Option<String>,
     pub(super) pos_secs: u64,
     pub(super) dur_secs: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sonata_core::providers::servers::{
+        ServerHealthReport, ServerKind, ServerProfile, ServerSpeedTestReport,
+    };
+
+    fn dummy_track(id: &str, source: ProviderSource) -> Track {
+        Track {
+            id: id.to_string(),
+            title: format!("Track {id}"),
+            artist: "Artist".to_string(),
+            album: "Album".to_string(),
+            album_id: None,
+            duration_secs: Some(180),
+            thumbnail_url: None,
+            liked: false,
+            set_video_id: None,
+            audio_badge: None,
+            is_explicit: false,
+            source,
+        }
+    }
+
+    fn dummy_server(id: &str, kind: ServerKind, enabled: bool) -> ServerProfile {
+        ServerProfile {
+            id: id.to_string(),
+            name: id.to_string(),
+            kind,
+            base_url: "http://localhost:8096".to_string(),
+            username: Some("user".to_string()),
+            password: None,
+            api_key: None,
+            access_token: None,
+            user_id: None,
+            bearer_token: None,
+            library_ids: Vec::new(),
+            share: None,
+            domain: None,
+            local_mount_path: None,
+            enabled,
+        }
+    }
+
+    #[test]
+    fn active_library_sources_filters_streaming_local_and_servers() {
+        let profiles = vec![
+            dummy_server("jf", ServerKind::Jellyfin, true),
+            dummy_server("sub", ServerKind::Subsonic, false),
+            dummy_server("smb", ServerKind::Smb, true),
+            dummy_server("dav", ServerKind::WebDav, true),
+        ];
+
+        let all = compute_active_library_sources(true, true, &profiles);
+        assert_eq!(
+            all,
+            vec![
+                LibrarySource::YouTube,
+                LibrarySource::Local,
+                LibrarySource::Jellyfin,
+                LibrarySource::Smb,
+                LibrarySource::WebDav,
+                LibrarySource::Downloads,
+            ]
+        );
+
+        let personal_only = compute_active_library_sources(false, true, &profiles);
+        assert_eq!(
+            personal_only,
+            vec![
+                LibrarySource::Local,
+                LibrarySource::Jellyfin,
+                LibrarySource::Smb,
+                LibrarySource::WebDav,
+                LibrarySource::Downloads,
+            ]
+        );
+    }
+
+    #[test]
+    fn personal_only_mode_allows_local_servers_and_downloads_only() {
+        let local = dummy_track("local:/music/song.flac", ProviderSource::YouTubeMusic);
+        let smb = dummy_track("smb:nas:song.flac", ProviderSource::YouTubeMusic);
+        let jellyfin = dummy_track("jellyfin:jf:123", ProviderSource::YouTubeMusic);
+        let ytm = dummy_track("dQw4w9WgXcQ", ProviderSource::YouTubeMusic);
+        let jio = dummy_track("jiosaavn:xyz", ProviderSource::YouTubeMusic);
+
+        assert!(can_play_track_in_mode(&local, true, false));
+        assert!(can_play_track_in_mode(&smb, true, false));
+        assert!(can_play_track_in_mode(&jellyfin, true, false));
+        assert!(!can_play_track_in_mode(&ytm, true, false));
+        assert!(can_play_track_in_mode(&ytm, true, true));
+        assert!(!can_play_track_in_mode(&jio, true, false));
+        assert!(can_play_track_in_mode(&ytm, false, false));
+        assert!(can_play_track_in_mode(&jio, false, false));
+    }
+
+    #[test]
+    fn personal_tracks_never_route_to_ytm_playlists() {
+        let personal_pl = PersonalPlaylist {
+            id: "personal:mix1".to_string(),
+            name: "FLAC Mix".to_string(),
+            tracks: vec![],
+            created_at_epoch_secs: 1,
+            updated_at_epoch_secs: 1,
+        };
+        let ytm_pl = Playlist {
+            id: "PL123".to_string(),
+            name: "My YTM Mix".to_string(),
+            track_count: Some(5),
+            thumbnail_url: None,
+            is_owned: true,
+            source: ProviderSource::YouTubeMusic,
+        };
+        let vllm = Playlist {
+            id: "VLLM".to_string(),
+            name: "Liked Music".to_string(),
+            track_count: None,
+            thumbnail_url: None,
+            is_owned: true,
+            source: ProviderSource::YouTubeMusic,
+        };
+
+        for id in [
+            "local:/music/a.flac",
+            "smb:nas:a.flac",
+            "jellyfin:srv:1",
+            "subsonic:srv:2",
+            "webdav:srv:3",
+        ] {
+            let track = dummy_track(id, ProviderSource::YouTubeMusic);
+            let targets = resolve_playlist_add_targets(
+                &track,
+                std::slice::from_ref(&personal_pl),
+                &[ytm_pl.clone(), vllm.clone()],
+                false,
+                true,
+            );
+            assert_eq!(targets.personal.len(), 1);
+            assert!(
+                targets.ytm.is_empty(),
+                "personal track {id} must not expose YTM playlists"
+            );
+        }
+
+        let ytm_track = dummy_track("abc123def45", ProviderSource::YouTubeMusic);
+        let targets_streaming = resolve_playlist_add_targets(
+            &ytm_track,
+            std::slice::from_ref(&personal_pl),
+            &[ytm_pl.clone(), vllm.clone()],
+            false,
+            true,
+        );
+        assert_eq!(targets_streaming.personal.len(), 1);
+        assert_eq!(targets_streaming.ytm.len(), 1);
+        assert_eq!(targets_streaming.ytm[0].id, "PL123");
+
+        let targets_personal_only =
+            resolve_playlist_add_targets(&ytm_track, &[personal_pl], &[ytm_pl, vllm], true, true);
+        assert_eq!(targets_personal_only.personal.len(), 1);
+        assert!(targets_personal_only.ytm.is_empty());
+    }
+
+    #[test]
+    fn health_and_speed_badges_format_latency_and_mbps() {
+        let alive = ServerHealthReport {
+            alive: true,
+            latency_ms: Some(14),
+            message: "ok".to_string(),
+        };
+        assert_eq!(format_server_health_badge(&alive), "Alive • 14 ms");
+
+        let offline = ServerHealthReport {
+            alive: false,
+            latency_ms: None,
+            message: "timeout".to_string(),
+        };
+        assert_eq!(format_server_health_badge(&offline), "Offline");
+
+        let speed_fast = ServerSpeedTestReport {
+            alive: true,
+            latency_ms: 8,
+            download_mbps: Some(245.7),
+            bytes_tested: 1024,
+            sample_note: "ok".to_string(),
+        };
+        assert_eq!(format_server_speed_badge(&speed_fast), "246 Mbps • 8 ms");
+
+        let speed_slow = ServerSpeedTestReport {
+            alive: true,
+            latency_ms: 42,
+            download_mbps: Some(18.34),
+            bytes_tested: 512,
+            sample_note: "ok".to_string(),
+        };
+        assert_eq!(format_server_speed_badge(&speed_slow), "18.3 Mbps • 42 ms");
+    }
 }

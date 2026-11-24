@@ -21,6 +21,7 @@ use sonata_runtime::discord::{DiscordConfig, DiscordPlaybackState, DiscordTrackI
 use sonata_runtime::media;
 use sonata_runtime::motion;
 use sonata_runtime::player::{SessionCommand, SessionEvent};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -241,7 +242,7 @@ fn discord_track_info(track: &Track, duration_secs: f64) -> DiscordTrackInfo {
     if duration_secs > 0.0 {
         info.duration_secs = Some(duration_secs);
     }
-    if track.is_self_hosted() {
+    if sonata_core::playlists::is_personal_track_id(&track.id) {
         info.listen_url = None;
         info.buttons.clear();
         if track.thumbnail_url.is_none() {
@@ -365,7 +366,39 @@ impl BackendEngine {
                 }
                 if was_initial_start {
                     self.status_line = format!("Playing: {} — {}", track.title, track.artist);
-                    if !track.is_jiosaavn() && !track.is_self_hosted() {
+                    if sonata_core::playlists::is_personal_track_id(&track.id) {
+                        if self.config.effective_attribute_personal_to_ytm()
+                            && !self.config.personal_only_mode
+                            && self.ytm.is_authenticated()
+                        {
+                            let ytm = self.ytm.clone();
+                            let attr_track = track.clone();
+                            tokio::spawn(async move {
+                                match ytm.attribute_personal_track_to_ytm(&attr_track).await {
+                                    Ok(Some(matched_id)) => {
+                                        tracing::debug!(
+                                            client = "desktop",
+                                            track_id = %attr_track.id,
+                                            matched_id = %matched_id,
+                                            "attributed personal track play to ytm"
+                                        );
+                                    }
+                                    Ok(None) => {}
+                                    Err(err) => {
+                                        tracing::debug!(
+                                            client = "desktop",
+                                            track_id = %attr_track.id,
+                                            error = %err,
+                                            "personal track ytm attribution failed"
+                                        );
+                                    }
+                                }
+                            });
+                        }
+                    } else if !track.is_jiosaavn()
+                        && !self.config.personal_only_mode
+                        && self.ytm.is_authenticated()
+                    {
                         let ytm = self.ytm.clone();
                         let vid = track.id.clone();
                         let duration = track.duration_secs;
@@ -539,6 +572,7 @@ impl BackendEngine {
             SessionEvent::TrackEnded { .. } => {}
             SessionEvent::QueueFinished { .. } => {
                 if self.config.autoplay
+                    && !self.config.personal_only_mode
                     && self.playback.repeat == RepeatMode::Off
                     && !self.playback.queue.is_empty()
                 {
@@ -945,6 +979,7 @@ impl BackendEngine {
 
     pub(super) fn maybe_prefetch_endless_autoplay(&mut self) {
         if !self.config.autoplay
+            || self.config.personal_only_mode
             || self.playback.repeat != RepeatMode::Off
             || self.playback.queue.is_empty()
         {
@@ -1085,13 +1120,18 @@ impl BackendEngine {
         self.cover_started_play_seq = None;
         self.motion_cover = None;
 
-        if let Some(url) = track
-            .thumbnail_url
-            .as_deref()
-            .map(media::upscale_artwork_url)
-        {
-            let cached = media::art_cache_path(&url);
-            self.art_path = cached.exists().then_some(cached);
+        if let Some(url) = track.thumbnail_url.as_deref() {
+            let local_cover = url
+                .strip_prefix("file://")
+                .map(PathBuf::from)
+                .or_else(|| url.starts_with('/').then(|| PathBuf::from(url)));
+            if let Some(path) = local_cover.filter(|p| p.exists()) {
+                self.art_path = Some(path);
+            } else {
+                let upscaled = media::upscale_artwork_url(url);
+                let cached = media::art_cache_path(&upscaled);
+                self.art_path = cached.exists().then_some(cached);
+            }
         } else {
             self.art_path = None;
         }
@@ -1107,7 +1147,10 @@ impl BackendEngine {
         let ytm = self.ytm.clone();
         let int_tx = self.int_tx.clone();
 
-        if !track.id.trim().is_empty() && !track.id.starts_with("local:") {
+        if !self.config.personal_only_mode
+            && !track.id.trim().is_empty()
+            && !sonata_core::playlists::is_personal_track_id(&track.id)
+        {
             let mv_ytm = ytm.clone();
             let mv_track = track.clone();
             let mv_tx = int_tx.clone();

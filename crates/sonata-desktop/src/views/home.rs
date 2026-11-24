@@ -25,7 +25,74 @@ use sonata_core::providers::{format_duration, Track};
 use std::rc::Rc;
 
 impl SonataDesktopView {
+    pub(crate) fn render_personal_only_notice(
+        &self,
+        title: &'static str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let s = sonata_runtime::i18n::strings(self.settings.language);
+        div()
+            .p(px(PAGE_INSET_X))
+            .child(
+                div()
+                    .p(px(24.0))
+                    .rounded(px(self.palette.radii.control))
+                    .bg(self.palette.surface)
+                    .border_1()
+                    .border_color(self.palette.outline)
+                    .flex()
+                    .flex_col()
+                    .items_start()
+                    .gap(px(12.0))
+                    .child(
+                        div()
+                            .text_size(px(20.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(self.palette.text)
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .text_color(self.palette.secondary)
+                            .child(s.personal_only_active),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap(px(8.0))
+                            .child(
+                                Button::new("po-go-lib")
+                                    .primary()
+                                    .small()
+                                    .icon(IconName::Library)
+                                    .label(s.library)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.navigate_to(crate::backend::NavTarget::Library, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("po-go-src")
+                                    .secondary()
+                                    .small()
+                                    .icon(IconName::Settings)
+                                    .label(s.sources)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.settings_tab = super::SettingsTab::Sources;
+                                        this.navigate_to(crate::backend::NavTarget::Settings, cx);
+                                    })),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
     pub fn render_home_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        if self.snapshot.config.personal_only_mode {
+            let s = sonata_runtime::i18n::strings(self.settings.language);
+            return self.render_personal_only_notice(s.personal_only_mode, cx);
+        }
         let vp_w: f32 = window.viewport_size().width.into();
         let (sb_w, rp_w) = self.settings.resolve_shell_widths(vp_w);
         let content_w = (vp_w - sb_w - rp_w - 64.0).max(320.0);
@@ -852,7 +919,7 @@ impl SonataDesktopView {
         let is_liked = self.snapshot.is_track_liked(track);
         let is_downloaded = self.snapshot.is_track_downloaded(&track.id);
         let is_downloading = self.snapshot.is_track_downloading(&track.id);
-        let is_self_hosted = track.is_self_hosted();
+        let is_self_hosted = sonata_core::playlists::is_personal_track_id(&track.id);
         let source_tag = track.source_tag();
         let is_cur = self
             .snapshot

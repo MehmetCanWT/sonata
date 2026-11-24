@@ -5,10 +5,14 @@
 //! 3. **Cache & Account**: adjusts active media cache limits and refreshes browser session cookies and playlists.
 
 use super::{
-    ActiveModal, App, AppEvent, FocusPane, ServerBrowserState, ServerBrowserTab, ServerFormState,
-    SidebarEntry,
+    resolve_tui_playlist_add_targets, ActiveModal, App, AppEvent, FocusPane, ServerBrowserState,
+    ServerBrowserTab, ServerFormState, SidebarEntry, TuiPlaylistAddTarget,
 };
 use sonata_core::cache::enforce_media_cache_limit_async;
+use sonata_core::playlists::{
+    is_personal_track_id, PersonalPlaylistStore, PERSONAL_PLAYLIST_ID_PREFIX,
+};
+use sonata_core::providers::servers::ServerKind;
 use sonata_core::providers::spotify::extract_playlist_id;
 use sonata_core::providers::{Playlist, ProviderSource, Track};
 use sonata_runtime::config::{AppConfig, ProviderMode};
@@ -68,8 +72,24 @@ impl App {
         let ytm = self.ytm.clone();
         let spotify = self.spotify.clone();
         let http = self.http.clone();
-        let jiosaavn_enabled = self.config.jiosaavn_enabled;
+        let personal_only = self.config.personal_only_mode;
+        let jiosaavn_enabled = self.config.effective_jiosaavn_enabled();
         let mode = self.config.provider_mode;
+        let local_matches: Vec<Track> = if self.config.local_music_enabled {
+            let needle = q.to_lowercase();
+            self.local_scan
+                .tracks
+                .iter()
+                .filter(|t| {
+                    t.title.to_lowercase().contains(&needle)
+                        || t.artist.to_lowercase().contains(&needle)
+                        || t.album.to_lowercase().contains(&needle)
+                })
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
         let server_client = self.server_client.clone();
         let enabled_servers: Vec<sonata_core::providers::servers::ServerProfile> = self
             .server_profiles
@@ -79,9 +99,9 @@ impl App {
             .collect();
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let mut combined = Vec::new();
+            let mut combined = local_matches;
             let jio_fut = async {
-                if jiosaavn_enabled {
+                if !personal_only && jiosaavn_enabled {
                     sonata_core::providers::jiosaavn::search_tracks(&http, &q, 8).await
                 } else {
                     Vec::new()
@@ -96,32 +116,36 @@ impl App {
                 }
                 tracks
             };
-            match mode {
-                ProviderMode::Both => {
-                    let (ytm_tracks, spot_tracks, jio_tracks, srv_tracks) = tokio::join!(
-                        ytm.search_songs(&q),
-                        spotify.search_tracks(&q),
-                        jio_fut,
-                        servers_fut
-                    );
-                    combined.extend(ytm_tracks.unwrap_or_default());
-                    combined.extend(spot_tracks.unwrap_or_default());
-                    combined.extend(jio_tracks);
-                    combined.extend(srv_tracks);
-                }
-                ProviderMode::YouTubeMusic => {
-                    let (ytm_tracks, jio_tracks, srv_tracks) =
-                        tokio::join!(ytm.search_songs(&q), jio_fut, servers_fut);
-                    combined.extend(ytm_tracks.unwrap_or_default());
-                    combined.extend(jio_tracks);
-                    combined.extend(srv_tracks);
-                }
-                ProviderMode::Spotify => {
-                    let (spot_tracks, jio_tracks, srv_tracks) =
-                        tokio::join!(spotify.search_tracks(&q), jio_fut, servers_fut);
-                    combined.extend(spot_tracks.unwrap_or_default());
-                    combined.extend(jio_tracks);
-                    combined.extend(srv_tracks);
+            if personal_only {
+                combined.extend(servers_fut.await);
+            } else {
+                match mode {
+                    ProviderMode::Both => {
+                        let (ytm_tracks, spot_tracks, jio_tracks, srv_tracks) = tokio::join!(
+                            ytm.search_songs(&q),
+                            spotify.search_tracks(&q),
+                            jio_fut,
+                            servers_fut
+                        );
+                        combined.extend(ytm_tracks.unwrap_or_default());
+                        combined.extend(spot_tracks.unwrap_or_default());
+                        combined.extend(jio_tracks);
+                        combined.extend(srv_tracks);
+                    }
+                    ProviderMode::YouTubeMusic => {
+                        let (ytm_tracks, jio_tracks, srv_tracks) =
+                            tokio::join!(ytm.search_songs(&q), jio_fut, servers_fut);
+                        combined.extend(ytm_tracks.unwrap_or_default());
+                        combined.extend(jio_tracks);
+                        combined.extend(srv_tracks);
+                    }
+                    ProviderMode::Spotify => {
+                        let (spot_tracks, jio_tracks, srv_tracks) =
+                            tokio::join!(spotify.search_tracks(&q), jio_fut, servers_fut);
+                        combined.extend(spot_tracks.unwrap_or_default());
+                        combined.extend(jio_tracks);
+                        combined.extend(srv_tracks);
+                    }
                 }
             }
             let _ = tx.send(AppEvent::TracksLoaded {
@@ -164,10 +188,61 @@ impl App {
                 self.focus = FocusPane::Tracks;
                 self.refresh_downloads();
             }
+            SidebarEntry::LocalSongs => {
+                self.tracks_req_id = self.tracks_req_id.wrapping_add(1);
+                self.current_playlist_id = Some("SONATA:LOCAL_SONGS".to_string());
+                self.tracks_heading = format!("Local Songs ({})", self.local_scan.tracks.len());
+                self.visible_tracks = self.local_scan.tracks.clone();
+                self.track_table_state
+                    .select((!self.visible_tracks.is_empty()).then_some(0));
+                self.focus = FocusPane::Tracks;
+            }
+            SidebarEntry::LocalAlbum(idx) => {
+                if let Some(album) = self.local_scan.albums.get(idx).cloned() {
+                    self.tracks_req_id = self.tracks_req_id.wrapping_add(1);
+                    self.current_playlist_id = Some(format!("local_album:{}", album.id));
+                    self.tracks_heading = format!("[Local Album] {}", album.name);
+                    self.visible_tracks = album.tracks;
+                    self.track_table_state
+                        .select((!self.visible_tracks.is_empty()).then_some(0));
+                    self.focus = FocusPane::Tracks;
+                }
+            }
+            SidebarEntry::LocalFolder(idx) => {
+                if let Some(folder) = self.local_scan.folders.get(idx).cloned() {
+                    self.tracks_req_id = self.tracks_req_id.wrapping_add(1);
+                    self.current_playlist_id = Some(format!("local_folder:{}", folder.name));
+                    self.tracks_heading = format!("[Folder] {}", folder.name);
+                    self.visible_tracks = folder.tracks;
+                    self.track_table_state
+                        .select((!self.visible_tracks.is_empty()).then_some(0));
+                    self.focus = FocusPane::Tracks;
+                }
+            }
+            SidebarEntry::PersonalPlaylist(ppl) => {
+                self.tracks_req_id = self.tracks_req_id.wrapping_add(1);
+                let live = self
+                    .personal_playlists
+                    .iter()
+                    .find(|p| p.id == ppl.id)
+                    .cloned()
+                    .unwrap_or(ppl);
+                self.current_playlist_id = Some(live.id.clone());
+                self.tracks_heading = format!("[Personal] {}", live.name);
+                self.visible_tracks = live.tracks;
+                self.track_table_state
+                    .select((!self.visible_tracks.is_empty()).then_some(0));
+                self.focus = FocusPane::Tracks;
+            }
             SidebarEntry::Server(profile) => {
                 self.open_server_browser(profile);
             }
             SidebarEntry::Playlist(pl) => {
+                if self.config.personal_only_mode {
+                    self.status_line =
+                        "Personal Only Mode active: streaming playlists disabled".to_string();
+                    return;
+                }
                 self.tracks_req_id = self.tracks_req_id.wrapping_add(1);
                 let req_id = self.tracks_req_id;
                 self.status_line = format!("Loading {}...", pl.name);
@@ -340,18 +415,17 @@ impl App {
         });
     }
 
-    pub fn writable_ytm_playlists(&self) -> Vec<Playlist> {
-        self.sidebar_items
-            .iter()
-            .filter_map(|entry| match entry {
-                SidebarEntry::Playlist(p)
-                    if p.source == ProviderSource::YouTubeMusic && p.id != "VLLM" =>
-                {
-                    Some(p.clone())
-                }
-                _ => None,
-            })
-            .collect()
+    pub fn playlist_add_targets_for_selected(&self) -> Vec<TuiPlaylistAddTarget> {
+        let Some(track) = self.selected_or_playing_track() else {
+            return Vec::new();
+        };
+        resolve_tui_playlist_add_targets(
+            &track,
+            &self.personal_playlists,
+            &self.ytm_playlists,
+            self.config.personal_only_mode,
+            self.ytm.is_authenticated(),
+        )
     }
 
     pub fn toggle_like_selected(&mut self) {
@@ -432,33 +506,39 @@ impl App {
     }
 
     pub fn open_add_to_playlist_modal(&mut self) {
-        if !self.ytm.is_authenticated() {
-            self.status_line = "Sign in to YouTube Music in your browser first".to_string();
-            return;
-        }
         if self.selected_or_playing_track().is_none() {
             self.status_line = "Select a track first".to_string();
             return;
         }
-        if self.writable_ytm_playlists().is_empty() {
+        if self.playlist_add_targets_for_selected().is_empty() {
             self.status_line =
-                "No writable YouTube Music playlists found (press c to create)".to_string();
+                "No playlists available — press c to create a Personal Playlist".to_string();
             return;
         }
         self.modal = ActiveModal::AddToPlaylist(0);
     }
 
     pub fn confirm_add_to_playlist(&mut self, pl_idx: usize) {
-        let playlists = self.writable_ytm_playlists();
-        let Some(pl) = playlists.get(pl_idx).cloned() else {
+        let targets = self.playlist_add_targets_for_selected();
+        let Some(target) = targets.get(pl_idx).cloned() else {
             return;
         };
         let Some(track) = self.selected_or_playing_track() else {
             return;
         };
-        if track.is_self_hosted() {
+        let pl = match target {
+            TuiPlaylistAddTarget::Personal(ppl) => {
+                self.add_track_to_personal_playlist(&ppl.id, track);
+                return;
+            }
+            TuiPlaylistAddTarget::Ytm(pl) => pl,
+        };
+        if self.config.personal_only_mode
+            || is_personal_track_id(&track.id)
+            || track.is_self_hosted()
+        {
             self.status_line =
-                "Self-hosted server tracks cannot be added to YouTube Music playlists".to_string();
+                "Personal/local/server tracks can only be added to Personal Playlists".to_string();
             return;
         }
         let ytm = self.ytm.clone();
@@ -509,7 +589,7 @@ impl App {
 
     pub fn remove_selected_from_playlist(&mut self) {
         let Some(pl_id) = self.current_playlist_id.clone() else {
-            self.status_line = "Open a YouTube Music playlist to remove tracks".to_string();
+            self.status_line = "Open a playlist to remove tracks".to_string();
             return;
         };
         if pl_id == "VLLM" {
@@ -519,6 +599,20 @@ impl App {
         let Some(idx) = self.track_table_state.selected() else {
             return;
         };
+        if pl_id.starts_with(PERSONAL_PLAYLIST_ID_PREFIX) {
+            let Some(removed_track) = self.visible_tracks.get(idx).cloned() else {
+                return;
+            };
+            self.visible_tracks.remove(idx);
+            if self.visible_tracks.is_empty() {
+                self.track_table_state.select(None);
+            } else {
+                self.track_table_state
+                    .select(Some(idx.min(self.visible_tracks.len() - 1)));
+            }
+            self.remove_track_from_personal_playlist(&pl_id, &removed_track.id);
+            return;
+        }
         let Some(track) = self.visible_tracks.get(idx).cloned() else {
             return;
         };
@@ -563,6 +657,10 @@ impl App {
     }
 
     pub fn create_ytm_playlist(&mut self, title: &str) {
+        if self.config.personal_only_mode {
+            self.create_personal_playlist(title);
+            return;
+        }
         let trimmed = title.trim().to_string();
         if trimmed.is_empty() {
             return;
@@ -596,7 +694,186 @@ impl App {
         });
     }
 
+    pub fn create_personal_playlist(&mut self, name: &str) {
+        let trimmed = name.trim().to_string();
+        if trimmed.is_empty() {
+            return;
+        }
+        let store = PersonalPlaylistStore::new(&self.paths);
+        match store.create(&trimmed) {
+            Ok(created) => {
+                self.personal_playlists = store.list().unwrap_or_default();
+                self.rebuild_sidebar();
+                self.status_line = format!("Created Personal Playlist \"{}\"", created.name);
+            }
+            Err(err) => {
+                self.status_line = format!("Create Personal Playlist failed: {err}");
+            }
+        }
+    }
+
+    pub fn rename_personal_playlist(&mut self, playlist_id: &str, name: &str) {
+        let trimmed = name.trim().to_string();
+        if trimmed.is_empty() {
+            return;
+        }
+        let store = PersonalPlaylistStore::new(&self.paths);
+        match store.rename(playlist_id, &trimmed) {
+            Ok(updated) => {
+                self.personal_playlists = store.list().unwrap_or_default();
+                self.rebuild_sidebar();
+                if self.current_playlist_id.as_deref() == Some(playlist_id) {
+                    self.tracks_heading = format!("[Personal] {}", updated.name);
+                }
+                self.status_line = format!("Renamed Personal Playlist to \"{}\"", updated.name);
+            }
+            Err(err) => {
+                self.status_line = format!("Rename failed: {err}");
+            }
+        }
+    }
+
+    pub fn delete_personal_playlist(&mut self, playlist_id: &str) {
+        let store = PersonalPlaylistStore::new(&self.paths);
+        match store.delete(playlist_id) {
+            Ok(removed) => {
+                if removed {
+                    self.personal_playlists = store.list().unwrap_or_default();
+                    self.rebuild_sidebar();
+                    if self.current_playlist_id.as_deref() == Some(playlist_id) {
+                        self.current_playlist_id = None;
+                        self.visible_tracks.clear();
+                    }
+                    self.status_line = "Deleted Personal Playlist".to_string();
+                }
+            }
+            Err(err) => {
+                self.status_line = format!("Delete failed: {err}");
+            }
+        }
+    }
+
+    pub fn add_track_to_personal_playlist(&mut self, playlist_id: &str, track: Track) {
+        let title = track.title.clone();
+        let store = PersonalPlaylistStore::new(&self.paths);
+        match store.add_track(playlist_id, track) {
+            Ok(updated) => {
+                self.personal_playlists = store.list().unwrap_or_default();
+                self.rebuild_sidebar();
+                if self.current_playlist_id.as_deref() == Some(playlist_id) {
+                    self.visible_tracks = updated.tracks;
+                }
+                self.status_line = format!("Added \"{title}\" to {}", updated.name);
+            }
+            Err(err) => {
+                self.status_line = format!("Add failed: {err}");
+            }
+        }
+    }
+
+    pub fn remove_track_from_personal_playlist(&mut self, playlist_id: &str, track_id: &str) {
+        let store = PersonalPlaylistStore::new(&self.paths);
+        match store.remove_track(playlist_id, track_id) {
+            Ok(updated) => {
+                self.personal_playlists = store.list().unwrap_or_default();
+                self.rebuild_sidebar();
+                if self.current_playlist_id.as_deref() == Some(playlist_id) {
+                    self.visible_tracks = updated.tracks;
+                }
+                self.status_line = format!("Removed track from {}", updated.name);
+            }
+            Err(err) => {
+                self.status_line = format!("Remove failed: {err}");
+            }
+        }
+    }
+
+    pub fn scan_local_music(&mut self) {
+        if !self.config.local_music_enabled {
+            self.local_scanning = false;
+            return;
+        }
+        let dirs = self.config.effective_local_music_dirs();
+        self.local_scanning = true;
+        self.status_line = "Scanning local music folders...".to_string();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let scan = tokio::task::spawn_blocking(move || {
+                sonata_core::providers::local::scan_directories(&dirs)
+            })
+            .await
+            .unwrap_or_default();
+            let _ = tx.send(AppEvent::LocalMusicScanned(scan));
+        });
+    }
+
+    pub fn probe_all_server_health(&self) {
+        for profile in self.server_profiles.iter().filter(|p| p.enabled).cloned() {
+            let client = self.server_client.clone();
+            let tx = self.tx.clone();
+            tokio::spawn(async move {
+                let report = client.probe_server_health(&profile).await;
+                let _ = tx.send(AppEvent::ServerHealthProbed {
+                    server_id: profile.id,
+                    report,
+                });
+            });
+        }
+    }
+
+    pub fn probe_server_health(&mut self, server_id: &str) {
+        let Some(profile) = self
+            .server_profiles
+            .iter()
+            .find(|p| p.id == server_id)
+            .cloned()
+        else {
+            return;
+        };
+        let client = self.server_client.clone();
+        let tx = self.tx.clone();
+        self.status_line = format!("Checking {}...", profile.name);
+        tokio::spawn(async move {
+            let report = client.probe_server_health(&profile).await;
+            let badge = super::format_tui_health_badge(&report);
+            let _ = tx.send(AppEvent::ServerHealthProbed {
+                server_id: profile.id,
+                report,
+            });
+            let _ = tx.send(AppEvent::StatusMessage(format!(
+                "{}: {badge}",
+                profile.name
+            )));
+        });
+    }
+
+    pub fn run_server_speed_test(&mut self, server_id: &str) {
+        let Some(profile) = self
+            .server_profiles
+            .iter()
+            .find(|p| p.id == server_id)
+            .cloned()
+        else {
+            return;
+        };
+        self.server_speed_testing.insert(server_id.to_string());
+        self.status_line = format!("Running speed test for {}...", profile.name);
+        let client = self.server_client.clone();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let report = client.run_speed_test(&profile).await;
+            let _ = tx.send(AppEvent::ServerSpeedTestFinished {
+                server_id: profile.id,
+                report,
+            });
+        });
+    }
+
     pub fn refresh_account(&mut self) {
+        if self.config.personal_only_mode {
+            self.status_line = "Personal Only Mode active: sign-in refresh skipped".to_string();
+            return;
+        }
         let ytm = self.ytm.clone();
         if let Some(db) = &self.cache_db {
             db.invalidate_playlist(None);
@@ -892,28 +1169,6 @@ impl App {
         };
     }
 
-    pub fn test_server_profile(&mut self, server_id: &str) {
-        let Some(profile) = self
-            .server_profiles
-            .iter()
-            .find(|p| p.id == server_id)
-            .cloned()
-        else {
-            return;
-        };
-        let client = self.server_client.clone();
-        let tx = self.tx.clone();
-        let sid = profile.id.clone();
-        self.status_line = format!("Testing {}...", profile.name);
-        tokio::spawn(async move {
-            let result = client.ping(&profile).await.map_err(|e| e.to_string());
-            let _ = tx.send(AppEvent::ServerTested {
-                server_id: sid,
-                result,
-            });
-        });
-    }
-
     pub fn test_server_form(&mut self, form: &ServerFormState) {
         let mut profile = build_tui_server_profile(form);
         let http = self.http.clone();
@@ -930,7 +1185,8 @@ impl App {
 
     pub fn save_server_form(&mut self, form: &ServerFormState) {
         let mut profile = build_tui_server_profile(form);
-        if profile.base_url.trim().is_empty() {
+        let smb_has_mount = profile.kind == ServerKind::Smb && profile.local_mount_path.is_some();
+        if profile.base_url.trim().is_empty() && !smb_has_mount {
             self.status_line = "Server URL cannot be empty".to_string();
             return;
         }
@@ -1114,19 +1370,41 @@ impl App {
                 return;
             }
 
-            let lib_arg = library_id.as_deref();
+            let lib_arg = folder_path.as_deref().or(library_id.as_deref());
             let libs_fut = client.list_libraries(&profile);
             let artists_fut = client.list_artists(&profile, lib_arg);
             let albums_fut = client.list_albums(&profile, lib_arg, None);
             let playlists_fut = client.list_playlists(&profile);
-            let (libs, artists, albums, playlists) =
-                tokio::join!(libs_fut, artists_fut, albums_fut, playlists_fut);
+            let smb_tracks_fut = async {
+                if profile.kind == ServerKind::Smb {
+                    client
+                        .get_playlist_tracks(&profile, lib_arg.unwrap_or("."))
+                        .await
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                }
+            };
+            let (libs, artists, albums, playlists, smb_tracks) = tokio::join!(
+                libs_fut,
+                artists_fut,
+                albums_fut,
+                playlists_fut,
+                smb_tracks_fut
+            );
             let error = libs
                 .as_ref()
                 .err()
                 .or(albums.as_ref().err())
                 .or(playlists.as_ref().err())
                 .map(|e| e.to_string());
+            let folders = if profile.kind == ServerKind::Smb {
+                libs.as_ref()
+                    .map(|items| items.iter().map(|l| l.id.clone()).collect())
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             let _ = tx.send(AppEvent::ServerBrowseLoaded {
                 server_id,
                 folder_path: None,
@@ -1134,8 +1412,8 @@ impl App {
                 artists: artists.unwrap_or_default(),
                 albums: albums.unwrap_or_default(),
                 playlists: playlists.unwrap_or_default(),
-                tracks: Vec::new(),
-                folders: Vec::new(),
+                tracks: smb_tracks,
+                folders,
                 error,
             });
         });
@@ -1308,30 +1586,36 @@ fn build_tui_server_profile(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    sonata_core::providers::servers::ServerProfile {
-        id: format!(
+    let id = form.editing_id.clone().unwrap_or_else(|| {
+        format!(
             "{}-{}-{ts}",
             form.kind.short_tag().to_lowercase(),
             if slug.is_empty() { "srv" } else { &slug },
-        ),
+        )
+    });
+    sonata_core::providers::servers::ServerProfile {
+        id,
         name,
         kind: form.kind,
         base_url,
         username: clean(&form.username),
         password: clean(&form.password),
-        api_key: if form.kind == sonata_core::providers::servers::ServerKind::Jellyfin {
+        api_key: if matches!(form.kind, ServerKind::Jellyfin | ServerKind::Subsonic) {
             token.clone()
         } else {
             None
         },
         access_token: None,
         user_id: None,
-        bearer_token: if form.kind == sonata_core::providers::servers::ServerKind::WebDav {
+        bearer_token: if form.kind == ServerKind::WebDav {
             token
         } else {
             None
         },
         library_ids: Vec::new(),
+        share: clean(&form.share),
+        domain: clean(&form.domain),
+        local_mount_path: clean(&form.mount_path).map(std::path::PathBuf::from),
         enabled: true,
     }
 }

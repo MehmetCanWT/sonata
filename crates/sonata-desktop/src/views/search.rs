@@ -34,7 +34,13 @@ impl SonataDesktopView {
         let started = self.loading_started.get("search").copied();
         let scroll_fades = self.settings.scroll_fades;
 
-        let active_tab = match self.search_tab {
+        let personal_only = self.snapshot.config.personal_only_mode;
+        let effective_tab = if personal_only {
+            SearchTab::Library
+        } else {
+            self.search_tab
+        };
+        let active_tab = match effective_tab {
             SearchTab::YouTube => 0,
             SearchTab::Library => 1,
         };
@@ -72,63 +78,68 @@ impl SonataDesktopView {
                                 format!("{}: \"{query}\"", s.search)
                             }),
                     )
-                    .child(
-                        TabBar::new("search-scope-tabs")
-                            .pill()
-                            .small()
-                            .selected_index(active_tab)
-                            .on_click(cx.listener(|this, idx: &usize, _, cx| {
-                                this.search_tab = if *idx == 1 {
-                                    SearchTab::Library
-                                } else {
-                                    SearchTab::YouTube
-                                };
-                                cx.notify();
-                            }))
-                            .child(Tab::new().label(s.youtube_music))
-                            .child(Tab::new().label(s.library)),
-                    ),
-            )
-            .when(self.search_tab == SearchTab::YouTube, |col| {
-                col.child(div().flex().flex_row().flex_wrap().gap(px(8.0)).children(
-                    categories.iter().enumerate().map(|(i, (cat, label))| {
-                        let active = self.search_category == *cat;
-                        let target_cat = *cat;
-                        div()
-                            .id(SharedString::from(format!("srch-cat-{i}")))
-                            .h(px(30.0))
-                            .px(px(12.0))
-                            .rounded_full()
-                            .cursor_pointer()
-                            .bg(if active {
-                                self.palette.accent
-                            } else {
-                                self.palette.surface
-                            })
-                            .hover(|s| {
-                                if active {
-                                    s.bg(self.palette.accent_hover)
-                                } else {
-                                    s.bg(self.palette.surface_hover)
-                                }
-                            })
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(if active {
-                                self.palette.on_accent
-                            } else {
-                                self.palette.text
-                            })
-                            .flex()
-                            .items_center()
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.search_category = target_cat;
-                                cx.notify();
-                            }))
-                            .child(*label)
+                    .when(!personal_only, |row| {
+                        row.child(
+                            TabBar::new("search-scope-tabs")
+                                .pill()
+                                .small()
+                                .selected_index(active_tab)
+                                .on_click(cx.listener(|this, idx: &usize, _, cx| {
+                                    this.search_tab = if *idx == 1 {
+                                        SearchTab::Library
+                                    } else {
+                                        SearchTab::YouTube
+                                    };
+                                    cx.notify();
+                                }))
+                                .child(Tab::new().label(s.youtube_music))
+                                .child(Tab::new().label(s.library)),
+                        )
                     }),
-                ))
-            });
+            )
+            .when(
+                !personal_only && effective_tab == SearchTab::YouTube,
+                |col| {
+                    col.child(div().flex().flex_row().flex_wrap().gap(px(8.0)).children(
+                        categories.iter().enumerate().map(|(i, (cat, label))| {
+                            let active = self.search_category == *cat;
+                            let target_cat = *cat;
+                            div()
+                                .id(SharedString::from(format!("srch-cat-{i}")))
+                                .h(px(30.0))
+                                .px(px(12.0))
+                                .rounded_full()
+                                .cursor_pointer()
+                                .bg(if active {
+                                    self.palette.accent
+                                } else {
+                                    self.palette.surface
+                                })
+                                .hover(|s| {
+                                    if active {
+                                        s.bg(self.palette.accent_hover)
+                                    } else {
+                                        s.bg(self.palette.surface_hover)
+                                    }
+                                })
+                                .text_size(px(12.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(if active {
+                                    self.palette.on_accent
+                                } else {
+                                    self.palette.text
+                                })
+                                .flex()
+                                .items_center()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.search_category = target_cat;
+                                    cx.notify();
+                                }))
+                                .child(*label)
+                        }),
+                    ))
+                },
+            );
 
         let gap = 14.0_f32;
         let cols = (((content_w + gap) / (CARD_W + gap)).floor() as usize).clamp(2, 8);
@@ -137,8 +148,25 @@ impl SonataDesktopView {
 
         let mut sections = div().flex().flex_col().gap(px(24.0));
 
-        if self.search_tab == SearchTab::Library {
+        if effective_tab == SearchTab::Library {
             let needle = query.trim().to_ascii_lowercase();
+            let matches_local: Vec<_> = if self.snapshot.config.local_music_enabled {
+                self.snapshot
+                    .local_scan
+                    .tracks
+                    .iter()
+                    .filter(|t| {
+                        needle.is_empty()
+                            || t.title.to_ascii_lowercase().contains(&needle)
+                            || t.artist.to_ascii_lowercase().contains(&needle)
+                            || t.album.to_ascii_lowercase().contains(&needle)
+                    })
+                    .cloned()
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let matches_server = self.snapshot.search_results.clone();
             let matches_pl: Vec<_> = self
                 .ordered_playlists()
                 .into_iter()
@@ -214,6 +242,75 @@ impl SonataDesktopView {
                         ))
                         .child(grid),
                 );
+            }
+
+            if !matches_local.is_empty() {
+                let local_arc: std::sync::Arc<[sonata_core::providers::Track]> =
+                    std::sync::Arc::from(matches_local.as_slice());
+                let mut rows = div().flex().flex_col().gap(px(2.0));
+                let total = local_arc.len().min(30);
+                for i in 0..total {
+                    rows = rows.child(self.render_track_row(
+                        "srch-loc-tr",
+                        i,
+                        &local_arc,
+                        TrackRowOpts {
+                            show_album: true,
+                            ..Default::default()
+                        },
+                        cx,
+                    ));
+                }
+                sections = sections.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(section_header(
+                            "srch-loc-trs",
+                            s.local_music,
+                            None,
+                            None,
+                            &self.palette,
+                        ))
+                        .child(rows),
+                );
+            }
+
+            if personal_only && !matches_server.is_empty() {
+                let srv_tracks: Vec<_> = matches_server
+                    .into_iter()
+                    .filter(|t| t.is_self_hosted())
+                    .collect();
+                if !srv_tracks.is_empty() {
+                    let srv_arc: std::sync::Arc<[sonata_core::providers::Track]> =
+                        std::sync::Arc::from(srv_tracks.as_slice());
+                    let mut rows = div().flex().flex_col().gap(px(2.0));
+                    for i in 0..srv_arc.len().min(30) {
+                        rows = rows.child(self.render_track_row(
+                            "srch-srv-tr",
+                            i,
+                            &srv_arc,
+                            TrackRowOpts {
+                                show_album: true,
+                                ..Default::default()
+                            },
+                            cx,
+                        ));
+                    }
+                    sections = sections.child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(section_header(
+                                "srch-srv-trs",
+                                s.servers,
+                                None,
+                                None,
+                                &self.palette,
+                            ))
+                            .child(rows),
+                    );
+                }
             }
 
             if !matches_hist.is_empty() {

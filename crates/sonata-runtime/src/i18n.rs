@@ -337,6 +337,17 @@ pub struct UiStrings {
     pub personal_playlists_desc: &'static str,
     pub attribute_personal_to_ytm: &'static str,
     pub attribute_personal_to_ytm_desc: &'static str,
+    pub scan: &'static str,
+    pub folders: &'static str,
+    pub youtube: &'static str,
+    pub local: &'static str,
+    pub edit: &'static str,
+    pub rename: &'static str,
+    pub delete: &'static str,
+    pub smb_share: &'static str,
+    pub smb_domain: &'static str,
+    pub smb_mount_path: &'static str,
+    pub personal_only_active: &'static str,
 }
 
 /// Translates common YouTube Music mood and genre chip/tile titles into `Tr` / `Ru`.
@@ -768,6 +779,18 @@ pub const EN: UiStrings = UiStrings {
     attribute_personal_to_ytm: "Report local/server plays to YouTube Music",
     attribute_personal_to_ytm_desc:
         "When signed in and not in Personal Only Mode, log matching local or server plays to YouTube Music history.",
+    scan: "Scan",
+    folders: "Folders",
+    youtube: "YouTube",
+    local: "Local",
+    edit: "Edit",
+    rename: "Rename",
+    delete: "Delete",
+    smb_share: "Share (optional)",
+    smb_domain: "Domain (optional)",
+    smb_mount_path: "Local Mount Path (optional)",
+    personal_only_active:
+        "Personal Only Mode is active — streaming feeds and playback are paused while your preferences remain preserved.",
 };
 
 pub const TR: UiStrings = UiStrings {
@@ -1039,6 +1062,18 @@ pub const TR: UiStrings = UiStrings {
     attribute_personal_to_ytm: "Yerel/sunucu çalmalarını YouTube Music geçmişine işle",
     attribute_personal_to_ytm_desc:
         "Oturum açıkken ve Yalnızca Kişisel Mod kapalıyken eşleşen yerel veya sunucu çalmalarını YouTube Music geçmişine kaydet.",
+    scan: "Tara",
+    folders: "Klasörler",
+    youtube: "YouTube",
+    local: "Yerel",
+    edit: "Düzenle",
+    rename: "Yeniden Adlandır",
+    delete: "Sil",
+    smb_share: "Paylaşım (isteğe bağlı)",
+    smb_domain: "Etki Alanı (isteğe bağlı)",
+    smb_mount_path: "Yerel Bağlama Yolu (isteğe bağlı)",
+    personal_only_active:
+        "Yalnızca Kişisel Mod etkin — tercihlerin korunurken akış katalogları ve oynatma duraklatıldı.",
 };
 
 pub const RU: UiStrings = UiStrings {
@@ -1311,6 +1346,18 @@ pub const RU: UiStrings = UiStrings {
     attribute_personal_to_ytm: "Отправлять локальные/серверные прослушивания в YouTube Music",
     attribute_personal_to_ytm_desc:
         "При входе и выключенном личном режиме записывать совпавшие треки в историю YouTube Music.",
+    scan: "Сканировать",
+    folders: "Папки",
+    youtube: "YouTube",
+    local: "Локальная",
+    edit: "Изменить",
+    rename: "Переименовать",
+    delete: "Удалить",
+    smb_share: "Общая папка (необяз.)",
+    smb_domain: "Домен (необяз.)",
+    smb_mount_path: "Локальный путь монтирования (необяз.)",
+    personal_only_active:
+        "Включён только личный режим — потоковые каталоги и воспроизведение приостановлены, ваши настройки сохранены.",
 };
 
 #[cfg(test)]

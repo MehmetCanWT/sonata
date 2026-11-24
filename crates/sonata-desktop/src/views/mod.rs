@@ -18,7 +18,7 @@ pub mod search;
 pub mod settings;
 pub mod sidebar;
 
-use crate::backend::{BackendCmd, BackendHandle, DesktopSnapshot, NavTarget};
+use crate::backend::{BackendCmd, BackendHandle, DesktopSnapshot, LibrarySource, NavTarget};
 use crate::background_appearance_for;
 use crate::settings::{
     is_mini_viewport, CornerStyle, DesktopSettings, ThemeModePref, GUTTER, PANEL_MAX, PANEL_MIN,
@@ -53,8 +53,14 @@ pub enum LibraryTab {
     Playlists,
     Albums,
     Artists,
-    Downloads,
-    Servers,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalSubTab {
+    Songs,
+    Albums,
+    Playlists,
+    Folders,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +83,7 @@ pub enum SearchCategory {
 pub enum SettingsTab {
     Appearance,
     Playback,
+    Sources,
     Library,
     System,
     Account,
@@ -152,6 +159,9 @@ pub struct SonataDesktopView {
     pub nav_cursor: usize,
 
     pub library_tab: LibraryTab,
+    pub library_source: LibrarySource,
+    pub local_sub_tab: LocalSubTab,
+    pub selected_local_folder: Option<std::path::PathBuf>,
     pub search_tab: SearchTab,
     pub search_category: SearchCategory,
     pub settings_tab: SettingsTab,
@@ -188,13 +198,19 @@ pub struct SonataDesktopView {
     pub search_input: Entity<InputState>,
     pub library_filter_input: Entity<InputState>,
     pub playlist_name_input: Entity<InputState>,
+    pub create_playlist_personal: bool,
     pub downloads_dir_input: Entity<InputState>,
+    pub local_dir_input: Entity<InputState>,
     pub discord_app_id_input: Entity<InputState>,
     pub server_name_input: Entity<InputState>,
     pub server_url_input: Entity<InputState>,
     pub server_user_input: Entity<InputState>,
     pub server_pass_input: Entity<InputState>,
     pub server_token_input: Entity<InputState>,
+    pub server_share_input: Entity<InputState>,
+    pub server_domain_input: Entity<InputState>,
+    pub server_mount_input: Entity<InputState>,
+    pub server_editing_id: Option<String>,
     pub server_modal_kind: ServerKind,
     pub progress_slider: Entity<SliderState>,
     pub volume_slider: Entity<SliderState>,
@@ -295,6 +311,14 @@ impl SonataDesktopView {
         let server_pass_input = cx.new(|cx| InputState::new(window, cx).placeholder("Password"));
         let server_token_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("API Key / Bearer Token"));
+        let server_share_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Music (optional)"));
+        let server_domain_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("WORKGROUP (optional)"));
+        let server_mount_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("/mnt/nas/music (optional)"));
+        let local_dir_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("/home/user/Music"));
 
         let dur = snapshot.duration_secs.max(1.0) as f32;
         let pos = (snapshot.position_secs as f32).clamp(0.0, dur);
@@ -531,6 +555,13 @@ impl SonataDesktopView {
         let init_dur = snapshot.duration_secs;
         let init_vp = window.viewport_size();
         let init_mini = is_mini_viewport(init_vp.width.into(), init_vp.height.into());
+        let init_sources = snapshot.active_library_sources();
+        let initial_source = init_sources
+            .first()
+            .copied()
+            .unwrap_or(LibrarySource::Downloads);
+        let init_personal_only = snapshot.config.personal_only_mode;
+        let init_signed_in = snapshot.is_signed_in();
         Self {
             backend,
             snapshot,
@@ -545,10 +576,21 @@ impl SonataDesktopView {
             palette,
             media: MediaCache::default(),
             focus_handle,
-            nav_history: vec![NavTarget::Home],
+            nav_history: vec![if init_personal_only {
+                NavTarget::Library
+            } else {
+                NavTarget::Home
+            }],
             nav_cursor: 0,
             library_tab: LibraryTab::Playlists,
-            search_tab: SearchTab::YouTube,
+            library_source: initial_source,
+            local_sub_tab: LocalSubTab::Songs,
+            selected_local_folder: None,
+            search_tab: if init_personal_only {
+                SearchTab::Library
+            } else {
+                SearchTab::YouTube
+            },
             search_category: SearchCategory::All,
             settings_tab: SettingsTab::Appearance,
             fullscreen_open: false,
@@ -583,13 +625,19 @@ impl SonataDesktopView {
             search_input,
             library_filter_input,
             playlist_name_input,
+            create_playlist_personal: init_personal_only || !init_signed_in,
             downloads_dir_input,
+            local_dir_input,
             discord_app_id_input,
             server_name_input,
             server_url_input,
             server_user_input,
             server_pass_input,
             server_token_input,
+            server_share_input,
+            server_domain_input,
+            server_mount_input,
+            server_editing_id: None,
             server_modal_kind: ServerKind::Jellyfin,
             progress_slider,
             volume_slider,
@@ -964,21 +1012,31 @@ impl SonataDesktopView {
     }
 
     pub fn ordered_playlists(&self) -> Vec<sonata_core::providers::Playlist> {
-        let mut all = self.snapshot.ytm_playlists.clone();
-        for saved in &self.settings.saved_external_playlists {
-            let norm = crate::settings::normalize_collection_id(&saved.id);
-            if !all
-                .iter()
-                .any(|p| crate::settings::normalize_collection_id(&p.id) == norm)
-            {
-                all.push(sonata_core::providers::Playlist {
-                    id: saved.id.clone(),
-                    name: saved.title.clone(),
-                    source: sonata_core::providers::ProviderSource::YouTubeMusic,
-                    track_count: None,
-                    thumbnail_url: saved.thumbnail_url.clone(),
-                    is_owned: false,
-                });
+        let mut all: Vec<sonata_core::providers::Playlist> = self
+            .snapshot
+            .personal_playlists
+            .iter()
+            .map(|p| p.to_playlist())
+            .collect();
+        if !self.snapshot.config.personal_only_mode {
+            for pl in &self.snapshot.ytm_playlists {
+                all.push(pl.clone());
+            }
+            for saved in &self.settings.saved_external_playlists {
+                let norm = crate::settings::normalize_collection_id(&saved.id);
+                if !all
+                    .iter()
+                    .any(|p| crate::settings::normalize_collection_id(&p.id) == norm)
+                {
+                    all.push(sonata_core::providers::Playlist {
+                        id: saved.id.clone(),
+                        name: saved.title.clone(),
+                        source: sonata_core::providers::ProviderSource::YouTubeMusic,
+                        track_count: None,
+                        thumbnail_url: saved.thumbnail_url.clone(),
+                        is_owned: false,
+                    });
+                }
             }
         }
         let order_map: HashMap<&str, usize> = self
@@ -1411,6 +1469,26 @@ impl SonataDesktopView {
                 .is_focused(window)
             || self
                 .server_token_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
+                .server_share_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
+                .server_domain_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
+                .server_mount_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
+                .local_dir_input
                 .read(cx)
                 .focus_handle(cx)
                 .is_focused(window);

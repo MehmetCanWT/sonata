@@ -33,38 +33,40 @@ impl SonataDesktopView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let s = sonata_runtime::i18n::strings(self.settings.language);
-        let nav_items = [
-            NavEntry {
+        let personal_only = self.snapshot.config.personal_only_mode;
+        let mut nav_items = Vec::with_capacity(6);
+        if !personal_only {
+            nav_items.push(NavEntry {
                 target: NavTarget::Home,
                 label: s.home,
                 icon: IconName::House,
-            },
-            NavEntry {
+            });
+            nav_items.push(NavEntry {
                 target: NavTarget::Explore,
                 label: s.explore,
                 icon: IconName::Compass,
-            },
-            NavEntry {
+            });
+            nav_items.push(NavEntry {
                 target: NavTarget::Radio,
                 label: s.radio,
                 icon: IconName::Radio,
-            },
-            NavEntry {
-                target: NavTarget::Library,
-                label: s.library,
-                icon: IconName::Library,
-            },
-            NavEntry {
-                target: NavTarget::History,
-                label: s.history,
-                icon: IconName::Clock,
-            },
-            NavEntry {
-                target: NavTarget::Settings,
-                label: s.settings,
-                icon: IconName::Settings,
-            },
-        ];
+            });
+        }
+        nav_items.push(NavEntry {
+            target: NavTarget::Library,
+            label: s.library,
+            icon: IconName::Library,
+        });
+        nav_items.push(NavEntry {
+            target: NavTarget::History,
+            label: s.history,
+            icon: IconName::Clock,
+        });
+        nav_items.push(NavEntry {
+            target: NavTarget::Settings,
+            label: s.settings,
+            icon: IconName::Settings,
+        });
 
         let mut nav_col = div()
             .flex()
@@ -252,6 +254,13 @@ impl SonataDesktopView {
                     this.dragging_playlist_idx = None;
                     let sub = if pl_open.id == "VLLM" {
                         "Your liked YouTube Music tracks".to_string()
+                    } else if pl_open
+                        .id
+                        .starts_with(sonata_core::playlists::PERSONAL_PLAYLIST_ID_PREFIX)
+                    {
+                        sonata_runtime::i18n::strings(this.settings.language)
+                            .personal_playlists
+                            .to_string()
                     } else {
                         "YouTube Music Playlist".to_string()
                     };
@@ -361,6 +370,9 @@ impl SonataDesktopView {
                                         .new_playlist,
                                 )
                                 .on_click(cx.listener(|this, _, window, cx| {
+                                    this.create_playlist_personal =
+                                        this.snapshot.config.personal_only_mode
+                                            || !this.snapshot.is_signed_in();
                                     this.modal = DesktopModal::CreatePlaylist;
                                     this.playlist_name_input
                                         .update(cx, |s, cx| s.set_value("", window, cx));
@@ -382,6 +394,9 @@ impl SonataDesktopView {
                                 sonata_runtime::i18n::strings(self.settings.language).new_playlist,
                             )
                             .on_click(cx.listener(|this, _, window, cx| {
+                                this.create_playlist_personal =
+                                    this.snapshot.config.personal_only_mode
+                                        || !this.snapshot.is_signed_in();
                                 this.modal = DesktopModal::CreatePlaylist;
                                 this.playlist_name_input
                                     .update(cx, |s, cx| s.set_value("", window, cx));

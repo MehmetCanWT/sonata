@@ -8,7 +8,11 @@ use super::types::{InternalEvent, NavTarget};
 use super::BackendEngine;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use sonata_core::auth::ExtractedCookies;
+use sonata_core::playlists::{
+    is_personal_track_id, PersonalPlaylistStore, PERSONAL_PLAYLIST_ID_PREFIX,
+};
 use sonata_core::providers::hifi::extract_badge_kbps;
+use sonata_core::providers::local::scan_directories;
 use sonata_core::providers::servers::{
     jellyfin, parse_server_item_id, save_server_profiles, webdav, ServerClient, ServerKind,
     ServerProfile,
@@ -325,6 +329,10 @@ impl BackendEngine {
     }
 
     pub(super) fn load_radio_mixes(&mut self) {
+        if self.config.personal_only_mode {
+            self.radio_loading = false;
+            return;
+        }
         self.radio_req_id = self.radio_req_id.wrapping_add(1);
         let req_id = self.radio_req_id;
         self.radio_loading = true;
@@ -337,7 +345,8 @@ impl BackendEngine {
     }
 
     pub(super) fn load_listening_history(&mut self) {
-        if !self.ytm.is_authenticated() {
+        if self.config.personal_only_mode || !self.ytm.is_authenticated() {
+            self.history_loading = false;
             return;
         }
         self.history_loading = true;
@@ -350,6 +359,10 @@ impl BackendEngine {
     }
 
     pub(super) fn load_explore(&mut self) {
+        if self.config.personal_only_mode {
+            self.explore_loading = false;
+            return;
+        }
         self.explore_req_id = self.explore_req_id.wrapping_add(1);
         let req_id = self.explore_req_id;
         self.explore_loading = true;
@@ -373,6 +386,10 @@ impl BackendEngine {
     }
 
     pub(super) fn open_mood_category(&mut self, title: String, browse_id: String, params: String) {
+        if self.config.personal_only_mode {
+            self.status_line = "Personal Only Mode is active".to_string();
+            return;
+        }
         self.mood_req_id = self.mood_req_id.wrapping_add(1);
         let req_id = self.mood_req_id;
         self.active_nav = NavTarget::MoodCategory {
@@ -464,7 +481,8 @@ impl BackendEngine {
     }
 
     pub(super) fn load_library_extras(&mut self) {
-        if !self.ytm.is_authenticated() {
+        if self.config.personal_only_mode || !self.ytm.is_authenticated() {
+            self.library_extras_loading = false;
             return;
         }
         self.library_extras_loading = true;
@@ -487,6 +505,11 @@ impl BackendEngine {
     }
 
     pub(super) fn load_home_with_chip(&mut self, chip: Option<MoodChip>) {
+        if self.config.personal_only_mode {
+            self.home_loading = false;
+            self.home_error = None;
+            return;
+        }
         self.home_req_id = self.home_req_id.wrapping_add(1);
         let req_id = self.home_req_id;
         self.home_loading = true;
@@ -718,6 +741,21 @@ impl BackendEngine {
         if let Some(id) = album_id
             .as_deref()
             .map(str::trim)
+            .filter(|id| id.starts_with("local-album:"))
+        {
+            if let Some(local_alb) = self.local_scan.albums.iter().find(|a| a.id == id) {
+                self.album_req_id = self.album_req_id.wrapping_add(1);
+                self.album_loading = false;
+                self.album_error = None;
+                self.album_detail = Some(local_alb.to_album_detail());
+                self.active_nav = NavTarget::Album(local_alb.id.clone());
+                self.status_line = format!("Loaded {}", local_alb.name);
+                return;
+            }
+        }
+        if let Some(id) = album_id
+            .as_deref()
+            .map(str::trim)
             .filter(|id| parse_server_item_id(id).is_some())
             .map(str::to_string)
         {
@@ -773,6 +811,10 @@ impl BackendEngine {
             .filter(|id| id.starts_with("MPRE"))
             .map(str::to_string)
         {
+            if self.config.personal_only_mode {
+                self.status_line = "Personal Only Mode is active".to_string();
+                return;
+            }
             self.album_req_id = self.album_req_id.wrapping_add(1);
             let req_id = self.album_req_id;
             self.active_nav = NavTarget::Album(id.clone());
@@ -831,6 +873,23 @@ impl BackendEngine {
             return;
         }
 
+        if let Some(local_alb) = self.local_scan.albums.iter().find(|a| {
+            a.name.eq_ignore_ascii_case(&clean_title)
+                && (artist.trim().is_empty() || a.artist.eq_ignore_ascii_case(artist.trim()))
+        }) {
+            self.album_req_id = self.album_req_id.wrapping_add(1);
+            self.album_loading = false;
+            self.album_error = None;
+            self.album_detail = Some(local_alb.to_album_detail());
+            self.active_nav = NavTarget::Album(local_alb.id.clone());
+            self.status_line = format!("Loaded {}", local_alb.name);
+            return;
+        }
+        if self.config.personal_only_mode {
+            self.status_line = "Personal Only Mode is active".to_string();
+            return;
+        }
+
         self.album_req_id = self.album_req_id.wrapping_add(1);
         let req_id = self.album_req_id;
         self.status_line = format!("Opening album {clean_title}...");
@@ -869,6 +928,11 @@ impl BackendEngine {
     }
 
     pub(super) fn start_track_radio(&mut self, seed: Track) {
+        if self.config.personal_only_mode {
+            self.status_line =
+                "Personal Only Mode is active — streaming radio is disabled".to_string();
+            return;
+        }
         self.status_line = format!("Starting {} radio...", seed.artist);
         self.active_queue_playlist_id = None;
         let ytm = self.ytm.clone();
@@ -923,6 +987,11 @@ impl BackendEngine {
     }
 
     pub(super) fn start_quick_radio(&mut self) {
+        if self.config.personal_only_mode {
+            self.status_line =
+                "Personal Only Mode is active — streaming radio is disabled".to_string();
+            return;
+        }
         if let Some(cur) = self.playback.current_track().cloned() {
             self.start_track_radio(cur);
             return;
@@ -986,6 +1055,20 @@ impl BackendEngine {
             return;
         }
 
+        if id.starts_with(PERSONAL_PLAYLIST_ID_PREFIX) {
+            if let Some(pl) = self.personal_playlists.iter().find(|p| p.id == id) {
+                self.playlist_heading = pl.name.clone();
+                self.playlist_cover_url = pl.tracks.iter().find_map(|t| t.thumbnail_url.clone());
+                self.playlist_editable = true;
+                self.playlist_tracks = pl.tracks.clone();
+                self.playlist_loading = false;
+            } else {
+                self.playlist_tracks.clear();
+                self.playlist_loading = false;
+            }
+            return;
+        }
+
         if let Some(item_ref) = parse_server_item_id(&id) {
             if let Some(profile) = self
                 .server_profiles
@@ -1024,6 +1107,13 @@ impl BackendEngine {
                 });
                 return;
             }
+        }
+
+        if self.config.personal_only_mode {
+            self.playlist_tracks.clear();
+            self.playlist_loading = false;
+            self.status_line = "Personal Only Mode is active".to_string();
+            return;
         }
 
         let cache_key = format!("YTM:{id}");
@@ -1126,7 +1216,7 @@ impl BackendEngine {
 
     pub(super) fn fetch_search_suggestions(&mut self, query: &str) {
         let q = query.trim().to_string();
-        if q.is_empty() {
+        if q.is_empty() || self.config.personal_only_mode {
             self.search_suggestions.clear();
             return;
         }
@@ -1160,8 +1250,11 @@ impl BackendEngine {
         self.search_loading = true;
         self.search_req_id = self.search_req_id.wrapping_add(1);
         let req_id = self.search_req_id;
-        let jiosaavn_enabled = self.config.jiosaavn_enabled;
-        self.status_line = if jiosaavn_enabled {
+        let personal_only = self.config.personal_only_mode;
+        let jiosaavn_enabled = self.config.effective_jiosaavn_enabled();
+        self.status_line = if personal_only {
+            format!("Searching local & personal servers for \"{q}\"...")
+        } else if jiosaavn_enabled {
             format!("Searching YouTube Music & JioSaavn for \"{q}\"...")
         } else {
             format!("Searching YouTube Music for \"{q}\"...")
@@ -1170,6 +1263,21 @@ impl BackendEngine {
         let ytm = self.ytm.clone();
         let http = self.http.clone();
         let server_client = self.server_client.clone();
+        let needle = q.to_ascii_lowercase();
+        let local_matches: Vec<Track> = if self.config.local_music_enabled {
+            self.local_scan
+                .tracks
+                .iter()
+                .filter(|t| {
+                    t.title.to_ascii_lowercase().contains(&needle)
+                        || t.artist.to_ascii_lowercase().contains(&needle)
+                        || t.album.to_ascii_lowercase().contains(&needle)
+                })
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
         let enabled_servers: Vec<ServerProfile> = self
             .server_profiles
             .iter()
@@ -1178,13 +1286,6 @@ impl BackendEngine {
             .collect();
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
-            let jio_fut = async {
-                if jiosaavn_enabled {
-                    sonata_core::providers::jiosaavn::search_tracks(&http, &q, 10).await
-                } else {
-                    Vec::new()
-                }
-            };
             let servers_fut = async {
                 let mut set = tokio::task::JoinSet::new();
                 for profile in &enabled_servers {
@@ -1201,6 +1302,34 @@ impl BackendEngine {
                 }
                 out
             };
+
+            if personal_only {
+                let server_results = servers_fut.await;
+                let mut tracks = local_matches;
+                let mut rich = super::RichSearchResult::default();
+                for sr in server_results.into_iter().flatten() {
+                    tracks.extend(sr.tracks);
+                    rich.albums.extend(sr.albums);
+                    rich.artists.extend(sr.artists);
+                    rich.playlists.extend(sr.playlists);
+                }
+                rich.songs = tracks.clone();
+                let _ = int_tx.send(InternalEvent::SearchLoaded {
+                    req_id,
+                    tracks,
+                    rich,
+                    error: None,
+                });
+                return;
+            }
+
+            let jio_fut = async {
+                if jiosaavn_enabled {
+                    sonata_core::providers::jiosaavn::search_tracks(&http, &q, 10).await
+                } else {
+                    Vec::new()
+                }
+            };
             let (ytm_res, rich_res, jio_tracks, server_results) = tokio::join!(
                 ytm.search_songs(&q),
                 ytm.search_rich(&q),
@@ -1208,7 +1337,7 @@ impl BackendEngine {
                 servers_fut
             );
             let mut rich = rich_res.unwrap_or_default();
-            let mut server_tracks = Vec::new();
+            let mut server_tracks = local_matches;
             for sr in server_results.into_iter().flatten() {
                 server_tracks.extend(sr.tracks);
                 rich.albums.extend(sr.albums);
@@ -1223,7 +1352,7 @@ impl BackendEngine {
                         rich.songs = tracks.clone();
                     } else {
                         for st in &tracks {
-                            if (st.is_jiosaavn() || st.is_self_hosted())
+                            if (st.is_jiosaavn() || st.is_self_hosted() || st.is_local())
                                 && !rich.songs.iter().any(|existing| existing.id == st.id)
                             {
                                 rich.songs.push(st.clone());
@@ -1510,6 +1639,15 @@ impl BackendEngine {
         title: Option<String>,
         cover_path: Option<PathBuf>,
     ) {
+        if playlist_id.starts_with(PERSONAL_PLAYLIST_ID_PREFIX) {
+            if let Some(new_name) = title
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+            {
+                self.rename_personal_playlist(&playlist_id, &new_name);
+            }
+            return;
+        }
         if !self.ytm.is_authenticated() {
             self.status_line = "Sign in to YouTube Music first".to_string();
             return;
@@ -1580,6 +1718,15 @@ impl BackendEngine {
         playlist_id: String,
         playlist_name: String,
     ) {
+        if playlist_id.starts_with(PERSONAL_PLAYLIST_ID_PREFIX) {
+            self.add_track_to_personal_playlist(track, playlist_id);
+            return;
+        }
+        if is_personal_track_id(&track.id) {
+            self.status_line =
+                "Local and server tracks can only be added to Personal Playlists".to_string();
+            return;
+        }
         if !self.ytm.is_authenticated() {
             self.status_line = "Sign in to YouTube Music to edit playlists".to_string();
             return;
@@ -1629,6 +1776,10 @@ impl BackendEngine {
         let Some(pl_id) = self.playlist_id.clone() else {
             return;
         };
+        if pl_id.starts_with(PERSONAL_PLAYLIST_ID_PREFIX) {
+            self.remove_track_from_personal_playlist(&pl_id, idx);
+            return;
+        }
         let Some(track) = self.playlist_tracks.get(idx).cloned() else {
             return;
         };
@@ -1953,6 +2104,222 @@ impl BackendEngine {
         );
     }
 
+    pub(super) fn scan_local_music(&mut self) {
+        if !self.config.local_music_enabled {
+            self.local_scanning = false;
+            self.local_scan = Default::default();
+            return;
+        }
+        self.local_scan_req_id = self.local_scan_req_id.wrapping_add(1);
+        let req_id = self.local_scan_req_id;
+        let dirs = self.config.effective_local_music_dirs();
+        self.local_scanning = true;
+        self.status_line = "Scanning local music folders...".to_string();
+        let int_tx = self.int_tx.clone();
+        tokio::spawn(async move {
+            let scan = tokio::task::spawn_blocking(move || scan_directories(&dirs))
+                .await
+                .unwrap_or_default();
+            let _ = req_id;
+            let _ = int_tx.send(InternalEvent::LocalMusicScanned(scan));
+        });
+    }
+
+    pub(super) fn create_personal_playlist(&mut self, name: &str) {
+        let clean = name.trim().to_string();
+        if clean.is_empty() {
+            return;
+        }
+        let paths = self.paths.clone();
+        let int_tx = self.int_tx.clone();
+        self.status_line = format!("Creating personal playlist \"{clean}\"...");
+        tokio::spawn(async move {
+            let res = tokio::task::spawn_blocking(move || {
+                let store = PersonalPlaylistStore::new(&paths);
+                let created = store.create(&clean)?;
+                let all = store.list()?;
+                Ok::<_, sonata_core::error::CoreError>((created, all))
+            })
+            .await;
+            match res {
+                Ok(Ok((created, all))) => {
+                    let _ = int_tx.send(InternalEvent::PersonalPlaylistsLoaded(all));
+                    let _ = int_tx.send(InternalEvent::StatusMessage(format!(
+                        "Created personal playlist \"{}\"",
+                        created.name
+                    )));
+                }
+                Ok(Err(e)) => {
+                    let _ = int_tx.send(InternalEvent::StatusMessage(format!(
+                        "Personal playlist failed: {e}"
+                    )));
+                }
+                Err(e) => {
+                    let _ = int_tx.send(InternalEvent::StatusMessage(format!(
+                        "Personal playlist task failed: {e}"
+                    )));
+                }
+            }
+        });
+    }
+
+    pub(super) fn rename_personal_playlist(&mut self, playlist_id: &str, name: &str) {
+        let clean = name.trim().to_string();
+        if clean.is_empty() {
+            return;
+        }
+        let paths = self.paths.clone();
+        let pid = playlist_id.to_string();
+        let int_tx = self.int_tx.clone();
+        tokio::spawn(async move {
+            let res = tokio::task::spawn_blocking(move || {
+                let store = PersonalPlaylistStore::new(&paths);
+                let updated = store.rename(&pid, &clean)?;
+                let all = store.list()?;
+                Ok::<_, sonata_core::error::CoreError>((updated, all))
+            })
+            .await;
+            if let Ok(Ok((updated, all))) = res {
+                let _ = int_tx.send(InternalEvent::PersonalPlaylistsLoaded(all));
+                let _ = int_tx.send(InternalEvent::StatusMessage(format!(
+                    "Renamed personal playlist to \"{}\"",
+                    updated.name
+                )));
+            }
+        });
+    }
+
+    pub(super) fn delete_personal_playlist(&mut self, playlist_id: &str) {
+        let paths = self.paths.clone();
+        let pid = playlist_id.to_string();
+        let int_tx = self.int_tx.clone();
+        if self.playlist_id.as_deref() == Some(playlist_id) {
+            self.active_nav = NavTarget::Library;
+            self.playlist_id = None;
+            self.playlist_tracks.clear();
+        }
+        tokio::spawn(async move {
+            let res = tokio::task::spawn_blocking(move || {
+                let store = PersonalPlaylistStore::new(&paths);
+                let removed = store.delete(&pid)?;
+                let all = store.list()?;
+                Ok::<_, sonata_core::error::CoreError>((removed, all))
+            })
+            .await;
+            if let Ok(Ok((removed, all))) = res {
+                let _ = int_tx.send(InternalEvent::PersonalPlaylistsLoaded(all));
+                if removed {
+                    let _ = int_tx.send(InternalEvent::StatusMessage(
+                        "Deleted personal playlist".to_string(),
+                    ));
+                }
+            }
+        });
+    }
+
+    pub(super) fn add_track_to_personal_playlist(&mut self, track: Track, playlist_id: String) {
+        let paths = self.paths.clone();
+        let int_tx = self.int_tx.clone();
+        let title = track.title.clone();
+        tokio::spawn(async move {
+            let res = tokio::task::spawn_blocking(move || {
+                let store = PersonalPlaylistStore::new(&paths);
+                let updated = store.add_track(&playlist_id, track)?;
+                let all = store.list()?;
+                Ok::<_, sonata_core::error::CoreError>((updated, all))
+            })
+            .await;
+            match res {
+                Ok(Ok((updated, all))) => {
+                    let _ = int_tx.send(InternalEvent::PersonalPlaylistsLoaded(all));
+                    let _ = int_tx.send(InternalEvent::StatusMessage(format!(
+                        "Added \"{title}\" to {}",
+                        updated.name
+                    )));
+                }
+                Ok(Err(e)) => {
+                    let _ = int_tx.send(InternalEvent::StatusMessage(format!(
+                        "Could not add to personal playlist: {e}"
+                    )));
+                }
+                Err(e) => {
+                    let _ = int_tx.send(InternalEvent::StatusMessage(format!(
+                        "Personal playlist task failed: {e}"
+                    )));
+                }
+            }
+        });
+    }
+
+    pub(super) fn remove_track_from_personal_playlist(&mut self, playlist_id: &str, index: usize) {
+        let Some(track) = self
+            .personal_playlists
+            .iter()
+            .find(|p| p.id == playlist_id)
+            .and_then(|p| p.tracks.get(index))
+            .cloned()
+        else {
+            return;
+        };
+        let paths = self.paths.clone();
+        let pid = playlist_id.to_string();
+        let int_tx = self.int_tx.clone();
+        tokio::spawn(async move {
+            let res = tokio::task::spawn_blocking(move || {
+                let store = PersonalPlaylistStore::new(&paths);
+                store.remove_track(&pid, &track.id)?;
+                store.list()
+            })
+            .await;
+            if let Ok(Ok(all)) = res {
+                let _ = int_tx.send(InternalEvent::PersonalPlaylistsLoaded(all));
+            }
+        });
+    }
+
+    pub(super) fn probe_all_server_health(&mut self) {
+        let ids: Vec<String> = self.server_profiles.iter().map(|p| p.id.clone()).collect();
+        for sid in ids {
+            self.probe_server_health(sid);
+        }
+    }
+
+    pub(super) fn probe_server_health(&mut self, server_id: String) {
+        let Some(profile) = self
+            .server_profiles
+            .iter()
+            .find(|p| p.id == server_id)
+            .cloned()
+        else {
+            return;
+        };
+        let client = self.server_client.clone();
+        let int_tx = self.int_tx.clone();
+        tokio::spawn(async move {
+            let report = client.probe_server_health(&profile).await;
+            let _ = int_tx.send(InternalEvent::ServerHealthProbed { server_id, report });
+        });
+    }
+
+    pub(super) fn run_server_speed_test(&mut self, server_id: String) {
+        let Some(profile) = self
+            .server_profiles
+            .iter()
+            .find(|p| p.id == server_id)
+            .cloned()
+        else {
+            return;
+        };
+        self.server_speed_testing.insert(server_id.clone());
+        self.status_line = format!("Running speed test for {}...", profile.name);
+        let client = self.server_client.clone();
+        let int_tx = self.int_tx.clone();
+        tokio::spawn(async move {
+            let report = client.run_speed_test(&profile).await;
+            let _ = int_tx.send(InternalEvent::ServerSpeedTestFinished { server_id, report });
+        });
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn test_server_draft(
         &mut self,
@@ -1963,6 +2330,9 @@ impl BackendEngine {
         password: Option<String>,
         api_key: Option<String>,
         bearer_token: Option<String>,
+        share: Option<String>,
+        domain: Option<String>,
+        local_mount_path: Option<PathBuf>,
     ) {
         self.server_test_result = None;
         let http = self.http.clone();
@@ -1977,6 +2347,9 @@ impl BackendEngine {
                 password,
                 api_key,
                 bearer_token,
+                share,
+                domain,
+                local_mount_path,
             );
             let res = prepare_and_ping_server(&http, &mut profile).await;
             let _ = int_tx.send(InternalEvent::ServerTested {
@@ -1997,6 +2370,9 @@ impl BackendEngine {
         password: Option<String>,
         api_key: Option<String>,
         bearer_token: Option<String>,
+        share: Option<String>,
+        domain: Option<String>,
+        local_mount_path: Option<PathBuf>,
     ) {
         let mut profiles = self.server_profiles.clone();
         let paths = self.paths.clone();
@@ -2012,6 +2388,9 @@ impl BackendEngine {
                 password,
                 api_key,
                 bearer_token,
+                share,
+                domain,
+                local_mount_path,
             );
             let ping_res = prepare_and_ping_server(&http, &mut profile).await;
             let active_id = profile.id.clone();
@@ -2047,26 +2426,6 @@ impl BackendEngine {
                     });
                 }
             }
-        });
-    }
-
-    pub(super) fn test_server_profile(&mut self, server_id: String) {
-        let Some(mut profile) = self
-            .server_profiles
-            .iter()
-            .find(|p| p.id == server_id)
-            .cloned()
-        else {
-            return;
-        };
-        let http = self.http.clone();
-        let int_tx = self.int_tx.clone();
-        tokio::spawn(async move {
-            let res = prepare_and_ping_server(&http, &mut profile).await;
-            let _ = int_tx.send(InternalEvent::ServerTested {
-                server_id: Some(server_id),
-                result: res,
-            });
         });
     }
 
@@ -2187,6 +2546,21 @@ impl BackendEngine {
                 client.list_albums(&profile, lib_arg, None),
                 client.list_playlists(&profile),
             );
+            let tracks = if profile.kind == ServerKind::Smb {
+                if let Some(lid) = lib_arg {
+                    client
+                        .get_playlist_tracks(&profile, lid)
+                        .await
+                        .unwrap_or_default()
+                } else {
+                    client
+                        .get_playlist_tracks(&profile, ".")
+                        .await
+                        .unwrap_or_default()
+                }
+            } else {
+                Vec::new()
+            };
             let error = libs_res
                 .as_ref()
                 .err()
@@ -2201,7 +2575,7 @@ impl BackendEngine {
                 artists: artists_res.unwrap_or_default(),
                 albums: albums_res.unwrap_or_default(),
                 playlists: playlists_res.unwrap_or_default(),
-                tracks: Vec::new(),
+                tracks,
                 error,
             });
         });
@@ -2218,6 +2592,9 @@ fn build_server_profile(
     password: Option<String>,
     api_key: Option<String>,
     bearer_token: Option<String>,
+    share: Option<String>,
+    domain: Option<String>,
+    local_mount_path: Option<PathBuf>,
 ) -> ServerProfile {
     let clean_name = if name.trim().is_empty() {
         kind.display_name().to_string()
@@ -2256,6 +2633,9 @@ fn build_server_profile(
     profile.password = opt(password);
     profile.api_key = opt(api_key);
     profile.bearer_token = opt(bearer_token);
+    profile.share = opt(share);
+    profile.domain = opt(domain);
+    profile.local_mount_path = local_mount_path.filter(|p| !p.as_os_str().is_empty());
     profile
 }
 
@@ -2263,7 +2643,9 @@ async fn prepare_and_ping_server(
     http: &reqwest::Client,
     profile: &mut ServerProfile,
 ) -> Result<String, String> {
-    if profile.normalized_base_url().is_empty() {
+    if profile.normalized_base_url().is_empty()
+        && !(profile.kind == ServerKind::Smb && profile.local_mount_path.is_some())
+    {
         return Err("Server URL is required".to_string());
     }
     if profile.kind == ServerKind::Jellyfin

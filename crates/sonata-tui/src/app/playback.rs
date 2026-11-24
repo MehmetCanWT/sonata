@@ -180,24 +180,51 @@ impl App {
                 self.sync_discord_rpc();
                 if was_initial_start {
                     self.status_line.clear();
-                    if !track
-                        .id
-                        .starts_with(sonata_core::providers::jiosaavn::ID_PREFIX)
-                        && !track.is_self_hosted()
-                    {
-                        let ytm = self.ytm.clone();
-                        let vid = track.id.clone();
-                        let duration = track.duration_secs;
-                        tokio::spawn(async move {
-                            if let Err(err) = ytm.report_playback(&vid, None, duration).await {
-                                tracing::debug!(
-                                    client = "tui",
-                                    track_id = %vid,
-                                    error = %err,
-                                    "ytm playback reporting failed"
-                                );
+                    if !self.config.personal_only_mode && self.ytm.is_authenticated() {
+                        if sonata_core::playlists::is_personal_track_id(&track.id) {
+                            if self.config.effective_attribute_personal_to_ytm() {
+                                let ytm = self.ytm.clone();
+                                let attr_track = track.clone();
+                                tokio::spawn(async move {
+                                    match ytm.attribute_personal_track_to_ytm(&attr_track).await {
+                                        Ok(Some(vid)) => {
+                                            tracing::debug!(
+                                                client = "tui",
+                                                track_id = %attr_track.id,
+                                                ytm_video_id = %vid,
+                                                "personal track attributed to ytm"
+                                            );
+                                        }
+                                        Ok(None) => {}
+                                        Err(err) => {
+                                            tracing::debug!(
+                                                client = "tui",
+                                                track_id = %attr_track.id,
+                                                error = %err,
+                                                "ytm personal attribution failed"
+                                            );
+                                        }
+                                    }
+                                });
                             }
-                        });
+                        } else if !track
+                            .id
+                            .starts_with(sonata_core::providers::jiosaavn::ID_PREFIX)
+                        {
+                            let ytm = self.ytm.clone();
+                            let vid = track.id.clone();
+                            let duration = track.duration_secs;
+                            tokio::spawn(async move {
+                                if let Err(err) = ytm.report_playback(&vid, None, duration).await {
+                                    tracing::debug!(
+                                        client = "tui",
+                                        track_id = %vid,
+                                        error = %err,
+                                        "ytm playback reporting failed"
+                                    );
+                                }
+                            });
+                        }
                     }
                 }
                 self.start_cover_enrichment();
@@ -333,7 +360,8 @@ impl App {
             }
             SessionEvent::TrackEnded { .. } => {}
             SessionEvent::QueueFinished { .. } => {
-                if self.config.autoplay
+                if !self.config.personal_only_mode
+                    && self.config.autoplay
                     && self.playback.repeat == RepeatMode::Off
                     && !self.playback.queue.is_empty()
                 {
@@ -795,6 +823,30 @@ impl App {
         if self.visible_tracks.is_empty() || selected >= self.visible_tracks.len() {
             return;
         }
+        if self.config.personal_only_mode {
+            let track = &self.visible_tracks[selected];
+            let is_downloaded = self.downloaded_track_ids.contains(&track.id);
+            if !super::can_play_tui_track(track, true, is_downloaded) {
+                self.status_line =
+                    "Personal Only Mode active: streaming tracks are disabled".to_string();
+                return;
+            }
+            let filtered: Vec<Track> = self
+                .visible_tracks
+                .iter()
+                .filter(|t| {
+                    super::can_play_tui_track(t, true, self.downloaded_track_ids.contains(&t.id))
+                })
+                .cloned()
+                .collect();
+            let start_index = filtered.iter().position(|t| t.id == track.id).unwrap_or(0);
+            self.enqueue_session_cmd(SessionCommand::PlayQueue {
+                tracks: filtered,
+                start_index,
+                push_history: false,
+            });
+            return;
+        }
         self.enqueue_session_cmd(SessionCommand::PlayQueue {
             tracks: self.visible_tracks.clone(),
             start_index: selected,
@@ -1047,8 +1099,13 @@ impl App {
         let art_url = track.and_then(|t| t.thumbnail_url.as_deref());
         let art_path = cached_art_path.or_else(|| {
             art_url
-                .map(media::art_cache_path)
-                .filter(|p| p.exists())
+                .and_then(|u| {
+                    u.strip_prefix("file://")
+                        .map(std::path::PathBuf::from)
+                        .or_else(|| u.starts_with('/').then(|| std::path::PathBuf::from(u)))
+                        .filter(|p| p.exists())
+                })
+                .or_else(|| art_url.map(media::art_cache_path).filter(|p| p.exists()))
                 .map(|p| p.to_string_lossy().into_owned())
         });
 
@@ -1094,10 +1151,14 @@ impl App {
 
     fn discord_track_info(track: &Track) -> sonata_runtime::discord::DiscordTrackInfo {
         let mut info = sonata_runtime::discord::DiscordTrackInfo::from_track(track);
-        if track.is_self_hosted() {
+        if sonata_core::playlists::is_personal_track_id(&track.id) {
             info.listen_url = None;
             info.buttons.clear();
-            if track.thumbnail_url.is_none() {
+            if track
+                .thumbnail_url
+                .as_deref()
+                .is_none_or(|u| u.starts_with('/') || u.starts_with("file://"))
+            {
                 info.artwork_url = None;
             }
         }

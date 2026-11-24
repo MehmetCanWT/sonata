@@ -144,7 +144,13 @@ impl MediaCache {
         on_ready: impl FnOnce(&mut App) + Send + 'static,
     ) -> Option<CachedMedia> {
         let u = url.filter(|s| !s.is_empty())?;
-        let path = art_cache_path(u);
+        let path = if let Some(plain) = u.strip_prefix("file://") {
+            PathBuf::from(plain)
+        } else if u.starts_with('/') {
+            PathBuf::from(u)
+        } else {
+            art_cache_path(u)
+        };
         self.get_for_path(&path, cx, on_ready)
     }
 

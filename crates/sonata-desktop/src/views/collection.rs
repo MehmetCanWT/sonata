@@ -541,14 +541,18 @@ impl SonataDesktopView {
                                     })),
                             )
                             .when(editable && !is_liked, |row| {
+                                let s = sonata_runtime::i18n::strings(self.settings.language);
                                 let pid_edit =
                                     self.snapshot.playlist_id.clone().unwrap_or_default();
+                                let pid_del = pid_edit.clone();
+                                let is_personal_pl = pid_edit
+                                    .starts_with(sonata_core::playlists::PERSONAL_PLAYLIST_ID_PREFIX);
                                 let cur_title = self.snapshot.playlist_heading.clone();
                                 row.child(
                                     Button::new("pl-edit")
                                         .secondary()
                                         .icon(IconName::Pencil)
-                                        .tooltip("Edit playlist title & cover")
+                                        .tooltip(s.rename)
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             if !pid_edit.is_empty() {
                                                 this.modal = DesktopModal::EditPlaylist {
@@ -563,6 +567,22 @@ impl SonataDesktopView {
                                             }
                                         })),
                                 )
+                                .when(is_personal_pl, |r| {
+                                    r.child(
+                                        Button::new("pl-delete-personal")
+                                            .danger()
+                                            .icon(IconName::Trash)
+                                            .label(s.delete)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.backend.send(
+                                                    BackendCmd::DeletePersonalPlaylist(
+                                                        pid_del.clone(),
+                                                    ),
+                                                );
+                                                cx.notify();
+                                            })),
+                                    )
+                                })
                             })
                             .when(!editable && !is_liked, |row| {
                                 let s = sonata_runtime::i18n::strings(self.settings.language);

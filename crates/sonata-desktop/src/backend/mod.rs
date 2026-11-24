@@ -12,7 +12,10 @@ mod types;
 pub use sonata_core::providers::ytmusic::{
     AlbumDetail, MoodCategoryTile, MoodChip, RichSearchResult,
 };
-pub use types::{BackendCmd, BackendHandle, DesktopSnapshot, NavTarget, UiWindowCmd};
+pub use types::{
+    can_play_track_in_mode, format_server_health_badge, format_server_speed_badge, BackendCmd,
+    BackendHandle, DesktopSnapshot, LibrarySource, NavTarget, UiWindowCmd,
+};
 
 use crate::integrations::mpris::{spawn_mpris, MprisUpdate};
 use crate::integrations::tray::{spawn_tray, TrayHandle, TrayState};
@@ -22,11 +25,16 @@ use sonata_core::cache::{enforce_media_cache_limit_async, start_media_cache_main
 use sonata_core::lyrics::LyricsState;
 use sonata_core::paths::CorePaths;
 use sonata_core::player::{PlaybackState, PlaybackTaskSet};
+use sonata_core::playlists::{
+    PersonalPlaylist, PersonalPlaylistStore, PERSONAL_PLAYLIST_ID_PREFIX,
+};
 use sonata_core::providers::hifi::{
     FastStartMode, ResolvedMusicVideo, ResolverProfile, StreamFallbackMode, UpgradeDelivery,
 };
+use sonata_core::providers::local::LocalScanResult;
 use sonata_core::providers::servers::{
-    load_server_profiles, ServerClient, ServerLibrary, ServerProfile,
+    load_server_profiles, ServerClient, ServerHealthReport, ServerLibrary, ServerProfile,
+    ServerSpeedTestReport,
 };
 use sonata_core::providers::ytmusic::{
     ArtistPage, HomeShelf, MusicVideoCandidate, YtAccountProfile, YtMusicClient,
@@ -61,7 +69,7 @@ pub(super) fn linux_resolver_profile(config: &AppConfig) -> ResolverProfile {
         upgrade_delivery: UpgradeDelivery::CacheBeforeReturn,
         fallback: StreamFallbackMode::ExternalTool,
         bootstrap_timeout: Duration::from_millis(2400),
-        jiosaavn_enabled: config.jiosaavn_enabled,
+        jiosaavn_enabled: config.effective_jiosaavn_enabled(),
         cache_limit_bytes: config.cache_limit_bytes(),
     }
 }
@@ -102,6 +110,9 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
         .map(|t| t.track_id.clone())
         .collect();
     let server_profiles = load_server_profiles(&paths).unwrap_or_default();
+    let personal_playlists = PersonalPlaylistStore::new(&paths)
+        .list()
+        .unwrap_or_default();
     let active_server_id = server_profiles
         .iter()
         .find(|p| p.enabled)
@@ -112,11 +123,21 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
     } else {
         DiscordRpcStatus::Disabled
     };
+    let initial_nav = if config.personal_only_mode {
+        NavTarget::Library
+    } else {
+        NavTarget::Home
+    };
+    let initial_status = if config.personal_only_mode {
+        "Personal Only Mode active".to_string()
+    } else {
+        "Loading YouTube Music home...".to_string()
+    };
 
     let initial_snapshot = Arc::new(DesktopSnapshot {
         config: config.clone(),
-        active_nav: NavTarget::Home,
-        status_line: "Loading YouTube Music home...".to_string(),
+        active_nav: initial_nav,
+        status_line: initial_status,
         available_browsers: available_browsers.clone(),
         signed_in_browser: initial_browser.clone(),
         user_profile: None,
@@ -130,7 +151,7 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
         home_chips: Vec::new(),
         active_home_chip: None,
         home_shelves: Vec::new(),
-        home_loading: true,
+        home_loading: !config.personal_only_mode,
         home_error: None,
         explore_shelves: Vec::new(),
         mood_tiles: Vec::new(),
@@ -140,7 +161,7 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
         mood_page_loading: false,
         shelf_detail: None,
         radio_shelves: Vec::new(),
-        radio_loading: true,
+        radio_loading: !config.personal_only_mode,
         history_tracks: Vec::new(),
         history_loading: false,
         last_played_tracks: Vec::new(),
@@ -203,6 +224,9 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
         discord_status: initial_discord_status,
         server_profiles: server_profiles.clone(),
         server_statuses: HashMap::new(),
+        server_health: HashMap::new(),
+        server_speed_tests: HashMap::new(),
+        server_speed_testing: HashSet::new(),
         active_server_id: active_server_id.clone(),
         server_libraries: Vec::new(),
         server_artists: Vec::new(),
@@ -212,6 +236,9 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
         server_current_folder: None,
         server_loading: false,
         server_test_result: None,
+        local_scan: LocalScanResult::default(),
+        local_scanning: config.local_music_enabled,
+        personal_playlists: personal_playlists.clone(),
     });
 
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -245,6 +272,7 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
                 downloaded_track_ids,
                 downloads_total_bytes,
                 server_profiles,
+                personal_playlists,
                 active_server_id,
                 cmd_tx_thread,
                 cmd_rx,
@@ -384,6 +412,9 @@ struct BackendEngine {
     pub(super) server_client: ServerClient,
     pub(super) server_profiles: Vec<ServerProfile>,
     pub(super) server_statuses: HashMap<String, String>,
+    pub(super) server_health: HashMap<String, ServerHealthReport>,
+    pub(super) server_speed_tests: HashMap<String, ServerSpeedTestReport>,
+    pub(super) server_speed_testing: HashSet<String>,
     pub(super) active_server_id: Option<String>,
     pub(super) server_libraries: Vec<ServerLibrary>,
     pub(super) server_artists: Vec<sonata_core::providers::ytmusic::HomeCard>,
@@ -394,6 +425,10 @@ struct BackendEngine {
     pub(super) server_loading: bool,
     pub(super) server_req_id: u64,
     pub(super) server_test_result: Option<Result<String, String>>,
+    pub(super) local_scan: LocalScanResult,
+    pub(super) local_scanning: bool,
+    pub(super) local_scan_req_id: u64,
+    pub(super) personal_playlists: Vec<PersonalPlaylist>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -410,6 +445,7 @@ async fn run_backend_loop(
     downloaded_track_ids: HashSet<String>,
     downloads_total_bytes: u64,
     server_profiles: Vec<ServerProfile>,
+    personal_playlists: Vec<PersonalPlaylist>,
     active_server_id: Option<String>,
     cmd_tx: mpsc::UnboundedSender<BackendCmd>,
     mut cmd_rx: mpsc::UnboundedReceiver<BackendCmd>,
@@ -464,7 +500,7 @@ async fn run_backend_loop(
     session_cfg.initial_repeat = config.repeat_mode;
     session_cfg.policy = SessionPolicy {
         hifi_substitution: config.hifi_substitution,
-        jiosaavn_enabled: config.jiosaavn_enabled,
+        jiosaavn_enabled: config.effective_jiosaavn_enabled(),
         cache_enabled: config.cache_limit_gb > 0,
     };
     let PlaybackSession {
@@ -496,6 +532,12 @@ async fn run_backend_loop(
         let _ = session.send(SessionCommand::SetSkipSilence(true)).await;
     }
 
+    let personal_only_startup = config.personal_only_mode;
+    let initial_nav_loop = if personal_only_startup {
+        NavTarget::Library
+    } else {
+        NavTarget::Home
+    };
     let mut engine = BackendEngine {
         config,
         paths,
@@ -520,7 +562,7 @@ async fn run_backend_loop(
         active_queue_playlist_id: None,
         prefetched_autoplay_seed: None,
         prefetched_autoplay_tracks: Vec::new(),
-        active_nav: NavTarget::Home,
+        active_nav: initial_nav_loop,
         status_line: initial_status,
         available_browsers,
         signed_in_browser: initial_browser.clone(),
@@ -535,7 +577,7 @@ async fn run_backend_loop(
         home_chips: Vec::new(),
         active_home_chip: None,
         home_shelves: Vec::new(),
-        home_loading: true,
+        home_loading: !personal_only_startup,
         home_error: None,
         explore_shelves: Vec::new(),
         mood_tiles: Vec::new(),
@@ -545,7 +587,7 @@ async fn run_backend_loop(
         mood_page_loading: false,
         shelf_detail: None,
         radio_shelves: Vec::new(),
-        radio_loading: true,
+        radio_loading: !personal_only_startup,
         history_tracks: Vec::new(),
         history_loading: false,
         last_played_tracks: Vec::new(),
@@ -618,6 +660,9 @@ async fn run_backend_loop(
         server_client,
         server_profiles,
         server_statuses: HashMap::new(),
+        server_health: HashMap::new(),
+        server_speed_tests: HashMap::new(),
+        server_speed_testing: HashSet::new(),
         active_server_id: active_server_id.clone(),
         server_libraries: Vec::new(),
         server_artists: Vec::new(),
@@ -628,10 +673,18 @@ async fn run_backend_loop(
         server_loading: false,
         server_req_id: 0,
         server_test_result: None,
+        local_scan: LocalScanResult::default(),
+        local_scanning: false,
+        local_scan_req_id: 0,
+        personal_playlists,
     };
 
     if let Some(sid) = active_server_id {
         engine.load_server_browse(sid, None, None);
+    }
+    engine.probe_all_server_health();
+    if engine.config.local_music_enabled {
+        engine.scan_local_music();
     }
 
     let cached_playlist_thumbs: Vec<String> = engine
@@ -643,12 +696,16 @@ async fn run_backend_loop(
         engine.prefetch_thumbnails(cached_playlist_thumbs);
     }
 
-    if let Some(browser_id) = initial_browser {
-        engine.start_sign_in(browser_id);
+    if !engine.config.personal_only_mode {
+        if let Some(browser_id) = initial_browser {
+            engine.start_sign_in(browser_id);
+        } else {
+            engine.load_home_feed();
+            engine.load_explore();
+            engine.load_radio_mixes();
+        }
     } else {
-        engine.load_home_feed();
-        engine.load_explore();
-        engine.load_radio_mixes();
+        engine.status_line = "Personal Only Mode active".to_string();
     }
     engine.spawn_update_check();
     engine.sync_hyprland_opacity(None);
@@ -723,7 +780,7 @@ impl BackendEngine {
     fn session_policy(&self) -> SessionPolicy {
         SessionPolicy {
             hifi_substitution: self.config.hifi_substitution,
-            jiosaavn_enabled: self.config.jiosaavn_enabled,
+            jiosaavn_enabled: self.config.effective_jiosaavn_enabled(),
             cache_enabled: self.config.cache_limit_gb > 0,
         }
     }
@@ -733,18 +790,33 @@ impl BackendEngine {
             BackendCmd::Navigate(target) => {
                 self.active_nav = target.clone();
                 match target {
-                    NavTarget::Home if self.home_shelves.is_empty() && !self.home_loading => {
+                    NavTarget::Home
+                        if !self.config.personal_only_mode
+                            && self.home_shelves.is_empty()
+                            && !self.home_loading =>
+                    {
                         self.load_home_feed();
                     }
                     NavTarget::Explore
-                        if self.explore_shelves.is_empty() && !self.explore_loading =>
+                        if !self.config.personal_only_mode
+                            && self.explore_shelves.is_empty()
+                            && !self.explore_loading =>
                     {
                         self.load_explore();
                     }
                     NavTarget::Library => {
                         self.refresh_downloads();
-                        if self.library_albums.is_empty() && !self.library_extras_loading {
+                        if !self.config.personal_only_mode
+                            && self.library_albums.is_empty()
+                            && !self.library_extras_loading
+                        {
                             self.load_library_extras();
+                        }
+                        if self.config.local_music_enabled
+                            && self.local_scan.tracks.is_empty()
+                            && !self.local_scanning
+                        {
+                            self.scan_local_music();
                         }
                         if self.active_server_id.is_some()
                             && self.server_libraries.is_empty()
@@ -757,14 +829,39 @@ impl BackendEngine {
                             }
                         }
                     }
-                    NavTarget::History if self.history_tracks.is_empty() => {
+                    NavTarget::History
+                        if !self.config.personal_only_mode && self.history_tracks.is_empty() =>
+                    {
                         self.load_listening_history();
                     }
-                    NavTarget::Radio if self.radio_shelves.is_empty() && !self.radio_loading => {
+                    NavTarget::Radio
+                        if !self.config.personal_only_mode
+                            && self.radio_shelves.is_empty()
+                            && !self.radio_loading =>
+                    {
                         self.load_radio_mixes();
                     }
                     NavTarget::Playlist(pl_id) => {
-                        if let Some(pl) = self.ytm_playlists.iter().find(|p| p.id == pl_id).cloned()
+                        if pl_id.starts_with(PERSONAL_PLAYLIST_ID_PREFIX) {
+                            if let Some(pl) = self
+                                .personal_playlists
+                                .iter()
+                                .find(|p| p.id == pl_id)
+                                .cloned()
+                            {
+                                let s = sonata_runtime::i18n::strings(self.ytm_language);
+                                let thumb = pl.tracks.iter().find_map(|t| t.thumbnail_url.clone());
+                                self.open_collection(
+                                    pl.id,
+                                    pl.name,
+                                    s.personal_playlists.to_string(),
+                                    thumb,
+                                    true,
+                                    false,
+                                );
+                            }
+                        } else if let Some(pl) =
+                            self.ytm_playlists.iter().find(|p| p.id == pl_id).cloned()
                         {
                             let subtitle = if pl.id == "VLLM" {
                                 "Your liked YouTube Music tracks".to_string()
@@ -895,6 +992,40 @@ impl BackendEngine {
                 if tracks.is_empty() {
                     return;
                 }
+                let tracks = if self.config.personal_only_mode {
+                    let target = tracks.get(start_index).cloned();
+                    if let Some(ref clicked) = target {
+                        if !can_play_track_in_mode(
+                            clicked,
+                            true,
+                            self.downloaded_track_ids.contains(&clicked.id),
+                        ) {
+                            self.status_line =
+                                "Personal Only Mode is active — streaming playback is disabled"
+                                    .to_string();
+                            return;
+                        }
+                    }
+                    let filtered: Vec<Track> = tracks
+                        .into_iter()
+                        .filter(|t| {
+                            can_play_track_in_mode(
+                                t,
+                                true,
+                                self.downloaded_track_ids.contains(&t.id),
+                            )
+                        })
+                        .collect();
+                    if filtered.is_empty() {
+                        self.status_line =
+                            "Personal Only Mode is active — no playable local or server tracks"
+                                .to_string();
+                        return;
+                    }
+                    filtered
+                } else {
+                    tracks
+                };
                 self.active_queue_playlist_id = match self.active_nav {
                     NavTarget::Playlist(ref pid) => Some(pid.clone()),
                     NavTarget::Album(ref aid) => Some(aid.clone()),
@@ -923,6 +1054,20 @@ impl BackendEngine {
                     .await;
             }
             BackendCmd::PlayQueueIndex(idx) => {
+                if self.config.personal_only_mode {
+                    if let Some(tr) = self.playback.queue.get(idx) {
+                        if !can_play_track_in_mode(
+                            tr,
+                            true,
+                            self.downloaded_track_ids.contains(&tr.id),
+                        ) {
+                            self.status_line =
+                                "Personal Only Mode is active — streaming playback is disabled"
+                                    .to_string();
+                            return;
+                        }
+                    }
+                }
                 let _ = self
                     .session
                     .send(SessionCommand::PlayIndex {
@@ -932,12 +1077,30 @@ impl BackendEngine {
                     .await;
             }
             BackendCmd::PlayTrackNext(track) => {
+                if !can_play_track_in_mode(
+                    &track,
+                    self.config.personal_only_mode,
+                    self.downloaded_track_ids.contains(&track.id),
+                ) {
+                    self.status_line =
+                        "Personal Only Mode is active — streaming playback is disabled".to_string();
+                    return;
+                }
                 let _ = self
                     .session
                     .send(SessionCommand::PlayTrackNext(track))
                     .await;
             }
             BackendCmd::AddTrackToQueue(track) => {
+                if !can_play_track_in_mode(
+                    &track,
+                    self.config.personal_only_mode,
+                    self.downloaded_track_ids.contains(&track.id),
+                ) {
+                    self.status_line =
+                        "Personal Only Mode is active — streaming playback is disabled".to_string();
+                    return;
+                }
                 let _ = self
                     .session
                     .send(SessionCommand::AddTrackToQueue(track))
@@ -1069,20 +1232,116 @@ impl BackendEngine {
             }
             BackendCmd::ToggleJioSaavn => {
                 self.config.jiosaavn_enabled = !self.config.jiosaavn_enabled;
-                let enabled = self.config.jiosaavn_enabled;
+                let effective = self.config.effective_jiosaavn_enabled();
                 self.resolver
-                    .update_profile(|profile| profile.jiosaavn_enabled = enabled);
+                    .update_profile(|profile| profile.jiosaavn_enabled = effective);
                 let _ = self.config.save();
                 let _ = self
                     .session
                     .send(SessionCommand::UpdatePolicy {
                         policy: self.session_policy(),
-                        trigger_upgrade: enabled,
+                        trigger_upgrade: effective,
                     })
                     .await;
                 self.status_line = format!(
                     "JioSaavn 320kbps module: {}",
-                    if self.config.jiosaavn_enabled {
+                    if self.config.personal_only_mode && self.config.jiosaavn_enabled {
+                        "Saved On (paused in Personal Only Mode)"
+                    } else if self.config.jiosaavn_enabled {
+                        "Enabled"
+                    } else {
+                        "Disabled"
+                    }
+                );
+            }
+            BackendCmd::TogglePersonalOnlyMode => {
+                self.config.personal_only_mode = !self.config.personal_only_mode;
+                let effective_jio = self.config.effective_jiosaavn_enabled();
+                self.resolver
+                    .update_profile(|profile| profile.jiosaavn_enabled = effective_jio);
+                let _ = self.config.save();
+                let _ = self
+                    .session
+                    .send(SessionCommand::UpdatePolicy {
+                        policy: self.session_policy(),
+                        trigger_upgrade: false,
+                    })
+                    .await;
+                if self.config.personal_only_mode {
+                    self.home_loading = false;
+                    self.explore_loading = false;
+                    self.radio_loading = false;
+                    self.library_extras_loading = false;
+                    self.prefetched_autoplay_seed = None;
+                    self.prefetched_autoplay_tracks.clear();
+                    if let Some(cur) = self.playback.current_track() {
+                        if !can_play_track_in_mode(
+                            cur,
+                            true,
+                            self.downloaded_track_ids.contains(&cur.id),
+                        ) {
+                            let _ = self.session.send(SessionCommand::Stop).await;
+                        }
+                    }
+                    self.status_line =
+                        "Personal Only Mode enabled (streaming preferences preserved)".to_string();
+                } else {
+                    self.status_line = "Streaming restored".to_string();
+                    if !self.ytm.is_authenticated() {
+                        if let Some(browser_id) = self.config.desktop_ytm_browser.clone() {
+                            self.start_sign_in(browser_id);
+                        } else {
+                            self.load_home_feed();
+                            self.load_explore();
+                            self.load_radio_mixes();
+                        }
+                    } else {
+                        self.load_home_feed();
+                        self.load_explore();
+                        self.load_radio_mixes();
+                        self.load_library_extras();
+                        self.load_listening_history();
+                    }
+                }
+            }
+            BackendCmd::ToggleLocalMusicEnabled => {
+                self.config.local_music_enabled = !self.config.local_music_enabled;
+                let _ = self.config.save();
+                if self.config.local_music_enabled {
+                    self.scan_local_music();
+                } else {
+                    self.local_scanning = false;
+                    self.local_scan = LocalScanResult::default();
+                    self.status_line = "Local Music disabled".to_string();
+                }
+            }
+            BackendCmd::AddLocalMusicDir(dir) => {
+                let trimmed = dir.to_string_lossy().trim().to_string();
+                if !trimmed.is_empty() {
+                    let path = PathBuf::from(trimmed);
+                    if !self.config.local_music_dirs.contains(&path) {
+                        self.config.local_music_dirs.push(path);
+                        let _ = self.config.save();
+                    }
+                    self.scan_local_music();
+                }
+            }
+            BackendCmd::RemoveLocalMusicDir(dir) => {
+                self.config.local_music_dirs.retain(|d| d != &dir);
+                let _ = self.config.save();
+                if self.config.local_music_enabled {
+                    self.scan_local_music();
+                }
+            }
+            BackendCmd::ScanLocalMusic => {
+                self.scan_local_music();
+            }
+            BackendCmd::ToggleAttributePersonalToYtm => {
+                self.config.scrobble_servers_to_ytm = !self.config.scrobble_servers_to_ytm;
+                let _ = self.config.save();
+                self.status_line = format!(
+                    "Report local/server plays to YouTube Music: {}",
+                    if self.config.scrobble_servers_to_ytm {
                         "Enabled"
                     } else {
                         "Disabled"
@@ -1270,6 +1529,12 @@ impl BackendEngine {
             BackendCmd::CreateYtmPlaylist(title) => {
                 self.create_ytm_playlist(&title);
             }
+            BackendCmd::CreatePersonalPlaylist(title) => {
+                self.create_personal_playlist(&title);
+            }
+            BackendCmd::DeletePersonalPlaylist(playlist_id) => {
+                self.delete_personal_playlist(&playlist_id);
+            }
             BackendCmd::EditPlaylist {
                 playlist_id,
                 title,
@@ -1283,6 +1548,9 @@ impl BackendEngine {
                 playlist_name,
             } => {
                 self.add_track_to_playlist(track, playlist_id, playlist_name);
+            }
+            BackendCmd::AddTrackToPersonalPlaylist { track, playlist_id } => {
+                self.add_track_to_personal_playlist(track, playlist_id);
             }
             BackendCmd::RemoveTrackFromPlaylist(idx) => {
                 self.remove_track_from_playlist(idx);
@@ -1364,6 +1632,7 @@ impl BackendEngine {
                 if let Some(sid) = self.active_server_id.clone() {
                     self.load_server_browse(sid, None, None);
                 }
+                self.probe_all_server_health();
             }
             BackendCmd::SaveServerProfile {
                 id,
@@ -1374,6 +1643,9 @@ impl BackendEngine {
                 password,
                 api_key,
                 bearer_token,
+                share,
+                domain,
+                local_mount_path,
             } => {
                 self.save_server_profile(
                     id,
@@ -1384,6 +1656,9 @@ impl BackendEngine {
                     password,
                     api_key,
                     bearer_token,
+                    share,
+                    domain,
+                    local_mount_path,
                 );
             }
             BackendCmd::TestServerDraft {
@@ -1394,6 +1669,9 @@ impl BackendEngine {
                 password,
                 api_key,
                 bearer_token,
+                share,
+                domain,
+                local_mount_path,
             } => {
                 self.test_server_draft(
                     name,
@@ -1403,10 +1681,16 @@ impl BackendEngine {
                     password,
                     api_key,
                     bearer_token,
+                    share,
+                    domain,
+                    local_mount_path,
                 );
             }
-            BackendCmd::TestServerProfile(server_id) => {
-                self.test_server_profile(server_id);
+            BackendCmd::ProbeServerHealth(server_id) => {
+                self.probe_server_health(server_id);
+            }
+            BackendCmd::RunServerSpeedTest(server_id) => {
+                self.run_server_speed_test(server_id);
             }
             BackendCmd::ToggleServerEnabled(server_id) => {
                 self.toggle_server_enabled(server_id);
@@ -2254,7 +2538,42 @@ impl BackendEngine {
                 self.active_server_id = Some(active_id.clone());
                 self.server_test_result = Some(Ok(message.clone()));
                 self.status_line = message;
+                self.probe_server_health(active_id.clone());
                 self.load_server_browse(active_id, None, None);
+            }
+            InternalEvent::ServerHealthProbed { server_id, report } => {
+                self.server_statuses
+                    .insert(server_id.clone(), format_server_health_badge(&report));
+                self.server_health.insert(server_id, report);
+            }
+            InternalEvent::ServerSpeedTestFinished { server_id, report } => {
+                self.server_speed_testing.remove(&server_id);
+                let badge = format_server_speed_badge(&report);
+                self.server_statuses
+                    .insert(server_id.clone(), badge.clone());
+                self.status_line = format!("Speed test: {badge}");
+                self.server_speed_tests.insert(server_id, report);
+            }
+            InternalEvent::LocalMusicScanned(scan) => {
+                self.local_scanning = false;
+                let track_count = scan.tracks.len();
+                let album_count = scan.albums.len();
+                self.local_scan = scan;
+                if self.config.local_music_enabled {
+                    self.status_line =
+                        format!("Local Music: {track_count} tracks across {album_count} albums");
+                }
+            }
+            InternalEvent::PersonalPlaylistsLoaded(playlists) => {
+                self.personal_playlists = playlists;
+                if let Some(pid) = self.playlist_id.clone() {
+                    if pid.starts_with(PERSONAL_PLAYLIST_ID_PREFIX) {
+                        if let Some(pl) = self.personal_playlists.iter().find(|p| p.id == pid) {
+                            self.playlist_heading = pl.name.clone();
+                            self.playlist_tracks = pl.tracks.clone();
+                        }
+                    }
+                }
             }
             InternalEvent::ServerBrowseLoaded {
                 req_id,
@@ -2438,6 +2757,9 @@ impl BackendEngine {
             discord_status: self.discord_rpc.status(),
             server_profiles: self.server_profiles.clone(),
             server_statuses: self.server_statuses.clone(),
+            server_health: self.server_health.clone(),
+            server_speed_tests: self.server_speed_tests.clone(),
+            server_speed_testing: self.server_speed_testing.clone(),
             active_server_id: self.active_server_id.clone(),
             server_libraries: self.server_libraries.clone(),
             server_artists: self.server_artists.clone(),
@@ -2447,6 +2769,9 @@ impl BackendEngine {
             server_current_folder: self.server_current_folder.clone(),
             server_loading: self.server_loading,
             server_test_result: self.server_test_result.clone(),
+            local_scan: self.local_scan.clone(),
+            local_scanning: self.local_scanning,
+            personal_playlists: self.personal_playlists.clone(),
         });
 
         if self.window_visible {
@@ -2635,6 +2960,9 @@ mod tests {
             discord_status: DiscordRpcStatus::Disconnected,
             server_profiles: Vec::new(),
             server_statuses: HashMap::new(),
+            server_health: HashMap::new(),
+            server_speed_tests: HashMap::new(),
+            server_speed_testing: HashSet::new(),
             active_server_id: None,
             server_libraries: Vec::new(),
             server_artists: Vec::new(),
@@ -2644,6 +2972,9 @@ mod tests {
             server_current_folder: None,
             server_loading: false,
             server_test_result: None,
+            local_scan: LocalScanResult::default(),
+            local_scanning: false,
+            personal_playlists: Vec::new(),
         }));
         let (_progress_tx, progress_rx) = watch::channel((0.0_f64, 0.0_f64));
         let handle = BackendHandle {

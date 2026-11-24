@@ -26,6 +26,10 @@ impl SonataDesktopView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if self.snapshot.config.personal_only_mode {
+            let s = sonata_runtime::i18n::strings(self.settings.language);
+            return self.render_personal_only_notice(s.explore, cx);
+        }
         let vp_w: f32 = window.viewport_size().width.into();
         let (sb_w, rp_w) = self.settings.resolve_shell_widths(vp_w);
         let content_w = (vp_w - sb_w - rp_w - 64.0).max(320.0);
@@ -397,6 +401,10 @@ impl SonataDesktopView {
     }
 
     pub fn render_radio_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        if self.snapshot.config.personal_only_mode {
+            let s = sonata_runtime::i18n::strings(self.settings.language);
+            return self.render_personal_only_notice(s.radio, cx);
+        }
         let vp_w: f32 = window.viewport_size().width.into();
         let (sb_w, rp_w) = self.settings.resolve_shell_widths(vp_w);
         let content_w = (vp_w - sb_w - rp_w - 64.0).max(320.0);

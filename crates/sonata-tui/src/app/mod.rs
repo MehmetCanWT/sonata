@@ -54,7 +54,7 @@ fn linux_resolver_profile(config: &AppConfig) -> ResolverProfile {
         upgrade_delivery: UpgradeDelivery::CacheBeforeReturn,
         fallback: StreamFallbackMode::ExternalTool,
         bootstrap_timeout: Duration::from_millis(2400),
-        jiosaavn_enabled: config.jiosaavn_enabled,
+        jiosaavn_enabled: config.effective_jiosaavn_enabled(),
         cache_limit_bytes: config.cache_limit_bytes(),
     }
 }
@@ -154,6 +154,15 @@ pub struct App {
     pub server_folders: Vec<String>,
     pub server_loading: bool,
     pub server_error: Option<String>,
+    pub active_source: TuiLibrarySource,
+    pub personal_playlists: Vec<sonata_core::playlists::PersonalPlaylist>,
+    pub local_scan: sonata_core::providers::local::LocalScanResult,
+    pub local_scanning: bool,
+    pub server_health:
+        std::collections::HashMap<String, sonata_core::providers::servers::ServerHealthReport>,
+    pub server_speed_tests:
+        std::collections::HashMap<String, sonata_core::providers::servers::ServerSpeedTestReport>,
+    pub server_speed_testing: std::collections::HashSet<String>,
 }
 
 impl App {
@@ -192,6 +201,17 @@ impl App {
         let server_client = sonata_core::providers::servers::ServerClient::new(http.clone());
         let server_profiles =
             sonata_core::providers::servers::load_server_profiles(&paths).unwrap_or_default();
+        let personal_playlists = sonata_core::playlists::PersonalPlaylistStore::new(&paths)
+            .list()
+            .unwrap_or_default();
+        let active_source = compute_tui_library_sources(
+            config.streaming_enabled(),
+            config.local_music_enabled,
+            &server_profiles,
+        )
+        .into_iter()
+        .next()
+        .unwrap_or(TuiLibrarySource::Local);
         let ytm =
             YtMusicClient::new(http.clone(), cookies.clone()).with_language(config.language.code());
         let spotify = SpotifyClient::with_paths(http.clone(), None, paths.clone());
@@ -216,7 +236,7 @@ impl App {
         session_cfg.initial_repeat = config.repeat_mode;
         session_cfg.policy = SessionPolicy {
             hifi_substitution: config.hifi_substitution,
-            jiosaavn_enabled: config.jiosaavn_enabled,
+            jiosaavn_enabled: config.effective_jiosaavn_enabled(),
             cache_enabled: config.cache_limit_gb > 0,
         };
         let PlaybackSession {
@@ -344,10 +364,21 @@ impl App {
             server_folders: Vec::new(),
             server_loading: false,
             server_error: None,
+            active_source,
+            personal_playlists,
+            local_scan: sonata_core::providers::local::LocalScanResult::default(),
+            local_scanning: false,
+            server_health: std::collections::HashMap::new(),
+            server_speed_tests: std::collections::HashMap::new(),
+            server_speed_testing: std::collections::HashSet::new(),
         };
         app.rebuild_sidebar();
         app.refresh_downloads();
         app.sync_appearance();
+        if app.config.local_music_enabled {
+            app.scan_local_music();
+        }
+        app.probe_all_server_health();
         if (initial_speed - sonata_runtime::config::DEFAULT_PLAYBACK_SPEED).abs() > 1e-6 {
             app.enqueue_session_cmd(SessionCommand::SetPlaybackSpeed(initial_speed));
         }
@@ -360,7 +391,7 @@ impl App {
     pub(super) fn session_policy(&self) -> SessionPolicy {
         SessionPolicy {
             hifi_substitution: self.config.hifi_substitution,
-            jiosaavn_enabled: self.config.jiosaavn_enabled,
+            jiosaavn_enabled: self.config.effective_jiosaavn_enabled(),
             cache_enabled: self.config.cache_limit_gb > 0,
         }
     }
@@ -393,6 +424,13 @@ impl App {
         });
 
         Self::spawn_update_check(self.http.clone(), self.tx.clone());
+
+        if self.config.personal_only_mode {
+            let _ = self.tx.send(AppEvent::StatusMessage(
+                "Personal Only Mode active (streaming paused)".to_string(),
+            ));
+            return;
+        }
 
         let tx = self.tx.clone();
         let pref_browser = self.config.preferred_browser.clone();
@@ -793,7 +831,33 @@ impl App {
             AppEvent::ServerSaved { profiles, message } => {
                 self.server_profiles = profiles;
                 self.rebuild_sidebar();
+                self.probe_all_server_health();
                 self.status_line = message;
+            }
+            AppEvent::ServerHealthProbed { server_id, report } => {
+                self.server_statuses
+                    .insert(server_id.clone(), format_tui_health_badge(&report));
+                self.server_health.insert(server_id, report);
+            }
+            AppEvent::ServerSpeedTestFinished { server_id, report } => {
+                self.server_speed_testing.remove(&server_id);
+                let badge = format_tui_speed_badge(&report);
+                self.server_speed_tests.insert(server_id, report);
+                self.status_line = format!("Speed test: {badge}");
+            }
+            AppEvent::LocalMusicScanned(scan) => {
+                self.local_scanning = false;
+                let count = scan.tracks.len();
+                let albums = scan.albums.len();
+                self.local_scan = scan;
+                self.rebuild_sidebar();
+                if matches!(
+                    self.sidebar_items.get(self.sidebar_idx),
+                    Some(SidebarEntry::LocalSongs)
+                ) {
+                    self.visible_tracks = self.local_scan.tracks.clone();
+                }
+                self.status_line = format!("Local Music: {count} tracks across {albums} albums");
             }
             AppEvent::ServerBrowseLoaded {
                 server_id,
