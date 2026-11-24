@@ -6,6 +6,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Self-Hosted Music Servers & Diagnostics (`sonata-core`, `sonata-runtime`, `sonata-desktop`, `sonata-tui`, `sonata-android`, `android`)**:
+  - Added portable Jellyfin, Subsonic/Navidrome, SMB, and WebDAV server providers (`providers/servers/`), pure-Rust RFC 1321 MD5 Subsonic salting, `roxmltree` WebDAV `PROPFIND` parsing, `0o600`/`0o700` credential storage, automatic secret/credential redaction, and stream auth header injection across Linux and Android (`PlaybackService`).
+  - Added live **Alive / Reachability** (`ms`) status badges and real **`Mbps` Speed Test** probes (`probe_server_health`, `run_speed_test`) for configured servers across Android, Desktop, and TUI.
+
+- **Sources & Modules Hub, Personal Only Mode & Optional YTM Playback Attribution (`sonata-core`, `sonata-runtime`, `sonata-desktop`, `sonata-tui`, `sonata-android`, `android`)**:
+  - Added a dedicated **Sources & Modules** settings section grouping self-hosted servers, local music folders, and pluggable streaming modules (including **JioSaavn** under Modules).
+  - Added non-destructive **Personal Only Mode**, which hides/disables YouTube Music, Spotify, and JioSaavn while keeping all user credentials and module preferences intact for seamless re-enabling.
+  - Added optional **YouTube Music Playback Attribution** (`attribute_personal_track_to_ytm`) so personal, local, and self-hosted listens can optionally be matched and reported to YouTube Music listen history.
+
+- **Local Audio Library, Per-Source Library Tabs & Isolated Personal Playlists (`sonata-core`, `sonata-runtime`, `sonata-desktop`, `sonata-tui`, `sonata-android`, `android`)**:
+  - Added portable desktop/TUI local folder scanning (`providers/local.rs` with FLAC/ID3/Ogg/Opus metadata and folder cover extraction) and Android MediaStore scanning (`LocalMusicScanner.kt`).
+  - Added dynamic per-source Library tabs (`YouTube`, `Local`, `Jellyfin`, `Subsonic`, `SMB`, `WebDAV`) showing songs, albums, and collections per active source.
+  - Added an isolated `PersonalPlaylistStore` (`playlists.rs`, `0o600`/`0o700`) so local, FLAC, and self-hosted tracks can be added to personal playlists without ever mutating YouTube Music APIs.
+
+- **Shared Linux Offline Downloads (`sonata-runtime`, `sonata-desktop`, `sonata-tui`)**:
+  - Added shared offline downloads storage (`~/.local/share/sonata/downloads/`, SQLite WAL `downloads.db`) with offline-first priority in `LinuxStreamResolver`, shared seamlessly between `sonata` (TUI) and `sonata-desktop`.
+
+- **Discord Rich Presence Across Linux & Android (`sonata-runtime`, `sonata-desktop`, `sonata-tui`, `android`)**:
+  - Added zero-dependency Linux local Discord IPC presence (`sonata-runtime::discord`) and native Android Gateway v10 WebSocket + WebView login + `/external-assets` artwork proxy (with auth state excluded from settings backups).
+  - Configured official Sonata Discord Application ID (`1520387624861438002`) with live track/artist/album/artwork metadata and a **"Listen on Sonata"** profile button.
+
+- **Real-Time Measured Audio Quality Badges (`sonata-runtime`, `sonata-desktop`, `sonata-tui`, `android`)**:
+  - Measured real playback codec, bitrate (e.g. `FLAC · 720–880 kbps`), bit depth, and sample rate (`16-bit/44.1kHz`, `24-bit/96kHz`) via live `mpv` IPC properties and Android Media3 ExoPlayer `AudioPipelineState` with file-size / `Content-Length` fallback.
+
+- **Desktop Music Video Mode, Portable Lyrics Translation & Playback Enhancements (`sonata-core`, `sonata-runtime`, `sonata-desktop`, `sonata-tui`)**:
+  - Added Desktop **Music / Video** mode toggle with selectable video quality, `segmentMap` / SponsorBlock timeline synchronization, and `SetVideoMode` integration.
+  - Added portable lyrics translation & romanization (`sonata-core::lyrics::translate`, `0o700`/`0o600` disk cache) wired into Desktop and TUI.
+  - Added Desktop & TUI **Playback Speed (`0.75x–2.0x`)**, **Skip Silence**, and **Sleep Timer (`15/30/45/60m` with 5-second fade-out)**.
+
+- **Sonata Connect LAN Handoff (`sonata-core`, `sonata-runtime`, `sonata-desktop`, `sonata-tui`, `android`)**:
+  - Added local network device discovery (UDP port `45389`), 6-digit PIN pairing with HMAC-SHA1 request signing, remote playback controls, and live queue handoff (`TransferQueue`) between Desktop, TUI, and Android.
+
+- **Gapless Playback & Crossfade (`sonata-runtime`, `sonata-desktop`, `sonata-tui`, `android`)**:
+  - Added configurable gapless playback and `0–12s` crossfade across Linux `mpv` sessions and Android Media3 (automatically bypassed in Video mode).
+
+- **Last.fm & ListenBrainz Scrobbling + On-Device Listening Stats (`sonata-core`, `sonata-runtime`, `sonata-desktop`, `sonata-tui`, `sonata-android`, `android`)**:
+  - Added portable Last.fm & ListenBrainz scrobbling (`scrobble.rs`, `0o600` `scrobble.json`, credential/token redaction).
+  - Added on-device SQLite WAL listening statistics (`stats.rs`, `stats.db`) with dedicated Stats views on Android (`StatsScreen`), Desktop (`views/stats.rs`), and TUI.
+
+- **Android Auto Support (`android`)**:
+  - Upgraded `PlaybackService` to `MediaLibraryService` with `SonataAutoBrowser`, `SonataAutoDataProvider`, and `automotive_app_desc.xml` for in-car browsing and playback.
+
+- **Flatpak Packaging, Compose UI Tests & Cross-Platform Docs (`packaging`, `android`, `docs`)**:
+  - Added Flatpak manifest and AppStream metadata (`packaging/flatpak/dev.sonata.Desktop.{yml,metainfo.xml}`).
+  - Added Jetpack Compose UI instrumentation test suite (`SonataComposeUiTest.kt`) and cross-platform documentation (`docs/cross-platform.md`).
+
+### Changed
+
+- **Modular Architecture Refactors (`sonata-core`, `sonata-runtime`, `sonata-desktop`, `android`)**:
+  - Split large Rust modules into focused submodules (`providers/ytmusic/parsers/`, `player/session/`, `views/fullscreen/`).
+  - Decomposed large Android files (`SonataViewModel.kt`, `CategorizedSettingsSheet.kt`, `NowPlayingScreen.kt`) into dedicated domain helpers and sub-screens (`viewmodel/*`, `ui/screens/settings/*`, `ui/player/*`).
+
 ## [1.0.7] - 2026-11-24
 
 ### Added
