@@ -2,7 +2,7 @@ package dev.sonata.android.discord
 
 /**
  * Shared Discord application constants, activity types, and identifier helpers
- * for Sonata's BitChord-style mobile Rich Presence integration.
+ * for Sonata's mobile Discord Rich Presence integration.
  */
 object DiscordApplication {
     const val DEFAULT_APP_ID = "1520387624861438002"

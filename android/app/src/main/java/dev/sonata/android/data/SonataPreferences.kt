@@ -229,8 +229,11 @@ data class SonataSettingsState(
     val stopMusicOnClose: Boolean = false,
     val showNerdStats: Boolean = false,
 
-    // Modules
+    // Modules & Sources
     val jioSaavnEnabled: Boolean = false,
+    val personalOnlyMode: Boolean = false,
+    val localMusicEnabled: Boolean = true,
+    val attributePersonalToYtm: Boolean = false,
 
     // Music Video Mode
     val suppressVideoAudioQualityWarning: Boolean = false,
@@ -259,6 +262,11 @@ data class SonataSettingsState(
 
     fun usesExternalDownloadStorage(): Boolean =
         downloadStorageLocation == DownloadStorageLocation.EXTERNAL || exportDownloads
+
+    fun isStreamingEnabled(): Boolean = SonataPreferences.isStreamingEnabled(personalOnlyMode)
+
+    fun effectiveJioSaavnEnabled(): Boolean =
+        SonataPreferences.effectiveJioSaavnEnabled(personalOnlyMode, jioSaavnEnabled)
 }
 
 /**
@@ -269,7 +277,7 @@ data class SonataSettingsState(
  */
 class SonataPreferences(context: Context) {
 
-    private val appContext = context.applicationContext
+    private val appContext = context.applicationContext ?: context
     private val prefs: SharedPreferences by lazy {
         appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
@@ -285,6 +293,15 @@ class SonataPreferences(context: Context) {
 
     private val _state = MutableStateFlow(SonataSettingsState())
     val state: StateFlow<SonataSettingsState> = _state.asStateFlow()
+
+    private val _personalOnlyMode = MutableStateFlow(false)
+    val personalOnlyMode: StateFlow<Boolean> = _personalOnlyMode.asStateFlow()
+
+    private val _localMusicEnabled = MutableStateFlow(true)
+    val localMusicEnabled: StateFlow<Boolean> = _localMusicEnabled.asStateFlow()
+
+    private val _attributePersonalToYtm = MutableStateFlow(false)
+    val attributePersonalToYtm: StateFlow<Boolean> = _attributePersonalToYtm.asStateFlow()
 
     private val _discordToken = MutableStateFlow<String?>(null)
     val discordToken: StateFlow<String?> = _discordToken.asStateFlow()
@@ -304,9 +321,16 @@ class SonataPreferences(context: Context) {
 
     private fun ensureStateLoadedLocked() {
         if (stateLoaded) return
-        _state.value = readState()
+        publishStateFlowsLocked(readState())
         _discordToken.value = readDiscordToken()
         stateLoaded = true
+    }
+
+    private fun publishStateFlowsLocked(next: SonataSettingsState) {
+        _state.value = next
+        _personalOnlyMode.value = next.personalOnlyMode
+        _localMusicEnabled.value = next.localMusicEnabled
+        _attributePersonalToYtm.value = next.attributePersonalToYtm
     }
 
     /**
@@ -357,8 +381,30 @@ class SonataPreferences(context: Context) {
             val next = sanitize(transform(_state.value))
             if (next == _state.value) return
             writeState(next)
-            _state.value = next
+            publishStateFlowsLocked(next)
         }
+    }
+
+    /**
+     * Toggles Personal Only Mode without mutating streaming module flags, cookies,
+     * or audio/playback preferences so switching back restores the prior setup intact.
+     */
+    fun setPersonalOnlyMode(enabled: Boolean) {
+        update { it.copy(personalOnlyMode = enabled) }
+    }
+
+    /**
+     * Enables or disables local device audio library scanning.
+     */
+    fun setLocalMusicEnabled(enabled: Boolean) {
+        update { it.copy(localMusicEnabled = enabled) }
+    }
+
+    /**
+     * Enables or disables optional YouTube Music playback attribution for personal tracks.
+     */
+    fun setAttributePersonalToYtm(enabled: Boolean) {
+        update { it.copy(attributePersonalToYtm = enabled) }
     }
 
     /**
@@ -525,6 +571,12 @@ class SonataPreferences(context: Context) {
                     stopMusicOnClose = settingsObj.optBoolean(KEY_STOP_MUSIC_ON_CLOSE, defaults.stopMusicOnClose),
                     showNerdStats = settingsObj.optBoolean(KEY_SHOW_NERD_STATS, defaults.showNerdStats),
                     jioSaavnEnabled = settingsObj.optBoolean(KEY_JIOSAAVN_ENABLED, defaults.jioSaavnEnabled),
+                    personalOnlyMode = settingsObj.optBoolean(KEY_PERSONAL_ONLY_MODE, defaults.personalOnlyMode),
+                    localMusicEnabled = settingsObj.optBoolean(KEY_LOCAL_MUSIC_ENABLED, defaults.localMusicEnabled),
+                    attributePersonalToYtm = settingsObj.optBoolean(
+                        KEY_ATTRIBUTE_PERSONAL_TO_YTM,
+                        defaults.attributePersonalToYtm,
+                    ),
                     suppressVideoAudioQualityWarning = settingsObj.optBoolean(
                         KEY_SUPPRESS_VIDEO_AUDIO_WARNING,
                         defaults.suppressVideoAudioQualityWarning,
@@ -575,7 +627,7 @@ class SonataPreferences(context: Context) {
             synchronized(lock) {
                 trackOffsetsCache = LinkedHashMap(restoredOffsets)
                 writeState(restored, restoredOffsets)
-                _state.value = restored
+                publishStateFlowsLocked(restored)
                 stateLoaded = true
             }
             true
@@ -689,6 +741,12 @@ class SonataPreferences(context: Context) {
                 stopMusicOnClose = prefs.getBoolean(KEY_STOP_MUSIC_ON_CLOSE, defaults.stopMusicOnClose),
                 showNerdStats = prefs.getBoolean(KEY_SHOW_NERD_STATS, defaults.showNerdStats),
                 jioSaavnEnabled = prefs.getBoolean(KEY_JIOSAAVN_ENABLED, defaults.jioSaavnEnabled),
+                personalOnlyMode = prefs.getBoolean(KEY_PERSONAL_ONLY_MODE, defaults.personalOnlyMode),
+                localMusicEnabled = prefs.getBoolean(KEY_LOCAL_MUSIC_ENABLED, defaults.localMusicEnabled),
+                attributePersonalToYtm = prefs.getBoolean(
+                    KEY_ATTRIBUTE_PERSONAL_TO_YTM,
+                    defaults.attributePersonalToYtm,
+                ),
                 suppressVideoAudioQualityWarning = prefs.getBoolean(
                     KEY_SUPPRESS_VIDEO_AUDIO_WARNING,
                     defaults.suppressVideoAudioQualityWarning,
@@ -769,6 +827,9 @@ class SonataPreferences(context: Context) {
             .putBoolean(KEY_STOP_MUSIC_ON_CLOSE, state.stopMusicOnClose)
             .putBoolean(KEY_SHOW_NERD_STATS, state.showNerdStats)
             .putBoolean(KEY_JIOSAAVN_ENABLED, state.jioSaavnEnabled)
+            .putBoolean(KEY_PERSONAL_ONLY_MODE, state.personalOnlyMode)
+            .putBoolean(KEY_LOCAL_MUSIC_ENABLED, state.localMusicEnabled)
+            .putBoolean(KEY_ATTRIBUTE_PERSONAL_TO_YTM, state.attributePersonalToYtm)
             .putBoolean(KEY_SUPPRESS_VIDEO_AUDIO_WARNING, state.suppressVideoAudioQualityWarning)
             .putString(KEY_VIDEO_QUALITY, state.videoQuality.name)
             .putBoolean(KEY_DISCORD_RPC_ENABLED, state.discordRpcEnabled)
@@ -822,6 +883,19 @@ class SonataPreferences(context: Context) {
         private const val PREFS_NAME = "sonata_preferences"
         private const val DISCORD_AUTH_PREFS_NAME = "sonata_discord_auth"
         private const val KEY_DISCORD_AUTH_SECRET = "discord_session_credential"
+
+        /**
+         * Returns `true` when online streaming sources (YouTube Music, JioSaavn) are active.
+         */
+        fun isStreamingEnabled(personalOnly: Boolean): Boolean = !personalOnly
+
+        /**
+         * Returns the effective JioSaavn state without mutating the underlying persisted flag.
+         */
+        fun effectiveJioSaavnEnabled(
+            personalOnly: Boolean,
+            jioSaavnEnabled: Boolean,
+        ): Boolean = !personalOnly && jioSaavnEnabled
 
         internal fun encodeTrackOffsets(offsets: Map<String, Long>): String {
             val obj = JSONObject()
@@ -962,6 +1036,9 @@ class SonataPreferences(context: Context) {
         private const val KEY_STOP_MUSIC_ON_CLOSE = "stop_music_on_close"
         private const val KEY_SHOW_NERD_STATS = "show_nerd_stats"
         private const val KEY_JIOSAAVN_ENABLED = "jiosaavn_enabled"
+        private const val KEY_PERSONAL_ONLY_MODE = "personal_only_mode"
+        private const val KEY_LOCAL_MUSIC_ENABLED = "local_music_enabled"
+        private const val KEY_ATTRIBUTE_PERSONAL_TO_YTM = "attribute_personal_to_ytm"
         private const val KEY_SUPPRESS_VIDEO_AUDIO_WARNING = "suppress_video_audio_warning"
         private const val KEY_VIDEO_QUALITY = "video_quality"
 
@@ -1039,6 +1116,9 @@ class SonataPreferences(context: Context) {
                 put(KEY_STOP_MUSIC_ON_CLOSE, current.stopMusicOnClose)
                 put(KEY_SHOW_NERD_STATS, current.showNerdStats)
                 put(KEY_JIOSAAVN_ENABLED, current.jioSaavnEnabled)
+                put(KEY_PERSONAL_ONLY_MODE, current.personalOnlyMode)
+                put(KEY_LOCAL_MUSIC_ENABLED, current.localMusicEnabled)
+                put(KEY_ATTRIBUTE_PERSONAL_TO_YTM, current.attributePersonalToYtm)
                 put(KEY_SUPPRESS_VIDEO_AUDIO_WARNING, current.suppressVideoAudioQualityWarning)
                 put(KEY_VIDEO_QUALITY, current.videoQuality.name)
                 put(KEY_DISCORD_RPC_ENABLED, current.discordRpcEnabled)

@@ -67,7 +67,7 @@ sealed interface DiscordRpcStatus {
 }
 
 /**
- * BitChord-style Discord User Gateway v10 Rich Presence client built on OkHttp WebSockets.
+ * Discord User Gateway v10 Rich Presence client for Sonata built on OkHttp WebSockets.
  *
  * Connects to `wss://gateway.discord.gg/?v=10&encoding=json`, authenticates via `IDENTIFY`
  * (op 2) with Android client super-properties, maintains `HEARTBEAT` (op 1) with jitter,
