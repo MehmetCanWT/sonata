@@ -18,6 +18,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_DOWNLOADS_LIMIT_GB: u8 = 10;
+pub const MIN_PLAYBACK_SPEED: f64 = 0.5;
+pub const MAX_PLAYBACK_SPEED: f64 = 2.0;
+pub const DEFAULT_PLAYBACK_SPEED: f64 = 1.0;
+pub const DEFAULT_VIDEO_QUALITY: &str = "Auto";
 
 fn default_true() -> bool {
     true
@@ -25,6 +29,22 @@ fn default_true() -> bool {
 
 fn default_downloads_limit_gb() -> u8 {
     DEFAULT_DOWNLOADS_LIMIT_GB
+}
+
+fn default_playback_speed() -> f64 {
+    DEFAULT_PLAYBACK_SPEED
+}
+
+fn default_video_quality() -> String {
+    DEFAULT_VIDEO_QUALITY.to_string()
+}
+
+/// Clamps playback speed into the supported `[0.5, 2.0]` range, falling back to `1.0` for non-finite inputs.
+pub fn sanitize_playback_speed(speed: f64) -> f64 {
+    if !speed.is_finite() {
+        return DEFAULT_PLAYBACK_SPEED;
+    }
+    speed.clamp(MIN_PLAYBACK_SPEED, MAX_PLAYBACK_SPEED)
 }
 
 /// Resolves an external CLI dependency across standard Linux, NixOS, Flatpak, and Snap binary paths.
@@ -159,6 +179,24 @@ pub struct AppConfig {
     /// Optional custom Discord application client ID overriding the built-in Sonata app ID.
     #[serde(default)]
     pub discord_app_id: Option<String>,
+    /// Playback speed multiplier (`0.5..=2.0`, default `1.0`).
+    #[serde(default = "default_playback_speed")]
+    pub playback_speed: f64,
+    /// Whether silence skipping audio filter is enabled for audio-only playback.
+    #[serde(default)]
+    pub skip_silence: bool,
+    /// Whether lyrics translation is enabled.
+    #[serde(default)]
+    pub lyrics_translate: bool,
+    /// Whether lyrics romanization is enabled.
+    #[serde(default)]
+    pub lyrics_romanize: bool,
+    /// Preferred video playback quality (`"Auto"`, `"1080p"`, `"720p"`, etc.).
+    #[serde(default = "default_video_quality")]
+    pub video_quality: String,
+    /// Whether plays from self-hosted servers should scrobble back to YouTube Music history.
+    #[serde(default)]
+    pub scrobble_servers_to_ytm: bool,
 }
 
 impl Default for AppConfig {
@@ -191,6 +229,12 @@ impl Default for AppConfig {
             downloads_limit_gb: DEFAULT_DOWNLOADS_LIMIT_GB,
             discord_rpc_enabled: true,
             discord_app_id: None,
+            playback_speed: DEFAULT_PLAYBACK_SPEED,
+            skip_silence: false,
+            lyrics_translate: false,
+            lyrics_romanize: false,
+            video_quality: DEFAULT_VIDEO_QUALITY.to_string(),
+            scrobble_servers_to_ytm: false,
         }
     }
 }
@@ -346,6 +390,10 @@ error = "#f38ba8"
         if let Ok(raw) = fs::read_to_string(path) {
             if let Ok(mut cfg) = toml::from_str::<Self>(&raw) {
                 cfg.cache_limit_gb = cfg.cache_limit_gb.min(MAX_CACHE_LIMIT_GB);
+                cfg.playback_speed = sanitize_playback_speed(cfg.playback_speed);
+                if cfg.video_quality.trim().is_empty() {
+                    cfg.video_quality = default_video_quality();
+                }
                 return cfg;
             }
         }
@@ -365,6 +413,10 @@ error = "#f38ba8"
         }
         let mut persisted = self.clone();
         persisted.cache_limit_gb = persisted.cache_limit_gb.min(MAX_CACHE_LIMIT_GB);
+        persisted.playback_speed = sanitize_playback_speed(persisted.playback_speed);
+        if persisted.video_quality.trim().is_empty() {
+            persisted.video_quality = default_video_quality();
+        }
         let body = toml::to_string_pretty(&persisted)?;
         let tmp = path.with_extension("toml.tmp");
         fs::write(&tmp, body)?;
@@ -470,5 +522,60 @@ mod tests {
             unlimited.effective_discord_app_id("1346240000000000000"),
             "1346240000000000000"
         );
+    }
+
+    #[test]
+    fn playback_controls_and_lyrics_defaults_and_roundtrip_preserve_values() {
+        let default_cfg = AppConfig::default();
+        assert!((default_cfg.playback_speed - 1.0).abs() < 1e-6);
+        assert!(!default_cfg.skip_silence);
+        assert!(!default_cfg.lyrics_translate);
+        assert!(!default_cfg.lyrics_romanize);
+        assert_eq!(default_cfg.video_quality, "Auto");
+        assert!(!default_cfg.scrobble_servers_to_ytm);
+
+        let legacy: AppConfig = toml::from_str("").expect("legacy empty config should parse");
+        assert!((legacy.playback_speed - 1.0).abs() < 1e-6);
+        assert!(!legacy.skip_silence);
+        assert!(!legacy.lyrics_translate);
+        assert!(!legacy.lyrics_romanize);
+        assert_eq!(legacy.video_quality, "Auto");
+        assert!(!legacy.scrobble_servers_to_ytm);
+
+        let dir = TempTestDir::new("cfg_playback_roundtrip");
+        let cfg_path = dir.path().join("config.toml");
+
+        let custom = AppConfig {
+            playback_speed: 1.5,
+            skip_silence: true,
+            lyrics_translate: true,
+            lyrics_romanize: true,
+            video_quality: "720p".to_string(),
+            scrobble_servers_to_ytm: true,
+            downloads_limit_gb: 15,
+            discord_rpc_enabled: false,
+            ..AppConfig::default()
+        };
+        custom.save_to(&cfg_path).expect("save config");
+
+        let reloaded = AppConfig::load_from(&cfg_path);
+        assert!((reloaded.playback_speed - 1.5).abs() < 1e-6);
+        assert!(reloaded.skip_silence);
+        assert!(reloaded.lyrics_translate);
+        assert!(reloaded.lyrics_romanize);
+        assert_eq!(reloaded.video_quality, "720p");
+        assert!(reloaded.scrobble_servers_to_ytm);
+        assert_eq!(reloaded.downloads_limit_gb, 15);
+        assert!(!reloaded.discord_rpc_enabled);
+
+        let clamped_path = dir.path().join("clamped.toml");
+        std::fs::write(
+            &clamped_path,
+            "playback_speed = 4.0\nvideo_quality = \"  \"\n",
+        )
+        .expect("write out of range config");
+        let clamped = AppConfig::load_from(&clamped_path);
+        assert!((clamped.playback_speed - 2.0).abs() < 1e-6);
+        assert_eq!(clamped.video_quality, "Auto");
     }
 }

@@ -11,20 +11,27 @@
 //! 4. **Resilience & Precache**: Owns natural vs. premature track-end detection, per-generation recovery
 //!    budgets, Hi-Fi upgrade swaps with base-stream fallback, lookahead next-track precaching, and bounded shutdown.
 
-use crate::player::mpv::{MpvController, MpvEvent};
+use crate::player::mpv::{
+    clamp_playback_speed, compute_bitrate_kbps_from_bytes, format_measured_audio_badge,
+    normalize_audio_codec_label, MpvController, MpvEvent,
+};
 use crate::process::LinuxStreamResolver;
 use sonata_core::player::coordinator::{PlaybackCommand, PlaybackCoordinator, PlaybackTransition};
 use sonata_core::player::{
     NextTrackPrecache, PlaybackGeneration, PlaybackState, PlaybackTask, PlaybackTaskSet,
     PrecacheKey, RepeatMode,
 };
-use sonata_core::providers::hifi::ResolvedStream;
+use sonata_core::providers::hifi::{extract_badge_kbps, ResolvedStream};
 use sonata_core::providers::{ProviderSource, Track};
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot, watch};
+
+/// Smooth volume ramp-down duration before a sleep timer pauses playback.
+pub const SLEEP_TIMER_FADE_DURATION: Duration = Duration::from_secs(5);
 
 /// Bounded command queue depth; callers await capacity so transport commands never drop.
 pub const SESSION_COMMAND_CAPACITY: usize = 64;
@@ -151,6 +158,17 @@ pub trait PlaybackAudioDriver: Send + Sync + 'static {
     fn set_paused(&self, paused: bool);
     fn seek_absolute(&self, secs: f64);
     fn set_volume(&self, volume: u8);
+    fn set_speed(&self, _speed: f64) {}
+    fn set_skip_silence(&self, _enabled: bool) {}
+    fn set_video_mode(
+        &self,
+        _enabled: bool,
+        _url: Option<String>,
+        _headers: Vec<(String, String)>,
+        _seek_secs: Option<f64>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
+    }
     fn shutdown(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
 }
 
@@ -177,6 +195,28 @@ impl PlaybackAudioDriver for MpvController {
 
     fn set_volume(&self, volume: u8) {
         MpvController::set_volume(self, volume);
+    }
+
+    fn set_speed(&self, speed: f64) {
+        MpvController::set_speed(self, speed);
+    }
+
+    fn set_skip_silence(&self, enabled: bool) {
+        MpvController::set_skip_silence(self, enabled);
+    }
+
+    fn set_video_mode(
+        &self,
+        enabled: bool,
+        url: Option<String>,
+        headers: Vec<(String, String)>,
+        seek_secs: Option<f64>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
+        Box::pin(async move {
+            MpvController::set_video_mode(self, enabled, url, headers, seek_secs)
+                .await
+                .map_err(|err| err.to_string())
+        })
     }
 
     fn shutdown(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
@@ -333,6 +373,19 @@ pub enum SessionCommand {
     SetRepeat(RepeatMode),
     /// Cycles repeat mode (`Off -> All -> One -> Off`).
     CycleRepeat,
+    /// Sets playback speed multiplier clamped to `0.5..=2.0`.
+    SetPlaybackSpeed(f64),
+    /// Enables or disables silence skipping (`af` filter; auto-disabled while video mode is active).
+    SetSkipSilence(bool),
+    /// Arms or cancels a sleep timer (`Some(secs)` fades volume smoothly over 5 seconds before pausing and restoring volume).
+    SetSleepTimer(Option<u64>),
+    /// Switches between audio-only (`--no-video`) and video (`--vid=auto`) playback, preserving position and headers.
+    SetVideoMode {
+        enabled: bool,
+        url: Option<String>,
+        headers: Vec<(String, String)>,
+        seek_secs: Option<f64>,
+    },
     /// Updates Hi-Fi/JioSaavn/cache policy and optionally triggers an immediate upgrade check.
     UpdatePolicy {
         policy: SessionPolicy,
@@ -386,6 +439,15 @@ pub enum SessionEvent {
         badge: String,
         first_audio_ms: Option<u128>,
         was_initial_start: bool,
+    },
+    AudioQualityUpdated {
+        generation: PlaybackGeneration,
+        track_id: String,
+        badge: String,
+        codec: Option<String>,
+        bitrate_kbps: Option<u32>,
+        sample_rate_hz: Option<u32>,
+        bit_depth: Option<u8>,
     },
     PausedChanged {
         generation: PlaybackGeneration,
@@ -450,6 +512,12 @@ pub enum SessionEvent {
         repeat: RepeatMode,
         volume: u8,
         muted: bool,
+    },
+    PlaybackOptionsChanged {
+        playback_speed: f64,
+        skip_silence: bool,
+        video_mode: bool,
+        sleep_timer_remaining_secs: Option<u64>,
     },
     PrecacheUpdated {
         generation: PlaybackGeneration,
@@ -582,6 +650,40 @@ enum InternalResult {
         track_id: String,
         result: Result<ResolvedStream, String>,
     },
+    LocalFileSize {
+        generation: PlaybackGeneration,
+        track_id: String,
+        bytes: u64,
+    },
+}
+
+#[derive(Debug, Clone, Default)]
+struct AudioQualityTracker {
+    track_id: String,
+    base_badge: String,
+    local_file_bytes: Option<u64>,
+    codec: Option<String>,
+    live_bitrate_bps: Option<u64>,
+    sample_rate_hz: Option<u32>,
+    bit_depth: Option<u8>,
+    last_emitted_badge: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct SleepTimerState {
+    deadline: Instant,
+    fade_duration: Duration,
+    pre_fade_volume: Option<u8>,
+    last_applied_volume: Option<u8>,
+}
+
+fn local_path_from_stream_url(url: &str) -> Option<PathBuf> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() || trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        return None;
+    }
+    let path_str = trimmed.strip_prefix("file://").unwrap_or(trimmed);
+    (!path_str.is_empty()).then(|| PathBuf::from(path_str))
 }
 
 struct SessionActor {
@@ -595,6 +697,11 @@ struct SessionActor {
 
     playback: PlaybackState,
     muted: bool,
+    playback_speed: f64,
+    skip_silence_pref: bool,
+    video_mode: bool,
+    sleep_timer: Option<SleepTimerState>,
+    audio_quality: AudioQualityTracker,
     generation: PlaybackGeneration,
     retried_generation: Option<PlaybackGeneration>,
     upgrade_started_generation: Option<PlaybackGeneration>,
@@ -635,6 +742,11 @@ impl SessionActor {
             internal_rx,
             playback,
             muted,
+            playback_speed: 1.0,
+            skip_silence_pref: false,
+            video_mode: false,
+            sleep_timer: None,
+            audio_quality: AudioQualityTracker::default(),
             generation: PlaybackGeneration::default(),
             retried_generation: None,
             upgrade_started_generation: None,
@@ -663,6 +775,7 @@ impl SessionActor {
             let active_play = !self.playback.paused
                 && !self.playback.loading_track
                 && self.playback.current_track().is_some();
+            let has_sleep_timer = self.sleep_timer.is_some();
 
             tokio::select! {
                 biased;
@@ -685,8 +798,13 @@ impl SessionActor {
                 Some(mev) = mpv_rx.recv() => {
                     self.handle_mpv_event(mev).await;
                 }
-                _ = tick.tick(), if active_play => {
-                    self.tick_playback().await;
+                _ = tick.tick(), if active_play || has_sleep_timer => {
+                    if active_play {
+                        self.tick_playback().await;
+                    }
+                    if self.sleep_timer.is_some() {
+                        self.tick_sleep_timer().await;
+                    }
                 }
             }
         }
@@ -716,7 +834,7 @@ impl SessionActor {
     fn interpolated_position(&self) -> f64 {
         let raw = match self.pos_anchor {
             Some((base, at)) if !self.playback.paused && !self.playback.loading_track => {
-                base + at.elapsed().as_secs_f64()
+                base + at.elapsed().as_secs_f64() * self.playback_speed
             }
             _ => self.playback.position_secs,
         };
@@ -947,6 +1065,12 @@ impl SessionActor {
                 let clamped = vol.min(100);
                 self.muted = false;
                 self.playback.volume = clamped;
+                if let Some(timer) = self.sleep_timer.as_mut() {
+                    if timer.pre_fade_volume.is_some() {
+                        timer.pre_fade_volume = Some(clamped);
+                        timer.last_applied_volume = Some(clamped);
+                    }
+                }
                 self.driver.set_volume(clamped);
                 self.emit_mode_changed().await;
             }
@@ -986,6 +1110,34 @@ impl SessionActor {
                 self.emit_mode_changed().await;
                 self.maybe_precache_next().await;
             }
+            SessionCommand::SetPlaybackSpeed(speed) => {
+                let clamped = clamp_playback_speed(speed);
+                if !self.playback.paused && !self.playback.loading_track {
+                    let cur = self.interpolated_position();
+                    self.playback.position_secs = cur;
+                    self.pos_anchor = Some((cur, Instant::now()));
+                }
+                self.playback_speed = clamped;
+                self.driver.set_speed(clamped);
+                self.emit_playback_options_changed().await;
+            }
+            SessionCommand::SetSkipSilence(enabled) => {
+                self.skip_silence_pref = enabled;
+                let effective = self.effective_skip_silence();
+                self.driver.set_skip_silence(effective);
+                self.emit_playback_options_changed().await;
+            }
+            SessionCommand::SetSleepTimer(seconds) => {
+                self.set_sleep_timer(seconds).await;
+            }
+            SessionCommand::SetVideoMode {
+                enabled,
+                url,
+                headers,
+                seek_secs,
+            } => {
+                self.set_video_mode(enabled, url, headers, seek_secs).await;
+            }
             SessionCommand::UpdatePolicy {
                 policy,
                 trigger_upgrade,
@@ -1003,12 +1155,248 @@ impl SessionActor {
         }
     }
 
+    fn effective_skip_silence(&self) -> bool {
+        self.skip_silence_pref && !self.video_mode
+    }
+
+    fn sleep_timer_remaining_secs(&self) -> Option<u64> {
+        self.sleep_timer.as_ref().map(|timer| {
+            let rem = timer.deadline.saturating_duration_since(Instant::now());
+            rem.as_secs() + u64::from(rem.subsec_nanos() > 0)
+        })
+    }
+
     async fn emit_mode_changed(&self) {
         self.emit(SessionEvent::ModeChanged {
             shuffle: self.playback.shuffle,
             repeat: self.playback.repeat,
             volume: self.playback.volume,
             muted: self.muted,
+        })
+        .await;
+    }
+
+    async fn emit_playback_options_changed(&self) {
+        self.emit(SessionEvent::PlaybackOptionsChanged {
+            playback_speed: self.playback_speed,
+            skip_silence: self.effective_skip_silence(),
+            video_mode: self.video_mode,
+            sleep_timer_remaining_secs: self.sleep_timer_remaining_secs(),
+        })
+        .await;
+    }
+
+    async fn set_sleep_timer(&mut self, seconds: Option<u64>) {
+        if let Some(prev) = self.sleep_timer.take() {
+            if let Some(orig) = prev.pre_fade_volume {
+                self.playback.volume = orig;
+                if !self.muted {
+                    self.driver.set_volume(orig);
+                }
+            }
+        }
+        if let Some(secs) = seconds {
+            if secs == 0 {
+                self.set_paused(true).await;
+            } else {
+                let total = Duration::from_secs(secs);
+                let fade_duration = total.min(SLEEP_TIMER_FADE_DURATION);
+                self.sleep_timer = Some(SleepTimerState {
+                    deadline: Instant::now() + total,
+                    fade_duration,
+                    pre_fade_volume: None,
+                    last_applied_volume: None,
+                });
+            }
+        }
+        self.emit_playback_options_changed().await;
+    }
+
+    async fn tick_sleep_timer(&mut self) {
+        let now = Instant::now();
+        let Some(timer) = self.sleep_timer.as_mut() else {
+            return;
+        };
+        if now >= timer.deadline {
+            let timer = self.sleep_timer.take().expect("sleep timer checked above");
+            let restore_vol = timer.pre_fade_volume.unwrap_or(self.playback.volume);
+            self.set_paused(true).await;
+            self.playback.volume = restore_vol;
+            if !self.muted {
+                self.driver.set_volume(restore_vol);
+            }
+            self.emit_playback_options_changed().await;
+            return;
+        }
+        let remaining = timer.deadline.saturating_duration_since(now);
+        if remaining <= timer.fade_duration && !timer.fade_duration.is_zero() {
+            if timer.pre_fade_volume.is_none() {
+                timer.pre_fade_volume = Some(self.playback.volume);
+            }
+            let base_vol = timer.pre_fade_volume.unwrap_or(self.playback.volume);
+            let ratio =
+                (remaining.as_secs_f64() / timer.fade_duration.as_secs_f64()).clamp(0.0, 1.0);
+            let faded = ((base_vol as f64) * ratio)
+                .round()
+                .clamp(0.0, base_vol as f64) as u8;
+            if !self.muted && timer.last_applied_volume != Some(faded) {
+                timer.last_applied_volume = Some(faded);
+                self.driver.set_volume(faded);
+            }
+        }
+    }
+
+    async fn set_video_mode(
+        &mut self,
+        enabled: bool,
+        url: Option<String>,
+        headers: Vec<(String, String)>,
+        seek_secs: Option<f64>,
+    ) {
+        self.video_mode = enabled;
+        self.driver.set_skip_silence(self.effective_skip_silence());
+
+        let (target_url, target_headers) = match url {
+            Some(u) if !u.is_empty() => (Some(u), headers),
+            _ => match self.playback.active_stream.as_ref() {
+                Some(active) => {
+                    let hdrs = if headers.is_empty() {
+                        active.headers.clone()
+                    } else {
+                        headers
+                    };
+                    (Some(active.url.clone()), hdrs)
+                }
+                None => (None, headers),
+            },
+        };
+        let effective_seek = seek_secs.or_else(|| {
+            self.playback
+                .current_track()
+                .map(|_| self.interpolated_position())
+        });
+
+        if target_url.is_some() {
+            if let Some(pos) = effective_seek {
+                self.playback.position_secs = pos.max(0.0);
+            }
+            self.pos_anchor = None;
+            self.awaiting_playback_start = true;
+            self.stream_loaded_at = Some(Instant::now());
+        }
+
+        if let Err(err) = self
+            .driver
+            .set_video_mode(enabled, target_url.clone(), target_headers, effective_seek)
+            .await
+        {
+            self.awaiting_playback_start = false;
+            tracing::warn!(
+                event = "video_mode_switch_failed",
+                client = self.config.client_name,
+                enabled,
+                error = %err,
+                "failed to switch video mode"
+            );
+            self.emit(SessionEvent::PlaybackError {
+                generation: self.generation,
+                track_id: self.playback.current_track().map(|t| t.id.clone()),
+                error: err,
+                badge: self.playback.stream_badge.clone(),
+            })
+            .await;
+        } else if target_url.is_some() && self.playback.paused {
+            self.driver.set_paused(true);
+        }
+        self.publish_progress();
+        self.emit_playback_options_changed().await;
+    }
+
+    fn begin_audio_quality_tracking(
+        &mut self,
+        generation: PlaybackGeneration,
+        track_id: &str,
+        stream: &ResolvedStream,
+    ) {
+        self.audio_quality = AudioQualityTracker {
+            track_id: track_id.to_string(),
+            base_badge: stream.badge.clone(),
+            ..AudioQualityTracker::default()
+        };
+        if let Some(local_path) = local_path_from_stream_url(&stream.url) {
+            let tx = self.internal_tx.clone();
+            let owned_track_id = track_id.to_string();
+            self.playback_tasks.spawn(async move {
+                let bytes = tokio::task::spawn_blocking(move || {
+                    std::fs::metadata(&local_path)
+                        .ok()
+                        .map(|m| m.len())
+                        .filter(|&n| n > 0)
+                })
+                .await
+                .ok()
+                .flatten();
+                if let Some(bytes) = bytes {
+                    let _ = tx
+                        .send(InternalResult::LocalFileSize {
+                            generation,
+                            track_id: owned_track_id,
+                            bytes,
+                        })
+                        .await;
+                }
+            });
+        }
+    }
+
+    async fn refresh_measured_audio_quality(&mut self) {
+        if self.audio_quality.track_id.is_empty() || self.playback.loading_track {
+            return;
+        }
+        let live_kbps = self.audio_quality.live_bitrate_bps.and_then(|bps| {
+            let kbps = ((bps as f64) / 1000.0).round() as u32;
+            (kbps > 0).then_some(kbps)
+        });
+        let local_kbps = self
+            .audio_quality
+            .local_file_bytes
+            .and_then(|bytes| compute_bitrate_kbps_from_bytes(bytes, self.playback.duration_secs));
+        let fallback_kbps = extract_badge_kbps(&self.audio_quality.base_badge);
+        let measured_kbps = live_kbps.or(local_kbps).or(fallback_kbps);
+
+        let Some(badge) = format_measured_audio_badge(
+            self.audio_quality.codec.as_deref(),
+            measured_kbps,
+            self.audio_quality.bit_depth,
+            self.audio_quality.sample_rate_hz,
+            Some(&self.audio_quality.base_badge),
+        ) else {
+            return;
+        };
+
+        if self.audio_quality.last_emitted_badge.as_deref() == Some(badge.as_str()) {
+            return;
+        }
+        self.audio_quality.last_emitted_badge = Some(badge.clone());
+        self.playback.stream_badge = badge.clone();
+
+        let codec = self
+            .audio_quality
+            .codec
+            .as_deref()
+            .map(normalize_audio_codec_label);
+        let track_id = self.audio_quality.track_id.clone();
+        let sample_rate_hz = self.audio_quality.sample_rate_hz;
+        let bit_depth = self.audio_quality.bit_depth;
+
+        self.emit(SessionEvent::AudioQualityUpdated {
+            generation: self.generation,
+            track_id,
+            badge,
+            codec,
+            bitrate_kbps: measured_kbps,
+            sample_rate_hz,
+            bit_depth,
         })
         .await;
     }
@@ -1076,6 +1464,7 @@ impl SessionActor {
         self.stream_loaded_at = None;
         self.upgrade_started_generation = None;
         self.upgrading_quality = false;
+        self.audio_quality = AudioQualityTracker::default();
         self.playback.paused = true;
         self.playback.loading_track = false;
         self.playback.position_secs = 0.0;
@@ -1143,6 +1532,7 @@ impl SessionActor {
         self.upgrading_quality = false;
         self.awaiting_playback_start = false;
         self.pending_auto_advance = None;
+        self.audio_quality = AudioQualityTracker::default();
         self.driver.stop();
 
         let generation = self.generation.advance();
@@ -1249,6 +1639,7 @@ impl SessionActor {
         self.playback.stream_badge = stream.badge.clone();
         self.pos_anchor = None;
         self.stream_loaded_at = Some(Instant::now());
+        self.begin_audio_quality_tracking(generation, &track_id, &stream);
         if resume_at >= 0.05 {
             self.driver.load_stream_at(&stream, resume_at);
         } else {
@@ -1347,6 +1738,7 @@ impl SessionActor {
                     self.pos_anchor = None;
                 }
                 self.playback.stream_badge = stream.badge.clone();
+                self.begin_audio_quality_tracking(generation, &track_id, &stream);
                 tracing::info!(
                     event = "quality_upgraded",
                     client = self.config.client_name,
@@ -1424,6 +1816,16 @@ impl SessionActor {
                     }
                 }
             }
+            InternalResult::LocalFileSize {
+                generation,
+                track_id,
+                bytes,
+            } => {
+                if generation == self.generation && self.audio_quality.track_id == track_id {
+                    self.audio_quality.local_file_bytes = Some(bytes);
+                    self.refresh_measured_audio_quality().await;
+                }
+            }
         }
     }
 
@@ -1486,6 +1888,7 @@ impl SessionActor {
                     })
                     .await;
                 }
+                self.refresh_measured_audio_quality().await;
             }
             MpvEvent::Paused(paused) => {
                 if self.playback.current_track().is_none() {
@@ -1659,6 +2062,36 @@ impl SessionActor {
             MpvEvent::PlaybackError { error, file } => {
                 self.handle_playback_error(error, file).await;
             }
+            MpvEvent::AudioBitrate(bps) => {
+                if self.playback.loading_track || self.playback.current_track().is_none() {
+                    return;
+                }
+                self.audio_quality.live_bitrate_bps = bps;
+                self.refresh_measured_audio_quality().await;
+            }
+            MpvEvent::AudioCodec(codec) => {
+                if self.playback.loading_track || self.playback.current_track().is_none() {
+                    return;
+                }
+                self.audio_quality.codec = codec;
+                self.refresh_measured_audio_quality().await;
+            }
+            MpvEvent::AudioParams(params) => {
+                if self.playback.loading_track || self.playback.current_track().is_none() {
+                    return;
+                }
+                match params {
+                    Some(p) => {
+                        self.audio_quality.sample_rate_hz = p.sample_rate_hz;
+                        self.audio_quality.bit_depth = p.bit_depth;
+                    }
+                    None => {
+                        self.audio_quality.sample_rate_hz = None;
+                        self.audio_quality.bit_depth = None;
+                    }
+                }
+                self.refresh_measured_audio_quality().await;
+            }
         }
     }
 
@@ -1721,6 +2154,7 @@ impl SessionActor {
             self.pos_anchor = None;
             self.playback.stream_badge = stream.badge.clone();
             self.stream_loaded_at = Some(Instant::now());
+            self.begin_audio_quality_tracking(self.generation, &track_id, &stream);
             self.driver.load_stream_at(&stream, resume_at);
             self.publish_progress();
             self.emit(SessionEvent::UpgradeFallback {
@@ -2130,5 +2564,540 @@ impl SessionActor {
         ShutdownReport {
             tasks_joined_cleanly,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        PlaybackAudioDriver, PlaybackSession, PlaybackSessionConfig, PlaybackStreamSource,
+        SessionCommand, SessionEvent, SessionPolicy,
+    };
+    use crate::downloads::test_support::TempTestDir;
+    use crate::player::mpv::{MpvAudioParams, MpvEvent};
+    use sonata_core::player::RepeatMode;
+    use sonata_core::providers::hifi::ResolvedStream;
+    use sonata_core::providers::{ProviderSource, Track};
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum TestDriverCall {
+        Load(String),
+        LoadAt(String, f64),
+        Stop,
+        Paused(bool),
+        Seek(f64),
+        Volume(u8),
+        Speed(f64),
+        SkipSilence(bool),
+        VideoMode {
+            enabled: bool,
+            url: Option<String>,
+            headers: Vec<(String, String)>,
+            seek_secs: Option<f64>,
+        },
+        Shutdown,
+    }
+
+    #[derive(Default)]
+    struct RecordingDriver {
+        calls: Mutex<Vec<TestDriverCall>>,
+    }
+
+    impl RecordingDriver {
+        fn calls(&self) -> Vec<TestDriverCall> {
+            self.calls.lock().expect("driver lock").clone()
+        }
+    }
+
+    impl PlaybackAudioDriver for RecordingDriver {
+        fn load_stream(&self, stream: &ResolvedStream) {
+            self.calls
+                .lock()
+                .expect("driver lock")
+                .push(TestDriverCall::Load(stream.url.clone()));
+        }
+
+        fn load_stream_at(&self, stream: &ResolvedStream, start_secs: f64) {
+            self.calls
+                .lock()
+                .expect("driver lock")
+                .push(TestDriverCall::LoadAt(stream.url.clone(), start_secs));
+        }
+
+        fn stop(&self) {
+            self.calls
+                .lock()
+                .expect("driver lock")
+                .push(TestDriverCall::Stop);
+        }
+
+        fn set_paused(&self, paused: bool) {
+            self.calls
+                .lock()
+                .expect("driver lock")
+                .push(TestDriverCall::Paused(paused));
+        }
+
+        fn seek_absolute(&self, secs: f64) {
+            self.calls
+                .lock()
+                .expect("driver lock")
+                .push(TestDriverCall::Seek(secs));
+        }
+
+        fn set_volume(&self, volume: u8) {
+            self.calls
+                .lock()
+                .expect("driver lock")
+                .push(TestDriverCall::Volume(volume));
+        }
+
+        fn set_speed(&self, speed: f64) {
+            self.calls
+                .lock()
+                .expect("driver lock")
+                .push(TestDriverCall::Speed(speed));
+        }
+
+        fn set_skip_silence(&self, enabled: bool) {
+            self.calls
+                .lock()
+                .expect("driver lock")
+                .push(TestDriverCall::SkipSilence(enabled));
+        }
+
+        fn set_video_mode(
+            &self,
+            enabled: bool,
+            url: Option<String>,
+            headers: Vec<(String, String)>,
+            seek_secs: Option<f64>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
+            self.calls
+                .lock()
+                .expect("driver lock")
+                .push(TestDriverCall::VideoMode {
+                    enabled,
+                    url,
+                    headers,
+                    seek_secs,
+                });
+            Box::pin(async { Ok(()) })
+        }
+
+        fn shutdown(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            self.calls
+                .lock()
+                .expect("driver lock")
+                .push(TestDriverCall::Shutdown);
+            Box::pin(async {})
+        }
+    }
+
+    struct StaticSource {
+        stream: ResolvedStream,
+    }
+
+    impl PlaybackStreamSource for StaticSource {
+        fn resolve_fast(
+            &self,
+            _track: Track,
+        ) -> Pin<Box<dyn Future<Output = Result<ResolvedStream, String>> + Send>> {
+            let s = self.stream.clone();
+            Box::pin(async move { Ok(s) })
+        }
+
+        fn resolve_recovery(
+            &self,
+            _track: Track,
+        ) -> Pin<Box<dyn Future<Output = Result<ResolvedStream, String>> + Send>> {
+            let s = self.stream.clone();
+            Box::pin(async move { Ok(s) })
+        }
+
+        fn resolve_hifi_upgrade(
+            &self,
+            _track: Track,
+            _current: ResolvedStream,
+            _allow_hifi: bool,
+        ) -> Pin<Box<dyn Future<Output = Option<ResolvedStream>> + Send>> {
+            Box::pin(async { None })
+        }
+
+        fn precache_hifi_audio(
+            &self,
+            _track: Track,
+            _allow_hifi: bool,
+        ) -> Pin<Box<dyn Future<Output = Option<ResolvedStream>> + Send>> {
+            Box::pin(async { None })
+        }
+    }
+
+    fn make_track(id: &str, duration_secs: u64) -> Track {
+        Track {
+            id: id.to_string(),
+            title: format!("Track {id}"),
+            artist: "Artist".to_string(),
+            album: "Album".to_string(),
+            duration_secs: Some(duration_secs),
+            thumbnail_url: None,
+            source: ProviderSource::YouTubeMusic,
+            audio_badge: None,
+            set_video_id: None,
+            liked: false,
+            album_id: None,
+            is_explicit: false,
+        }
+    }
+
+    fn fast_test_config() -> PlaybackSessionConfig {
+        PlaybackSessionConfig {
+            client_name: "session-unit-test",
+            initial_volume: 80,
+            initial_muted: false,
+            initial_shuffle: false,
+            initial_repeat: RepeatMode::Off,
+            policy: SessionPolicy {
+                hifi_substitution: false,
+                jiosaavn_enabled: false,
+                cache_enabled: false,
+            },
+            stale_error_grace: Duration::from_millis(50),
+            shutdown_timeout: Duration::from_millis(500),
+            tick_interval: Duration::from_millis(40),
+            position_steering: false,
+        }
+    }
+
+    async fn recv_event_matching<F>(
+        events: &mut mpsc::Receiver<SessionEvent>,
+        mut pred: F,
+    ) -> SessionEvent
+    where
+        F: FnMut(&SessionEvent) -> bool,
+    {
+        tokio::time::timeout(Duration::from_secs(4), async {
+            while let Some(ev) = events.recv().await {
+                if pred(&ev) {
+                    return ev;
+                }
+            }
+            panic!("session event channel closed before matching event arrived");
+        })
+        .await
+        .expect("timed out waiting for SessionEvent")
+    }
+
+    #[tokio::test]
+    async fn emits_measured_audio_quality_for_live_and_local_flac_streams() {
+        let dir = TempTestDir::new("session_local_flac");
+        let flac_path = dir.path().join("lossless.flac");
+        // 198_000 bytes over 1.8s -> 880 kbps exact
+        std::fs::write(&flac_path, vec![0u8; 198_000]).expect("write test flac");
+
+        let driver = Arc::new(RecordingDriver::default());
+        let source = Arc::new(StaticSource {
+            stream: ResolvedStream {
+                url: flac_path.to_string_lossy().into_owned(),
+                badge: "FLAC · Local".to_string(),
+                headers: Vec::new(),
+            },
+        });
+        let (mpv_tx, mpv_rx) = mpsc::channel(32);
+        let mut session = PlaybackSession::spawn(
+            fast_test_config(),
+            Arc::clone(&driver) as Arc<dyn PlaybackAudioDriver>,
+            source,
+            mpv_rx,
+        );
+
+        session
+            .handle
+            .send(SessionCommand::PlayQueue {
+                tracks: vec![make_track("local-flac", 2)],
+                start_index: 0,
+                push_history: false,
+            })
+            .await
+            .expect("play queue");
+
+        recv_event_matching(&mut session.events, |e| {
+            matches!(e, SessionEvent::StreamLoaded { .. })
+        })
+        .await;
+
+        mpv_tx.send(MpvEvent::PlaybackStarted).await.unwrap();
+        mpv_tx.send(MpvEvent::Duration(1.8)).await.unwrap();
+        mpv_tx
+            .send(MpvEvent::AudioCodec(Some("flac".to_string())))
+            .await
+            .unwrap();
+        mpv_tx
+            .send(MpvEvent::AudioParams(Some(MpvAudioParams {
+                sample_rate_hz: Some(44100),
+                bit_depth: Some(16),
+                format: Some("s16".to_string()),
+            })))
+            .await
+            .unwrap();
+
+        let local_ev = recv_event_matching(&mut session.events, |e| {
+            matches!(
+                e,
+                SessionEvent::AudioQualityUpdated { badge, .. }
+                    if badge == "FLAC · 880 kbps · 16-bit/44.1kHz"
+            )
+        })
+        .await;
+        assert!(matches!(
+            local_ev,
+            SessionEvent::AudioQualityUpdated {
+                bitrate_kbps: Some(880),
+                sample_rate_hz: Some(44100),
+                bit_depth: Some(16),
+                ..
+            }
+        ));
+
+        // Live audio-bitrate overrides file-size calculation when present (e.g., 24-bit/96kHz stream)
+        mpv_tx
+            .send(MpvEvent::AudioBitrate(Some(2_450_000)))
+            .await
+            .unwrap();
+        mpv_tx
+            .send(MpvEvent::AudioParams(Some(MpvAudioParams {
+                sample_rate_hz: Some(96000),
+                bit_depth: Some(24),
+                format: Some("s24".to_string()),
+            })))
+            .await
+            .unwrap();
+
+        recv_event_matching(&mut session.events, |e| {
+            matches!(
+                e,
+                SessionEvent::AudioQualityUpdated { badge, .. }
+                    if badge == "FLAC · 2450 kbps · 24-bit/96kHz"
+            )
+        })
+        .await;
+
+        session.handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn handles_speed_skip_silence_and_video_mode_switch() {
+        let driver = Arc::new(RecordingDriver::default());
+        let source = Arc::new(StaticSource {
+            stream: ResolvedStream {
+                url: "https://example.com/audio.webm".to_string(),
+                badge: "OPUS 256kbps · Extreme".to_string(),
+                headers: vec![("User-Agent".to_string(), "SonataTest/1.0".to_string())],
+            },
+        });
+        let (mpv_tx, mpv_rx) = mpsc::channel(32);
+        let mut session = PlaybackSession::spawn(
+            fast_test_config(),
+            Arc::clone(&driver) as Arc<dyn PlaybackAudioDriver>,
+            source,
+            mpv_rx,
+        );
+
+        session
+            .handle
+            .send(SessionCommand::PlayQueue {
+                tracks: vec![make_track("vid-1", 180)],
+                start_index: 0,
+                push_history: false,
+            })
+            .await
+            .unwrap();
+        recv_event_matching(&mut session.events, |e| {
+            matches!(e, SessionEvent::StreamLoaded { .. })
+        })
+        .await;
+        mpv_tx.send(MpvEvent::PlaybackStarted).await.unwrap();
+        mpv_tx.send(MpvEvent::Position(42.5)).await.unwrap();
+
+        // Speed clamping
+        session
+            .handle
+            .send(SessionCommand::SetPlaybackSpeed(4.0))
+            .await
+            .unwrap();
+        recv_event_matching(&mut session.events, |e| {
+            matches!(
+                e,
+                SessionEvent::PlaybackOptionsChanged { playback_speed, .. }
+                    if (*playback_speed - 2.0).abs() < 1e-6
+            )
+        })
+        .await;
+
+        // Enable skip silence in audio mode
+        session
+            .handle
+            .send(SessionCommand::SetSkipSilence(true))
+            .await
+            .unwrap();
+        recv_event_matching(&mut session.events, |e| {
+            matches!(
+                e,
+                SessionEvent::PlaybackOptionsChanged {
+                    skip_silence: true,
+                    video_mode: false,
+                    ..
+                }
+            )
+        })
+        .await;
+
+        // Switch to video mode: skip_silence auto-disables and preserves headers & position
+        session
+            .handle
+            .send(SessionCommand::SetVideoMode {
+                enabled: true,
+                url: Some("https://example.com/video720.mp4".to_string()),
+                headers: vec![(
+                    "Referer".to_string(),
+                    "https://music.youtube.com/".to_string(),
+                )],
+                seek_secs: Some(42.5),
+            })
+            .await
+            .unwrap();
+        recv_event_matching(&mut session.events, |e| {
+            matches!(
+                e,
+                SessionEvent::PlaybackOptionsChanged {
+                    skip_silence: false,
+                    video_mode: true,
+                    ..
+                }
+            )
+        })
+        .await;
+
+        // Exit video mode: skip_silence preference resumes
+        session
+            .handle
+            .send(SessionCommand::SetVideoMode {
+                enabled: false,
+                url: None,
+                headers: Vec::new(),
+                seek_secs: Some(50.0),
+            })
+            .await
+            .unwrap();
+        recv_event_matching(&mut session.events, |e| {
+            matches!(
+                e,
+                SessionEvent::PlaybackOptionsChanged {
+                    skip_silence: true,
+                    video_mode: false,
+                    ..
+                }
+            )
+        })
+        .await;
+
+        let calls = driver.calls();
+        assert!(calls.contains(&TestDriverCall::Speed(2.0)));
+        assert!(calls.contains(&TestDriverCall::SkipSilence(true)));
+        assert!(calls.contains(&TestDriverCall::SkipSilence(false)));
+        assert!(calls.iter().any(|c| matches!(
+            c,
+            TestDriverCall::VideoMode {
+                enabled: true,
+                url: Some(u),
+                headers,
+                seek_secs: Some(pos),
+            } if u == "https://example.com/video720.mp4"
+                && headers == &vec![("Referer".to_string(), "https://music.youtube.com/".to_string())]
+                && (*pos - 42.5).abs() < 1e-6
+        )));
+
+        session.handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn sleep_timer_fades_volume_pauses_and_restores_volume() {
+        let driver = Arc::new(RecordingDriver::default());
+        let source = Arc::new(StaticSource {
+            stream: ResolvedStream {
+                url: "https://example.com/audio.webm".to_string(),
+                badge: "AAC · 320 kbps".to_string(),
+                headers: Vec::new(),
+            },
+        });
+        let (mpv_tx, mpv_rx) = mpsc::channel(32);
+        let mut session = PlaybackSession::spawn(
+            fast_test_config(),
+            Arc::clone(&driver) as Arc<dyn PlaybackAudioDriver>,
+            source,
+            mpv_rx,
+        );
+
+        session
+            .handle
+            .send(SessionCommand::PlayQueue {
+                tracks: vec![make_track("sleep-1", 300)],
+                start_index: 0,
+                push_history: false,
+            })
+            .await
+            .unwrap();
+        recv_event_matching(&mut session.events, |e| {
+            matches!(e, SessionEvent::StreamLoaded { .. })
+        })
+        .await;
+        mpv_tx.send(MpvEvent::PlaybackStarted).await.unwrap();
+
+        // 1-second sleep timer enters fade immediately (min(5s, 1s) = 1s fade) and pauses + restores 80
+        session
+            .handle
+            .send(SessionCommand::SetSleepTimer(Some(1)))
+            .await
+            .unwrap();
+
+        recv_event_matching(&mut session.events, |e| {
+            matches!(e, SessionEvent::PausedChanged { paused: true, .. })
+        })
+        .await;
+        recv_event_matching(&mut session.events, |e| {
+            matches!(
+                e,
+                SessionEvent::PlaybackOptionsChanged {
+                    sleep_timer_remaining_secs: None,
+                    ..
+                }
+            )
+        })
+        .await;
+
+        let volumes: Vec<u8> = driver
+            .calls()
+            .into_iter()
+            .filter_map(|c| match c {
+                TestDriverCall::Volume(v) => Some(v),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            volumes.iter().any(|&v| v < 80),
+            "expected smooth fade volumes below 80, got {volumes:?}"
+        );
+        assert_eq!(
+            volumes.last().copied(),
+            Some(80),
+            "expected volume restored to 80 after pause, got {volumes:?}"
+        );
+
+        session.handle.shutdown().await;
     }
 }
