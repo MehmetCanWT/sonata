@@ -66,6 +66,7 @@ impl SonataDesktopView {
             .gap(px(2.0))
             .px(px(8.0))
             .pb(px(12.0));
+        let s = sonata_runtime::i18n::strings(self.settings.language);
         if queue.is_empty() {
             list = list.child(
                 div()
@@ -73,7 +74,7 @@ impl SonataDesktopView {
                     .py(px(24.0))
                     .text_size(px(13.0))
                     .text_color(self.palette.dim)
-                    .child("Queue is empty"),
+                    .child(s.queue_empty),
             );
         } else {
             // Window large queues around the active track so 200+ track queues stay 60fps.
@@ -417,6 +418,7 @@ impl SonataDesktopView {
             .last_wheel_lyrics
             .is_some_and(|t| t.elapsed() < Duration::from_secs(PANEL_WHEEL_SETTLE_SECS));
 
+        let s = sonata_runtime::i18n::strings(self.settings.language);
         let scroll_body: AnyElement = match lyrics {
             LyricsState::Idle => div()
                 .id("rp-lyrics-scroll")
@@ -426,7 +428,7 @@ impl SonataDesktopView {
                 .p(px(16.0))
                 .text_size(px(13.0))
                 .text_color(self.palette.dim)
-                .child("Play a track to display lyrics.")
+                .child(s.select_song_lyrics)
                 .into_any_element(),
             LyricsState::Loading => div()
                 .id("rp-lyrics-scroll")
@@ -436,7 +438,7 @@ impl SonataDesktopView {
                 .p(px(16.0))
                 .text_size(px(13.0))
                 .text_color(self.palette.dim)
-                .child("Loading lyrics...")
+                .child(s.fetching_lyrics)
                 .into_any_element(),
             LyricsState::NotFound => div()
                 .id("rp-lyrics-scroll")
@@ -446,7 +448,7 @@ impl SonataDesktopView {
                 .p(px(16.0))
                 .text_size(px(13.0))
                 .text_color(self.palette.dim)
-                .child("No lyrics available for this track.")
+                .child(s.no_lyrics_found)
                 .into_any_element(),
             LyricsState::Plain(lines) => div()
                 .id("rp-lyrics-scroll")

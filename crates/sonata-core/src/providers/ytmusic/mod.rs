@@ -33,11 +33,15 @@ pub use browse::{
 };
 use parsers::{
     apply_collection_backfill, collect_playlists, collect_tracks, extract_search_album_browse_id,
-    extract_search_artist_browse_id, find_artist_songs_endpoint, find_collection_header,
-    find_description_text, find_home_continuation, find_mplyt_browse_id, find_shelf_continuation,
-    is_excluded_shelf_title, merge_home_shelves, CollectionHeader,
+    extract_search_artist_browse_id, find_artist_songs_endpoint, find_automix_endpoint,
+    find_collection_header, find_description_text, find_home_continuation, find_mplyt_browse_id,
+    find_shelf_continuation, is_excluded_shelf_title, merge_home_shelves, CollectionHeader,
 };
-pub use parsers::{parse_account_profile_json, parse_artist_page_json, parse_home_shelves_json};
+pub use parsers::{
+    build_sync_segments_from_offtopic, parse_account_profile_json, parse_artist_page_json,
+    parse_home_shelves_json, parse_music_video_counterpart_json, MusicVideoCandidate,
+    MusicVideoSyncSegment,
+};
 pub use search::{parse_rich_search_json, parse_search_suggestions_json, RichSearchResult};
 const INNERTUBE_BASE: &str = "https://music.youtube.com/youtubei/v1";
 const WEB_REMIX_VERSION: &str = "1.20260707.12.00";
@@ -118,6 +122,25 @@ struct ChannelScope {
     data_sync_id: Option<String>,
 }
 
+fn normalize_ytm_language(lang: &str) -> &'static str {
+    let trimmed = lang.trim().to_ascii_lowercase();
+    if trimmed.starts_with("tr") {
+        "tr"
+    } else if trimmed.starts_with("ru") {
+        "ru"
+    } else {
+        "en"
+    }
+}
+
+fn accept_language_header(lang: &str) -> &'static str {
+    match lang {
+        "tr" => "tr-TR,tr;q=0.9",
+        "ru" => "ru-RU,ru;q=0.9",
+        _ => "en-US,en;q=0.9",
+    }
+}
+
 #[derive(Clone)]
 pub struct YtMusicClient {
     http: Client,
@@ -128,6 +151,7 @@ pub struct YtMusicClient {
     visitor_data: Arc<RwLock<Option<String>>>,
     channel_scope: Arc<RwLock<Option<ChannelScope>>>,
     scope_lock: Arc<Mutex<()>>,
+    language: Arc<RwLock<String>>,
 }
 
 impl YtMusicClient {
@@ -141,6 +165,34 @@ impl YtMusicClient {
             visitor_data: Arc::new(RwLock::new(None)),
             channel_scope: Arc::new(RwLock::new(None)),
             scope_lock: Arc::new(Mutex::new(())),
+            language: Arc::new(RwLock::new("en".to_string())),
+        }
+    }
+
+    /// Returns this client configured with the normalized initial YouTube Music `hl` language.
+    pub fn with_language(self, lang: &str) -> Self {
+        if let Ok(mut guard) = self.language.try_write() {
+            *guard = normalize_ytm_language(lang).to_string();
+        }
+        self
+    }
+
+    /// Updates the active YouTube Music `hl` language (`"tr"`, `"ru"`, or `"en"`) and clears
+    /// cached playlists and artist pages when the normalized language changes.
+    pub async fn set_language(&self, lang: &str) {
+        let normalized = normalize_ytm_language(lang);
+        let changed = {
+            let mut guard = self.language.write().await;
+            if *guard == normalized {
+                false
+            } else {
+                *guard = normalized.to_string();
+                true
+            }
+        };
+        if changed {
+            self.playlist_cache.lock().await.clear();
+            self.artist_cache.lock().await.clear();
         }
     }
 
@@ -182,11 +234,12 @@ impl YtMusicClient {
         let auth_hdr = self
             .cookies
             .ytm_sapisidhash_for_origin("https://www.youtube.com")?;
+        let lang = self.language.read().await.clone();
         let resp = self
             .http
             .get("https://www.youtube.com/getAccountSwitcherEndpoint")
             .header("User-Agent", WEB_USER_AGENT)
-            .header("Accept-Language", "en-US,en;q=0.9")
+            .header("Accept-Language", accept_language_header(&lang))
             .header("X-Origin", "https://www.youtube.com")
             .header("Referer", "https://www.youtube.com/")
             .header("X-Goog-AuthUser", "0")
@@ -213,6 +266,7 @@ impl YtMusicClient {
         if self.is_authenticated() {
             self.ensure_channel_scope().await;
         }
+        let lang = self.language.read().await.clone();
         let visitor = self.visitor_data.read().await.clone();
         let scope = self.channel_scope.read().await.clone().unwrap_or_default();
 
@@ -220,6 +274,7 @@ impl YtMusicClient {
             .pointer_mut("/context/client")
             .and_then(Value::as_object_mut)
         {
+            client.insert("hl".to_string(), json!(lang));
             if let Some(ref v) = visitor {
                 client.insert("visitorData".to_string(), json!(v));
             }
@@ -239,7 +294,7 @@ impl YtMusicClient {
             .post(&url)
             .header("Content-Type", "application/json")
             .header("User-Agent", WEB_USER_AGENT)
-            .header("Accept-Language", "en-US,en;q=0.9")
+            .header("Accept-Language", accept_language_header(&lang))
             .header("Origin", "https://music.youtube.com")
             .header("X-Origin", "https://music.youtube.com")
             .header("Referer", "https://music.youtube.com/")
@@ -281,13 +336,14 @@ impl YtMusicClient {
         Ok(data)
     }
 
-    fn base_context() -> Value {
+    async fn base_context(&self) -> Value {
+        let lang = self.language.read().await.clone();
         json!({
             "context": {
                 "client": {
                     "clientName": "WEB_REMIX",
                     "clientVersion": WEB_REMIX_VERSION,
-                    "hl": "en",
+                    "hl": lang,
                     "gl": "US"
                 }
             }
@@ -305,9 +361,10 @@ impl YtMusicClient {
             source: ProviderSource::YouTubeMusic,
             track_count: None,
             thumbnail_url: None,
+            is_owned: false,
         }];
 
-        let mut body = Self::base_context();
+        let mut body = self.base_context().await;
         body["browseId"] = json!("FEmusic_liked_playlists");
         let data = self.post("browse", body).await?;
         collect_playlists(&data, &mut playlists);
@@ -315,7 +372,7 @@ impl YtMusicClient {
         let mut cont = find_shelf_continuation(&data).or_else(|| find_home_continuation(&data));
         for _ in 0..8 {
             let Some(token) = cont.take() else { break };
-            let mut next_body = Self::base_context();
+            let mut next_body = self.base_context().await;
             next_body["continuation"] = json!(token);
             let Ok(page) = self.post("browse", next_body).await else {
                 break;
@@ -331,7 +388,7 @@ impl YtMusicClient {
         }
 
         if playlists.len() <= 1 {
-            let mut landing_body = Self::base_context();
+            let mut landing_body = self.base_context().await;
             landing_body["browseId"] = json!("FEmusic_library_landing");
             if let Ok(landing) = self.post("browse", landing_body).await {
                 collect_playlists(&landing, &mut playlists);
@@ -371,7 +428,7 @@ impl YtMusicClient {
             }
         }
 
-        let mut body = Self::base_context();
+        let mut body = self.base_context().await;
         body["browseId"] = json!(browse_id);
         let browse_res = self.post("browse", body).await;
 
@@ -389,7 +446,7 @@ impl YtMusicClient {
         // resolve via the `next` watch-playlist endpoint rather than `browse`.
         if page1.is_empty() {
             let raw_playlist_id = browse_id.strip_prefix("VL").unwrap_or(&browse_id);
-            let mut next_body = Self::base_context();
+            let mut next_body = self.base_context().await;
             next_body["playlistId"] = json!(raw_playlist_id);
             if let Ok(next_data) = self.post("next", next_body).await {
                 collect_tracks(&next_data, &mut page1);
@@ -409,7 +466,7 @@ impl YtMusicClient {
         let mut all_tracks = page1;
         for _ in 0..20 {
             let Some(token) = cont else { break };
-            let mut next_body = Self::base_context();
+            let mut next_body = self.base_context().await;
             next_body["continuation"] = json!(token);
             let Ok(page) = self.post("browse", next_body).await else {
                 break;
@@ -440,16 +497,16 @@ impl YtMusicClient {
             return Err(anyhow!("Not signed in to YouTube Music"));
         }
         let data = self
-            .post("account/account_menu", Self::base_context())
+            .post("account/account_menu", self.base_context().await)
             .await?;
         parse_account_profile_json(&data)
             .ok_or_else(|| anyhow!("Could not read YouTube Music profile from session cookies"))
     }
 
     pub async fn fetch_home_feed(&self) -> Result<Vec<HomeShelf>> {
-        let mut home_body = Self::base_context();
+        let mut home_body = self.base_context().await;
         home_body["browseId"] = json!("FEmusic_home");
-        let mut exp_body = Self::base_context();
+        let mut exp_body = self.base_context().await;
         exp_body["browseId"] = json!("FEmusic_explore");
 
         let (home_res, exp_res) = tokio::join!(
@@ -469,7 +526,7 @@ impl YtMusicClient {
         // Listen again, Mixed for you, Forgotten favorites, etc. are never truncated by Explore.
         for _ in 0..2 {
             let Some(token) = cont.take() else { break };
-            let mut next_body = Self::base_context();
+            let mut next_body = self.base_context().await;
             next_body["continuation"] = json!(token);
             let page_res = if shelves.is_empty() {
                 self.post("browse", next_body).await.ok()
@@ -514,7 +571,7 @@ impl YtMusicClient {
             }
         }
 
-        let mut body = Self::base_context();
+        let mut body = self.base_context().await;
         body["browseId"] = json!(browse_id);
         let data = self.post("browse", body).await?;
         let mut page = parse_artist_page_json(browse_id, &data)
@@ -522,7 +579,7 @@ impl YtMusicClient {
 
         // Expand Top Songs past the 5 preview rows via the artist's Songs shelf `bottomEndpoint`.
         if let Some((songs_browse_id, songs_params)) = find_artist_songs_endpoint(&data) {
-            let mut songs_body = Self::base_context();
+            let mut songs_body = self.base_context().await;
             songs_body["browseId"] = json!(songs_browse_id);
             if let Some(params) = songs_params {
                 songs_body["params"] = json!(params);
@@ -573,7 +630,7 @@ impl YtMusicClient {
         }
 
         // Primary query with YouTube Music's Artists search filter.
-        let mut body = Self::base_context();
+        let mut body = self.base_context().await;
         body["query"] = json!(primary);
         body["params"] = json!("EgWKAQIgAWoKEAkQBRAKEAMQBA%3D%3D");
         let data = self.post("search", body).await?;
@@ -582,7 +639,7 @@ impl YtMusicClient {
         }
 
         // Fallback to unfiltered search (Top Result card / linked artist run).
-        let mut fallback = Self::base_context();
+        let mut fallback = self.base_context().await;
         fallback["query"] = json!(primary);
         let fb_data = self.post("search", fallback).await?;
         Ok(extract_search_artist_browse_id(&fb_data, &primary))
@@ -597,18 +654,154 @@ impl YtMusicClient {
         self.fetch_artist_page(&browse_id).await
     }
 
-    /// Fetches personalized up-next / radio queue tracks (`RDAMVM<video_id>`) via InnerTube `next`.
+    /// Fetches personalized up-next / radio queue tracks (`RDAMVM<video_id>`) via InnerTube `next`,
+    /// following an `automixPreviewVideoRenderer` endpoint once if the initial panel has few tracks.
     pub async fn fetch_radio_queue(&self, video_id: &str) -> Result<Vec<Track>> {
-        let mut body = Self::base_context();
+        let mut body = self.base_context().await;
         body["videoId"] = json!(video_id);
         body["playlistId"] = json!(format!("RDAMVM{video_id}"));
         body["isAudioOnly"] = json!(true);
+        body["enablePersistentPlaylistPanel"] = json!(true);
+        body["tunerSettingValue"] = json!("AUTOMIX_SETTING_NORMAL");
+        body["params"] = json!("wAEB");
         let data = self.post("next", body).await?;
         let mut tracks = Vec::new();
         collect_tracks(&data, &mut tracks);
+
+        if tracks.len() < 10 {
+            if let Some((automix_pid, automix_params)) = find_automix_endpoint(&data) {
+                let mut follow = self.base_context().await;
+                follow["videoId"] = json!(video_id);
+                follow["playlistId"] = json!(automix_pid);
+                follow["isAudioOnly"] = json!(true);
+                follow["enablePersistentPlaylistPanel"] = json!(true);
+                follow["tunerSettingValue"] = json!("AUTOMIX_SETTING_NORMAL");
+                follow["params"] = json!(automix_params.as_deref().unwrap_or("wAEB"));
+                if let Ok(Ok(more)) =
+                    tokio::time::timeout(Duration::from_secs(5), self.post("next", follow)).await
+                {
+                    collect_tracks(&more, &mut tracks);
+                }
+            }
+        }
+
         let mut seen = std::collections::HashSet::new();
         tracks.retain(|t| !t.id.is_empty() && seen.insert(t.id.clone()));
         Ok(tracks)
+    }
+
+    async fn fetch_next_panel_tracks(
+        &self,
+        video_id: Option<&str>,
+        playlist_id: &str,
+    ) -> Vec<Track> {
+        let mut body = self.base_context().await;
+        if let Some(vid) = video_id.filter(|s| !s.is_empty()) {
+            body["videoId"] = json!(vid);
+        }
+        body["playlistId"] = json!(playlist_id);
+        body["isAudioOnly"] = json!(true);
+        body["enablePersistentPlaylistPanel"] = json!(true);
+        body["tunerSettingValue"] = json!("AUTOMIX_SETTING_NORMAL");
+        body["params"] = json!("wAEB");
+
+        let Ok(Ok(data)) =
+            tokio::time::timeout(Duration::from_secs(6), self.post("next", body)).await
+        else {
+            return Vec::new();
+        };
+        let mut tracks = Vec::new();
+        collect_tracks(&data, &mut tracks);
+
+        if tracks.len() < 10 {
+            if let Some((automix_pid, automix_params)) = find_automix_endpoint(&data) {
+                let mut follow = self.base_context().await;
+                if let Some(vid) = video_id.filter(|s| !s.is_empty()) {
+                    follow["videoId"] = json!(vid);
+                }
+                follow["playlistId"] = json!(automix_pid);
+                follow["isAudioOnly"] = json!(true);
+                follow["enablePersistentPlaylistPanel"] = json!(true);
+                follow["tunerSettingValue"] = json!("AUTOMIX_SETTING_NORMAL");
+                follow["params"] = json!(automix_params.as_deref().unwrap_or("wAEB"));
+                if let Ok(Ok(more)) =
+                    tokio::time::timeout(Duration::from_secs(5), self.post("next", follow)).await
+                {
+                    collect_tracks(&more, &mut tracks);
+                }
+            }
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        tracks.retain(|t| !t.id.is_empty() && seen.insert(t.id.clone()));
+        tracks
+    }
+
+    /// Fetches personalized endless continuation tracks from multiple bounded signals:
+    /// optional playlist automix (`RDAMPL<id>` / `RD*`), primary seed radio (`RDAMVM<seed1>`),
+    /// and optional complementary seed radio (`RDAMVM<seed2>`), ranked and artist-diversified.
+    pub async fn fetch_endless_radio_queue(
+        &self,
+        seed_video_ids: &[String],
+        playlist_id: Option<&str>,
+        exclude_video_ids: &[String],
+        preferred_artists: &[String],
+    ) -> Result<Vec<Track>> {
+        let mut valid_seeds: Vec<String> = Vec::new();
+        for raw in seed_video_ids {
+            let clean = raw.trim();
+            if is_valid_ytm_video_id(clean) && !valid_seeds.iter().any(|s| s == clean) {
+                valid_seeds.push(clean.to_string());
+                if valid_seeds.len() >= 2 {
+                    break;
+                }
+            }
+        }
+
+        let automix_playlist = playlist_id.and_then(normalize_endless_playlist_id);
+        let primary_seed = valid_seeds.first().cloned();
+        let secondary_seed = valid_seeds.get(1).cloned();
+
+        let (playlist_batch, primary_batch, secondary_batch) = tokio::join!(
+            async {
+                if let Some(ref pid) = automix_playlist {
+                    self.fetch_next_panel_tracks(primary_seed.as_deref(), pid)
+                        .await
+                } else {
+                    Vec::new()
+                }
+            },
+            async {
+                if let Some(ref seed) = primary_seed {
+                    self.fetch_next_panel_tracks(Some(seed), &format!("RDAMVM{seed}"))
+                        .await
+                } else {
+                    Vec::new()
+                }
+            },
+            async {
+                if let Some(ref seed) = secondary_seed {
+                    self.fetch_next_panel_tracks(Some(seed), &format!("RDAMVM{seed}"))
+                        .await
+                } else {
+                    Vec::new()
+                }
+            }
+        );
+
+        let batches = [
+            (true, playlist_batch),
+            (false, primary_batch),
+            (false, secondary_batch),
+        ];
+
+        Ok(rank_and_diversify_recommendations(
+            &batches,
+            &valid_seeds,
+            exclude_video_ids,
+            preferred_artists,
+            30,
+        ))
     }
 
     /// Reports track playback + watchtime telemetry to YouTube Music (`playbackTracking`)
@@ -632,7 +825,7 @@ impl YtMusicClient {
         }
 
         // Report only the individual played song to YouTube Music history (never attach playlistId).
-        let mut body = Self::base_context();
+        let mut body = self.base_context().await;
         body["videoId"] = json!(clean_vid);
         body["contentCheckOk"] = json!(true);
         body["racyCheckOk"] = json!(true);
@@ -656,11 +849,13 @@ impl YtMusicClient {
             .filter(|s| !s.is_empty());
 
         let cpn = generate_cpn();
-        let playback_url = build_videostats_url(pb_base, &cpn, None, duration_secs, false);
+        let lang = self.language.read().await.clone();
+        let playback_url = build_videostats_url(pb_base, &cpn, None, duration_secs, false, &lang);
         self.send_videostats_get(&playback_url).await?;
 
         if let Some(wt_url_base) = wt_base {
-            let watchtime_url = build_videostats_url(wt_url_base, &cpn, None, duration_secs, true);
+            let watchtime_url =
+                build_videostats_url(wt_url_base, &cpn, None, duration_secs, true, &lang);
             if let Err(err) = self.send_videostats_get(&watchtime_url).await {
                 tracing::debug!(
                     video_id = %clean_vid,
@@ -673,6 +868,7 @@ impl YtMusicClient {
     }
 
     async fn send_videostats_get(&self, url: &str) -> Result<()> {
+        let lang = self.language.read().await.clone();
         let visitor = self.visitor_data.read().await.clone();
         let scope = self.channel_scope.read().await.clone().unwrap_or_default();
 
@@ -680,7 +876,7 @@ impl YtMusicClient {
             .http
             .get(url)
             .header("User-Agent", WEB_USER_AGENT)
-            .header("Accept-Language", "en-US,en;q=0.9")
+            .header("Accept-Language", accept_language_header(&lang))
             .header("Origin", "https://music.youtube.com")
             .header("X-Origin", "https://music.youtube.com")
             .header("Referer", "https://music.youtube.com/")
@@ -712,11 +908,11 @@ impl YtMusicClient {
     }
 
     pub async fn fetch_native_lyrics(&self, video_id: &str) -> Option<String> {
-        let mut body = Self::base_context();
+        let mut body = self.base_context().await;
         body["videoId"] = json!(video_id);
         let next = self.post("next", body).await.ok()?;
         let lyrics_browse_id = find_mplyt_browse_id(&next)?;
-        let mut b_body = Self::base_context();
+        let mut b_body = self.base_context().await;
         b_body["browseId"] = json!(lyrics_browse_id);
         let page = self.post("browse", b_body).await.ok()?;
         find_description_text(&page)
@@ -727,7 +923,7 @@ impl YtMusicClient {
             return Err(anyhow!("Sign in to YouTube Music in your browser first"));
         }
         let endpoint = if like { "like/like" } else { "like/removelike" };
-        let mut body = Self::base_context();
+        let mut body = self.base_context().await;
         body["target"] = json!({ "videoId": video_id });
         self.post(endpoint, body).await?;
         self.invalidate_cache(Some("VLLM")).await;
@@ -784,7 +980,7 @@ impl YtMusicClient {
                 })
             })
             .collect();
-        let mut body = Self::base_context();
+        let mut body = self.base_context().await;
         body["playlistId"] = json!(raw_id);
         body["actions"] = json!(actions);
         let resp = self.post("browse/edit_playlist", body).await?;
@@ -807,7 +1003,7 @@ impl YtMusicClient {
         let raw_id = playlist_browse_id
             .strip_prefix("VL")
             .unwrap_or(playlist_browse_id);
-        let mut body = Self::base_context();
+        let mut body = self.base_context().await;
         body["playlistId"] = json!(raw_id);
         body["actions"] = json!([{
             "action": "ACTION_REMOVE_VIDEO",
@@ -850,7 +1046,7 @@ impl YtMusicClient {
                 clean_ids.push(trimmed.to_string());
             }
         }
-        let mut body = Self::base_context();
+        let mut body = self.base_context().await;
         body["title"] = json!(clean_title);
         if !description.trim().is_empty() {
             body["description"] = json!(description.trim());
@@ -921,7 +1117,7 @@ impl YtMusicClient {
             return Ok(());
         }
 
-        let mut body = Self::base_context();
+        let mut body = self.base_context().await;
         body["playlistId"] = json!(raw_id);
         body["actions"] = json!(actions);
         let resp = self.post("browse/edit_playlist", body).await?;
@@ -1068,7 +1264,7 @@ impl YtMusicClient {
             .ok_or_else(|| anyhow!("Missing encryptedBlobId from YouTube Music upload response"))?;
 
         // Step 3: Bind custom thumbnail blob to the playlist via browse/edit_playlist.
-        let mut body = Self::base_context();
+        let mut body = self.base_context().await;
         body["playlistId"] = json!(raw_id);
         body["actions"] = json!([{
             "action": "ACTION_SET_CUSTOM_THUMBNAIL",
@@ -1086,7 +1282,7 @@ impl YtMusicClient {
             Ok(resp) if resp.get("status").and_then(|v| v.as_str()) != Some("STATUS_FAILED")
         );
         if !ok {
-            let mut fallback = Self::base_context();
+            let mut fallback = self.base_context().await;
             fallback["playlistId"] = json!(raw_id);
             fallback["actions"] = json!([{
                 "action": "ACTION_SET_CUSTOM_THUMBNAIL",
@@ -1104,7 +1300,7 @@ impl YtMusicClient {
     }
 
     pub async fn search_songs(&self, query: &str) -> Result<Vec<Track>> {
-        let mut body = Self::base_context();
+        let mut body = self.base_context().await;
         body["query"] = json!(query);
         // Filter strictly to Songs ("EgWKAQIIAWoMEAMQBBAJEAoQBRAV")
         body["params"] = json!("EgWKAQIIAWoMEAMQBBAJEAoQBRAV");
@@ -1114,7 +1310,7 @@ impl YtMusicClient {
         collect_tracks(&data, &mut tracks);
         if tracks.is_empty() {
             // Retry unfiltered search if song filter returned empty
-            let mut fallback = Self::base_context();
+            let mut fallback = self.base_context().await;
             fallback["query"] = json!(query);
             if let Ok(fb_data) = self.post("search", fallback).await {
                 collect_tracks(&fb_data, &mut tracks);
@@ -1143,7 +1339,7 @@ impl YtMusicClient {
 
         if !target_key.0.is_empty() {
             if let Some(album_id) = track.album_id.as_deref() {
-                let mut body = Self::base_context();
+                let mut body = self.base_context().await;
                 body["browseId"] = json!(album_id);
                 if let Ok(album_data) = self.post("browse", body).await {
                     let mut album_tracks = Vec::new();
@@ -1205,12 +1401,181 @@ impl YtMusicClient {
         found
     }
 
+    async fn fetch_sponsorblock_music_offtopic_segments(
+        &self,
+        video_id: &str,
+        total_video_ms: u64,
+    ) -> Vec<MusicVideoSyncSegment> {
+        let Ok(resp) = self
+            .http
+            .get("https://sponsor.ajay.app/api/skipSegments")
+            .query(&[("videoID", video_id), ("category", "music_offtopic")])
+            .timeout(Duration::from_secs(2))
+            .send()
+            .await
+        else {
+            return Vec::new();
+        };
+        if !resp.status().is_success() {
+            return Vec::new();
+        }
+        let Ok(items) = resp.json::<Vec<Value>>().await else {
+            return Vec::new();
+        };
+        let offtopic_ms: Vec<(u64, u64)> = items
+            .into_iter()
+            .filter_map(|item| {
+                let seg = item.get("segment")?.as_array()?;
+                let start_s = seg.first()?.as_f64()?;
+                let end_s = seg.get(1)?.as_f64()?;
+                if !start_s.is_finite() || !end_s.is_finite() || end_s <= start_s || start_s < 0.0 {
+                    return None;
+                }
+                let start_ms = (start_s * 1000.0).round() as u64;
+                let end_ms = (end_s * 1000.0).round() as u64;
+                (end_ms > start_ms).then_some((start_ms, end_ms))
+            })
+            .collect();
+        build_sync_segments_from_offtopic(&offtopic_ms, total_video_ms)
+    }
+
+    async fn enrich_music_video_sync_segments(
+        &self,
+        mut cand: MusicVideoCandidate,
+        track_duration_secs: Option<u64>,
+    ) -> MusicVideoCandidate {
+        if cand.sync_segments.is_empty() {
+            let total_ms = cand
+                .duration_secs
+                .or(track_duration_secs)
+                .unwrap_or(0)
+                .saturating_mul(1000);
+            cand.sync_segments = self
+                .fetch_sponsorblock_music_offtopic_segments(&cand.video_id, total_ms)
+                .await;
+        }
+        cand
+    }
+
+    /// Resolves whether a playable official/counterpart Music Video exists on YouTube Music
+    /// for `track`, checking the InnerTube `next` counterpart wrapper first and falling back to
+    /// a strict YTM Videos search match.
+    pub async fn resolve_music_video_candidate(
+        &self,
+        track: &Track,
+    ) -> Option<MusicVideoCandidate> {
+        let base_id = if track.source == ProviderSource::YouTubeMusic
+            && !track.id.trim().is_empty()
+            && !track.id.contains(' ')
+            && !track.id.starts_with("jiosaavn:")
+            && !track.id.starts_with("local:")
+        {
+            track.id.trim().to_string()
+        } else {
+            let primary_artist = primary_artist_query(&track.artist);
+            let query = format!("{} {}", primary_artist, canonical_song_title(&track.title))
+                .trim()
+                .to_string();
+            if query.is_empty() {
+                return None;
+            }
+            let target_key = canonical_song_key(&track.title, &track.artist);
+            self.search_songs(&query)
+                .await
+                .ok()?
+                .into_iter()
+                .find(|cand| {
+                    let key = canonical_song_key(&cand.title, &cand.artist);
+                    !key.0.is_empty() && key.0 == target_key.0
+                })?
+                .id
+        };
+
+        let mut next_body = self.base_context().await;
+        next_body["videoId"] = json!(&base_id);
+        next_body["enablePersistentPlaylistPanel"] = json!(true);
+        next_body["isAudioOnly"] = json!(true);
+        if let Ok(next_data) = self.post("next", next_body).await {
+            if let Some(cand) = parse_music_video_counterpart_json(&next_data, &base_id) {
+                return Some(
+                    self.enrich_music_video_sync_segments(cand, track.duration_secs)
+                        .await,
+                );
+            }
+        }
+
+        // Strict Video-filtered fallback search only when no counterpart metadata existed.
+        let target_key = canonical_song_key(&track.title, &track.artist);
+        if target_key.0.is_empty() {
+            return None;
+        }
+        let primary_artist = primary_artist_query(&track.artist);
+        let search_query = if primary_artist.is_empty() {
+            format!("{} official music video", target_key.0)
+        } else {
+            format!("{primary_artist} {} official music video", target_key.0)
+        };
+        let mut search_body = self.base_context().await;
+        search_body["query"] = json!(search_query);
+        search_body["params"] = json!("EgWKAQIQAWoKEAkQChADEAUQBA%3D%3D");
+        let data = self.post("search", search_body).await.ok()?;
+        let mut candidates = Vec::new();
+        collect_tracks(&data, &mut candidates);
+        let fallback = candidates.into_iter().find_map(|cand| {
+            let lower_title = cand.title.to_ascii_lowercase();
+            const REJECTED_MARKERS: &[&str] = &[
+                "lyric",
+                "lyrics",
+                "audio",
+                "karaoke",
+                "cover",
+                "slowed",
+                "reverb",
+                "nightcore",
+                "8d",
+                "instrumental",
+                "reaction",
+            ];
+            if REJECTED_MARKERS.iter().any(|m| lower_title.contains(m)) {
+                return None;
+            }
+            let cand_key = canonical_song_key(&cand.title, &cand.artist);
+            if cand_key.0 != target_key.0 {
+                return None;
+            }
+            if !target_key.1.is_empty()
+                && !cand_key.1.is_empty()
+                && cand_key.1 != target_key.1
+                && !cand_key.1.contains(&target_key.1)
+                && !target_key.1.contains(&cand_key.1)
+            {
+                return None;
+            }
+            if let (Some(a), Some(b)) = (track.duration_secs, cand.duration_secs) {
+                if a > 0 && b > 0 && a.abs_diff(b) > 90 {
+                    return None;
+                }
+            }
+            Some(MusicVideoCandidate {
+                video_id: cand.id,
+                title: cand.title,
+                thumbnail_url: cand.thumbnail_url,
+                duration_secs: cand.duration_secs,
+                sync_segments: Vec::new(),
+            })
+        })?;
+        Some(
+            self.enrich_music_video_sync_segments(fallback, track.duration_secs)
+                .await,
+        )
+    }
+
     /// Fetches the signed-in listener's reverse-chronological YTM listening history (`FEmusic_history`).
     pub async fn fetch_listening_history(&self) -> Result<Vec<Track>> {
         if !self.is_authenticated() {
             return Ok(Vec::new());
         }
-        let mut body = Self::base_context();
+        let mut body = self.base_context().await;
         body["browseId"] = json!("FEmusic_history");
         let data = self.post("browse", body).await?;
         let mut tracks = Vec::new();
@@ -1238,7 +1603,7 @@ impl YtMusicClient {
             format!("{clean_album} {primary_artist}")
         };
 
-        let mut body = Self::base_context();
+        let mut body = self.base_context().await;
         body["query"] = json!(query);
         // Filter to Albums.
         body["params"] = json!("EgWKAQIYAWoKEAkQBRAKEAMQBA%3D%3D");
@@ -1248,7 +1613,7 @@ impl YtMusicClient {
         }
 
         if !primary_artist.is_empty() {
-            let mut fallback = Self::base_context();
+            let mut fallback = self.base_context().await;
             fallback["query"] = json!(clean_album);
             fallback["params"] = json!("EgWKAQIYAWoKEAkQBRAKEAMQBA%3D%3D");
             if let Ok(fb_data) = self.post("search", fallback).await {
@@ -1263,11 +1628,11 @@ impl YtMusicClient {
     /// Fetches personalized YouTube Music radio & mix shelves (`FEmusic_mixed_for_you` + Home/Explore mixes),
     /// strictly excluding manual `VLPL...` user playlists.
     pub async fn fetch_radio_mixes(&self) -> Result<Vec<HomeShelf>> {
-        let mut mixed_body = Self::base_context();
+        let mut mixed_body = self.base_context().await;
         mixed_body["browseId"] = json!("FEmusic_mixed_for_you");
-        let mut home_body = Self::base_context();
+        let mut home_body = self.base_context().await;
         home_body["browseId"] = json!("FEmusic_home");
-        let mut exp_body = Self::base_context();
+        let mut exp_body = self.base_context().await;
         exp_body["browseId"] = json!("FEmusic_explore");
 
         let (mixed_res, home_res, exp_res) = tokio::join!(
@@ -1290,7 +1655,7 @@ impl YtMusicClient {
             let mut cont = find_home_continuation(&mixed_data);
             for _ in 0..2 {
                 let Some(token) = cont.take() else { break };
-                let mut next_body = Self::base_context();
+                let mut next_body = self.base_context().await;
                 next_body["continuation"] = json!(token);
                 let Ok(Ok(page)) =
                     tokio::time::timeout(Duration::from_secs(4), self.post("browse", next_body))
@@ -1353,7 +1718,7 @@ impl YtMusicClient {
         if let Ok(Ok(home_data)) = home_res {
             extra_shelves.extend(parse_home_shelves_json(&home_data));
             if let Some(token) = find_home_continuation(&home_data) {
-                let mut next_body = Self::base_context();
+                let mut next_body = self.base_context().await;
                 next_body["continuation"] = json!(token);
                 if let Ok(Ok(page)) =
                     tokio::time::timeout(Duration::from_secs(4), self.post("browse", next_body))
@@ -1404,7 +1769,7 @@ impl YtMusicClient {
         &self,
         params: Option<&str>,
     ) -> Result<(Vec<MoodChip>, Vec<HomeShelf>)> {
-        let mut body = Self::base_context();
+        let mut body = self.base_context().await;
         body["browseId"] = json!("FEmusic_home");
         if let Some(p) = params.filter(|s| !s.is_empty()) {
             body["params"] = json!(p);
@@ -1425,9 +1790,9 @@ impl YtMusicClient {
 
     /// Fetches `FEmusic_explore` shelves alongside `FEmusic_moods_and_genres` category tiles.
     pub async fn fetch_explore(&self) -> Result<(Vec<HomeShelf>, Vec<MoodCategoryTile>)> {
-        let mut exp_body = Self::base_context();
+        let mut exp_body = self.base_context().await;
         exp_body["browseId"] = json!("FEmusic_explore");
-        let mut moods_body = Self::base_context();
+        let mut moods_body = self.base_context().await;
         moods_body["browseId"] = json!("FEmusic_moods_and_genres");
 
         let (exp_res, moods_res) = tokio::join!(
@@ -1466,7 +1831,7 @@ impl YtMusicClient {
         browse_id: &str,
         params: &str,
     ) -> Result<Vec<HomeShelf>> {
-        let mut body = Self::base_context();
+        let mut body = self.base_context().await;
         body["browseId"] = json!(browse_id);
         if !params.is_empty() {
             body["params"] = json!(params);
@@ -1477,9 +1842,9 @@ impl YtMusicClient {
 
     /// Fetches saved library albums and track artists.
     pub async fn fetch_library_albums_and_artists(&self) -> (Vec<HomeCard>, Vec<HomeCard>) {
-        let mut albums_body = Self::base_context();
+        let mut albums_body = self.base_context().await;
         albums_body["browseId"] = json!("FEmusic_liked_albums");
-        let mut artists_body = Self::base_context();
+        let mut artists_body = self.base_context().await;
         artists_body["browseId"] = json!("FEmusic_library_corpus_track_artists");
 
         let (alb_res, art_res) = tokio::join!(
@@ -1507,7 +1872,7 @@ impl YtMusicClient {
 
     /// Fetches full album details including tracks, clickable artists, and alternate versions.
     pub async fn fetch_album_detail(&self, browse_id: &str) -> Result<AlbumDetail> {
-        let mut body = Self::base_context();
+        let mut body = self.base_context().await;
         body["browseId"] = json!(browse_id);
         let data = self.post("browse", body).await?;
         let parsed = parse_album_detail_json(browse_id, &data).map_err(anyhow::Error::new)?;
@@ -1525,7 +1890,7 @@ impl YtMusicClient {
 
     /// Fetches a wide artist channel banner URL (`>= 1.5` aspect ratio) if available.
     pub async fn fetch_artist_banner(&self, browse_id: &str) -> Option<String> {
-        let mut body = Self::base_context();
+        let mut body = self.base_context().await;
         body["browseId"] = json!(browse_id);
         let data = self.post("browse", body).await.ok()?;
         parse_artist_banner_url_json(&data)
@@ -1533,7 +1898,7 @@ impl YtMusicClient {
 
     /// Marks a YouTube Music video as disliked.
     pub async fn set_dislike_status(&self, video_id: &str) -> Result<()> {
-        let mut body = Self::base_context();
+        let mut body = self.base_context().await;
         body["target"] = json!({ "videoId": video_id });
         let _ = self.post("like/dislike", body).await?;
         Ok(())
@@ -1541,10 +1906,19 @@ impl YtMusicClient {
 
     /// Saves or removes a YouTube Music playlist/album from the user's library.
     pub async fn set_playlist_saved(&self, playlist_id: &str, save: bool) -> Result<()> {
-        let mut body = Self::base_context();
-        body["target"] = json!({ "playlistId": playlist_id });
+        if !self.is_authenticated() {
+            return Err(anyhow!("Sign in to YouTube Music in your browser first"));
+        }
+        let raw_id = playlist_id.trim();
+        let bare_id = raw_id.strip_prefix("VL").unwrap_or(raw_id);
+        if bare_id.is_empty() {
+            return Err(anyhow!("Missing target playlist ID"));
+        }
+        let mut body = self.base_context().await;
+        body["target"] = json!({ "playlistId": bare_id });
         let endpoint = if save { "like/like" } else { "like/removelike" };
         let _ = self.post(endpoint, body).await?;
+        self.invalidate_cache(None).await;
         Ok(())
     }
 
@@ -1553,7 +1927,7 @@ impl YtMusicClient {
         if input.trim().is_empty() {
             return Vec::new();
         }
-        let mut body = Self::base_context();
+        let mut body = self.base_context().await;
         body["input"] = json!(input.trim());
         let Ok(data) = self.post("music/get_search_suggestions", body).await else {
             return Vec::new();
@@ -1572,7 +1946,7 @@ impl YtMusicClient {
 
     /// Searches YouTube Music and parses categorized songs, videos, albums, artists, and playlists.
     pub async fn search_rich(&self, query: &str) -> Result<RichSearchResult> {
-        let mut body = Self::base_context();
+        let mut body = self.base_context().await;
         body["query"] = json!(query.trim());
         let data = self.post("search", body).await?;
         let parsed = parse_rich_search_json(&data).map_err(anyhow::Error::new)?;
@@ -1866,6 +2240,7 @@ fn build_videostats_url(
     _playlist_id: Option<&str>,
     duration_secs: Option<u64>,
     is_watchtime: bool,
+    hl: &str,
 ) -> String {
     let mut url = if let Some(rest) = base_url.strip_prefix("https://s.youtube.com/") {
         format!("https://music.youtube.com/{rest}")
@@ -1879,7 +2254,7 @@ fn build_videostats_url(
     append_query_param(&mut url, "ver", "2");
     append_query_param(&mut url, "c", "WEB_REMIX");
     append_query_param(&mut url, "cver", WEB_REMIX_VERSION);
-    append_query_param(&mut url, "hl", "en");
+    append_query_param(&mut url, "hl", normalize_ytm_language(hl));
     append_query_param(&mut url, "gl", "US");
     if let Some(dur) = duration_secs.filter(|&d| d > 0) {
         append_query_param(&mut url, "len", &format!("{dur}.000"));
@@ -1903,11 +2278,198 @@ fn build_videostats_url(
     url
 }
 
+fn is_valid_ytm_video_id(raw: &str) -> bool {
+    let clean = raw.trim();
+    !clean.is_empty() && !clean.starts_with("local:") && !clean.starts_with("jiosaavn:")
+}
+
+fn normalize_endless_playlist_id(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.starts_with("local:") {
+        return None;
+    }
+    let bare = trimmed.strip_prefix("VL").unwrap_or(trimmed).trim();
+    if bare.is_empty() || bare == "LM" || bare == "SE" || bare.starts_with("UC") {
+        return None;
+    }
+    if bare.starts_with("RD") {
+        Some(bare.to_string())
+    } else if bare.starts_with("PL") || bare.starts_with("OLAK") {
+        Some(format!("RDAMPL{bare}"))
+    } else {
+        None
+    }
+}
+
+fn is_non_music_clutter(title: &str) -> bool {
+    let lower = title.to_ascii_lowercase();
+    lower.contains("interview")
+        || lower.contains("behind the scenes")
+        || lower.contains("making of")
+        || lower.contains("reaction")
+        || lower.contains("teaser")
+        || lower.contains("trailer")
+}
+
+/// Scores, deduplicates, filters, and artist-diversifies candidate radio tracks from one or more
+/// InnerTube `next` batches `(is_playlist_automix, tracks)`.
+pub(crate) fn rank_and_diversify_recommendations(
+    batches: &[(bool, Vec<Track>)],
+    seed_video_ids: &[String],
+    exclude_video_ids: &[String],
+    preferred_artists: &[String],
+    limit: usize,
+) -> Vec<Track> {
+    if limit == 0 {
+        return Vec::new();
+    }
+
+    let mut excluded_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for id in seed_video_ids.iter().chain(exclude_video_ids.iter()) {
+        let trimmed = id.trim();
+        if !trimmed.is_empty() {
+            excluded_ids.insert(trimmed);
+        }
+    }
+
+    let preferred_artist_keys: std::collections::HashSet<String> = preferred_artists
+        .iter()
+        .map(|a| primary_artist_query(a).to_ascii_lowercase())
+        .filter(|a| !a.is_empty())
+        .collect();
+
+    struct Candidate {
+        track: Track,
+        primary_artist_key: String,
+        score: i32,
+        batch_hits: usize,
+        from_playlist_automix: bool,
+        first_seen_order: usize,
+    }
+
+    let mut by_id: HashMap<String, usize> = HashMap::new();
+    let mut by_song_key: HashMap<(String, String), usize> = HashMap::new();
+    let mut candidates: Vec<Candidate> = Vec::new();
+    let mut seen_order: usize = 0;
+
+    for (batch_idx, (is_playlist_automix, tracks)) in batches.iter().enumerate() {
+        let mut seen_in_batch: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (pos, track) in tracks.iter().enumerate() {
+            let id = track.id.trim();
+            if id.is_empty() || excluded_ids.contains(id) || !seen_in_batch.insert(id.to_string()) {
+                continue;
+            }
+            let song_key = canonical_song_key(&track.title, &track.artist);
+            let artist_key = primary_artist_query(&track.artist).to_ascii_lowercase();
+            let pos_score = 25i32.saturating_sub(pos.min(25) as i32);
+
+            let existing_idx = by_id.get(id).copied().or_else(|| {
+                if !song_key.0.is_empty() && !song_key.1.is_empty() {
+                    by_song_key.get(&song_key).copied()
+                } else {
+                    None
+                }
+            });
+
+            if let Some(idx) = existing_idx {
+                let entry = &mut candidates[idx];
+                entry.batch_hits += 1;
+                entry.score += 40 + (pos_score / 2);
+                if *is_playlist_automix && !entry.from_playlist_automix {
+                    entry.from_playlist_automix = true;
+                    entry.score += 15;
+                }
+                if track.is_explicit && !entry.track.is_explicit {
+                    entry.track = track.clone();
+                }
+            } else {
+                let mut score = pos_score;
+                if *is_playlist_automix {
+                    score += 15;
+                }
+                if !artist_key.is_empty() && preferred_artist_keys.contains(&artist_key) {
+                    score += 20;
+                }
+                if is_non_music_clutter(&track.title) {
+                    score -= 25;
+                }
+                // Slight tie-breaker preference for earlier batches (automix / primary seed).
+                score -= (batch_idx as i32) * 2;
+
+                let idx = candidates.len();
+                by_id.insert(id.to_string(), idx);
+                if !song_key.0.is_empty() && !song_key.1.is_empty() {
+                    by_song_key.insert(song_key, idx);
+                }
+                candidates.push(Candidate {
+                    track: track.clone(),
+                    primary_artist_key: artist_key,
+                    score,
+                    batch_hits: 1,
+                    from_playlist_automix: *is_playlist_automix,
+                    first_seen_order: seen_order,
+                });
+                seen_order += 1;
+            }
+        }
+    }
+
+    candidates.sort_by(|a, b| {
+        b.score
+            .cmp(&a.score)
+            .then_with(|| b.batch_hits.cmp(&a.batch_hits))
+            .then_with(|| a.first_seen_order.cmp(&b.first_seen_order))
+    });
+
+    // Interleave with artist diversity: avoid back-to-back same primary artist and cap any
+    // artist to at most 2 tracks per 10-track sliding window when other artists remain.
+    let mut pool: Vec<Candidate> = candidates;
+    let mut result: Vec<Track> = Vec::with_capacity(limit.min(pool.len()));
+    let mut recent_artists: Vec<String> = Vec::new();
+
+    while !pool.is_empty() && result.len() < limit {
+        let last_artist = recent_artists.last().map(String::as_str);
+        let window_start = recent_artists.len().saturating_sub(9);
+        let window = &recent_artists[window_start..];
+
+        let pick_idx = pool
+            .iter()
+            .position(|c| {
+                let same_as_last = !c.primary_artist_key.is_empty()
+                    && last_artist == Some(c.primary_artist_key.as_str());
+                let window_count = if c.primary_artist_key.is_empty() {
+                    0
+                } else {
+                    window
+                        .iter()
+                        .filter(|a| a.as_str() == c.primary_artist_key.as_str())
+                        .count()
+                };
+                !same_as_last && window_count < 2
+            })
+            .or_else(|| {
+                pool.iter().position(|c| {
+                    c.primary_artist_key.is_empty()
+                        || last_artist != Some(c.primary_artist_key.as_str())
+                })
+            })
+            .unwrap_or(0);
+
+        let chosen = pool.remove(pick_idx);
+        recent_artists.push(chosen.primary_artist_key);
+        result.push(chosen.track);
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        build_videostats_url, generate_cpn, is_manual_user_playlist_id, is_mix_playlist_id,
-        normalize_playback_playlist_id, prefer_explicit_order, primary_artist_query,
+        accept_language_header, build_videostats_url, generate_cpn, is_manual_user_playlist_id,
+        is_mix_playlist_id, normalize_endless_playlist_id, normalize_playback_playlist_id,
+        prefer_explicit_order, primary_artist_query, rank_and_diversify_recommendations,
+        ArtistPage, Client, ExtractedCookies, Instant, YtMusicClient,
     };
     use crate::providers::{ProviderSource, Track};
 
@@ -1991,10 +2553,12 @@ mod tests {
             Some("VLPLtest99"),
             Some(210),
             false,
+            "en",
         );
         assert!(pb.starts_with("https://music.youtube.com/api/stats/playback?"));
         assert!(pb.contains("cpn=CPN1234567890123"));
         assert!(pb.contains("c=WEB_REMIX"));
+        assert!(pb.contains("hl=en"));
         assert!(!pb.contains("list="));
         assert!(pb.contains("cmt=0"));
         assert!(!pb.contains("final=1"));
@@ -2005,12 +2569,124 @@ mod tests {
             Some("MPREb_album"),
             Some(210),
             true,
+            "tr-TR",
         );
         assert!(wt.starts_with("https://music.youtube.com/api/stats/watchtime?"));
         assert!(wt.contains("st=0.000"));
         assert!(wt.contains("et=35.000"));
         assert!(wt.contains("final=1"));
+        assert!(wt.contains("hl=tr"));
         assert!(!wt.contains("list="));
         assert_eq!(wt.matches("ver=2").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn set_language_normalizes_codes_and_clears_caches_on_change() {
+        let client = YtMusicClient::new(Client::new(), ExtractedCookies::default());
+        assert_eq!(client.language.read().await.as_str(), "en");
+        assert_eq!(accept_language_header("en"), "en-US,en;q=0.9");
+        assert_eq!(accept_language_header("tr"), "tr-TR,tr;q=0.9");
+        assert_eq!(accept_language_header("ru"), "ru-RU,ru;q=0.9");
+
+        client
+            .playlist_cache
+            .lock()
+            .await
+            .insert("VL1".to_string(), (Instant::now(), Vec::new()));
+        client
+            .artist_cache
+            .lock()
+            .await
+            .insert("UC1".to_string(), (Instant::now(), ArtistPage::default()));
+
+        // Same normalized language ("en-GB" -> "en") keeps caches intact.
+        client.set_language("en-GB").await;
+        assert_eq!(client.language.read().await.as_str(), "en");
+        assert_eq!(client.playlist_cache.lock().await.len(), 1);
+        assert_eq!(client.artist_cache.lock().await.len(), 1);
+
+        // Switching to Turkish normalizes "tr-TR" -> "tr" and clears both caches.
+        client.set_language("tr-TR").await;
+        assert_eq!(client.language.read().await.as_str(), "tr");
+        assert!(client.playlist_cache.lock().await.is_empty());
+        assert!(client.artist_cache.lock().await.is_empty());
+        assert_eq!(client.base_context().await["context"]["client"]["hl"], "tr");
+
+        // Switching to Russian normalizes "ru_RU" -> "ru".
+        client.set_language("ru_RU").await;
+        assert_eq!(client.language.read().await.as_str(), "ru");
+        assert_eq!(client.base_context().await["context"]["client"]["hl"], "ru");
+
+        // Unsupported language falls back to "en".
+        client.set_language("fr").await;
+        assert_eq!(client.language.read().await.as_str(), "en");
+    }
+
+    #[test]
+    fn ranks_and_diversifies_endless_recommendations() {
+        assert_eq!(
+            normalize_endless_playlist_id("VLPLabc123").as_deref(),
+            Some("RDAMPLPLabc123")
+        );
+        assert_eq!(
+            normalize_endless_playlist_id("RDCLAK5uy_abc").as_deref(),
+            Some("RDCLAK5uy_abc")
+        );
+        assert_eq!(normalize_endless_playlist_id("VLLM"), None);
+
+        let playlist_batch = vec![
+            dummy("seed1", "Seed Song", "Seed Artist", false),
+            dummy("t1", "Midnight Run", "Artist A", false),
+            dummy("t2", "City Lights", "Artist A", false),
+            dummy("t3", "Neon Echo", "Artist A", false),
+            dummy("clutter", "Track Behind the Scenes", "Artist B", false),
+        ];
+        let seed_batch = vec![
+            dummy("excluded1", "Already Played", "Artist C", false),
+            dummy("t1_dup", "Midnight Run (Clean)", "Artist A", false),
+            dummy("consensus", "Consensus Hit", "Artist D", false),
+            dummy("t4", "Velvet Sky", "Artist E", false),
+        ];
+        let secondary_batch = vec![
+            dummy("consensus", "Consensus Hit", "Artist D", true),
+            dummy("t5", "Aurora", "Artist F", false),
+        ];
+
+        let ranked = rank_and_diversify_recommendations(
+            &[
+                (true, playlist_batch),
+                (false, seed_batch),
+                (false, secondary_batch),
+            ],
+            &["seed1".to_string()],
+            &["excluded1".to_string()],
+            &["Artist D".to_string()],
+            10,
+        );
+        let ids: Vec<&str> = ranked.iter().map(|t| t.id.as_str()).collect();
+        assert!(!ids.contains(&"seed1"));
+        assert!(!ids.contains(&"excluded1"));
+        // "t1_dup" should dedupe with "t1" by canonical (title, artist)
+        assert_eq!(
+            ranked
+                .iter()
+                .filter(|t| t.title.starts_with("Midnight Run"))
+                .count(),
+            1
+        );
+        // Consensus multi-batch hit with preferred artist ranks at the top and promotes explicit
+        assert_eq!(ids[0], "consensus");
+        assert!(ranked[0].is_explicit);
+        // Clutter track is demoted below real music tracks
+        let clutter_pos = ids.iter().position(|&id| id == "clutter").unwrap();
+        let velvet_pos = ids.iter().position(|&id| id == "t4").unwrap();
+        assert!(velvet_pos < clutter_pos);
+        // Same primary artist should not appear consecutively when alternatives exist
+        for pair in ranked.windows(2) {
+            assert_ne!(
+                primary_artist_query(&pair[0].artist),
+                primary_artist_query(&pair[1].artist)
+            );
+        }
     }
 }

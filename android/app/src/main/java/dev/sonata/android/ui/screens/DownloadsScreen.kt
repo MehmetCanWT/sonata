@@ -104,21 +104,22 @@ fun DownloadsManagerSheet(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
                     Column(Modifier.weight(1f)) {
                         Text(
-                            text = "Downloads",
+                            text = strings.downloads,
                             style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
                             color = themeTokens.onSurfacePrimary,
                         )
                         Text(
-                            text = "${downloads.size} tracks · ${formatBytes(totalBytes)} offline",
+                            text = "${strings.tracksCount(downloads.size)} · ${formatBytes(totalBytes)}",
                             style = MaterialTheme.typography.bodySmall,
                             color = themeTokens.onSurfaceSecondary,
                         )
                     }
                     CircleGlyph(
                         icon = SonataIcons.Close,
-                        contentDescription = "Close Downloads",
+                        contentDescription = strings.close,
                         onClick = onDismiss,
                     )
                 }
@@ -140,14 +141,15 @@ fun DownloadsManagerSheet(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
+                            val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
                             DownloadToggleChip(
-                                label = if (wifiOnly) "Wi-Fi Only: On" else "Wi-Fi Only: Off",
+                                label = if (wifiOnly) "Wi-Fi: ${strings.done}" else "Wi-Fi: ${strings.off}",
                                 active = wifiOnly,
                                 onClick = onToggleWifiOnly,
                                 modifier = Modifier.weight(1f),
                             )
                             DownloadToggleChip(
-                                label = if (exportToMusic) "Music/Sonata" else "App Private",
+                                label = if (exportToMusic) "Music/Sonata" else strings.storageLocationInternal,
                                 active = exportToMusic,
                                 onClick = onToggleExportToMusic,
                                 modifier = Modifier.weight(1f),
@@ -172,7 +174,7 @@ fun DownloadsManagerSheet(
                                     Icon(SonataIcons.Play, null, tint = Color.White, modifier = Modifier.size(15.dp))
                                     Spacer(Modifier.width(6.dp))
                                     Text(
-                                        text = "Play Offline",
+                                        text = dev.sonata.android.ui.i18n.LocalSonataStrings.current.playAll,
                                         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                                         color = Color.White,
                                     )
@@ -187,7 +189,7 @@ fun DownloadsManagerSheet(
                                     contentAlignment = Alignment.Center,
                                 ) {
                                     Text(
-                                        text = "Clear All",
+                                        text = dev.sonata.android.ui.i18n.LocalSonataStrings.current.clear,
                                         style = MaterialTheme.typography.labelMedium,
                                         color = themeTokens.onSurfacePrimary.copy(alpha = 0.82f),
                                     )
@@ -275,7 +277,7 @@ fun DownloadsManagerSheet(
             // Downloaded tracks list
             item(key = "dl_saved_header") {
                 Text(
-                    text = "SAVED ON DEVICE",
+                    text = dev.sonata.android.ui.i18n.LocalSonataStrings.current.downloaded.uppercase(),
                     style = MaterialTheme.typography.labelSmall.copy(
                         letterSpacing = 0.8.sp,
                         fontWeight = FontWeight.Bold,
@@ -304,12 +306,12 @@ fun DownloadsManagerSheet(
                                 modifier = Modifier.size(32.dp),
                             )
                             Text(
-                                text = "No Offline Tracks Yet",
+                                text = dev.sonata.android.ui.i18n.LocalSonataStrings.current.noDownloadsYet,
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
                                 color = themeTokens.onSurfacePrimary,
                             )
                             Text(
-                                text = "Tap Download on any song or album to listen without a connection.",
+                                text = dev.sonata.android.ui.i18n.LocalSonataStrings.current.noDownloadsHint,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = themeTokens.onSurfaceSecondary,
                             )
@@ -362,10 +364,14 @@ fun DownloadsManagerSheet(
                             val meta = buildString {
                                 append(rec.artist)
                                 append(" · ")
-                                append(formatBytes(rec.fileSizeBytes))
+                                append(formatBytes(rec.totalSizeBytes))
                                 if (!rec.codec.isNullOrBlank()) {
                                     append(" · ")
                                     append(rec.codec.uppercase())
+                                }
+                                if (rec.hasOfflineVideo && !rec.videoQualityLabel.isNullOrBlank()) {
+                                    append(" · ")
+                                    append(rec.videoQualityLabel)
                                 }
                             }
                             Text(

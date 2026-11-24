@@ -188,6 +188,7 @@ impl SonataDesktopView {
                 if this.settings.language != lang {
                     this.settings.language = lang;
                     this.settings.save();
+                    this.backend.send(BackendCmd::SetLanguage(lang));
                     cx.notify();
                 }
             }))
@@ -393,6 +394,18 @@ impl SonataDesktopView {
             .gap(px(10.0))
             .child(
                 self.settings_row(
+                    s.autoplay,
+                    s.autoplay_desc,
+                    Switch::new("sw-autoplay")
+                        .checked(cfg.autoplay)
+                        .on_change(cx.listener(|this, _, _, _| {
+                            this.backend.send(BackendCmd::ToggleAutoplay);
+                        }))
+                        .into_any_element(),
+                ),
+            )
+            .child(
+                self.settings_row(
                     s.hifi_upgrade,
                     s.hifi_upgrade_desc,
                     Switch::new("sw-hifi")
@@ -441,8 +454,8 @@ impl SonataDesktopView {
             )
             .child(
                 self.settings_row(
-                    "Double-click to play rows",
-                    "Require a double-click on track rows instead of single-click playback",
+                    s.dbl_click_play,
+                    s.dbl_click_play_desc,
                     Switch::new("sw-dblclick")
                         .checked(self.settings.double_click_to_play)
                         .on_change(cx.listener(|this, _, _, cx| {
@@ -455,6 +468,7 @@ impl SonataDesktopView {
     }
 
     fn render_settings_library(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let s = strings(self.settings.language);
         let limit_gb = self.snapshot.config.cache_limit_gb;
         let label = AppConfig::cache_limit_label(limit_gb);
 
@@ -496,11 +510,7 @@ impl SonataDesktopView {
             .flex()
             .flex_col()
             .gap(px(10.0))
-            .child(self.settings_row(
-                "Audio Media Cache Limit",
-                "Bounded SQLite/disk LRU storage for cached audio streams",
-                cache_ctrl,
-            ))
+            .child(self.settings_row(s.cache_budget, s.cache_budget_desc, cache_ctrl))
             .child(
                 self.settings_row(
                     "Artwork Memory Budget",

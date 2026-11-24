@@ -212,9 +212,10 @@ fn render_mini_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App, allo
     app.ui_rects.player_top = rows[0];
     app.ui_rects.volume_bar = Rect::default();
 
+    let s = sonata_runtime::i18n::strings(app.config.language);
     let title_text = match app.playback.current_track() {
         Some(t) => format!("{} — {}", t.title, t.artist),
-        None => "No track playing".to_string(),
+        None => s.no_track_playing.to_string(),
     };
     let top_line = Line::from(Span::styled(
         title_text,
@@ -376,9 +377,10 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 
     app.ui_rects.player_top = top_cols[1];
 
+    let s = sonata_runtime::i18n::strings(app.config.language);
     let (title, artist) = match app.playback.current_track() {
         Some(t) => (t.title.as_str(), t.artist.as_str()),
-        None => ("No track playing", "Select a track and press Enter"),
+        None => (s.no_track_playing, s.pick_track_hint),
     };
 
     let play_icon = if app.playback.loading_track {
@@ -514,16 +516,31 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         Line::from(vec![
             Span::styled(
                 if app.playback.shuffle {
-                    "⇄ Shuffle: On"
+                    format!("⇄ {}", s.shuffle_on)
                 } else {
-                    "⇄ Shuffle: Off"
+                    format!("⇄ {}", s.shuffle_off)
                 },
                 shuffle_style,
             ),
             Span::styled("   ·   ", Style::default().fg(app.theme.border)),
             Span::styled(
-                format!("↻ Repeat: {}", app.playback.repeat.label()),
+                match app.playback.repeat {
+                    RepeatMode::Off => format!("↻ {}", s.repeat_off),
+                    RepeatMode::All => format!("↻ {}", s.repeat_all),
+                    RepeatMode::One => format!("↻ {}", s.repeat_one),
+                },
                 repeat_style,
+            ),
+            Span::styled("   ·   ", Style::default().fg(app.theme.border)),
+            Span::styled(
+                if app.config.autoplay { "∞" } else { "∞·" },
+                if app.config.autoplay {
+                    Style::default()
+                        .fg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(app.theme.muted)
+                },
             ),
         ])
     } else {

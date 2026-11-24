@@ -16,9 +16,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Locale
 import kotlin.coroutines.coroutineContext
 
 enum class ApkInstallLaunchResult {
@@ -52,7 +54,11 @@ object ApkUpdater {
         try {
             while (true) {
                 coroutineContext.ensureActive()
-                val conn = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
+                val parsedUrl = URL(currentUrl)
+                require(isAllowedUpdateUrl(parsedUrl)) {
+                    "Refusing untrusted APK update URL (${parsedUrl.protocol}://${parsedUrl.host})"
+                }
+                val conn = (parsedUrl.openConnection() as HttpURLConnection).apply {
                     instanceFollowRedirects = false
                     connectTimeout = 15_000
                     readTimeout = 30_000
@@ -66,7 +72,11 @@ object ApkUpdater {
                     require(!location.isNullOrBlank() && redirects < 8) {
                         "Invalid redirect while downloading APK ($code)"
                     }
-                    currentUrl = URL(URL(currentUrl), location).toString()
+                    val nextUrl = URL(parsedUrl, location)
+                    require(isAllowedUpdateUrl(nextUrl)) {
+                        "Refusing redirect to untrusted APK host (${nextUrl.protocol}://${nextUrl.host})"
+                    }
+                    currentUrl = nextUrl.toString()
                     redirects++
                     continue
                 }
@@ -107,8 +117,24 @@ object ApkUpdater {
                 }
             }
             onProgress(1f, downloaded, if (totalBytes > 0L) totalBytes else downloaded)
+            if (totalBytes > 0L) {
+                require(downloaded == totalBytes) {
+                    "Downloaded APK size mismatch ($downloaded != $totalBytes bytes)"
+                }
+            }
             require(tempFile.length() > 100_000L) {
                 "Downloaded APK looks incomplete (${tempFile.length()} bytes)"
+            }
+            val header = ByteArray(4)
+            val headerRead = FileInputStream(tempFile).use { it.read(header) }
+            require(
+                headerRead == 4 &&
+                    header[0] == 0x50.toByte() &&
+                    header[1] == 0x4B.toByte() &&
+                    header[2] == 0x03.toByte() &&
+                    header[3] == 0x04.toByte()
+            ) {
+                "Downloaded file is not a valid APK archive"
             }
             if (!tempFile.renameTo(finalFile)) {
                 tempFile.copyTo(finalFile, overwrite = true)
@@ -157,5 +183,12 @@ object ApkUpdater {
         if (bytes <= 0L) return "0 MB"
         val mb = bytes / (1024.0 * 1024.0)
         return String.format(java.util.Locale.US, "%.1f MB", mb)
+    }
+
+    private fun isAllowedUpdateUrl(url: URL): Boolean {
+        if (!url.protocol.equals("https", ignoreCase = true)) return false
+        val host = url.host?.lowercase(Locale.ROOT).orEmpty()
+        return host == "github.com" ||
+            (host.endsWith(".githubusercontent.com") && host.length > ".githubusercontent.com".length)
     }
 }

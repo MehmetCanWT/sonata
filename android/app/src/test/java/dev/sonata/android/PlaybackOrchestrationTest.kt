@@ -581,4 +581,34 @@ class PlaybackOrchestrationTest {
         val generic429 = RuntimeException("HTTP 429 too many requests")
         assertNull(RateLimitPolicy.backoffMsFor(generic429, defaultBackoffMs = 60_000L))
     }
+
+    @Test
+    fun gateway_endlessRadioQueue_receivesSeedPlaylistExcludeAndPreferredArtists() = runTest {
+        val gateway = FakeSonataEngineGateway()
+        var capturedSeeds: List<String> = emptyList()
+        var capturedPlaylistId: String? = null
+        var capturedExcludes: List<String> = emptyList()
+        var capturedPreferredArtists: List<String> = emptyList()
+
+        gateway.endlessRadioHandler = { seeds, playlistId, excludes, artists ->
+            capturedSeeds = seeds
+            capturedPlaylistId = playlistId
+            capturedExcludes = excludes
+            capturedPreferredArtists = artists
+            listOf(track("R1"), track("R2"))
+        }
+
+        val result = gateway.fetchEndlessRadioQueue(
+            seedVideoIds = listOf("S1", "S2"),
+            playlistId = "PL123",
+            excludeVideoIds = listOf("E1"),
+            preferredArtists = listOf("Artist A", "Artist B"),
+        )
+
+        assertEquals(listOf("R1", "R2"), result.map { it.id })
+        assertEquals(listOf("S1", "S2"), capturedSeeds)
+        assertEquals("PL123", capturedPlaylistId)
+        assertEquals(listOf("E1"), capturedExcludes)
+        assertEquals(listOf("Artist A", "Artist B"), capturedPreferredArtists)
+    }
 }

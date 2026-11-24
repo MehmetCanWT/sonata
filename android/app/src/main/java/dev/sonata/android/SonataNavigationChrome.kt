@@ -160,6 +160,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -312,9 +313,10 @@ internal val Shape20 = RoundedCornerShape(20.dp)
 internal val Shape22 = RoundedCornerShape(22.dp)
 internal val Pill50Shape = RoundedCornerShape(percent = 50)
 internal val CapsulePillShape = SquirclePillShape()
-internal val NowPlayingBottomScrim = Brush.verticalGradient(
-    0.38f to Color.Transparent,
-    1f to Color.Black.copy(alpha = 0.46f),
+internal val NowPlayingBottomScrim = dev.sonata.android.ui.smoothScrimBrush(
+    from = Color.Black.copy(alpha = 0f),
+    to = Color.Black.copy(alpha = 0.46f),
+    startFraction = 0.38f,
 )
 
 internal data class NavTabSpec(
@@ -360,7 +362,7 @@ internal fun FloatingTopChrome(
     modifier: Modifier = Modifier,
 ) {
     val pillShape = remember { CircleShape }
-    val showBack = state.collectionTitle != null || showAllMoods || showListeningHistory
+    val showBack = state.collectionTitle != null || state.moodCategoryTitle != null || showAllMoods || showListeningHistory
     val showSearch = state.activeTab == AndroidTab.Search && !showBack
     val glassInk = glassContentColor()
     val backIconTint = glassInk
@@ -385,9 +387,10 @@ internal fun FloatingTopChrome(
                     .clickable(onClick = onBack),
                 contentAlignment = Alignment.Center,
             ) {
+                val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
                 Icon(
                     imageVector = SonataIcons.ChevronLeft,
-                    contentDescription = "Back",
+                    contentDescription = strings.back,
                     tint = backIconTint,
                     modifier = Modifier.size(22.dp),
                 )
@@ -405,20 +408,30 @@ internal fun FloatingTopChrome(
                     query = state.query,
                     onQueryChange = onQueryChange,
                     onSubmit = onSearchSubmit,
-                    placeholder = "Artists, Songs, Lyrics, and More",
+                    placeholder = dev.sonata.android.ui.i18n.LocalSonataStrings.current.searchPlaceholder,
                 )
             }
         } else {
-            if (showAllMoods) {
+            val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
+            if (state.collectionTitle == null && state.moodCategoryTitle != null) {
                 Text(
-                    text = "Find Your Mood",
+                    text = dev.sonata.android.ui.i18n.localizeMoodTitle(state.moodCategoryTitle, strings),
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.onBackground,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+            } else if (showAllMoods) {
+                Text(
+                    text = strings.allMoodsAndGenres,
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
                     color = MaterialTheme.colorScheme.onBackground,
                     modifier = Modifier.weight(1f),
                 )
             } else if (showListeningHistory) {
                 Text(
-                    text = "Listening History",
+                    text = strings.listeningHistory,
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
                     color = MaterialTheme.colorScheme.onBackground,
                     modifier = Modifier.weight(1f),
@@ -432,6 +445,7 @@ internal fun FloatingTopChrome(
             // Unreachable, kept for structural clarity.
         } else if (state.collectionTitle != null && showBack) {
             val capsuleShape = remember { SquirclePillShape() }
+            val shareChooserTitle = dev.sonata.android.ui.i18n.LocalSonataStrings.current.share
             val detailShareClick = {
                 if (onShareCollectionClick != null) {
                     onShareCollectionClick()
@@ -444,7 +458,7 @@ internal fun FloatingTopChrome(
                         putExtra(Intent.EXTRA_SUBJECT, title)
                         putExtra(Intent.EXTRA_TEXT, url)
                     }
-                    context.startActivity(Intent.createChooser(sendIntent, "Share"))
+                    context.startActivity(Intent.createChooser(sendIntent, shareChooserTitle))
                 }
             }
             Row(
@@ -465,7 +479,7 @@ internal fun FloatingTopChrome(
                 ) {
                     Icon(
                         imageVector = DetailShareIcon,
-                        contentDescription = "Share",
+                        contentDescription = dev.sonata.android.ui.i18n.LocalSonataStrings.current.share,
                         tint = glassInk,
                         modifier = Modifier.size(18.dp),
                     )
@@ -503,7 +517,7 @@ internal fun FloatingTopChrome(
                 ) {
                     Icon(
                         imageVector = SonataIcons.History,
-                        contentDescription = "Listening History",
+                        contentDescription = dev.sonata.android.ui.i18n.LocalSonataStrings.current.listeningHistory,
                         tint = glassInk,
                         modifier = Modifier.size(19.dp),
                     )
@@ -546,14 +560,14 @@ internal fun AvatarCircleContent(
         if (avatarRequest != null) {
             AsyncImage(
                 model = avatarRequest,
-                contentDescription = "Account and Settings",
+                contentDescription = dev.sonata.android.ui.i18n.LocalSonataStrings.current.account,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize().clip(CircleShape),
             )
         } else {
             Icon(
                 imageVector = SonataIcons.Person,
-                contentDescription = "Account and Settings",
+                contentDescription = dev.sonata.android.ui.i18n.LocalSonataStrings.current.account,
                 tint = glassInk,
                 modifier = Modifier.size(18.dp),
             )
@@ -708,7 +722,7 @@ internal fun SonataGlassNavBar(
             expandedElevation = 0.dp,
         ),
         sizes = FloatingTabBarDefaults.sizes(
-            tabBarContentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+            tabBarContentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp),
             tabExpandedContentPadding = PaddingValues(vertical = 6.dp),
             inlineComponentSpacing = InlineSpacing,
             inlineBarPadding = PaddingValues(
@@ -745,16 +759,10 @@ internal fun SonataGlassNavBar(
                     },
                     onClick = onClick,
                     title = {
-                        Text(
+                        NavTabLabel(
                             text = tabLabel,
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontSize = 10.sp,
-                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
-                            ),
+                            isSelected = isSelected,
                             color = tint,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(top = 2.dp),
                         )
                     },
                 )
@@ -770,22 +778,53 @@ internal fun SonataGlassNavBar(
                         )
                     },
                     title = {
-                        Text(
+                        NavTabLabel(
                             text = tabLabel,
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontSize = 10.sp,
-                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
-                            ),
+                            isSelected = isSelected,
                             color = tint,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(top = 2.dp),
                         )
                     },
                     onClick = onClick,
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun NavTabLabel(
+    text: String,
+    isSelected: Boolean,
+    color: Color,
+) {
+    val baseDensity = LocalDensity.current
+    val cappedDensity = remember(baseDensity) {
+        Density(
+            density = baseDensity.density,
+            fontScale = baseDensity.fontScale.coerceAtMost(1.1f),
+        )
+    }
+    var fontSizeSp by remember(text) { mutableStateOf(10f) }
+    CompositionLocalProvider(LocalDensity provides cappedDensity) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = fontSizeSp.sp,
+                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+            ),
+            color = color,
+            softWrap = false,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+            onTextLayout = { result ->
+                if ((result.hasVisualOverflow || result.didOverflowWidth) && fontSizeSp > 7.5f) {
+                    fontSizeSp = (fontSizeSp - 0.5f).coerceAtLeast(7.5f)
+                }
+            },
+            modifier = Modifier
+                .padding(top = 2.dp, start = 1.dp, end = 1.dp),
+        )
     }
 }
 

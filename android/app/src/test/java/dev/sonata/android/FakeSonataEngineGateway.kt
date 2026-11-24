@@ -4,12 +4,17 @@ import dev.sonata.android.data.SonataEngineGateway
 import kotlinx.coroutines.CancellationException
 import uniffi.sonata_android.AndroidAccountProfile
 import uniffi.sonata_android.AndroidArtistPage
+import uniffi.sonata_android.AndroidExploreFeed
 import uniffi.sonata_android.AndroidHomeShelf
 import uniffi.sonata_android.AndroidJioSaavnStream
 import uniffi.sonata_android.AndroidJsCipherSolver
 import uniffi.sonata_android.AndroidLyricLine
+import uniffi.sonata_android.AndroidMoodCategory
+import uniffi.sonata_android.AndroidMoodChip
 import uniffi.sonata_android.AndroidMotionMedia
+import uniffi.sonata_android.AndroidMusicVideoCandidate
 import uniffi.sonata_android.AndroidPlaylist
+import uniffi.sonata_android.AndroidResolvedMusicVideo
 import uniffi.sonata_android.AndroidResolvedStream
 import uniffi.sonata_android.AndroidTrack
 import uniffi.sonata_android.AndroidUpdateInfo
@@ -55,7 +60,14 @@ class FakeSonataEngineGateway : SonataEngineGateway {
         { _, _ -> null }
     var resolveExplicitCounterpartHandler: suspend (AndroidTrack) -> AndroidTrack? = { null }
     var homeFeedHandler: suspend () -> List<AndroidHomeShelf> = { emptyList() }
+    var exploreFeedHandler: suspend () -> AndroidExploreFeed = {
+        AndroidExploreFeed(shelves = emptyList(), moods = emptyList())
+    }
+    var moodCategoryHandler: suspend (String, String) -> List<AndroidHomeShelf> = { _, _ -> emptyList() }
+    var homeMoodChipsHandler: suspend () -> List<AndroidMoodChip> = { emptyList() }
+    var homeMoodFeedHandler: suspend (String?) -> List<AndroidHomeShelf> = { emptyList() }
     var playlistsHandler: suspend () -> List<AndroidPlaylist> = { emptyList() }
+    var lastLanguageCode: String? = null
 
     override fun setJsCipherSolver(solver: AndroidJsCipherSolver) {
         cipherSolver = solver
@@ -84,6 +96,22 @@ class FakeSonataEngineGateway : SonataEngineGateway {
 
     override suspend fun fetchHomeFeed(): List<AndroidHomeShelf> = homeFeedHandler()
 
+    override suspend fun setLanguage(languageCode: String) {
+        lastLanguageCode = languageCode
+    }
+
+    override suspend fun fetchExploreFeed(): AndroidExploreFeed = exploreFeedHandler()
+
+    override suspend fun fetchMoodCategory(
+        browseId: String,
+        params: String,
+    ): List<AndroidHomeShelf> = moodCategoryHandler(browseId, params)
+
+    override suspend fun fetchHomeMoodChips(): List<AndroidMoodChip> = homeMoodChipsHandler()
+
+    override suspend fun fetchHomeMoodFeed(params: String?): List<AndroidHomeShelf> =
+        homeMoodFeedHandler(params)
+
     override suspend fun searchSongs(query: String): List<AndroidTrack> = try {
         searchHandler(query)
     } catch (ce: CancellationException) {
@@ -91,7 +119,14 @@ class FakeSonataEngineGateway : SonataEngineGateway {
         throw ce
     }
 
-    override suspend fun fetchCollectionTracks(browseId: String): List<AndroidTrack> = emptyList()
+    var collectionTracksHandler: suspend (String) -> List<AndroidTrack> = { emptyList() }
+    var savedPlaylistsLog = mutableListOf<Pair<String, Boolean>>()
+
+    override suspend fun fetchCollectionTracks(browseId: String): List<AndroidTrack> =
+        collectionTracksHandler(browseId)
+
+    override suspend fun fetchCollectionTracksFresh(browseId: String): List<AndroidTrack> =
+        collectionTracksHandler(browseId)
 
     override suspend fun fetchArtistPage(browseId: String): AndroidArtistPage {
         error("Stub fetchArtistPage not configured for $browseId")
@@ -112,7 +147,17 @@ class FakeSonataEngineGateway : SonataEngineGateway {
     override suspend fun resolveExplicitCounterpart(track: AndroidTrack): AndroidTrack? =
         resolveExplicitCounterpartHandler(track)
 
+    var endlessRadioHandler: suspend (List<String>, String?, List<String>, List<String>) -> List<AndroidTrack> =
+        { _, _, _, _ -> emptyList() }
+
     override suspend fun fetchRadioQueue(videoId: String): List<AndroidTrack> = emptyList()
+
+    override suspend fun fetchEndlessRadioQueue(
+        seedVideoIds: List<String>,
+        playlistId: String?,
+        excludeVideoIds: List<String>,
+        preferredArtists: List<String>,
+    ): List<AndroidTrack> = endlessRadioHandler(seedVideoIds, playlistId, excludeVideoIds, preferredArtists)
 
     override suspend fun setLikeStatus(videoId: String, liked: Boolean) = Unit
 
@@ -129,6 +174,10 @@ class FakeSonataEngineGateway : SonataEngineGateway {
         description: String,
         videoIds: List<String>,
     ): String = "PL_FAKE"
+
+    override suspend fun setPlaylistSaved(playlistId: String, saved: Boolean) {
+        savedPlaylistsLog.add(playlistId to saved)
+    }
 
     override suspend fun editPlaylistMetadata(
         playlistId: String,
@@ -176,7 +225,7 @@ class FakeSonataEngineGateway : SonataEngineGateway {
 
     override suspend fun clearLyricsCache() = Unit
 
-    override suspend fun checkForUpdates(): AndroidUpdateInfo = checkForUpdatesForVersion("1.0.6")
+    override suspend fun checkForUpdates(): AndroidUpdateInfo = checkForUpdatesForVersion("1.0.7")
 
     override suspend fun checkForUpdatesForVersion(currentVersion: String): AndroidUpdateInfo =
         AndroidUpdateInfo(
@@ -222,4 +271,23 @@ class FakeSonataEngineGateway : SonataEngineGateway {
         cancelledMotionCount.incrementAndGet()
         throw ce
     }
+
+    var musicVideoCandidateHandler: suspend (AndroidTrack) -> AndroidMusicVideoCandidate? = { null }
+    var musicVideoStreamsHandler: suspend (String) -> AndroidResolvedMusicVideo = { videoId ->
+        AndroidResolvedMusicVideo(
+            videoId = videoId,
+            qualities = emptyList(),
+            audioUrl = null,
+            audioBadge = "AAC",
+            headers = emptyList(),
+        )
+    }
+
+    override suspend fun resolveMusicVideoCandidate(
+        track: AndroidTrack,
+    ): AndroidMusicVideoCandidate? = musicVideoCandidateHandler(track)
+
+    override suspend fun resolveMusicVideoStreams(
+        videoId: String,
+    ): AndroidResolvedMusicVideo = musicVideoStreamsHandler(videoId)
 }

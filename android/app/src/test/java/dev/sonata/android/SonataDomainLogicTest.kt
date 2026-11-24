@@ -1,5 +1,11 @@
 package dev.sonata.android
 
+import dev.sonata.android.data.VideoQualityPreference
+import dev.sonata.android.playback.mapMusicToVideoMs
+import dev.sonata.android.playback.mapVideoToMusicMs
+import dev.sonata.android.ui.components.isEditableUserPlaylist
+import dev.sonata.android.ui.components.isSaveableExternalCollection
+import dev.sonata.android.ui.components.normalizeCollectionId
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -8,7 +14,9 @@ import org.junit.Test
 import uniffi.sonata_android.AndroidHomeCard
 import uniffi.sonata_android.AndroidHomeCardKind
 import uniffi.sonata_android.AndroidHomeShelf
+import uniffi.sonata_android.AndroidMusicVideoSyncSegment
 import uniffi.sonata_android.AndroidTrack
+import uniffi.sonata_android.AndroidVideoQualityStream
 
 class SonataDomainLogicTest {
 
@@ -203,5 +211,100 @@ class SonataDomainLogicTest {
             "https://example.com/playback?itag=140",
             SonataViewModel.stripRangeQueryParam("https://example.com/playback?itag=140"),
         )
+    }
+
+    @Test
+    fun playlistOwnershipNormalizationAndSaveableDetectionWorkAccurately() {
+        assertEquals("PL123", normalizeCollectionId("VLPL123"))
+        assertEquals("PL123", normalizeCollectionId("  PL123  "))
+        assertEquals("LM", normalizeCollectionId("VLLM"))
+        assertEquals("RDCLAK_mix", normalizeCollectionId("VLRDCLAK_mix"))
+        assertEquals("", normalizeCollectionId("   "))
+
+        val ownedIds = setOf("PL_OWNED")
+        val savedIds = setOf("PL_COMMUNITY")
+
+        // Only owned playlists when signed in should allow editing.
+        assertTrue(isEditableUserPlaylist("VLPL_OWNED", signedIn = true, ownedPlaylistIds = ownedIds, savedExternalPlaylistIds = savedIds))
+        assertTrue(isEditableUserPlaylist("PL_OWNED", signedIn = true, ownedPlaylistIds = ownedIds, savedExternalPlaylistIds = savedIds))
+        assertFalse(isEditableUserPlaylist("VLPL_OWNED", signedIn = false, ownedPlaylistIds = ownedIds, savedExternalPlaylistIds = savedIds))
+        assertFalse(isEditableUserPlaylist("VLPL_COMMUNITY", signedIn = true, ownedPlaylistIds = ownedIds, savedExternalPlaylistIds = savedIds))
+        assertFalse(isEditableUserPlaylist("VLPL_EXTERNAL_UNKNOWN", signedIn = true, ownedPlaylistIds = ownedIds, savedExternalPlaylistIds = savedIds))
+        assertFalse(isEditableUserPlaylist("VLLM", signedIn = true, ownedPlaylistIds = setOf("VLLM"), savedExternalPlaylistIds = savedIds))
+        assertFalse(isEditableUserPlaylist("RDCLAK5uy_123", signedIn = true, ownedPlaylistIds = setOf("RDCLAK5uy_123"), savedExternalPlaylistIds = savedIds))
+
+        // External playlists and albums are saveable; owned/local/downloads/LM are not.
+        assertTrue(isSaveableExternalCollection("VLPL_COMMUNITY", isOwned = false))
+        assertTrue(isSaveableExternalCollection("MPREb_album123", isOwned = false))
+        assertTrue(isSaveableExternalCollection("RDCLAK5uy_mix", isOwned = false))
+        assertFalse(isSaveableExternalCollection("VLPL_OWNED", isOwned = true))
+        assertFalse(isSaveableExternalCollection("__sonata_downloads__", isOwned = false))
+        assertFalse(isSaveableExternalCollection("local_pl_123", isOwned = false))
+        assertFalse(isSaveableExternalCollection("VLLM", isOwned = false))
+    }
+
+    @Test
+    fun videoQualitySelectionHonorsAutoCapExplicitHeightAndFallback() {
+        val qualities = listOf(
+            AndroidVideoQualityStream("360p", 360u, 30u, "https://v/360", "video/mp4", 500_000u, true),
+            AndroidVideoQualityStream("480p", 480u, 30u, "https://v/480", "video/mp4", 900_000u, false),
+            AndroidVideoQualityStream("720p60", 720u, 60u, "https://v/720", "video/mp4", 1_800_000u, false),
+            AndroidVideoQualityStream("1080p", 1080u, 30u, "https://v/1080", "video/mp4", 2_500_000u, false),
+        )
+
+        assertNull(SonataViewModel.selectVideoQualityStream(emptyList(), VideoQualityPreference.AUTO))
+        assertEquals(
+            1080u,
+            SonataViewModel.selectVideoQualityStream(qualities, VideoQualityPreference.AUTO)?.height,
+        )
+        assertEquals(
+            720u,
+            SonataViewModel.selectVideoQualityStream(qualities, VideoQualityPreference.P720)?.height,
+        )
+        assertEquals(
+            480u,
+            SonataViewModel.selectVideoQualityStream(qualities, VideoQualityPreference.P480)?.height,
+        )
+        assertEquals(
+            720u,
+            SonataViewModel.selectVideoQualityStream(qualities, VideoQualityPreference.AUTO, explicitHeight = 720)?.height,
+        )
+        // Fallback when only higher resolutions exist
+        val hdOnly = qualities.takeLast(2)
+        assertEquals(
+            720u,
+            SonataViewModel.selectVideoQualityStream(hdOnly, VideoQualityPreference.P360)?.height,
+        )
+    }
+
+    @Test
+    fun musicVideoSyncMappingHandlesIntrosInterludesAndRoundTrips() {
+        assertEquals(0L, mapMusicToVideoMs(-50L, emptyList()))
+        assertEquals(42_000L, mapMusicToVideoMs(42_000L, emptyList()))
+        assertEquals(42_000L, mapVideoToMusicMs(42_000L, emptyList()))
+
+        // Intro silence 0..18.5s in video, verse/chorus 1 (92s), skit 110.5..125s, rest of song (110s)
+        val segments = listOf(
+            AndroidMusicVideoSyncSegment(musicStartMs = 0uL, videoStartMs = 18_500uL, durationMs = 92_000uL),
+            AndroidMusicVideoSyncSegment(musicStartMs = 92_000uL, videoStartMs = 125_000uL, durationMs = 110_000uL),
+        )
+
+        // Switching to video at start of music lands at start of song inside video (18.5s)
+        assertEquals(18_500L, mapMusicToVideoMs(0L, segments))
+        // Mid-first-segment seeks cleanly
+        assertEquals(68_500L, mapMusicToVideoMs(50_000L, segments))
+        // Second segment skips mid-video pause
+        assertEquals(133_000L, mapMusicToVideoMs(100_000L, segments))
+
+        // During silent intro in video, lyrics wait cleanly at 0ms
+        assertEquals(0L, mapVideoToMusicMs(10_000L, segments))
+        // Inside video first segment, maps back to music timeline
+        assertEquals(50_000L, mapVideoToMusicMs(68_500L, segments))
+        // Inside mid-video interlude (115s in video), holds cleanly at upcoming music boundary (92s)
+        assertEquals(92_000L, mapVideoToMusicMs(115_000L, segments))
+        // Past final music segment (outro credits), clamps at end of music (202s)
+        assertEquals(202_000L, mapVideoToMusicMs(250_000L, segments))
+        // Round-trip inside any music segment preserves timestamp
+        assertEquals(125_000L, mapVideoToMusicMs(mapMusicToVideoMs(125_000L, segments), segments))
     }
 }

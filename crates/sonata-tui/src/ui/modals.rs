@@ -43,7 +43,7 @@ pub fn sized_popup(min_w: u16, max_w: u16, target_h: u16, area: Rect) -> Rect {
     }
 }
 
-pub const SETTINGS_ROW_COUNT: usize = 11;
+pub const SETTINGS_ROW_COUNT: usize = 12;
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn settings_popup_rect(area: Rect, row_count: usize) -> Rect {
@@ -162,15 +162,17 @@ fn render_theme_picker(frame: &mut Frame<'_>, area: Rect, app: &App, selected: u
 }
 
 fn render_spotify_import(frame: &mut Frame<'_>, area: Rect, app: &App, input: &str) {
+    let s = sonata_runtime::i18n::strings(app.config.language);
     let popup = sized_popup(40, 68, 8, area);
     frame.render_widget(Clear, popup);
 
     let text = format!(
-        "Paste a Spotify playlist URL or ID (no API key required):\n\n> {input}▏\n\nEnter: Import   Esc: Cancel"
+        "Paste a Spotify playlist URL or ID (no API key required):\n\n> {input}▏\n\nEnter: {}   Esc: {}",
+        s.create, s.cancel
     );
     let p = Paragraph::new(text).wrap(Wrap { trim: false }).block(
         Block::default()
-            .title(" Import Spotify Playlist ")
+            .title(s.tui_import_spotify_title)
             .title_alignment(Alignment::Center)
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -181,6 +183,7 @@ fn render_spotify_import(frame: &mut Frame<'_>, area: Rect, app: &App, input: &s
 }
 
 fn render_add_to_playlist(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize) {
+    let s = sonata_runtime::i18n::strings(app.config.language);
     let playlists = app.writable_ytm_playlists();
     let target_h = (playlists.len() as u16 + 4).clamp(8, 16);
     let popup = sized_popup(38, 62, target_h, area);
@@ -199,7 +202,7 @@ fn render_add_to_playlist(frame: &mut Frame<'_>, area: Rect, app: &App, selected
     let list = List::new(items)
         .block(
             Block::default()
-                .title(" Add to YouTube Music Playlist ")
+                .title(s.tui_add_to_playlist_title)
                 .title_alignment(Alignment::Center)
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
@@ -219,14 +222,17 @@ fn render_add_to_playlist(frame: &mut Frame<'_>, area: Rect, app: &App, selected
 }
 
 fn render_create_playlist(frame: &mut Frame<'_>, area: Rect, app: &App, input: &str) {
+    let s = sonata_runtime::i18n::strings(app.config.language);
     let popup = sized_popup(38, 60, 8, area);
     frame.render_widget(Clear, popup);
 
-    let text =
-        format!("New YouTube Music playlist title:\n\n> {input}▏\n\nEnter: Create   Esc: Cancel");
+    let text = format!(
+        "{}:\n\n> {input}▏\n\nEnter: {}   Esc: {}",
+        s.new_playlist, s.create, s.cancel
+    );
     let p = Paragraph::new(text).wrap(Wrap { trim: false }).block(
         Block::default()
-            .title(" Create YouTube Music Playlist ")
+            .title(s.tui_create_playlist_title)
             .title_alignment(Alignment::Center)
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -295,6 +301,13 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
                 s.enabled_320k,
                 s.disabled,
             ),
+            adjustable: true,
+        },
+        SettingEntry {
+            section: None,
+            label: s.autoplay,
+            description: s.autoplay_desc,
+            value: SettingValueKind::Toggle(app.config.autoplay, s.enabled, s.disabled),
             adjustable: true,
         },
         SettingEntry {

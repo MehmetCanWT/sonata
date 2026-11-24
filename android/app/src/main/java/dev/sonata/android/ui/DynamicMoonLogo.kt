@@ -343,7 +343,7 @@ fun DynamicMoonLogo(
             )
             drawCircle(
                 brush = Brush.radialGradient(
-                    colors = listOf(haloColor, Color.Transparent),
+                    colors = listOf(haloColor, haloColor.copy(alpha = 0f)),
                     center = center,
                     radius = size.minDimension * 0.5f,
                 ),

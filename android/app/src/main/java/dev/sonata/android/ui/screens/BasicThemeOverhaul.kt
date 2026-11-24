@@ -32,7 +32,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import dev.sonata.android.ui.components.SonataEditorialCard
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -74,6 +76,7 @@ import dev.sonata.android.ui.theme.BasicPalette
 import dev.sonata.android.ui.theme.LocalLunariaColors
 import uniffi.sonata_android.AndroidHomeCard
 import uniffi.sonata_android.AndroidHomeCardKind
+import uniffi.sonata_android.AndroidMoodCategory
 
 // ---- Basic theme geometry constants -----------------------------------------
 
@@ -128,9 +131,10 @@ fun BasicMoodSleeveCard(
     artworkUrl: String?,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    accentColor: Color? = null,
     titleStyle: TextStyle = MaterialTheme.typography.titleMedium,
 ) {
-    val tone = remember(title) { buildBasicMoodTone(title) }
+    val tone = remember(title, accentColor) { buildBasicMoodTone(title, accentColor) }
     val sizedUrl = remember(artworkUrl) { artworkUrl?.artworkAt(CARD_ART_PX) }
     val req = rememberArtworkRequest(sizedUrl, 360, 220)
 
@@ -161,9 +165,10 @@ fun BasicMoodSleeveCard(
             Modifier
                 .matchParentSize()
                 .background(
-                    Brush.verticalGradient(
-                        0f to Color.Black.copy(alpha = 0.24f),
-                        0.62f to Color.Transparent,
+                    dev.sonata.android.ui.smoothScrimBrush(
+                        from = Color.Black.copy(alpha = 0.24f),
+                        to = Color.Black.copy(alpha = 0f),
+                        endFraction = 0.62f,
                     ),
                 ),
         )
@@ -202,6 +207,11 @@ fun BasicExploreScreen(
     onOpenMood: (String) -> Unit,
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
+    moodCategories: List<AndroidMoodCategory> = emptyList(),
+    onOpenMoodCategory: (String, String, String) -> Unit = { title, _, _ -> onOpenMood(title) },
+    personalizedHeroCards: List<AndroidHomeCard> = emptyList(),
+    onOpenCard: (AndroidHomeCard) -> Unit = {},
+    onStartDiscoveryStation: () -> Unit = {},
 ) {
     PullToRefreshBox(
         isRefreshing = refreshing,
@@ -214,7 +224,21 @@ fun BasicExploreScreen(
                 maxWidth >= 600.dp -> 3
                 else -> 2
             }
-            val rows = remember(moodCards, columns) { moodCards.chunked(columns) }
+            val effectiveMoods = remember(moodCategories, moodCards) {
+                if (moodCategories.isNotEmpty()) {
+                    moodCategories
+                } else {
+                    moodCards.map { card ->
+                        AndroidMoodCategory(
+                            title = card.title,
+                            browseId = if (card.id.startsWith("FEmood")) card.id else "",
+                            params = "",
+                            accentColor = 0u,
+                        )
+                    }
+                }
+            }
+            val rows = remember(effectiveMoods, columns) { effectiveMoods.chunked(columns) }
 
             LazyColumn(
                 state = listState,
@@ -222,25 +246,70 @@ fun BasicExploreScreen(
                 modifier = Modifier.fillMaxSize(),
             ) {
                 item(key = "basic_explore_title", contentType = "basic_title") {
-                    Text(
-                        text = dev.sonata.android.ui.i18n.LocalSonataStrings.current.exploreHeading,
-                        style = MaterialTheme.typography.displayLarge.copy(
-                            fontSize = 34.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            letterSpacing = (-0.5).sp,
-                        ),
-                        color = MaterialTheme.colorScheme.onBackground,
-                        modifier = Modifier.padding(
-                            start = PAGE_GUTTER,
-                            end = PAGE_GUTTER,
-                            top = 8.dp,
-                            bottom = 14.dp,
-                        ),
-                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(
+                                start = PAGE_GUTTER,
+                                end = PAGE_GUTTER,
+                                top = 8.dp,
+                                bottom = 14.dp,
+                            ),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            text = dev.sonata.android.ui.i18n.LocalSonataStrings.current.exploreHeading,
+                            style = MaterialTheme.typography.displayLarge.copy(
+                                fontSize = 34.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                letterSpacing = (-0.5).sp,
+                            ),
+                            color = MaterialTheme.colorScheme.onBackground,
+                        )
+                        val discoverLabel = dev.sonata.android.ui.i18n.LocalSonataStrings.current.discoveryStation
+                        val pillFill = if (LocalLunariaColors.current.isDark) BasicPalette.DarkSurfaceVariant else BasicPalette.LightSurfaceVariant
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .background(pillFill)
+                                .clickable(onClick = onStartDiscoveryStation)
+                                .padding(horizontal = 12.dp, vertical = 7.dp),
+                        ) {
+                            Text(
+                                text = discoverLabel,
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                color = MaterialTheme.colorScheme.onBackground,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                }
+                if (personalizedHeroCards.isNotEmpty()) {
+                    item(key = "basic_explore_picks", contentType = "basic_explore_picks") {
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.padding(bottom = 18.dp),
+                        ) {
+                            items(
+                                items = personalizedHeroCards,
+                                key = { c -> "basic_pick_${c.kind}_${c.id}" },
+                            ) { card ->
+                                SonataEditorialCard(
+                                    title = card.title,
+                                    subtitle = card.subtitle,
+                                    artworkUrl = card.thumbnailUrl,
+                                    onClick = { onOpenCard(card) },
+                                    width = 148.dp,
+                                )
+                            }
+                        }
+                    }
                 }
                 items(
                     items = rows,
-                    key = { row -> "basic_mood_row_${row.first().id}_${row.first().title}" },
+                    key = { row -> "basic_mood_row_${row.first().browseId}_${row.first().params}_${row.first().title}" },
                     contentType = { "basic_mood_row" },
                 ) { row ->
                     Row(
@@ -250,15 +319,17 @@ fun BasicExploreScreen(
                             .padding(horizontal = PAGE_GUTTER)
                             .padding(bottom = BasicMoodSpacing),
                     ) {
-                        row.forEachIndexed { idx, card ->
-                            val art = card.thumbnailUrl?.takeIf { it.isNotBlank() }
-                                ?: artPool.getOrNull(
-                                    ((card.title.hashCode() and Int.MAX_VALUE) + idx) % artPool.size.coerceAtLeast(1),
-                                )
+                        row.forEachIndexed { idx, cat ->
+                            val art = artPool.getOrNull(
+                                ((cat.title.hashCode() and Int.MAX_VALUE) + idx) % artPool.size.coerceAtLeast(1),
+                            )
+                            val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
+                            val catAccent = cat.accentColor.takeIf { it != 0u }?.let { Color(it.toInt()) }
                             BasicMoodSleeveCard(
-                                title = card.title,
+                                title = dev.sonata.android.ui.i18n.localizeMoodTitle(cat.title, strings),
                                 artworkUrl = art,
-                                onClick = { onOpenMood(card.title) },
+                                accentColor = catAccent,
+                                onClick = { onOpenMoodCategory(cat.title, cat.browseId, cat.params) },
                                 modifier = Modifier
                                     .weight(1f)
                                     .aspectRatio(BasicMoodCardAspect),
@@ -295,6 +366,10 @@ fun BasicDetailHeroHeader(
     isDownloading: Boolean,
     allDownloaded: Boolean,
     onEditPlaylist: (() -> Unit)? = null,
+    isPinned: Boolean = false,
+    onTogglePin: (() -> Unit)? = null,
+    isSavedToLibrary: Boolean = false,
+    onToggleSaveToLibrary: (() -> Unit)? = null,
     onOpenArtist: (() -> Unit)?,
     fullScreenDetailCover: Boolean = false,
 ) {
@@ -364,8 +439,9 @@ fun BasicDetailHeroHeader(
                         .height(topInset + 44.dp)
                         .align(Alignment.TopCenter)
                         .background(
-                            Brush.verticalGradient(
-                                listOf(Color.Black.copy(alpha = 0.45f), Color.Transparent),
+                            dev.sonata.android.ui.smoothScrimBrush(
+                                from = Color.Black.copy(alpha = 0.45f),
+                                to = Color.Black.copy(alpha = 0f),
                             ),
                         ),
                 )
@@ -375,10 +451,9 @@ fun BasicDetailHeroHeader(
                         .fillMaxHeight(0.55f)
                         .align(Alignment.BottomCenter)
                         .background(
-                            Brush.verticalGradient(
-                                0f to Color.Transparent,
-                                0.68f to bgColor.copy(alpha = 0.84f),
-                                1f to bgColor,
+                            dev.sonata.android.ui.smoothScrimBrush(
+                                from = bgColor.copy(alpha = 0f),
+                                to = bgColor,
                             ),
                         ),
                 )
@@ -448,7 +523,7 @@ fun BasicDetailHeroHeader(
             val metaParts = listOfNotNull(
                 kindLabel?.takeIf { it.isNotBlank() },
                 year?.takeIf { it.isNotBlank() },
-                if (trackCount > 0) "$trackCount ${if (trackCount == 1) "song" else "songs"}" else null,
+                if (trackCount > 0) dev.sonata.android.ui.i18n.LocalSonataStrings.current.tracksCount(trackCount) else null,
             )
             if (metaParts.isNotEmpty()) {
                 Spacer(Modifier.height(4.dp))
@@ -462,17 +537,25 @@ fun BasicDetailHeroHeader(
 
             Spacer(Modifier.height(18.dp))
 
-            // Release Action Row: [Shuffle 50dp] [Play Pill weight(1f)] [Download 50dp]
+            // Release Action Row: [Shuffle] [Play Pill weight(1f)] [Download] [Edit/+] [Pin]
+            val sideCount = 1 +
+                (if (onDownloadAll != null) 1 else 0) +
+                (if (onEditPlaylist != null || onToggleSaveToLibrary != null) 1 else 0) +
+                (if (onTogglePin != null) 1 else 0)
+            val buttonHeight = BasicReleaseSideButton
+            val sideButtonSize = if (sideCount >= 4) 44.dp else BasicReleaseSideButton
+            val rowGap = if (sideCount >= 4) 8.dp else BasicReleaseActionGap
             Row(
                 modifier = Modifier
                     .widthIn(max = BasicReleaseActionsMaxWidth)
                     .fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(BasicReleaseActionGap),
+                horizontalArrangement = Arrangement.spacedBy(rowGap),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
                 Box(
                     modifier = Modifier
-                        .size(BasicReleaseSideButton)
+                        .size(width = sideButtonSize, height = buttonHeight)
                         .clip(BasicActionPillShape)
                         .background(secondaryFill)
                         .clickable(onClick = onShuffleAll),
@@ -480,16 +563,16 @@ fun BasicDetailHeroHeader(
                 ) {
                     Icon(
                         imageVector = SonataIcons.Shuffle,
-                        contentDescription = "Shuffle",
+                        contentDescription = strings.shuffle,
                         tint = primaryText,
-                        modifier = Modifier.size(21.dp),
+                        modifier = Modifier.size(20.dp),
                     )
                 }
 
                 Row(
                     modifier = Modifier
                         .weight(1f)
-                        .height(BasicReleaseSideButton)
+                        .height(buttonHeight)
                         .clip(BasicActionPillShape)
                         .background(primaryFill)
                         .clickable(onClick = onPlayAll),
@@ -500,20 +583,21 @@ fun BasicDetailHeroHeader(
                         imageVector = SonataIcons.Play,
                         contentDescription = null,
                         tint = primaryContent,
-                        modifier = Modifier.size(20.dp),
+                        modifier = Modifier.size(19.dp),
                     )
-                    Spacer(Modifier.width(8.dp))
+                    Spacer(Modifier.width(7.dp))
                     Text(
-                        text = "Play",
+                        text = strings.play,
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
                         color = primaryContent,
+                        maxLines = 1,
                     )
                 }
 
                 if (onDownloadAll != null) {
                     Box(
                         modifier = Modifier
-                            .size(BasicReleaseSideButton)
+                            .size(width = sideButtonSize, height = buttonHeight)
                             .clip(BasicActionPillShape)
                             .background(secondaryFill)
                             .clickable(enabled = !isDownloading, onClick = onDownloadAll),
@@ -523,19 +607,19 @@ fun BasicDetailHeroHeader(
                             isDownloading -> CircularProgressIndicator(
                                 color = primaryText,
                                 strokeWidth = 2.dp,
-                                modifier = Modifier.size(20.dp),
+                                modifier = Modifier.size(19.dp),
                             )
                             allDownloaded -> Icon(
                                 imageVector = SonataIcons.Check,
-                                contentDescription = "Downloaded",
+                                contentDescription = strings.downloaded,
                                 tint = Color(0xFF34C759),
-                                modifier = Modifier.size(21.dp),
+                                modifier = Modifier.size(20.dp),
                             )
                             else -> Icon(
                                 imageVector = SonataIcons.Download,
-                                contentDescription = "Download all",
+                                contentDescription = strings.downloadAll,
                                 tint = primaryText,
-                                modifier = Modifier.size(21.dp),
+                                modifier = Modifier.size(20.dp),
                             )
                         }
                     }
@@ -544,7 +628,7 @@ fun BasicDetailHeroHeader(
                 if (onEditPlaylist != null) {
                     Box(
                         modifier = Modifier
-                            .size(BasicReleaseSideButton)
+                            .size(width = sideButtonSize, height = buttonHeight)
                             .clip(BasicActionPillShape)
                             .background(secondaryFill)
                             .clickable(onClick = onEditPlaylist),
@@ -552,9 +636,43 @@ fun BasicDetailHeroHeader(
                     ) {
                         Icon(
                             imageVector = SonataIcons.Edit,
-                            contentDescription = "Edit playlist",
+                            contentDescription = strings.editPlaylist,
                             tint = primaryText,
+                            modifier = Modifier.size(19.dp),
+                        )
+                    }
+                } else if (onToggleSaveToLibrary != null) {
+                    Box(
+                        modifier = Modifier
+                            .size(width = sideButtonSize, height = buttonHeight)
+                            .clip(BasicActionPillShape)
+                            .background(if (isSavedToLibrary) primaryFill else secondaryFill)
+                            .clickable(onClick = onToggleSaveToLibrary),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = if (isSavedToLibrary) SonataIcons.Check else SonataIcons.Add,
+                            contentDescription = if (isSavedToLibrary) strings.removeFromLibrary else strings.addToLibrary,
+                            tint = if (isSavedToLibrary) primaryContent else primaryText,
                             modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
+
+                if (onTogglePin != null) {
+                    Box(
+                        modifier = Modifier
+                            .size(width = sideButtonSize, height = buttonHeight)
+                            .clip(BasicActionPillShape)
+                            .background(if (isPinned) primaryFill else secondaryFill)
+                            .clickable(onClick = onTogglePin),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = if (isPinned) SonataIcons.PinFilled else SonataIcons.Pin,
+                            contentDescription = if (isPinned) strings.unpinFromLibrary else strings.pinToLibrary,
+                            tint = if (isPinned) primaryContent else primaryText,
+                            modifier = Modifier.size(19.dp),
                         )
                     }
                 }
@@ -623,8 +741,9 @@ fun BasicArtistHeroHeader(
                     .height(statusTop + 44.dp)
                     .align(Alignment.TopCenter)
                     .background(
-                        Brush.verticalGradient(
-                            listOf(Color.Black.copy(alpha = 0.45f), Color.Transparent),
+                        dev.sonata.android.ui.smoothScrimBrush(
+                            from = Color.Black.copy(alpha = 0.45f),
+                            to = Color.Black.copy(alpha = 0f),
                         ),
                     ),
             )
@@ -634,10 +753,9 @@ fun BasicArtistHeroHeader(
                     .fillMaxHeight(0.55f)
                     .align(Alignment.BottomCenter)
                     .background(
-                        Brush.verticalGradient(
-                            0f to Color.Transparent,
-                            0.65f to bgColor.copy(alpha = 0.82f),
-                            1f to bgColor,
+                        dev.sonata.android.ui.smoothScrimBrush(
+                            from = bgColor.copy(alpha = 0f),
+                            to = bgColor,
                         ),
                     ),
             )
@@ -738,8 +856,8 @@ private class BasicMoodTone(
     val duotone: ColorFilter,
 )
 
-private fun buildBasicMoodTone(title: String): BasicMoodTone {
-    val base = when ((title.hashCode() and Int.MAX_VALUE) % 8) {
+private fun buildBasicMoodTone(title: String, accentColor: Color? = null): BasicMoodTone {
+    val base = accentColor ?: when ((title.hashCode() and Int.MAX_VALUE) % 8) {
         0 -> Color(0xFFCC6A55)
         1 -> Color(0xFFC07A92)
         2 -> Color(0xFF9C8AC0)

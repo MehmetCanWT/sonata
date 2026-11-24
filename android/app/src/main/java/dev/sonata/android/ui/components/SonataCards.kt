@@ -287,6 +287,7 @@ fun SonataEditorialCard(
     @Suppress("UNUSED_PARAMETER") onPlayClick: (() -> Unit)? = null,
     onLongClick: ((Rect?) -> Unit)? = null,
     width: Dp = 148.dp,
+    isPinned: Boolean = false,
 ) {
     val themeTokens = LocalLunariaColors.current
     val haptics = LocalHapticFeedback.current
@@ -346,6 +347,25 @@ fun SonataEditorialCard(
                         .size(34.dp)
                         .align(Alignment.Center),
                 )
+            }
+            if (isPinned) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(7.dp)
+                        .size(24.dp)
+                        .clip(CircleShape)
+                        .background(themeTokens.eclipseSurface.copy(alpha = 0.88f))
+                        .border(0.75.dp, themeTokens.cardStroke, CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = SonataIcons.PinFilled,
+                        contentDescription = null,
+                        tint = if (themeTokens.isBasic) themeTokens.onSurfacePrimary else themeTokens.petalLavender,
+                        modifier = Modifier.size(13.dp),
+                    )
+                }
             }
         }
 
@@ -474,18 +494,23 @@ fun SonataSplitHeroHeader(
     isDownloading: Boolean = false,
     allDownloaded: Boolean = false,
     onEditPlaylist: (() -> Unit)? = null,
+    isPinned: Boolean = false,
+    onTogglePin: (() -> Unit)? = null,
+    isSavedToLibrary: Boolean = false,
+    onToggleSaveToLibrary: (() -> Unit)? = null,
     onMoreOptions: (() -> Unit)? = null,
     onOpenArtist: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
+    val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
     val themeTokens = LocalLunariaColors.current
     val sizedUrl = remember(artworkUrl) { artworkUrl.artworkAt(HEADER_ART_PX) }
     val request = rememberArtworkRequest(sizedUrl, 800, 800)
-    val metaLine = remember(kindLabel, year, trackCount) {
+    val metaLine = remember(kindLabel, year, trackCount, strings) {
         buildList {
             kindLabel?.takeIf { it.isNotBlank() }?.let { add(it) }
             year?.takeIf { it.isNotBlank() }?.let { add(it) }
-            if (trackCount > 0) add("$trackCount tracks")
+            if (trackCount > 0) add(strings.tracksCount(trackCount))
         }.joinToString(" • ")
     }
     val isOfflineLibrary = kindLabel.equals("Offline Library", ignoreCase = true)
@@ -665,16 +690,16 @@ fun SonataSplitHeroHeader(
 
             Spacer(Modifier.height(10.dp))
 
-            // Centered Liquid Glass action row: [Shuffle] [▶ Play] [Download] [⋯]
+            // Centered Liquid Glass action row: [Shuffle] [▶ Play] [Download] [Edit/+] [Pin] [⋯]
             CompositionLocalProvider(LocalAppBackdrop provides heroBackdrop) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(48.dp)
+                            .size(46.dp)
                             .sonataThemeGlassButton(
                                 shape = CircleShape,
                                 fallbackColor = themeTokens.eclipseSurface,
@@ -684,16 +709,16 @@ fun SonataSplitHeroHeader(
                     ) {
                         Icon(
                             imageVector = SonataIcons.Shuffle,
-                            contentDescription = "Shuffle",
+                            contentDescription = strings.shuffle,
                             tint = buttonContentTint,
-                            modifier = Modifier.size(20.dp),
+                            modifier = Modifier.size(19.dp),
                         )
                     }
 
                     Row(
                         modifier = Modifier
-                            .height(48.dp)
-                            .widthIn(min = 148.dp)
+                            .height(46.dp)
+                            .widthIn(min = 110.dp)
                             .sonataThemeGlassButton(
                                 shape = pillShape,
                                 surfaceTint = playPillTint,
@@ -701,7 +726,7 @@ fun SonataSplitHeroHeader(
                                 shadowElevation = 12.dp,
                             )
                             .clickable(onClick = onPlayAll)
-                            .padding(horizontal = 26.dp),
+                            .padding(horizontal = 18.dp),
                         horizontalArrangement = Arrangement.Center,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -713,19 +738,20 @@ fun SonataSplitHeroHeader(
                         )
                         Spacer(Modifier.width(7.dp))
                         Text(
-                            text = "Play",
+                            text = strings.play,
                             style = MaterialTheme.typography.labelMedium.copy(
-                                fontSize = 15.5.sp,
+                                fontSize = 15.sp,
                                 fontWeight = FontWeight.Bold,
                             ),
                             color = buttonContentTint,
+                            maxLines = 1,
                         )
                     }
 
                     if (onDownloadAll != null) {
                         Box(
                             modifier = Modifier
-                                .size(48.dp)
+                                .size(46.dp)
                                 .sonataThemeGlassButton(
                                     shape = CircleShape,
                                     fallbackColor = themeTokens.eclipseSurface,
@@ -741,15 +767,15 @@ fun SonataSplitHeroHeader(
                                 )
                                 allDownloaded -> Icon(
                                     imageVector = SonataIcons.Check,
-                                    contentDescription = "All Downloaded",
+                                    contentDescription = strings.downloaded,
                                     tint = accentColor,
-                                    modifier = Modifier.size(20.dp),
+                                    modifier = Modifier.size(19.dp),
                                 )
                                 else -> Icon(
                                     imageVector = SonataIcons.Download,
-                                    contentDescription = "Download All",
+                                    contentDescription = strings.downloadAll,
                                     tint = buttonContentTint,
-                                    modifier = Modifier.size(20.dp),
+                                    modifier = Modifier.size(19.dp),
                                 )
                             }
                         }
@@ -758,7 +784,7 @@ fun SonataSplitHeroHeader(
                     if (onEditPlaylist != null) {
                         Box(
                             modifier = Modifier
-                                .size(48.dp)
+                                .size(46.dp)
                                 .sonataThemeGlassButton(
                                     shape = CircleShape,
                                     fallbackColor = themeTokens.eclipseSurface,
@@ -768,8 +794,46 @@ fun SonataSplitHeroHeader(
                         ) {
                             Icon(
                                 imageVector = SonataIcons.Edit,
-                                contentDescription = "Edit playlist",
+                                contentDescription = strings.editPlaylist,
                                 tint = buttonContentTint,
+                                modifier = Modifier.size(19.dp),
+                            )
+                        }
+                    } else if (onToggleSaveToLibrary != null) {
+                        Box(
+                            modifier = Modifier
+                                .size(46.dp)
+                                .sonataThemeGlassButton(
+                                    shape = CircleShape,
+                                    fallbackColor = themeTokens.eclipseSurface,
+                                )
+                                .clickable(onClick = onToggleSaveToLibrary),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                imageVector = if (isSavedToLibrary) SonataIcons.Check else SonataIcons.Add,
+                                contentDescription = if (isSavedToLibrary) strings.removeFromLibrary else strings.addToLibrary,
+                                tint = if (isSavedToLibrary) accentColor else buttonContentTint,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                    }
+
+                    if (onTogglePin != null) {
+                        Box(
+                            modifier = Modifier
+                                .size(46.dp)
+                                .sonataThemeGlassButton(
+                                    shape = CircleShape,
+                                    fallbackColor = themeTokens.eclipseSurface,
+                                )
+                                .clickable(onClick = onTogglePin),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                imageVector = if (isPinned) SonataIcons.PinFilled else SonataIcons.Pin,
+                                contentDescription = if (isPinned) strings.unpinFromLibrary else strings.pinToLibrary,
+                                tint = if (isPinned) accentColor else buttonContentTint,
                                 modifier = Modifier.size(19.dp),
                             )
                         }
@@ -778,7 +842,7 @@ fun SonataSplitHeroHeader(
                     if (onMoreOptions != null) {
                         Box(
                             modifier = Modifier
-                                .size(48.dp)
+                                .size(46.dp)
                                 .sonataThemeGlassButton(
                                     shape = CircleShape,
                                     fallbackColor = themeTokens.eclipseSurface,
@@ -788,9 +852,9 @@ fun SonataSplitHeroHeader(
                         ) {
                             Icon(
                                 imageVector = SonataIcons.MoreHoriz,
-                                contentDescription = "More options",
+                                contentDescription = strings.options,
                                 tint = buttonContentTint,
-                                modifier = Modifier.size(20.dp),
+                                modifier = Modifier.size(19.dp),
                             )
                         }
                     }

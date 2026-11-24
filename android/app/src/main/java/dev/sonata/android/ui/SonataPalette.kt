@@ -191,6 +191,7 @@ import dev.sonata.android.data.DesignTheme
 import dev.sonata.android.lightweightLiquidGlass
 import dev.sonata.android.ui.components.SonataMoodAnimatedArt
 import dev.sonata.android.ui.player.CardCanvasSurface
+import dev.sonata.android.ui.theme.BasicPalette
 import dev.sonata.android.ui.theme.LocalLunariaColors
 import dev.sonata.android.ui.theme.LunariaColors
 import dev.sonata.android.ui.theme.SonataAppFontFamily
@@ -298,6 +299,13 @@ private val DefaultFallbackColors = listOf(
     Color(0xFFFFAF7B),
 )
 
+private val BasicFallbackColors = listOf(
+    Color(0xFF1C1C1E),
+    Color(0xFF2C2C2E),
+    Color(0xFF0D0D0F),
+    Color(0xFF141416),
+)
+
 @Composable
 fun rememberArtworkPalette(
     artworkUrl: String?,
@@ -307,6 +315,7 @@ fun rememberArtworkPalette(
 ): ArtworkPalette {
     val context = LocalPlatformContext.current
     val scheme = MaterialTheme.colorScheme
+    val tokens = LocalLunariaColors.current
     val reduceAnimation = LocalReduceAnimation.current
     var seed by remember(artworkUrl) { mutableStateOf(artworkUrl?.let(artworkSeedCache::get)) }
     val knownUpFront = remember(artworkUrl) { seed != null }
@@ -327,16 +336,16 @@ fun rememberArtworkPalette(
         seed = extracted
     }
 
-    val target = remember(seed, dark, scheme) {
+    val target = remember(seed, dark, scheme, tokens.isBasic) {
         seed?.toPalette(dark) ?: ArtworkPalette(
             background = scheme.background,
             wash = scheme.background,
             elevated = scheme.surfaceVariant,
-            accent = SonataAccent,
+            accent = if (tokens.isBasic) BasicPalette.AccentRed else SonataAccent,
             onBackground = scheme.onBackground,
             onBackgroundVariant = scheme.onSurfaceVariant,
             divider = scheme.outline,
-            meshColors = DefaultFallbackColors,
+            meshColors = if (tokens.isBasic) BasicFallbackColors else DefaultFallbackColors,
         )
     }
 

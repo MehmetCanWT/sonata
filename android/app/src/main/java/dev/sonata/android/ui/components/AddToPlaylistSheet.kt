@@ -227,8 +227,9 @@ fun AddToPlaylistSheet(
 
             HorizontalDivider(color = themeTokens.cardStroke)
 
+            val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
             Text(
-                text = "ADD TO PLAYLIST",
+                text = strings.addToPlaylist.uppercase(),
                 style = MaterialTheme.typography.labelSmall.copy(
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -253,13 +254,13 @@ fun AddToPlaylistSheet(
                 ) {
                     Icon(
                         imageVector = PlaylistPlusIcon,
-                        contentDescription = "New Playlist",
+                        contentDescription = strings.newPlaylist,
                         tint = themeTokens.petalLavender,
                         modifier = Modifier.size(22.dp),
                     )
                 }
                 Text(
-                    text = "New Playlist",
+                    text = strings.newPlaylist,
                     style = MaterialTheme.typography.titleMedium.copy(
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Medium,
@@ -278,7 +279,7 @@ fun AddToPlaylistSheet(
                     query = searchQuery,
                     onQueryChange = { searchQuery = it },
                     onSubmit = {},
-                    placeholder = "Find a playlist",
+                    placeholder = strings.searchPlaceholder,
                 )
             }
 
@@ -354,10 +355,11 @@ fun AddToPlaylistSheet(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
+                            val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
                             val subtitleText = if (playlist.id.startsWith("local:")) {
-                                "Offline playlist"
+                                strings.offlineLabel
                             } else {
-                                "Playlist"
+                                strings.playlistLabel
                             }
                             Text(
                                 text = subtitleText,
@@ -396,6 +398,7 @@ fun AddToPlaylistSheet(
         }
 
         if (showCreateDialog) {
+            val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
             var newTitle by remember { mutableStateOf("") }
             AlertDialog(
                 onDismissRequest = { showCreateDialog = false },
@@ -404,7 +407,7 @@ fun AddToPlaylistSheet(
                 textContentColor = themeTokens.onSurfaceSecondary,
                 title = {
                     Text(
-                        text = "New Playlist",
+                        text = strings.createPlaylist,
                         style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                     )
                 },
@@ -419,7 +422,7 @@ fun AddToPlaylistSheet(
                     ) {
                         if (newTitle.isEmpty()) {
                             Text(
-                                text = "Playlist title",
+                                text = strings.playlistName,
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = themeTokens.onSurfaceSecondary.copy(alpha = 0.65f),
                             )
@@ -447,7 +450,7 @@ fun AddToPlaylistSheet(
                         },
                     ) {
                         Text(
-                            text = "Create",
+                            text = strings.create,
                             color = if (newTitle.isNotBlank()) themeTokens.petalLavender else themeTokens.onSurfaceSecondary.copy(alpha = 0.45f),
                             fontWeight = FontWeight.SemiBold,
                         )
@@ -455,7 +458,7 @@ fun AddToPlaylistSheet(
                 },
                 dismissButton = {
                     TextButton(onClick = { showCreateDialog = false }) {
-                        Text(text = "Cancel", color = themeTokens.onSurfaceSecondary)
+                        Text(text = strings.cancel, color = themeTokens.onSurfaceSecondary)
                     }
                 },
             )

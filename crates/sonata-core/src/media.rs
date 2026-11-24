@@ -134,7 +134,17 @@ pub async fn resolve_track_cover(
             ProviderSource::Spotify => "spotify",
         }
     };
-    if let Some(metadata) = cache_db.and_then(|db| db.get_track_enrichment(&track.id)) {
+    let cached_meta = if let Some(db) = cache_db {
+        let db = db.clone();
+        let track_id = track.id.clone();
+        tokio::task::spawn_blocking(move || db.get_track_enrichment(&track_id))
+            .await
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
+    if let Some(metadata) = cached_meta {
         if matches!(
             metadata.cover_source.as_str(),
             "deezer" | "apple" | "ytm" | "spotify" | "jiosaavn"
@@ -172,7 +182,13 @@ pub async fn resolve_track_cover(
     };
 
     if let Some(cache_db) = cache_db {
-        cache_db.set_track_cover(&track.id, &url, source);
+        let db = cache_db.clone();
+        let track_id = track.id.clone();
+        let cover_url = url.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            db.set_track_cover(&track_id, &cover_url, source);
+        })
+        .await;
     }
     Some((url, source.to_string()))
 }
@@ -214,7 +230,7 @@ pub fn extract_apple_motion_video_url(html: &str) -> Option<String> {
         let mut cursor = 0usize;
         while let Some(rel) = normalized[cursor..].find(marker) {
             let start = cursor + rel;
-            let end = normalized.len().min(start + 1500);
+            let end = normalized.floor_char_boundary(normalized.len().min(start + 1500));
             let window = &normalized[start..end];
             if let Some(m) = re_media.find(window) {
                 return Some(m.as_str().to_string());
@@ -736,6 +752,26 @@ mod tests {
         assert_eq!(
             select_fast_hls_variant_url(master).as_deref(),
             Some("https://mvod.itunes.apple.com/itunes-assets/486x486_avc.m3u8")
+        );
+    }
+
+    #[test]
+    fn extract_apple_motion_video_url_handles_multibyte_chars_at_window_boundary() {
+        // Place multi-byte Turkish, Russian, and emoji characters straddling byte offset `start + 1500`.
+        let prefix = "editorialVideo".to_string();
+        let filler_len = 1500 - prefix.len() - 1;
+        let padding = "a".repeat(filler_len);
+        let multibyte_tail = "ğüşöçıЖЯ🎵";
+
+        let no_url_payload = format!("{prefix}{padding}{multibyte_tail}");
+        assert_eq!(extract_apple_motion_video_url(&no_url_payload), None);
+
+        let with_url_payload = format!(
+            "{prefix} türkçe русский 🎶 https://cdn.apple.com/video/motion.m3u8 {padding}{multibyte_tail}"
+        );
+        assert_eq!(
+            extract_apple_motion_video_url(&with_url_payload).as_deref(),
+            Some("https://cdn.apple.com/video/motion.m3u8")
         );
     }
 }

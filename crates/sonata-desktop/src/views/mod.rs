@@ -662,7 +662,9 @@ impl SonataDesktopView {
         let nav_changed = self.snapshot.active_nav != next.active_nav;
         let track_changed = self.snapshot.current_track().map(|t| t.id.as_str())
             != next.current_track().map(|t| t.id.as_str());
+        let thumbs_changed = self.snapshot.thumb_rev != next.thumb_rev;
         let mini_visual_changed = track_changed
+            || thumbs_changed
             || self.snapshot.paused != next.paused
             || self.snapshot.loading_track != next.loading_track
             || self.snapshot.art_path != next.art_path;
@@ -678,7 +680,7 @@ impl SonataDesktopView {
         }
 
         if self.mini_mode {
-            if track_changed {
+            if track_changed || thumbs_changed {
                 self.media.clear_missing();
             }
             if mini_visual_changed {
@@ -689,13 +691,14 @@ impl SonataDesktopView {
 
         self.track_loading_flag("home", self.snapshot.home_loading);
         self.track_loading_flag("explore", self.snapshot.explore_loading);
+        self.track_loading_flag("mood", self.snapshot.mood_page_loading);
         self.track_loading_flag("artist", self.snapshot.artist_loading);
         self.track_loading_flag("album", self.snapshot.album_loading);
         self.track_loading_flag("playlist", self.snapshot.playlist_loading);
         self.track_loading_flag("search", self.snapshot.search_loading);
         self.track_loading_flag("radio", self.snapshot.radio_loading);
         self.track_loading_flag("history", self.snapshot.history_loading);
-        if nav_changed || track_changed {
+        if nav_changed || track_changed || thumbs_changed {
             self.media.clear_missing();
         }
 
@@ -908,8 +911,21 @@ impl SonataDesktopView {
 
     pub fn ordered_playlists(&self) -> Vec<sonata_core::providers::Playlist> {
         let mut all = self.snapshot.ytm_playlists.clone();
-        if self.settings.sidebar_playlist_order.is_empty() {
-            return all;
+        for saved in &self.settings.saved_external_playlists {
+            let norm = crate::settings::normalize_collection_id(&saved.id);
+            if !all
+                .iter()
+                .any(|p| crate::settings::normalize_collection_id(&p.id) == norm)
+            {
+                all.push(sonata_core::providers::Playlist {
+                    id: saved.id.clone(),
+                    name: saved.title.clone(),
+                    source: sonata_core::providers::ProviderSource::YouTubeMusic,
+                    track_count: None,
+                    thumbnail_url: saved.thumbnail_url.clone(),
+                    is_owned: false,
+                });
+            }
         }
         let order_map: HashMap<&str, usize> = self
             .settings
@@ -919,15 +935,54 @@ impl SonataDesktopView {
             .map(|(i, id)| (id.as_str(), i))
             .collect();
         all.sort_by_key(|p| {
-            if p.id == "VLLM" {
-                (0, 0)
+            if let Some(pin_idx) = self.settings.pin_index(&p.id) {
+                (0, pin_idx)
+            } else if p.id == "VLLM" {
+                (1, 0)
             } else if let Some(&idx) = order_map.get(p.id.as_str()) {
-                (1, idx)
+                (2, idx)
             } else {
-                (2, usize::MAX)
+                (3, usize::MAX)
             }
         });
         all
+    }
+
+    pub fn toggle_pin_collection(
+        &mut self,
+        item: crate::settings::PinnedCollection,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings.toggle_pin(item);
+        self.settings.save();
+        cx.notify();
+    }
+
+    pub fn is_playlist_in_library(&self, id: &str) -> bool {
+        let norm = crate::settings::normalize_collection_id(id);
+        self.settings.is_saved_external(id)
+            || self
+                .snapshot
+                .ytm_playlists
+                .iter()
+                .any(|p| crate::settings::normalize_collection_id(&p.id) == norm)
+    }
+
+    pub fn toggle_save_external_playlist(
+        &mut self,
+        item: crate::settings::PinnedCollection,
+        cx: &mut Context<Self>,
+    ) {
+        let save = !self.is_playlist_in_library(&item.id);
+        self.settings.set_saved_external(item.clone(), save);
+        self.settings.save();
+        self.backend.send(BackendCmd::ToggleSavePlaylist {
+            id: item.id,
+            title: item.title,
+            thumbnail_url: item.thumbnail_url,
+            save,
+        });
+        cx.notify();
     }
 
     pub fn reorder_playlist(&mut self, from_id: &str, to_id: &str, cx: &mut Context<Self>) {

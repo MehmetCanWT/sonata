@@ -303,7 +303,10 @@ impl SonataDesktopView {
                                         .text_size(px(11.0))
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(self.palette.dim)
-                                        .child("Suggestions"),
+                                        .child(
+                                            sonata_runtime::i18n::strings(self.settings.language)
+                                                .suggestions,
+                                        ),
                                 )
                                 .children(
                                     suggestions.into_iter().enumerate().map(|(i, s)| {
@@ -347,7 +350,10 @@ impl SonataDesktopView {
                                     .text_size(px(11.0))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(self.palette.dim)
-                                    .child("Recent searches"),
+                                    .child(
+                                        sonata_runtime::i18n::strings(self.settings.language)
+                                            .recent_searches,
+                                    ),
                             )
                             .children(
                                 recents.into_iter().take(6).enumerate().map(|(i, r)| {

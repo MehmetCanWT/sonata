@@ -347,6 +347,7 @@ impl SpotifyClient {
             source: ProviderSource::Spotify,
             track_count: None,
             thumbnail_url: Some(LIKED_COVER.to_string()),
+            is_owned: false,
         }];
 
         let mut offset = 0usize;
@@ -397,6 +398,7 @@ impl SpotifyClient {
                     source: ProviderSource::Spotify,
                     track_count: None,
                     thumbnail_url: cover,
+                    is_owned: false,
                 });
             }
             let total = root

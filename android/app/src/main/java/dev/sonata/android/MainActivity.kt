@@ -280,6 +280,7 @@ import dev.sonata.android.ui.screens.ArtistScreenData
 import dev.sonata.android.ui.screens.ArtistSimilarItem
 import dev.sonata.android.ui.screens.ArtistTrackItem
 import dev.sonata.android.ui.screens.DownloadsManagerSheet
+import dev.sonata.android.ui.screens.MoodCategoryScreen
 import dev.sonata.android.ui.screens.RadioMixesScreen
 import dev.sonata.android.ui.screens.SonataSettingsScreen
 import dev.sonata.android.ui.theme.SonataRadioWavesIcon
@@ -541,6 +542,7 @@ private fun SonataAppContent(
     val libraryListState = rememberLazyListState()
     val searchListState = rememberLazyListState()
     val collectionListState = rememberLazyListState()
+    val moodCategoryListState = rememberLazyListState()
 
     val navBarScroll = rememberFloatingTabBarScrollConnection(
         initialIsInline = false,
@@ -558,6 +560,7 @@ private fun SonataAppContent(
     val scrolled by remember(
         state.activeTab,
         state.collectionTitle,
+        state.moodCategoryTitle,
         showAllMoods,
         showListeningHistory,
         homeListState,
@@ -566,12 +569,16 @@ private fun SonataAppContent(
         libraryListState,
         searchListState,
         collectionListState,
+        moodCategoryListState,
     ) {
         derivedStateOf {
             when {
                 state.collectionTitle != null ->
                     collectionListState.firstVisibleItemIndex > 0 ||
                         collectionListState.firstVisibleItemScrollOffset > 28
+                state.moodCategoryTitle != null ->
+                    moodCategoryListState.firstVisibleItemIndex > 0 ||
+                        moodCategoryListState.firstVisibleItemScrollOffset > 28
                 showAllMoods || showListeningHistory -> true
                 state.activeTab == AndroidTab.Home ->
                     homeListState.firstVisibleItemIndex > 0 ||
@@ -651,10 +658,11 @@ private fun SonataAppContent(
     }
 
     val canStepBackFromSearch = state.activeTab == AndroidTab.Search && state.query.isNotEmpty()
-    if (!hasOverlayOpen && (state.collectionTitle != null || showAllMoods || showListeningHistory || canStepBackFromSearch || state.activeTab != AndroidTab.Home)) {
+    if (!hasOverlayOpen && (state.collectionTitle != null || state.moodCategoryTitle != null || showAllMoods || showListeningHistory || canStepBackFromSearch || state.activeTab != AndroidTab.Home)) {
         BackHandler {
             when {
                 state.collectionTitle != null -> vm.closeCollection()
+                state.moodCategoryTitle != null -> vm.closeMoodCategory()
                 showListeningHistory -> showListeningHistory = false
                 showAllMoods -> showAllMoods = false
                 canStepBackFromSearch -> vm.searchDebounced("")
@@ -829,7 +837,7 @@ private fun SonataAppContent(
                 .layerBackdrop(appBackdrop),
         ) {
             val topPad = when {
-                state.collectionTitle != null -> topBarHeight + 8.dp
+                state.collectionTitle != null || state.moodCategoryTitle != null -> topBarHeight + 8.dp
                 state.activeTab == AndroidTab.Search && !showAllMoods && !showListeningHistory -> topBarHeight + 10.dp
                 else -> statusTopPadding + 8.dp
             }
@@ -860,6 +868,7 @@ private fun SonataAppContent(
                         isDownloading = detailIsDownloading,
                         allDownloaded = detailAllDownloaded,
                         fullScreenDetailCover = settings.fullScreenDetailCover,
+                        artworkTintedPages = settings.artworkTintedPages,
                         onPlayTrack = { track -> vm.playTrack(track, state.collectionTracks) },
                         onTrackOptions = { track, bounds -> trackOptionsTarget = TrackMenuRequest(track, bounds) },
                         onTrackLongClick = { track, trackNum, bounds -> openTrackHeldMenu(track, trackNum, bounds) },
@@ -875,15 +884,44 @@ private fun SonataAppContent(
                                 collectionId = state.collectionBrowseId ?: state.collectionTitle ?: "collection",
                             )
                         },
-                        onEditPlaylist = if (
-                            dev.sonata.android.ui.components.isEditableUserPlaylist(
-                                browseId = state.collectionBrowseId,
-                                signedIn = state.signedIn,
-                            )
-                        ) {
+                        onEditPlaylist = if (vm.isOwnedEditablePlaylist(state.collectionBrowseId)) {
                             { showEditPlaylistDialog = true }
                         } else {
                             null
+                        },
+                        isPinned = vm.isCollectionPinned(state.collectionBrowseId),
+                        onTogglePin = state.collectionBrowseId?.takeIf { it.isNotBlank() }?.let { bid ->
+                            {
+                                vm.togglePinCollection(
+                                    id = bid,
+                                    title = state.collectionTitle.orEmpty(),
+                                    subtitle = state.collectionSubtitle.orEmpty(),
+                                    coverUrl = state.collectionCoverUrl
+                                        ?: state.collectionTracks.firstOrNull { !it.thumbnailUrl.isNullOrBlank() }?.thumbnailUrl,
+                                    kindLabel = state.collectionKindLabel.orEmpty(),
+                                    isAlbum = state.collectionKindLabel.equals("Album", ignoreCase = true) ||
+                                        state.collectionKindLabel.equals("Single", ignoreCase = true) ||
+                                        bid.startsWith("MPRE"),
+                                )
+                            }
+                        },
+                        isSavedToLibrary = vm.isPlaylistSavedToLibrary(state.collectionBrowseId),
+                        onToggleSaveToLibrary = state.collectionBrowseId?.takeIf { bid ->
+                            dev.sonata.android.ui.components.isSaveableExternalCollection(
+                                browseId = bid,
+                                isOwned = vm.isOwnedEditablePlaylist(bid),
+                            )
+                        }?.let { bid ->
+                            {
+                                vm.toggleSaveExternalPlaylist(
+                                    id = bid,
+                                    title = state.collectionTitle.orEmpty(),
+                                    subtitle = state.collectionSubtitle.orEmpty(),
+                                    coverUrl = state.collectionCoverUrl
+                                        ?: state.collectionTracks.firstOrNull { !it.thumbnailUrl.isNullOrBlank() }?.thumbnailUrl,
+                                    kindLabel = state.collectionKindLabel.orEmpty(),
+                                )
+                            }
                         },
                         onMoreOptions = {
                             heldContextTarget = HeldContextTarget.AlbumOrPlaylistCard(
@@ -901,12 +939,33 @@ private fun SonataAppContent(
                     )
                 }
 
+                state.moodCategoryTitle != null -> MoodCategoryScreen(
+                    title = state.moodCategoryTitle.orEmpty(),
+                    shelves = state.moodCategoryShelves,
+                    loading = state.moodCategoryLoading,
+                    activeTrackId = state.activeTrack?.id,
+                    isPlaying = state.isPlaying,
+                    contentPadding = contentPadding,
+                    listState = moodCategoryListState,
+                    modifier = Modifier.nestedScroll(navBarScroll),
+                    onOpenCard = { card, shelfTracks -> vm.openCard(card, shelfTracks) },
+                    onCardLongClick = openCardHeldMenu,
+                    onPlayTrack = { track, queue -> vm.playTrack(track, queue) },
+                    onTrackOptions = { track, bounds -> trackOptionsTarget = TrackMenuRequest(track, bounds) },
+                    onTrackLongClick = { track, idx, bounds -> openTrackHeldMenu(track, idx, bounds) },
+                )
+
                 showAllMoods -> AllMoodsScreen(
                     contentPadding = PaddingValues(top = topBarHeight + 8.dp, bottom = bottomBarInset),
                     modifier = Modifier.nestedScroll(navBarScroll),
+                    moodCategories = state.moodCategories,
                     onOpenMood = { title ->
                         showAllMoods = false
                         vm.openMood(title)
+                    },
+                    onOpenMoodCategory = { title, browseId, params ->
+                        showAllMoods = false
+                        vm.openMoodCategory(title, browseId, params)
                     },
                 )
 
@@ -950,10 +1009,27 @@ private fun SonataAppContent(
                                         anchorBounds = bounds,
                                     )
                                 },
+                                onPinnedLongClick = { entry, bounds ->
+                                    heldContextTarget = HeldContextTarget.AlbumOrPlaylistCard(
+                                        browseId = entry.id,
+                                        title = entry.title,
+                                        subtitle = entry.subtitle,
+                                        coverUrl = entry.coverUrl,
+                                        isAlbum = entry.isAlbum,
+                                        eyebrow = entry.kindLabel.uppercase(),
+                                        isTopPickTall = false,
+                                        anchorBounds = bounds,
+                                    )
+                                },
                                 onOpenCard = { card, shelfTracks -> vm.openCard(card, shelfTracks) },
                                 onOpenPlaylist = vm::openPlaylist,
+                                onOpenPinnedCollection = vm::openPinnedCollection,
                                 onOpenMood = vm::openMood,
+                                onSelectHomeMoodChip = vm::selectHomeMoodChip,
+                                onOpenMoodCategory = vm::openMoodCategory,
                                 onShowAllMoods = { showAllMoods = true },
+                                onStartPersonalStation = vm::startPersonalStation,
+                                onStartDiscoveryStation = vm::startDiscoveryStation,
                             )
 
                             AndroidTab.Explore -> ExploreTabContent(
@@ -963,11 +1039,13 @@ private fun SonataAppContent(
                                 modifier = Modifier.nestedScroll(navBarScroll),
                                 onRefresh = vm::loadHome,
                                 onOpenMood = vm::openMood,
+                                onOpenMoodCategory = vm::openMoodCategory,
                                 onOpenCard = { card, shelfTracks -> vm.openCard(card, shelfTracks) },
                                 onCardLongClick = { card, bounds -> openCardHeldMenu(card, null, false, bounds) },
                                 onPlayTrack = { track, queue -> vm.playTrack(track, queue) },
                                 onTrackOptions = { track, bounds -> trackOptionsTarget = TrackMenuRequest(track, bounds) },
                                 onTrackLongClick = { track, idx, bounds -> openTrackHeldMenu(track, idx, bounds) },
+                                onStartDiscoveryStation = vm::startDiscoveryStation,
                             )
 
                             AndroidTab.Radio -> {
@@ -989,15 +1067,22 @@ private fun SonataAppContent(
                                     refreshing = state.refreshing,
                                     onRefresh = vm::loadHome,
                                     onStartTrackRadio = { tr -> vm.startQuickRadio(tr) },
+                                    onStartPersonalStation = vm::startPersonalStation,
+                                    onStartDiscoveryStation = vm::startDiscoveryStation,
                                 )
                             }
 
                             AndroidTab.Library -> {
                                 val downloads by vm.downloads.collectAsStateWithLifecycle()
+                                val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
+                                val latestDownloadCoverUrl = remember(downloads) {
+                                    downloads.maxByOrNull { it.downloadedAtMs }?.coverUrl?.takeIf { it.isNotBlank() }
+                                        ?: downloads.firstOrNull { !it.coverUrl.isNullOrBlank() }?.coverUrl
+                                }
                                 LibraryTabContent(
                                     state = state,
                                     downloadsCount = downloads.size,
-                                    latestDownloadCoverUrl = downloads.firstOrNull()?.coverUrl,
+                                    latestDownloadCoverUrl = latestDownloadCoverUrl,
                                     listState = libraryListState,
                                     contentPadding = contentPadding,
                                     modifier = Modifier.nestedScroll(navBarScroll),
@@ -1007,17 +1092,16 @@ private fun SonataAppContent(
                                         heldContextTarget = HeldContextTarget.AlbumOrPlaylistCard(
                                             browseId = playlist.id,
                                             title = playlist.name,
-                                            subtitle = if (playlist.id == SonataViewModel.DOWNLOADS_PLAYLIST_ID) "Offline Library" else "Playlist",
+                                            subtitle = if (playlist.id == SonataViewModel.DOWNLOADS_PLAYLIST_ID) strings.offlineLibrary else strings.playlistLabel,
                                             coverUrl = playlist.thumbnailUrl,
                                             isAlbum = false,
-                                            eyebrow = "PLAYLIST",
+                                            eyebrow = strings.playlistLabel.uppercase(),
                                             isTopPickTall = false,
                                             anchorBounds = bounds,
                                         )
                                     },
                                     onPlayTrack = { track, queue -> vm.playTrack(track, queue) },
                                     onOpenDownloads = vm::openDownloadsPlaylist,
-                                    onOpenDownloadsManager = { showDownloadsSheet = true },
                                     onOpenArtist = { id, name -> vm.openArtist(id, name) },
                                 )
                             }
@@ -1069,6 +1153,7 @@ private fun SonataAppContent(
                 activeTrackId = state.activeTrack?.id,
                 userAvatarUrl = if (state.signedIn) state.accountProfile?.avatarUrl else null,
                 backdrop = artistBackdrop,
+                artworkTintedPages = settings.artworkTintedPages,
                 contentBottomPadding = PaddingValues(bottom = bottomBarInset),
                 onBack = vm::closeArtist,
                 onShareArtist = { data ->
@@ -1167,6 +1252,7 @@ private fun SonataAppContent(
                 onBack = {
                     when {
                         state.collectionTitle != null -> vm.closeCollection()
+                        state.moodCategoryTitle != null -> vm.closeMoodCategory()
                         showListeningHistory -> showListeningHistory = false
                         showAllMoods -> showAllMoods = false
                     }
@@ -1193,6 +1279,7 @@ private fun SonataAppContent(
                 },
                 onHistoryClick = {
                     showAllMoods = false
+                    vm.closeMoodCategory()
                     vm.closeCollection()
                     vm.refreshListeningHistory()
                     showListeningHistory = true
@@ -1222,6 +1309,7 @@ private fun SonataAppContent(
                     onTabSelected = { tab ->
                         showAllMoods = false
                         showListeningHistory = false
+                        vm.closeMoodCategory()
                         vm.closeArtist()
                         navigateToTab(tab)
                     },
@@ -1281,12 +1369,43 @@ private fun SonataAppContent(
             val heldDownloads by vm.downloads.collectAsStateWithLifecycle()
             val heldActiveDownloads by vm.activeDownloads.collectAsStateWithLifecycle()
             val targetTrack = (heldContextTarget as? HeldContextTarget.TrackRow)?.track
+            val targetCollection = heldContextTarget as? HeldContextTarget.AlbumOrPlaylistCard
+            val targetColId = targetCollection?.browseId
+            val targetIsPinned = targetColId?.let { vm.isCollectionPinned(it) } == true
+            val targetCanSave = targetColId != null &&
+                dev.sonata.android.ui.components.isSaveableExternalCollection(
+                    browseId = targetColId,
+                    isOwned = vm.isOwnedEditablePlaylist(targetColId),
+                )
+            val targetIsSaved = targetColId?.let { vm.isPlaylistSavedToLibrary(it) } == true
             HeldContextMenu(
                 target = heldContextTarget,
                 isLiked = targetTrack?.id?.let { it in state.likedTrackIds } == true,
                 isDisliked = false,
                 isDownloaded = targetTrack?.id?.let { id -> heldDownloads.any { it.videoId == id } } == true,
                 activeDownload = targetTrack?.id?.let { heldActiveDownloads[it] },
+                isCollectionPinned = targetIsPinned,
+                isCollectionSavedToLibrary = targetIsSaved,
+                canSaveCollectionToLibrary = targetCanSave,
+                onTogglePinCollection = { col ->
+                    vm.togglePinCollection(
+                        id = col.browseId,
+                        title = col.title,
+                        subtitle = col.subtitle,
+                        coverUrl = col.coverUrl,
+                        kindLabel = col.eyebrow.orEmpty(),
+                        isAlbum = col.isAlbum,
+                    )
+                },
+                onToggleSaveCollectionToLibrary = { col ->
+                    vm.toggleSaveExternalPlaylist(
+                        id = col.browseId,
+                        title = col.title,
+                        subtitle = col.subtitle,
+                        coverUrl = col.coverUrl,
+                        kindLabel = col.eyebrow.orEmpty(),
+                    )
+                },
                 backdrop = activeOverlayBackdrop,
                 onDismiss = { heldContextTarget = null },
                 onToggleLike = { t -> vm.toggleStarTrack(t.id) },
@@ -1444,21 +1563,24 @@ private fun SonataAppContent(
             BackHandler(enabled = state.showSettingsSheet) { vm.dismissSettingsSheet() }
             val settingsDownloads by vm.downloads.collectAsStateWithLifecycle()
             val settingsDownloadBytes by vm.downloadsTotalBytes.collectAsStateWithLifecycle()
+            val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
+            val storageLabel = if (settings.downloadStorageLocation == dev.sonata.android.data.DownloadStorageLocation.EXTERNAL) {
+                strings.storageExternalLabel
+            } else {
+                strings.storageInternalLabel
+            }
             val initialStorageStats = remember(
                 settings.downloadStorageLocation,
                 settingsDownloads.size,
                 settingsDownloadBytes,
+                storageLabel,
             ) {
                 dev.sonata.android.data.SonataDownloadManager.DownloadStorageStats(
                     trackCount = settingsDownloads.size,
                     downloadedBytes = settingsDownloadBytes,
                     availableBytes = 0L,
                     totalBytes = 0L,
-                    locationLabel = if (settings.downloadStorageLocation == dev.sonata.android.data.DownloadStorageLocation.EXTERNAL) {
-                        "External · Music/Sonata"
-                    } else {
-                        "Internal · Private App Storage"
-                    },
+                    locationLabel = storageLabel,
                 )
             }
             val downloadStorageStats by androidx.compose.runtime.produceState(
@@ -1520,8 +1642,9 @@ private fun SonataAppContent(
                     downloads.any { it.videoId == track.id }
                 }
                 val activeTrackDownload = activeDownloads[track.id]
-                var trackLyricOffsetMs by remember(track.id, settings.lyricsOffsetMs) {
-                    mutableLongStateOf(vm.getTrackLyricOffsetMs(track.id))
+                val lyricOffsetKey = if (state.videoModeEnabled) "${track.id}:video" else track.id
+                var trackLyricOffsetMs by remember(lyricOffsetKey, settings.lyricsOffsetMs) {
+                    mutableLongStateOf(vm.getTrackLyricOffsetMs(lyricOffsetKey))
                 }
                 NowPlayingScreen(
                     track = track,
@@ -1556,14 +1679,15 @@ private fun SonataAppContent(
                         vm.updateSettings { it.copy(lyricsRomanizationEnabled = !it.lyricsRomanizationEnabled) }
                     },
                     onStepLyricOffsetMs = { delta ->
-                        val next = (trackLyricOffsetMs + delta).coerceIn(-5000L, 5000L)
+                        val next = (trackLyricOffsetMs + delta).coerceIn(-30_000L, 30_000L)
                         trackLyricOffsetMs = next
-                        vm.setTrackLyricOffsetMs(track.id, next)
+                        vm.setTrackLyricOffsetMs(lyricOffsetKey, next)
                     },
                     onResetLyricOffsetMs = {
                         trackLyricOffsetMs = 0L
-                        vm.setTrackLyricOffsetMs(track.id, 0L)
+                        vm.setTrackLyricOffsetMs(lyricOffsetKey, 0L)
                     },
+                    onToggleAutoplay = vm::toggleAutoplay,
                     onShareInApp = {
                         shareTarget = SonataShareTarget.Track(track)
                     },
@@ -1590,7 +1714,15 @@ private fun SonataAppContent(
                     onAddToPlaylist = {
                         vm.openAddToPlaylist(listOf(track))
                     },
-                    onDismiss = { showNowPlaying = false },
+                    onEnableVideoMode = vm::enableVideoMode,
+                    onDisableVideoMode = vm::disableVideoMode,
+                    onSelectVideoQuality = vm::selectVideoQuality,
+                    onSetVideoFullscreen = vm::setVideoFullscreen,
+                    onSuppressVideoWarning = vm::setSuppressVideoAudioWarning,
+                    onDismiss = {
+                        vm.setVideoFullscreen(false)
+                        showNowPlaying = false
+                    },
                 )
             }
         }

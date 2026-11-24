@@ -92,6 +92,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -813,6 +814,7 @@ private fun SharedTransitionScope.ExpandedTabs(
     // and would otherwise keep the step from its first touch.
     val currentTabStepPx by rememberUpdatedState(tabStepPx)
     val currentIsRtl by rememberUpdatedState(isRtl)
+    val currentTabs by rememberUpdatedState(tabs)
 
     // The pill rests inside its tab cell with balanced horizontal/vertical clearance and lifts to
     // stand [PILL_GROW_HEIGHT] taller while travelling.
@@ -821,7 +823,7 @@ private fun SharedTransitionScope.ExpandedTabs(
     val padTopPx = with(density) { contentPadding.calculateTopPadding().toPx() }
     val padBottomPx = with(density) { contentPadding.calculateBottomPadding().toPx() }
     val rowHeightPx = rowSize.height.toFloat()
-    val pillInsetXPx = with(density) { 8.dp.toPx() }
+    val pillInsetXPx = with(density) { 4.dp.toPx() }
     val pillInsetYPx = with(density) { 4.dp.toPx() }
     val pillRestWidthPx = (tabWidthPx - pillInsetXPx).coerceAtLeast(1f)
     val pillRestHeightPx = (rowHeightPx - pillInsetYPx).coerceAtLeast(1f)
@@ -920,7 +922,7 @@ private fun SharedTransitionScope.ExpandedTabs(
                             detectHorizontalDragGestures(
                                 onDragStart = {
                                     step = currentTabStepPx
-                                    holding = currentSelectedTabIndex >= 0 && step > 0f
+                                    holding = currentSelectedTabIndex >= 0 && step > 0f && currentTabs.isNotEmpty()
                                     if (!holding) return@detectHorizontalDragGestures
                                     // In tab order, whichever way the row runs.
                                     direction = if (currentIsRtl) -1f else 1f
@@ -935,19 +937,23 @@ private fun SharedTransitionScope.ExpandedTabs(
                                 onDragEnd = {
                                     if (!holding) return@detectHorizontalDragGestures
                                     holding = false
+                                    val tabList = currentTabs
+                                    if (tabList.isEmpty()) return@detectHorizontalDragGestures
                                     val absoluteIndexFloat = (dragStartIndex + totalDrag / step)
-                                        .coerceIn(0f, tabs.lastIndex.toFloat())
+                                        .coerceIn(0f, tabList.lastIndex.toFloat())
                                     val newIndex = absoluteIndexFloat.roundToInt()
                                     pill.release(newIndex)
                                     if (newIndex != currentSelectedTabIndex) {
-                                        tabs[newIndex].onClick()
+                                        tabList[newIndex].onClick()
                                     }
                                 },
                                 onHorizontalDrag = { _, delta ->
                                     if (!holding) return@detectHorizontalDragGestures
+                                    val tabList = currentTabs
+                                    if (tabList.isEmpty()) return@detectHorizontalDragGestures
                                     totalDrag += delta * direction
                                     val absoluteIndexFloat = (dragStartIndex + totalDrag / step)
-                                        .coerceIn(0f, tabs.lastIndex.toFloat())
+                                        .coerceIn(0f, tabList.lastIndex.toFloat())
                                     pill.dragTo(absoluteIndexFloat)
 
                                     val approximateTab = absoluteIndexFloat.roundToInt()
@@ -990,10 +996,14 @@ private fun SharedTransitionScope.ExpandedTabs(
                             },
                             title = {
                                 Box(
-                                    Modifier.animateEnterExitTab(
-                                        sharedTransitionScope = this@ExpandedTabs,
-                                        animatedVisibilityScope = animatedVisibilityScope
-                                    )
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clipToBounds()
+                                        .animateEnterExitTab(
+                                            sharedTransitionScope = this@ExpandedTabs,
+                                            animatedVisibilityScope = animatedVisibilityScope
+                                        ),
+                                    contentAlignment = Alignment.Center,
                                 ) {
                                     tab.title()
                                 }

@@ -234,6 +234,28 @@ impl SonataDesktopView {
                                             this.backend.send(BackendCmd::ToggleSaveAlbum);
                                         })),
                                 )
+                            })
+                            .child({
+                                let s = sonata_runtime::i18n::strings(self.settings.language);
+                                let is_pinned = self.settings.is_pinned(&alb.id);
+                                let pin_item = crate::settings::PinnedCollection {
+                                    id: alb.id.clone(),
+                                    title: alb.title.clone(),
+                                    subtitle: alb.subtitle.clone(),
+                                    thumbnail_url: alb.cover_url.clone(),
+                                    is_album: true,
+                                };
+                                Button::new("alb-pin")
+                                    .secondary()
+                                    .icon(if is_pinned {
+                                        IconName::Check
+                                    } else {
+                                        IconName::ArrowUp
+                                    })
+                                    .label(if is_pinned { s.pinned } else { s.pin })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.toggle_pin_collection(pin_item.clone(), cx);
+                                    }))
                             }),
                     ),
             );
@@ -297,7 +319,8 @@ impl SonataDesktopView {
                                 .flex_col()
                                 .child(section_header(
                                     "alb-ov",
-                                    "Other versions",
+                                    sonata_runtime::i18n::strings(self.settings.language)
+                                        .other_versions,
                                     None,
                                     None,
                                     &self.palette,
@@ -394,7 +417,11 @@ impl SonataDesktopView {
                             .text_size(px(11.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(self.palette.secondary)
-                            .child("PLAYLIST"),
+                            .child(
+                                sonata_runtime::i18n::strings(self.settings.language)
+                                    .playlist
+                                    .to_uppercase(),
+                            ),
                     )
                     .child(
                         div()
@@ -493,11 +520,79 @@ impl SonataDesktopView {
                                         })),
                                 )
                             })
+                            .when(!editable && !is_liked, |row| {
+                                let s = sonata_runtime::i18n::strings(self.settings.language);
+                                let pid = self.snapshot.playlist_id.clone().unwrap_or_default();
+                                let in_lib = !pid.is_empty() && self.is_playlist_in_library(&pid);
+                                let save_item = crate::settings::PinnedCollection {
+                                    id: pid.clone(),
+                                    title: self.snapshot.playlist_heading.clone(),
+                                    subtitle: self.snapshot.playlist_subtitle.clone(),
+                                    thumbnail_url: self.snapshot.playlist_cover_url.clone(),
+                                    is_album: false,
+                                };
+                                row.child(
+                                    Button::new("pl-save-lib")
+                                        .secondary()
+                                        .icon(if in_lib {
+                                            IconName::Check
+                                        } else {
+                                            IconName::Plus
+                                        })
+                                        .label(if in_lib {
+                                            s.in_library
+                                        } else {
+                                            s.add_to_library
+                                        })
+                                        .tooltip(if in_lib {
+                                            s.remove_from_library
+                                        } else {
+                                            s.add_to_library
+                                        })
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            if !save_item.id.is_empty() {
+                                                this.toggle_save_external_playlist(
+                                                    save_item.clone(),
+                                                    cx,
+                                                );
+                                            }
+                                        })),
+                                )
+                            })
+                            .when(self.snapshot.playlist_id.is_some(), |row| {
+                                let s = sonata_runtime::i18n::strings(self.settings.language);
+                                let pid = self.snapshot.playlist_id.clone().unwrap_or_default();
+                                let is_pinned = self.settings.is_pinned(&pid);
+                                let pin_item = crate::settings::PinnedCollection {
+                                    id: pid,
+                                    title: self.snapshot.playlist_heading.clone(),
+                                    subtitle: self.snapshot.playlist_subtitle.clone(),
+                                    thumbnail_url: self.snapshot.playlist_cover_url.clone(),
+                                    is_album: false,
+                                };
+                                row.child(
+                                    Button::new("pl-pin")
+                                        .secondary()
+                                        .icon(if is_pinned {
+                                            IconName::Check
+                                        } else {
+                                            IconName::ArrowUp
+                                        })
+                                        .label(if is_pinned { s.pinned } else { s.pin })
+                                        .tooltip(if is_pinned { s.unpin } else { s.pin })
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.toggle_pin_collection(pin_item.clone(), cx);
+                                        })),
+                                )
+                            })
                             .child(
                                 Button::new("pl-refresh")
                                     .secondary()
                                     .icon(IconName::RefreshCw)
-                                    .tooltip("Sync playlist from YouTube Music")
+                                    .tooltip(
+                                        sonata_runtime::i18n::strings(self.settings.language)
+                                            .refresh,
+                                    )
                                     .on_click(cx.listener(|this, _, _, _| {
                                         this.backend.send(BackendCmd::RefreshActivePlaylist);
                                     })),
@@ -521,7 +616,7 @@ impl SonataDesktopView {
                     .py(px(28.0))
                     .text_size(px(13.0))
                     .text_color(self.palette.dim)
-                    .child("This playlist has no tracks yet."),
+                    .child(sonata_runtime::i18n::strings(self.settings.language).playlist_empty),
             );
         } else {
             // Virtualize large playlists so 200+ / 1000+ track playlists only build visible + overscan rows.

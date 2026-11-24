@@ -21,12 +21,13 @@ use sonata_core::lyrics::{lrclib, LyricsState};
 use sonata_core::motion::{MotionMedia, MotionMediaKind};
 use sonata_core::paths::CorePaths;
 use sonata_core::providers::hifi::{
-    FastStartMode, JsCipherBridge, ResolvedStream, ResolverProfile, SolvedCipherPair,
-    StreamFallbackMode, StreamResolver, UpgradeDelivery,
+    FastStartMode, JsCipherBridge, ResolvedMusicVideo, ResolvedStream, ResolverProfile,
+    SolvedCipherPair, StreamFallbackMode, StreamResolver, UpgradeDelivery, VideoQualityStream,
 };
 use sonata_core::providers::jiosaavn::{self, ResolvedJioSaavnStream};
 use sonata_core::providers::ytmusic::{
-    ArtistPage, HomeCard, HomeCardKind, HomeShelf, YtAccountProfile, YtMusicClient,
+    ArtistPage, HomeCard, HomeCardKind, HomeShelf, MoodCategoryTile, MoodChip, MusicVideoCandidate,
+    MusicVideoSyncSegment, YtAccountProfile, YtMusicClient,
 };
 use sonata_core::providers::{Playlist, ProviderSource, Track};
 use std::fs::{self, OpenOptions};
@@ -238,6 +239,9 @@ pub struct AndroidPlaylist {
     pub id: String,
     pub name: String,
     pub thumbnail_url: Option<String>,
+    #[serde(default)]
+    #[uniffi(default = false)]
+    pub is_owned: bool,
 }
 
 impl From<&Playlist> for AndroidPlaylist {
@@ -246,6 +250,7 @@ impl From<&Playlist> for AndroidPlaylist {
             id: p.id.clone(),
             name: p.name.clone(),
             thumbnail_url: p.thumbnail_url.clone(),
+            is_owned: p.is_owned,
         }
     }
 }
@@ -256,6 +261,7 @@ impl From<Playlist> for AndroidPlaylist {
             id: p.id,
             name: p.name,
             thumbnail_url: p.thumbnail_url,
+            is_owned: p.is_owned,
         }
     }
 }
@@ -410,6 +416,143 @@ impl From<HomeShelf> for AndroidHomeShelf {
             title: s.title,
             tracks: s.tracks.into_iter().map(AndroidTrack::from).collect(),
             cards: s.cards.into_iter().map(AndroidHomeCard::from).collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct AndroidMoodChip {
+    pub label: String,
+    pub params: String,
+}
+
+impl From<MoodChip> for AndroidMoodChip {
+    fn from(c: MoodChip) -> Self {
+        Self {
+            label: c.label,
+            params: c.params,
+        }
+    }
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct AndroidMoodCategory {
+    pub title: String,
+    pub browse_id: String,
+    pub params: String,
+    pub accent_color: u32, // 0xFF000000 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+}
+
+impl From<MoodCategoryTile> for AndroidMoodCategory {
+    fn from(t: MoodCategoryTile) -> Self {
+        let (r, g, b) = t.accent_rgb;
+        Self {
+            title: t.title,
+            browse_id: t.browse_id,
+            params: t.params,
+            accent_color: 0xFF00_0000 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32),
+        }
+    }
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct AndroidExploreFeed {
+    pub shelves: Vec<AndroidHomeShelf>,
+    pub moods: Vec<AndroidMoodCategory>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct AndroidMusicVideoSyncSegment {
+    pub music_start_ms: u64,
+    pub video_start_ms: u64,
+    pub duration_ms: u64,
+}
+
+impl From<MusicVideoSyncSegment> for AndroidMusicVideoSyncSegment {
+    fn from(s: MusicVideoSyncSegment) -> Self {
+        Self {
+            music_start_ms: s.music_start_ms,
+            video_start_ms: s.video_start_ms,
+            duration_ms: s.duration_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct AndroidMusicVideoCandidate {
+    pub video_id: String,
+    pub title: String,
+    pub thumbnail_url: Option<String>,
+    pub duration_secs: Option<u64>,
+    pub sync_segments: Vec<AndroidMusicVideoSyncSegment>,
+}
+
+impl From<MusicVideoCandidate> for AndroidMusicVideoCandidate {
+    fn from(c: MusicVideoCandidate) -> Self {
+        Self {
+            video_id: c.video_id,
+            title: c.title,
+            thumbnail_url: c.thumbnail_url,
+            duration_secs: c.duration_secs,
+            sync_segments: c
+                .sync_segments
+                .into_iter()
+                .map(AndroidMusicVideoSyncSegment::from)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct AndroidVideoQualityStream {
+    pub quality_label: String,
+    pub height: u32,
+    pub fps: u32,
+    pub video_url: String,
+    pub mime_type: String,
+    pub bitrate_bps: u64,
+    pub is_muxed: bool,
+}
+
+impl From<VideoQualityStream> for AndroidVideoQualityStream {
+    fn from(q: VideoQualityStream) -> Self {
+        Self {
+            quality_label: q.quality_label,
+            height: q.height,
+            fps: q.fps,
+            video_url: q.video_url,
+            mime_type: q.mime_type,
+            bitrate_bps: q.bitrate_bps,
+            is_muxed: q.is_muxed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct AndroidResolvedMusicVideo {
+    pub video_id: String,
+    pub qualities: Vec<AndroidVideoQualityStream>,
+    pub audio_url: Option<String>,
+    pub audio_badge: String,
+    pub headers: Vec<AndroidHeader>,
+}
+
+impl From<ResolvedMusicVideo> for AndroidResolvedMusicVideo {
+    fn from(v: ResolvedMusicVideo) -> Self {
+        Self {
+            video_id: v.video_id,
+            qualities: v
+                .qualities
+                .into_iter()
+                .map(AndroidVideoQualityStream::from)
+                .collect(),
+            audio_url: v.audio_url,
+            audio_badge: v.audio_badge,
+            headers: v
+                .headers
+                .into_iter()
+                .map(|(name, value)| AndroidHeader { name, value })
+                .collect(),
         }
     }
 }
@@ -616,6 +759,7 @@ pub struct SonataAndroidEngine {
     paths: CorePaths,
     cache_db: Option<CacheDb>,
     cipher_bridge: RwLock<Option<Arc<dyn JsCipherBridge>>>,
+    language: RwLock<String>,
     session: RwLock<AuthSession>,
 }
 
@@ -636,14 +780,22 @@ impl SonataAndroidEngine {
             .clone()
     }
 
+    fn current_language(&self) -> String {
+        self.language
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
     fn build_session(
         http: &reqwest::Client,
         paths: &CorePaths,
         cache_db: Option<CacheDb>,
         cookies: ExtractedCookies,
         cipher_bridge: Option<Arc<dyn JsCipherBridge>>,
+        language: &str,
     ) -> AuthSession {
-        let ytm = YtMusicClient::new(http.clone(), cookies.clone());
+        let ytm = YtMusicClient::new(http.clone(), cookies.clone()).with_language(language);
         let resolver = StreamResolver::with_profile(
             http.clone(),
             ytm.clone(),
@@ -685,13 +837,14 @@ impl SonataAndroidEngine {
 
         let cache_db = CacheDb::open_with_paths(&paths, true);
         let cookies = ExtractedCookies::load_saved_ytm_header(&paths).unwrap_or_default();
-        let session = Self::build_session(&http, &paths, cache_db.clone(), cookies, None);
+        let session = Self::build_session(&http, &paths, cache_db.clone(), cookies, None, "en");
 
         Ok(Self {
             http,
             paths,
             cache_db,
             cipher_bridge: RwLock::new(None),
+            language: RwLock::new("en".to_string()),
             session: RwLock::new(session),
         })
     }
@@ -779,12 +932,14 @@ impl SonataAndroidEngine {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
+        let lang = self.current_language();
         let next_session = Self::build_session(
             &self.http,
             &self.paths,
             self.cache_db.clone(),
             cookies,
             bridge,
+            &lang,
         );
         let ytm = next_session.ytm.clone();
         {
@@ -853,12 +1008,14 @@ impl SonataAndroidEngine {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
+        let lang = self.current_language();
         let next_session = Self::build_session(
             &self.http,
             &self.paths,
             self.cache_db.clone(),
             ExtractedCookies::default(),
             bridge,
+            &lang,
         );
         {
             let mut guard = self
@@ -892,6 +1049,65 @@ impl SonataAndroidEngine {
         Ok(shelves.into_iter().map(AndroidHomeShelf::from).collect())
     }
 
+    /// Updates the active YouTube Music `hl` language (`"tr"`, `"ru"`, or `"en"`) and clears
+    /// cached playlists and artist pages when changed.
+    pub async fn set_language(&self, language_code: String) {
+        {
+            let mut guard = self
+                .language
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *guard = language_code.clone();
+        }
+        let ytm = self.current_ytm();
+        ytm.set_language(&language_code).await;
+    }
+
+    /// Fetches `FEmusic_explore` shelves alongside `FEmusic_moods_and_genres` category tiles.
+    pub async fn fetch_explore_feed(&self) -> Result<AndroidExploreFeed, SonataAndroidError> {
+        let ytm = self.current_ytm();
+        let (shelves, moods) = ytm.fetch_explore().await?;
+        Ok(AndroidExploreFeed {
+            shelves: shelves.into_iter().map(AndroidHomeShelf::from).collect(),
+            moods: moods.into_iter().map(AndroidMoodCategory::from).collect(),
+        })
+    }
+
+    /// Fetches curated shelves for a mood or genre category browse endpoint.
+    pub async fn fetch_mood_category(
+        &self,
+        browse_id: String,
+        params: String,
+    ) -> Result<Vec<AndroidHomeShelf>, SonataAndroidError> {
+        let ytm = self.current_ytm();
+        let shelves = ytm.fetch_mood_category(&browse_id, &params).await?;
+        Ok(shelves.into_iter().map(AndroidHomeShelf::from).collect())
+    }
+
+    /// Fetches top-level YouTube Music home mood filter chips.
+    pub async fn fetch_home_mood_chips(&self) -> Result<Vec<AndroidMoodChip>, SonataAndroidError> {
+        let ytm = self.current_ytm();
+        let (chips, _) = ytm.fetch_home_with_chips(None).await?;
+        Ok(chips.into_iter().map(AndroidMoodChip::from).collect())
+    }
+
+    /// Fetches the home feed filtered by an optional mood chip `params` token, or the full
+    /// home feed when `params` is `None` or empty.
+    pub async fn fetch_home_mood_feed(
+        &self,
+        params: Option<String>,
+    ) -> Result<Vec<AndroidHomeShelf>, SonataAndroidError> {
+        let ytm = self.current_ytm();
+        let shelves = match params.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(p) => {
+                let (_, shelves) = ytm.fetch_home_with_chips(Some(p)).await?;
+                shelves
+            }
+            None => ytm.fetch_home_feed().await?,
+        };
+        Ok(shelves.into_iter().map(AndroidHomeShelf::from).collect())
+    }
+
     /// Searches YouTube Music songs for the given query.
     pub async fn search_songs(
         &self,
@@ -908,6 +1124,21 @@ impl SonataAndroidEngine {
         browse_id: String,
     ) -> Result<Vec<AndroidTrack>, SonataAndroidError> {
         let ytm = self.current_ytm();
+        let mut tracks = Vec::new();
+        ytm.fetch_playlist_tracks_progressive(&browse_id, |batch, _| {
+            tracks.extend(batch);
+        })
+        .await?;
+        Ok(tracks.into_iter().map(AndroidTrack::from).collect())
+    }
+
+    /// Invalidates any cached playlist entry for `browse_id` and fetches live tracks from YouTube Music.
+    pub async fn fetch_collection_tracks_fresh(
+        &self,
+        browse_id: String,
+    ) -> Result<Vec<AndroidTrack>, SonataAndroidError> {
+        let ytm = self.current_ytm();
+        ytm.invalidate_cache(Some(&browse_id)).await;
         let mut tracks = Vec::new();
         ytm.fetch_playlist_tracks_progressive(&browse_id, |batch, _| {
             tracks.extend(batch);
@@ -992,6 +1223,27 @@ impl SonataAndroidEngine {
         Ok(tracks.into_iter().map(AndroidTrack::from).collect())
     }
 
+    /// Fetches personalized endless continuation tracks combining playlist automix and seed
+    /// radios, excluding played/seed IDs and diversifying artists.
+    pub async fn fetch_endless_radio_queue(
+        &self,
+        seed_video_ids: Vec<String>,
+        playlist_id: Option<String>,
+        exclude_video_ids: Vec<String>,
+        preferred_artists: Vec<String>,
+    ) -> Result<Vec<AndroidTrack>, SonataAndroidError> {
+        let ytm = self.current_ytm();
+        let tracks = ytm
+            .fetch_endless_radio_queue(
+                &seed_video_ids,
+                playlist_id.as_deref(),
+                &exclude_video_ids,
+                &preferred_artists,
+            )
+            .await?;
+        Ok(tracks.into_iter().map(AndroidTrack::from).collect())
+    }
+
     /// Persists like/unlike status for a YouTube Music track.
     pub async fn set_like_status(
         &self,
@@ -1040,6 +1292,17 @@ impl SonataAndroidEngine {
             .create_playlist_with_tracks(&title, &description, &video_ids)
             .await?;
         Ok(pid)
+    }
+
+    /// Saves or removes an external playlist in the signed-in user's YouTube Music library.
+    pub async fn set_playlist_saved(
+        &self,
+        playlist_id: String,
+        saved: bool,
+    ) -> Result<(), SonataAndroidError> {
+        let ytm = self.current_ytm();
+        ytm.set_playlist_saved(&playlist_id, saved).await?;
+        Ok(())
     }
 
     /// Updates a user-owned YouTube Music playlist's title, description, and/or privacy status.
@@ -1117,6 +1380,31 @@ impl SonataAndroidEngine {
             .resolve_hifi_upgrade(&core_track, &core_stream, true)
             .await
             .map(AndroidResolvedStream::from)
+    }
+
+    /// Checks whether an official or counterpart Music Video exists for `track`.
+    pub async fn resolve_music_video_candidate(
+        &self,
+        track: AndroidTrack,
+    ) -> Option<AndroidMusicVideoCandidate> {
+        let ytm = self.current_ytm();
+        let core_track: Track = track.into();
+        ytm.resolve_music_video_candidate(&core_track)
+            .await
+            .map(AndroidMusicVideoCandidate::from)
+    }
+
+    /// Resolves adaptive/fallback video quality streams and companion audio for `video_id`.
+    pub async fn resolve_music_video_streams(
+        &self,
+        video_id: String,
+    ) -> Result<AndroidResolvedMusicVideo, SonataAndroidError> {
+        let resolver = self.current_resolver();
+        let resolved = resolver
+            .resolve_music_video_streams(&video_id)
+            .await
+            .map_err(|err| CoreError::classify_anyhow(&err))?;
+        Ok(resolved.into())
     }
 
     /// Fetches synced or plain lyrics lines for the active track.
@@ -1354,6 +1642,7 @@ mod tests {
             id: "PL123".to_string(),
             name: "Favorites".to_string(),
             thumbnail_url: None,
+            is_owned: true,
         }];
         save_cached_json_in(&dir, CACHE_PLAYLISTS_FILE, &playlists);
         let loaded_playlists: Vec<AndroidPlaylist> =
@@ -1415,10 +1704,12 @@ mod tests {
             source: ProviderSource::YouTubeMusic,
             track_count: Some(12),
             thumbnail_url: Some("https://example.com/pl.jpg".to_string()),
+            is_owned: true,
         };
         let android_pl = AndroidPlaylist::from(&playlist);
         assert_eq!(android_pl.id, "PL_42");
         assert_eq!(android_pl.name, "Night Mix");
+        assert!(android_pl.is_owned);
         assert_eq!(
             android_pl.thumbnail_url.as_deref(),
             Some("https://example.com/pl.jpg")
@@ -1549,6 +1840,24 @@ mod tests {
 
         let err = SonataAndroidError::from(anyhow::anyhow!("boom"));
         assert_eq!(err.to_string(), "boom");
+
+        let chip = AndroidMoodChip::from(MoodChip {
+            label: "Energize".to_string(),
+            params: "ggMPOg1uX1lMbVZ".to_string(),
+        });
+        assert_eq!(chip.label, "Energize");
+        assert_eq!(chip.params, "ggMPOg1uX1lMbVZ");
+
+        let mood = AndroidMoodCategory::from(MoodCategoryTile {
+            title: "Focus".to_string(),
+            browse_id: "FEmusic_moods_and_genres_category".to_string(),
+            params: "ggMPOg1uX1JOQWZ".to_string(),
+            accent_rgb: (0x12, 0x34, 0x56),
+        });
+        assert_eq!(mood.title, "Focus");
+        assert_eq!(mood.browse_id, "FEmusic_moods_and_genres_category");
+        assert_eq!(mood.params, "ggMPOg1uX1JOQWZ");
+        assert_eq!(mood.accent_color, 0xFF12_3456);
     }
 
     struct MockJsCipherSolver {
@@ -1681,6 +1990,7 @@ mod tests {
                 id: "PL1".to_string(),
                 name: "Mix".to_string(),
                 thumbnail_url: None,
+                is_owned: true,
             }],
         );
         assert!(engine.paths.cache_dir.join(CACHE_PROFILE_FILE).exists());
@@ -1694,8 +2004,12 @@ mod tests {
             Err(SonataAndroidError::AuthRequired { .. })
         ));
 
+        engine.set_language("tr-TR".to_string()).await;
+        assert_eq!(engine.current_language(), "tr-TR");
+
         engine.sign_out().await;
         assert!(!engine.is_signed_in());
+        assert_eq!(engine.current_language(), "tr-TR");
         assert!(!engine.paths.cache_dir.join(CACHE_PROFILE_FILE).exists());
         assert!(!engine.paths.cache_dir.join(CACHE_PLAYLISTS_FILE).exists());
 

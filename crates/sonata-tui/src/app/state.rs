@@ -116,6 +116,10 @@ pub enum AppEvent {
         frames: Vec<(Option<StatefulProtocol>, Vec<u8>)>,
     },
     PlaylistCreated(Playlist),
+    AutoplayTracksReady {
+        play_seq: u64,
+        tracks: Vec<Track>,
+    },
     UpdateChecked(UpdateCheckResult),
     StatusMessage(String),
 }

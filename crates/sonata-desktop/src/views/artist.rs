@@ -75,6 +75,7 @@ impl SonataDesktopView {
         let top_tracks = artist.popular_tracks.clone();
         let artist_name_header = artist.name.clone();
 
+        let s = sonata_runtime::i18n::strings(self.settings.language);
         let action_buttons = div()
             .flex()
             .flex_row()
@@ -84,7 +85,7 @@ impl SonataDesktopView {
                 Button::new("art-play")
                     .primary()
                     .icon(IconName::Play)
-                    .label("Play")
+                    .label(s.play)
                     .when(top_tracks.is_empty() && shuffle_id.is_none(), |b| {
                         b.opacity(0.45)
                     })
@@ -121,7 +122,7 @@ impl SonataDesktopView {
                     Button::new("art-radio")
                         .secondary()
                         .icon(IconName::Radio)
-                        .label("Radio")
+                        .label(s.radio)
                         .on_click(cx.listener(move |this, _, _, _| {
                             if let Some(first) = tracks_rad.first().cloned() {
                                 this.backend.send(BackendCmd::StartTrackRadio(first));
@@ -307,7 +308,7 @@ impl SonataDesktopView {
                                 .flex_col()
                                 .child(section_header(
                                     "art-top-h",
-                                    "Top songs",
+                                    s.top_songs,
                                     None,
                                     None,
                                     &self.palette,
@@ -322,7 +323,7 @@ impl SonataDesktopView {
                                 .flex_col()
                                 .child(section_header(
                                     "art-lik-h",
-                                    "You Liked",
+                                    s.you_liked,
                                     None,
                                     None,
                                     &self.palette,
@@ -337,7 +338,7 @@ impl SonataDesktopView {
                         .flex_col()
                         .child(section_header(
                             "art-top-h",
-                            "Top songs",
+                            s.top_songs,
                             None,
                             None,
                             &self.palette,
@@ -363,7 +364,7 @@ impl SonataDesktopView {
                     .flex_col()
                     .child(section_header(
                         "art-rel-h",
-                        "Releases",
+                        s.releases,
                         None,
                         None,
                         &self.palette,
@@ -383,7 +384,7 @@ impl SonataDesktopView {
                     .flex_col()
                     .child(section_header(
                         "art-sim-h",
-                        "Fans might also like",
+                        s.fans_might_like,
                         None,
                         None,
                         &self.palette,

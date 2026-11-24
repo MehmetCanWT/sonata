@@ -242,12 +242,14 @@ impl CacheDb {
 
     /// Clears all persisted synced/plain lyrics from SQLite enrichment and on-disk `.lrc`/`.txt` files.
     pub fn clear_lyrics_cache(&self) {
-        let guard = self.lock_conn();
-        if let Err(error) = guard.execute(
-            "UPDATE track_enrichment SET synced_lyrics = NULL, plain_lyrics = NULL, lyrics_status = 'NONE'",
-            [],
-        ) {
-            tracing::warn!("[sonata:cache] lyrics-clear failed error={error}");
+        {
+            let guard = self.lock_conn();
+            if let Err(error) = guard.execute(
+                "UPDATE track_enrichment SET synced_lyrics = NULL, plain_lyrics = NULL, lyrics_status = 'NONE'",
+                [],
+            ) {
+                tracing::warn!("[sonata:cache] lyrics-clear failed error={error}");
+            }
         }
         let _ = std::fs::remove_dir_all(&self.lyrics_cache_dir);
     }

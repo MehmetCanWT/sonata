@@ -814,6 +814,21 @@ impl SonataDesktopView {
                                                     })),
                                             )
                                             .child(
+                                                Button::new("fs-autoplay")
+                                                    .ghost()
+                                                    .small()
+                                                    .icon(IconName::Infinity)
+                                                    .text_color(if self.snapshot.autoplay {
+                                                        gpui_kit::white()
+                                                    } else {
+                                                        gpui_kit::white().opacity(0.54)
+                                                    })
+                                                    .on_click(cx.listener(|this, _, _, _| {
+                                                        this.backend
+                                                            .send(BackendCmd::ToggleAutoplay);
+                                                    })),
+                                            )
+                                            .child(
                                                 Button::new("fs-like")
                                                     .ghost()
                                                     .small()
@@ -837,7 +852,7 @@ impl SonataDesktopView {
             div()
                 .text_size(px(18.0))
                 .text_color(gpui_kit::white().opacity(0.52))
-                .child("Nothing playing")
+                .child(sonata_runtime::i18n::strings(self.settings.language).nothing_playing)
         };
 
         let left_column = div()
@@ -1546,7 +1561,7 @@ impl SonataDesktopView {
                 .justify_center()
                 .text_size(px(17.0))
                 .text_color(gpui_kit::white().opacity(0.40))
-                .child("No lyrics available for this track")
+                .child(sonata_runtime::i18n::strings(self.settings.language).no_lyrics_found)
                 .into_any_element(),
         };
 

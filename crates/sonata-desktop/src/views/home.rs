@@ -7,6 +7,7 @@
 use super::{ContextMenuKind, ContextMenuState, SonataDesktopView};
 use crate::backend::{BackendCmd, MoodChip};
 use crate::settings::{ART_SIZE, CARD_STRETCH_MAX, CARD_W, PAGE_INSET_X, ROW_HEIGHT};
+use crate::theme::ramp::{hsla_from_rgb, Rgb};
 use crate::ui::components::{
     artist_links_row, cover_art_tile, delayed_skeleton_block, explicit_badge, mood_art_tile,
     scroll_edge_fades, section_header, wide_thumb_tile,
@@ -95,7 +96,13 @@ impl SonataDesktopView {
                             };
                             this.backend.send(BackendCmd::SelectHomeChip(next));
                         }))
-                        .child(chip.label.clone())
+                        .child(
+                            sonata_runtime::i18n::localize_mood_title(
+                                self.settings.language,
+                                &chip.label,
+                            )
+                            .into_owned(),
+                        )
                         .when(is_sel, |c| c.child(Icon::new(IconName::X).size(px(13.0)))),
                 );
             }
@@ -124,7 +131,7 @@ impl SonataDesktopView {
                         Button::new("home-retry")
                             .primary()
                             .small()
-                            .label("Retry")
+                            .label(sonata_runtime::i18n::strings(self.settings.language).retry)
                             .on_click(cx.listener(|this, _, _, _| {
                                 this.backend.send(BackendCmd::RefreshHome);
                             })),
@@ -158,9 +165,83 @@ impl SonataDesktopView {
                 );
             }
         } else {
+            let s = sonata_runtime::i18n::strings(self.settings.language);
+            if active_chip.is_none() {
+                // Recently Played shelf
+                let mut recent_seen = std::collections::HashSet::new();
+                let recent_cards: Vec<HomeCard> = self
+                    .snapshot
+                    .last_played_tracks
+                    .iter()
+                    .chain(self.snapshot.history_tracks.iter())
+                    .filter(|t| !t.id.is_empty() && recent_seen.insert(t.id.clone()))
+                    .take(12)
+                    .map(|t| HomeCard {
+                        kind: HomeCardKind::Song,
+                        id: t.id.clone(),
+                        title: t.title.clone(),
+                        subtitle: t.artist.clone(),
+                        thumbnail_url: t.thumbnail_url.clone(),
+                        track: Some(t.clone()),
+                    })
+                    .collect();
+                if !recent_cards.is_empty() {
+                    page = page.child(self.render_cards_shelf(
+                        "home-recent",
+                        HomeShelf {
+                            title: s.recently_played.to_string(),
+                            tracks: Vec::new(),
+                            cards: recent_cards,
+                        },
+                        content_w,
+                        cx,
+                    ));
+                }
+
+                // Pinned collections shelf directly beneath Recently Played
+                if !self.settings.pinned_collections.is_empty() {
+                    let pinned_cards: Vec<HomeCard> = self
+                        .settings
+                        .pinned_collections
+                        .iter()
+                        .map(|p| HomeCard {
+                            kind: if p.is_album {
+                                HomeCardKind::Album
+                            } else {
+                                HomeCardKind::Playlist
+                            },
+                            id: p.id.clone(),
+                            title: p.title.clone(),
+                            subtitle: p.subtitle.clone(),
+                            thumbnail_url: p.thumbnail_url.clone(),
+                            track: None,
+                        })
+                        .collect();
+                    page = page.child(self.render_cards_shelf(
+                        "home-pinned",
+                        HomeShelf {
+                            title: s.pinned.to_string(),
+                            tracks: Vec::new(),
+                            cards: pinned_cards,
+                        },
+                        content_w,
+                        cx,
+                    ));
+                }
+            }
+
+            let mut rendered_shelves = 0usize;
+            let mut rendered_moods = false;
+            let home_mood_tiles = self.snapshot.mood_tiles.clone();
             for (s_idx, shelf) in shelves.into_iter().enumerate() {
+                if !shelf.cards.is_empty()
+                    && shelf.cards.iter().all(|c| c.kind == HomeCardKind::Mood)
+                {
+                    continue;
+                }
                 if !shelf.tracks.is_empty() && shelf.cards.is_empty() {
                     page = page.child(self.render_quick_picks_shelf(s_idx, shelf, content_w, cx));
+                    rendered_shelves += 1;
                 } else if !shelf.cards.is_empty() {
                     page = page.child(self.render_cards_shelf(
                         &format!("home-sh-{s_idx}"),
@@ -168,7 +249,19 @@ impl SonataDesktopView {
                         content_w,
                         cx,
                     ));
+                    rendered_shelves += 1;
                 }
+                if !rendered_moods
+                    && rendered_shelves == 1
+                    && active_chip.is_none()
+                    && !home_mood_tiles.is_empty()
+                {
+                    rendered_moods = true;
+                    page = page.child(self.render_home_mood_tiles_section(&home_mood_tiles, cx));
+                }
+            }
+            if !rendered_moods && active_chip.is_none() && !home_mood_tiles.is_empty() {
+                page = page.child(self.render_home_mood_tiles_section(&home_mood_tiles, cx));
             }
         }
 
@@ -188,6 +281,78 @@ impl SonataDesktopView {
                 &self.palette,
                 scroll_fades,
             ))
+            .into_any_element()
+    }
+
+    fn render_home_mood_tiles_section(
+        &mut self,
+        mood_tiles: &[crate::backend::MoodCategoryTile],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let s = sonata_runtime::i18n::strings(self.settings.language);
+        let mut tiles_grid = div().flex().flex_row().flex_wrap().gap(px(10.0));
+        for (i, tile) in mood_tiles.iter().take(12).enumerate() {
+            let stripe = hsla_from_rgb(
+                Rgb::from_u8(tile.accent_rgb.0, tile.accent_rgb.1, tile.accent_rgb.2),
+                1.0,
+            );
+            let title_raw = tile.title.clone();
+            let display_title =
+                sonata_runtime::i18n::localize_mood_title(self.settings.language, &title_raw)
+                    .into_owned();
+            let browse_id = tile.browse_id.clone();
+            let params = tile.params.clone();
+            tiles_grid = tiles_grid.child(
+                div()
+                    .id(SharedString::from(format!("home-mood-tile-{i}")))
+                    .w(px(164.0))
+                    .h(px(44.0))
+                    .rounded(px(self.palette.radii.item))
+                    .bg(self.palette.surface)
+                    .hover(|st| st.bg(self.palette.surface_hover))
+                    .overflow_hidden()
+                    .cursor_pointer()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.fullscreen_open = false;
+                        this.backend.send(BackendCmd::OpenMoodCategory {
+                            title: display_title.clone(),
+                            browse_id: browse_id.clone(),
+                            params: params.clone(),
+                        });
+                        cx.notify();
+                    }))
+                    .child(div().w(px(6.0)).h_full().bg(stripe))
+                    .child(
+                        div()
+                            .px(px(12.0))
+                            .text_size(px(13.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(self.palette.text)
+                            .truncate()
+                            .child(
+                                sonata_runtime::i18n::localize_mood_title(
+                                    self.settings.language,
+                                    &tile.title,
+                                )
+                                .into_owned(),
+                            ),
+                    ),
+            );
+        }
+        div()
+            .flex()
+            .flex_col()
+            .child(section_header(
+                "home-moods",
+                s.find_your_mood,
+                None,
+                None,
+                &self.palette,
+            ))
+            .child(tiles_grid)
             .into_any_element()
     }
 
@@ -214,10 +379,13 @@ impl SonataDesktopView {
             .map(|t| t.id.clone())
             .unwrap_or_default();
 
+        let s = sonata_runtime::i18n::strings(self.settings.language);
+        let localized_title =
+            sonata_runtime::i18n::localize_shelf_title(self.settings.language, &shelf.title);
         let header = section_header(
             &format!("qp-{shelf_idx}"),
-            &shelf.title,
-            Some("START RADIO FROM A SONG"),
+            &localized_title,
+            Some(s.start_radio),
             Some(Rc::new({
                 let b = self.backend.clone();
                 let sh = show_all_shelf;
@@ -427,9 +595,11 @@ impl SonataDesktopView {
 
         let show_all_shelf = shelf.clone();
         let has_more = shelf.cards.len() > max_cards;
+        let localized_title =
+            sonata_runtime::i18n::localize_shelf_title(self.settings.language, &shelf.title);
         let header = section_header(
             id_prefix,
-            &shelf.title,
+            &localized_title,
             None,
             if has_more || shelf.cards.len() >= 4 {
                 Some(Rc::new({
@@ -944,7 +1114,8 @@ fn trigger_card_action(backend: &crate::backend::BackendHandle, card: &HomeCard)
             artist: card.subtitle.clone(),
             thumbnail_url: card.thumbnail_url.clone(),
         }),
-        HomeCardKind::Mood | HomeCardKind::Playlist => backend.send(BackendCmd::OpenCollection {
+        HomeCardKind::Mood => backend.send(BackendCmd::OpenMoodByTitle(card.title.clone())),
+        HomeCardKind::Playlist => backend.send(BackendCmd::OpenCollection {
             id: card.id.clone(),
             title: card.title.clone(),
             subtitle: card.subtitle.clone(),

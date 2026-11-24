@@ -5,7 +5,7 @@
 ## 1. Zero Telemetry, Ads, or Tracking SDKs
 
 - Sonata collects **zero** analytics, behavioral telemetry, crash logs, advertising IDs, or device identifiers.
-- Android builds omit Google Play Services, Firebase, ad SDKs, encrypted dependency metadata (`dependenciesInfo` disabled for reproducible builds), and `REQUEST_INSTALL_PACKAGES` (update downloads save APK files via system downloads or external browser without automatic install prompts).
+- Android builds omit Google Play Services, Firebase, ad SDKs, and encrypted dependency metadata (`dependenciesInfo` disabled for reproducible builds). `REQUEST_INSTALL_PACKAGES` is declared solely so users who explicitly tap **Download & Install** on an in-app GitHub Releases update prompt (`ApkUpdater.kt`) can launch Android's system `PackageInstaller` for the downloaded APK via scoped `FileProvider`.
 - All network communication goes directly from your device to the third-party music, lyrics, artwork, or release hosts you interact with.
 
 ## 2. Authentication & Session Cookies
@@ -21,7 +21,7 @@ Depending on your enabled features and optional modules, Sonata sends direct HTT
 - **Music Catalog, Playback & Listening History**:
   - **YouTube Music (`music.youtube.com`, Google Video CDNs)**: Search, Home/Explore/Radio feeds, Library playlists, Artist pages, stream resolution (`TVHTML5` / `WEB_REMIX`), likes, playlist management, and—when signed in—`report_playback` watchtime reporting so your Listening History (`FEmusic_history`) and yearly YouTube Music Replay stay updated (including resolved YouTube Music matches when audio streams come via JioSaavn).
   - **Spotify (`open.spotify.com`)**: Public embed playlists (no login needed) or optional `sp_dc` user library access; tracks resolve against YouTube audio sources.
-  - **JioSaavn (`jiosaavn.com`, opt-in module, default OFF)**: Only queried when explicitly enabled under *Settings -> Modules* to locate higher-bitrate AAC streams.
+  - **JioSaavn (`jiosaavn.com`, opt-in module, default OFF)**: Only queried when explicitly enabled under *Settings → Audio Quality* (or *Settings → Downloads → Include JioSaavn* on Android, and Settings on Desktop & Terminal) to locate higher-bitrate AAC streams.
 - **Lyrics Providers**: `lrc.red`, BetterLyrics, LyricsPlus v2, Apple Music TTML catalogue proxy (`lyrics-api.binimum.org`), LRCLIB (`lrclib.net`), KuGou (`kugou.com`), NetEase (`music.163.com`), QQ Music (`c.y.qq.com`), YouTube Music native lyrics, and Genius (`genius.com`). Optional Android lyrics translation uses local or device-initiated translation lookups only when requested.
 - **Artwork & Motion Covers (Canvas)**: Apple Music HLS (`editorialVideo`), Tidal, community Canvas manifests, Deezer (`api.deezer.com`), iTunes Search (`itunes.apple.com`), and provider CDNs.
 - **Release Checks**: GitHub Releases API (`api.github.com/repos/MehmetCanWT/sonata/releases`) when checking for Sonata app updates (can be ignored/dismissed at any time).
@@ -33,9 +33,9 @@ Each third-party service is governed by its own privacy policy when your device 
 - **Linux Config & Cache**:
   - Configuration and TOML themes: `~/.config/sonata/` (`config.toml`, `themes/*.toml`).
   - Media, artwork, lyrics, and SQLite WAL metadata cache: `~/.cache/sonata/`, bounded by your configured cache limit (or cleared when cache is turned off).
-  - Diagnostics log: `~/.cache/sonata/sonata.log` (capped at 10 MiB at startup, `0o600` permissions) with URLs, cookies, and `Authorization` / `SAPISID` / `sp_dc` values scrubbed via `sonata_core::redaction`.
+  - Diagnostics logs: `~/.cache/sonata/sonata.log` for Desktop/runtime (capped at 10 MiB at startup, `0o600` permissions) with URLs, cookies, and `Authorization` / `SAPISID` / `sp_dc` values scrubbed via `sonata_core::redaction`, plus `~/.cache/sonata/sonata-tui.log` for Terminal stderr diagnostics (capped at 2 MiB at startup).
   - Local integrations: `$XDG_RUNTIME_DIR/sonata/now_playing.json` (or `~/.cache/sonata/now_playing.json`) for local bars/widgets like Waybar/Hyprlock (removed on clean exit) and session D-Bus MPRIS2 (`org.mpris.MediaPlayer2.sonata`).
-- **Android Local Storage, Offline Library & Share Cards**:
-  - Preferences, offline downloads, and local playlists stay inside private app storage (unless you explicitly save a share card image to `Pictures/Sonata` or export downloaded audio via MediaStore).
+- **Android Local Storage, Offline Library, Updates & Share Cards**:
+  - Preferences, offline downloads, and local playlists stay inside private app storage (unless you explicitly save a share card image to `Pictures/Sonata` or export downloaded audio via MediaStore). User-initiated app updates temporarily download `Sonata-v<version>-arm64.apk` into app-private `cacheDir/updates/`.
   - JSON settings backup/restore (`SonataPreferences`) excludes all authentication cookies and session tokens.
   - Visual Share Sheet renders PNG cards locally on-device using Android Canvas and shares via scoped `androidx.core.content.FileProvider` URIs only when you tap **Share Link**, **Share Image**, or **Save Image**.

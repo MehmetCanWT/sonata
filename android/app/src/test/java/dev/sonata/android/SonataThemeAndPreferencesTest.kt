@@ -95,7 +95,7 @@ class SonataThemeAndPreferencesTest {
         assertEquals("Flat", clean.eqPreset)
         assertEquals(listOf(-12f, 0f, 3.5f, 12f, 0f), clean.eqBandsDb)
         assertEquals("tr", clean.lyricsTranslationLang)
-        assertEquals(-5_000L, clean.lyricsOffsetMs)
+        assertEquals(-30_000L, clean.lyricsOffsetMs)
 
         val slow = SonataPreferences.sanitize(
             SonataSettingsState(
@@ -103,14 +103,14 @@ class SonataThemeAndPreferencesTest {
                 crossfadeSeconds = 0,
                 playbackSpeed = Float.POSITIVE_INFINITY,
                 lyricsTranslationLang = " ",
-                lyricsOffsetMs = 15_000L,
+                lyricsOffsetMs = 45_000L,
             ),
         )
         assertEquals(60, slow.fpsLimit)
         assertEquals(1, slow.crossfadeSeconds)
         assertEquals(1.0f, slow.playbackSpeed, 0.001f)
         assertEquals("en", slow.lyricsTranslationLang)
-        assertEquals(5_000L, slow.lyricsOffsetMs)
+        assertEquals(30_000L, slow.lyricsOffsetMs)
     }
 
     @Test
@@ -136,7 +136,7 @@ class SonataThemeAndPreferencesTest {
             ),
         )
         assertTrue(encodedOffsets.contains("\"vid_ok\":750"))
-        assertTrue(encodedOffsets.contains("\"vid_high\":5000"))
+        assertTrue(encodedOffsets.contains("\"vid_high\":30000"))
         assertFalse(encodedOffsets.contains("vid_zero"))
     }
 
@@ -331,5 +331,59 @@ class SonataThemeAndPreferencesTest {
         assertFalse(dev.sonata.android.ui.components.isEditableUserPlaylist("MPREb_album123", signedIn = true))
         assertFalse(dev.sonata.android.ui.components.isEditableUserPlaylist("RDCLAK5uy_mix", signedIn = true))
         assertFalse(dev.sonata.android.ui.components.isEditableUserPlaylist(null, signedIn = true))
+    }
+
+    @Test
+    fun shuffleAndRepeatPersistenceSanitizationAndLocalizedShelvesWork() {
+        val defaults = SonataSettingsState()
+        assertFalse(defaults.shuffleEnabled)
+        assertEquals(0, defaults.repeatMode)
+
+        assertEquals(0, SonataPreferences.sanitize(defaults.copy(repeatMode = -2)).repeatMode)
+        assertEquals(2, SonataPreferences.sanitize(defaults.copy(repeatMode = 9)).repeatMode)
+
+        val persisted = SonataSettingsState(shuffleEnabled = true, repeatMode = 2)
+        val backup = SonataPreferences.formatBackupJson(persisted, emptyMap(), 1_700_000_000_000L)
+        assertTrue(backup.contains("\"shuffle_enabled\": true"))
+        assertTrue(backup.contains("\"repeat_mode\": 2"))
+
+        val tr = dev.sonata.android.ui.i18n.TurkishSonataStrings
+        val ru = dev.sonata.android.ui.i18n.RussianSonataStrings
+        assertEquals(tr.quickPicks, dev.sonata.android.ui.i18n.localizeShelfTitle("Quick picks", tr))
+        assertEquals(ru.newReleases, dev.sonata.android.ui.i18n.localizeShelfTitle("New Releases", ru))
+        assertEquals("Custom Editorial Shelf", dev.sonata.android.ui.i18n.localizeShelfTitle("Custom Editorial Shelf", tr))
+        assertEquals(tr.moodWorkout, dev.sonata.android.ui.i18n.localizeMoodTitle("Workout", tr))
+        assertEquals(ru.moodFocus, dev.sonata.android.ui.i18n.localizeMoodTitle("Focus", ru))
+        assertFalse(defaults.suppressVideoAudioQualityWarning)
+        assertEquals(dev.sonata.android.data.VideoQualityPreference.AUTO, defaults.videoQuality)
+
+        val withVideoPrefs = defaults.copy(
+            suppressVideoAudioQualityWarning = true,
+            videoQuality = dev.sonata.android.data.VideoQualityPreference.P720,
+        )
+        val videoBackup = SonataPreferences.formatBackupJson(withVideoPrefs, emptyMap(), 1_700_000_000_000L)
+        assertTrue(videoBackup.contains("\"suppress_video_audio_warning\": true"))
+        assertTrue(videoBackup.contains("\"video_quality\": \"P720\""))
+
+        assertFalse(defaults.downloadVideosIfAvailable)
+        assertEquals(
+            dev.sonata.android.data.VideoDownloadQuality.P720,
+            defaults.videoDownloadQuality,
+        )
+        assertEquals(
+            dev.sonata.android.data.VideoQualityPreference.P1080,
+            dev.sonata.android.data.VideoDownloadQuality.P1080.toVideoQualityPreference(),
+        )
+        assertEquals(
+            dev.sonata.android.data.VideoQualityPreference.P360,
+            dev.sonata.android.data.VideoDownloadQuality.P360.toVideoQualityPreference(),
+        )
+        val withVideoDownloadPrefs = defaults.copy(
+            downloadVideosIfAvailable = true,
+            videoDownloadQuality = dev.sonata.android.data.VideoDownloadQuality.P1080,
+        )
+        val dlBackup = SonataPreferences.formatBackupJson(withVideoDownloadPrefs, emptyMap(), 1_700_000_000_000L)
+        assertTrue(dlBackup.contains("\"download_videos_if_available\": true"))
+        assertTrue(dlBackup.contains("\"video_download_quality\": \"P1080\""))
     }
 }

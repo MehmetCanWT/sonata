@@ -6,8 +6,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.7] - 2026-11-24
+
 ### Added
 
+- **Desktop Feature Parity: Find Your Mood on Home, Playlist Pinning, Add-to-Library (`+`), Live Refresh & Proactive Personalized Autoplay (`sonata-runtime`, `sonata-desktop`)**:
+  - Added **Recently Played**, **Pinned**, and **Find Your Mood** shelves directly on Desktop Home, localized mood chips and tiles (`localize_mood_title`), and rendered both track and card shelves inside `MoodCategory` pages.
+  - Enforced playlist ownership (`is_owned`) across Library, Sidebar, and Playlist detail views: non-owned playlists hide Edit controls and display a `+` / `✓` Add-to-Library action synced with YouTube Music (`set_playlist_saved`), plus Pin/Unpin support that promotes pinned playlists to the top of Library/Sidebar and Home.
+  - Live-refreshed opened playlists in the background so creator edits appear immediately, updated Liked Music (`VLLM`) cover art from the latest liked song, and added listener artist-affinity ranking + proactive endless autoplay prefetching (`fetch_endless_radio_queue`) for seamless queue continuation.
+
+- **Optional Now Playing Music/Video Mode, Quality Selector, Offline Video Downloads & Fullscreen Video (`sonata-core`, `sonata-android`, `android`)**:
+  - Detected official/counterpart YouTube Music videos (`resolve_music_video_candidate` / `parse_music_video_counterpart_json`) and adaptive/muxed video formats (`resolve_music_video_streams`) in `sonata-core` + UniFFI.
+  - Added a top **Music / Video** mode toggle inside `NowPlayingScreen` whenever a track has an available music video, with a dismissible audio-quality drop warning dialog (`"Do not show again"` persisted in `SonataPreferences`), selectable video resolution (`Auto`, `1080p`, `720p`, `480p`, `360p`), and an immersive landscape fullscreen video overlay (`FullscreenMusicVideoOverlay`) with stable tap-to-toggle overlay controls.
+  - Added **Download videos if available** (`downloadVideosIfAvailable`) and **Video Download Quality** (`1080p` / `720p` / `480p` / `360p`) under Downloads settings with offline companion video storage in `SonataDownloadManager` and offline Video mode playback.
+  - Synchronized Music/Video switches and Video-mode lyrics timelines via YouTube Music `segmentMap` and SponsorBlock `music_offtopic` segments, widened manual per-mode lyric offset to `±30s`, disabled `skipSilenceEnabled` during Video playback, and fixed `CanvasVideoSurface` animated artwork resuming when switching back to Music mode.
+
+- **Playlist Pinning, External Add-to-Library (`+`) & Live Collection Refresh (`sonata-core`, `sonata-android`, `android`)**:
+  - Added collection/playlist pinning for owned and external playlists, Liked Music, and Downloads, automatically placing pinned items at the top of Library and in a new **Pinned** (`Sabitlenenler`) shelf directly beneath Last Played on Home.
+  - Detected YouTube Music playlist ownership from InnerTube metadata (`Playlist.is_owned`) so non-owned playlists hide the Edit button and instead display a `+` / `✓` Add-to-Library action (persisted locally and synced via `like/like` / `like/removelike` when signed in).
+  - Bypassed the 5-minute playlist cache (`fetch_collection_tracks_fresh`) whenever opening a playlist so creator updates (added or removed tracks and cover art) immediately appear.
+
+- **YouTube Music Moods, Genres & Dynamic Feed Language (`sonata-core`, `sonata-runtime`, `sonata-desktop`, `sonata-tui`, `sonata-android`, `android`)**:
+  - Propagated active UI language (`en`/`tr`/`ru`) dynamically to YouTube Music `hl` context, `Accept-Language`, and playback telemetry URLs, clearing cached artist/playlist metadata on language switch.
+  - Exported `fetch_explore_feed`, `fetch_mood_category`, `fetch_home_mood_chips`, and `fetch_home_mood_feed` over UniFFI (`AndroidMoodChip`, `AndroidMoodCategory`, `AndroidExploreFeed`) and wired live Home mood filter chips, dynamic Moods & Genres tiles, and a dedicated `MoodCategoryScreen` browse view.
+  - Expanded shelf and section localization (`localizeShelfTitle`, `localizeMoodTitle`) and multilingual (`en`/`tr`/`ru`) shelf classification across Home, Explore, Radio, Artist, and Detail views, plus wired `artworkTintedPages` across Detail and Artist screens.
+
+- **Personalized Recommendations, Endless Radio Continuation & Persisted Playback Modes (`sonata-core`, `sonata-runtime`, `sonata-desktop`, `sonata-tui`, `sonata-android`, `android`)**:
+  - Added multi-seed personalized `fetch_endless_radio_queue` with `AUTOMIX_SETTING_NORMAL` / persistent playlist panel support, playlist automix continuation (`RDAMPL`), listener artist-affinity weighting, and diversity-balanced ranking (deduplication, non-music suppression, and consecutive/sliding-window artist limits) exported to Desktop, TUI, and Android.
+  - Upgraded Android Home, Explore, and Radio recommendations (artist-affinity Top Picks, Trending & Viral scoring, recency-weighted Artist Stations, Discovery & Personal station launches, and `BasicExploreScreen` personalized picks) plus proactive endless continuation prefetching.
+  - Persisted endless playback (`autoplay`), `shuffle`, and `repeat` modes across restarts across Desktop/TUI (`AppConfig`) and Android (`SonataPreferences`, excluding secrets from backup, clamping restored repeat mode).
+- **Complete Localization (`en`, `tr`, `ru`) & Adaptive Tab Bar Labels (`sonata-runtime`, `sonata-desktop`, `sonata-tui`, `android`)**:
+  - Extended `sonata-runtime::i18n` and Android `SonataStrings` (`en`/`tr`/`ru`), including shelf and mood title localization (`localize_shelf_title` / `localizeShelfTitle`, `localizeMoodTitle`), across Settings, Home, Explore, Radio, Library, Search, Artist, Downloads, Now Playing, context menus, share sheets, and ViewModel status messages.
+  - Added adaptive density-capped auto-shrinking labels (`NavTabLabel`) and adjusted tab bar insets in `SonataNavigationChrome` / `FloatingTabBar` to eliminate horizontal text clipping on longer Turkish and Russian navigation labels.
 - **Multilingual Localization (`en`, `tr`, `ru`) Across All Clients**: Added English, Turkish, and Russian UI translations across Android (`AppLanguage.SYSTEM` default following device locale), Desktop, and TUI (`AppLanguage::En` default) with live language switching in Settings.
 - **YouTube Music Playlist Editing & Custom Cover Sync (`sonata-core`, `sonata-desktop`, `sonata-android`, `android`)**: Added playlist rename, description/privacy updates (`browse/edit_playlist`), and custom cover image upload (3-step resumable upload + `ACTION_SET_CUSTOM_THUMBNAIL`) synced directly to the signed-in YouTube Music account on both Desktop and Android.
 - **Android In-App APK Auto-Download & Installer (`android`)**: Added automatic arm64 APK download into `cacheDir/updates/` with immediate Android PackageInstaller launch (`FileProvider` + `REQUEST_INSTALL_PACKAGES` permission prompt fallback) from the Update Available dialog.
@@ -15,6 +45,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Desktop Mood Category Routing & Instant Thumbnail Cache Refresh (`sonata-desktop`)**: Routed `HomeCardKind::Mood` clicks through `OpenMoodByTitle` (`mood_tiles` -> `home_chips` -> `search_rich` fallback) while filtering legacy mood-only shelves, prioritized active detail-page fetches via `prefetch_thumbnails_urgent`, and bumped `thumb_rev` on `ThumbnailsReady` so `MediaCache::clear_missing` immediately invalidates negative cache entries and increases `MAX_CONCURRENT_DECODES` to `16`.
+- **Android Library Downloads, Gestures & Smooth Scrim Gradients (`android`)**:
+  - Removed the duplicate Downloads manager row in Library and updated the Downloads playlist grid card to display clean full-bleed album artwork from the most recently downloaded song (falling back to the Downloads gradient icon when no cover is available).
+  - Fixed `ThinSlider` drag gesture handling with `rememberUpdatedState`, zero-width layout guards, and `try/finally` finish-callback cleanup, and updated `FloatingTabBar` horizontal drag gestures to read `rememberUpdatedState(tabs)`.
+  - Replaced `Color.Transparent` gradient stops across UI cards, overlays, and artwork scrims with smoothstep-eased `smoothScrimBrush` / `artworkScrimBrush` and RGB-matched zero-alpha stops to eliminate mid-fade banding.
+- **README Download Badge (`README.md`)**: Removed the duplicate lower Android download badge under `# Download` while retaining the top hero badge.
 - **Desktop Player Bar Alignment & Collection Header Spacing (`sonata-desktop`)**: Aligned bottom player bar action icons, explicit badge, and volume controls onto a consistent centerline; fixed playlist/album header artwork wash fill and top tracklist spacing so tracks never overlap the cover header.
 - **TUI 60 FPS Spring Lyrics Scroll & Luminous Wave (`sonata-tui`)**: Added critically damped spring scroll and upward luminous `tachyonfx` sweep transitions for synced lyrics.
 

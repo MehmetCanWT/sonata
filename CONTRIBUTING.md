@@ -6,12 +6,13 @@ Thank you for your interest in contributing to **Sonata**!
 
 - **Primary language**: All code, comments, module headers, documentation, UI strings, and logs must be written in **English**.
 - **Workspace boundaries**:
-  - Shared engine logic belongs in `crates/sonata-core` (no UI dependencies).
+  - Shared portable engine logic belongs in `crates/sonata-core` (no UI dependencies, no subprocesses, no Linux-only crates).
+  - Shared Linux runtime adapters (`mpv`, `yt-dlp`, `ffmpeg`, CLI JS cipher, browser cookies, XDG config, `i18n`, telemetry) belong in `crates/sonata-runtime`.
   - Terminal client lives in `crates/sonata-tui` (`sonata`).
   - Wayland desktop client lives in `crates/sonata-desktop` (`sonata-desktop`).
   - UniFFI Android bridge lives in `crates/sonata-android`, and the Kotlin/Jetpack Compose client lives in `android/`.
 - **Module headers**: Every Rust source file (`*.rs`) must begin with a `//!` overview and numbered component breakdown (see [AGENTS.md](AGENTS.md)).
-- **Theme & UI parity (Android)**: Keep both **`Violet`** and **`Moonflower`** themes (Light, Dark, and AMOLED modes) structurally distinct and verify translucent **Liquid Glass** chrome across portrait and landscape form factors.
+- **Theme & localization parity**: Keep Android **`Basic`** (default), **`Violet`**, and **`Moonflower`** themes (Light, Dark, and AMOLED modes) structurally distinct with neutral **Liquid Glass** chrome across portrait and landscape form factors, and keep `en`/`tr`/`ru` UI strings in sync across `crates/sonata-runtime/src/i18n.rs` and `android/app/src/main/java/dev/sonata/android/ui/i18n/SonataStrings.kt`.
 - **Security**: Create cookie/auth files with `0o600` permissions, private cache/runtime directories with `0o700`, keep secrets out of settings backups, and scrub URLs/tokens through `sonata_core::redaction` before logging.
 
 ## Development Setup
@@ -37,7 +38,7 @@ Building and testing the Android app locally requires **JDK 21**, **Android SDK 
 
 ```sh
 rustup target add aarch64-linux-android
-cargo ndk -t arm64-v8a -P 26 -o android/app/src/main/jniLibs build -p sonata-android --release --locked
+cargo ndk -t arm64-v8a -P 31 -o android/app/src/main/jniLibs build -p sonata-android --release --locked
 
 cd android
 ./gradlew testDebugUnitTest --console=plain
@@ -45,17 +46,19 @@ cd android
 ```
 
 > [!NOTE]
-> If you change `#[uniffi::export]` APIs or records in `crates/sonata-android/src/lib.rs`, regenerate Kotlin bindings from an unstripped debug cdylib (`cargo build -p sonata-android --locked`) into `android/app/src/main/java/uniffi/sonata_android/sonata_android.kt` before building Android.
+> If you change `#[uniffi::export]` APIs or records in `crates/sonata-android/src/lib.rs`, regenerate Kotlin bindings from an unstripped debug cdylib (`cargo build --locked -p sonata-android --lib`) into `android/app/src/main/java/uniffi/sonata_android/sonata_android.kt` before building Android.
 
 ## Verification Before Opening a Pull Request
 
-All pull requests must pass formatting, workspace checks, Clippy with zero warnings, and all unit tests (Rust + Android JVM when touching `android/` or `crates/sonata-android`):
+All pull requests must pass boundary checks, formatting, workspace checks, Clippy with zero warnings, all unit tests (Rust + Android JVM when touching `android/` or `crates/sonata-android`), and UniFFI binding drift verification:
 
 ```sh
+./scripts/check_boundaries.sh
 cargo fmt --all -- --check
 cargo check --workspace --all-targets --message-format=short
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo test --offline -p sonata-core -p sonata-desktop -p sonata-tui -p sonata-android
+cargo test --offline -p sonata-core -p sonata-runtime -p sonata-desktop -p sonata-tui -p sonata-android
+cargo build --locked -p sonata-android --lib && cargo run --locked -p sonata-android --bin uniffi-bindgen -- generate --no-format --library target/debug/libsonata_android.so --language kotlin --out-dir /tmp/uniffi-check && diff -u android/app/src/main/java/uniffi/sonata_android/sonata_android.kt /tmp/uniffi-check/uniffi/sonata_android/sonata_android.kt
 cd android && ./gradlew testDebugUnitTest --console=plain
 ```
 

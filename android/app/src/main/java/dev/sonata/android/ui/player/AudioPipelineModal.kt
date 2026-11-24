@@ -41,6 +41,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.sonata.android.data.AudioPipelineInfo
+import dev.sonata.android.ui.i18n.LocalSonataStrings
+import dev.sonata.android.ui.i18n.RussianSonataStrings
+import dev.sonata.android.ui.i18n.SonataStrings
+import dev.sonata.android.ui.i18n.TurkishSonataStrings
 import dev.sonata.android.ui.theme.LocalLunariaColors
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -96,9 +100,10 @@ fun AudioPipelineModal(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                val strings = LocalSonataStrings.current
                 Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
                     Text(
-                        text = "Audio Signal Chain",
+                        text = strings.audioPipeline,
                         style = MaterialTheme.typography.titleLarge.copy(
                             fontSize = 22.sp,
                             fontWeight = FontWeight.Bold,
@@ -107,13 +112,17 @@ fun AudioPipelineModal(
                     )
                     Spacer(Modifier.height(2.dp))
                     Text(
-                        text = "Live 4-stage playback telemetry",
+                        text = strings.audioPipelineSubtitle,
                         style = MaterialTheme.typography.bodySmall,
                         color = themeTokens.onSurfaceSecondary,
                     )
                 }
                 StatusBadge(
-                    label = if (info.isBitTransparentDsp) "Bypassed" else "DSP Active",
+                    label = if (info.isBitTransparentDsp) {
+                        localizedBypassedLabel(strings)
+                    } else {
+                        localizedDspActiveLabel(strings)
+                    },
                     highlighted = !info.isBitTransparentDsp,
                     accent = if (info.isBitTransparentDsp) mistAccent else activeAccent,
                 )
@@ -121,51 +130,58 @@ fun AudioPipelineModal(
 
             Spacer(Modifier.height(2.dp))
 
+            val strings = LocalSonataStrings.current
             // Stage 1: Source
             val deliveryTag = when {
-                info.fromOfflineDownload -> "Offline Download"
-                info.fromCache -> "Disk Cache"
-                else -> "Network Stream"
+                info.fromOfflineDownload -> strings.offlineLabel
+                info.fromCache -> strings.done
+                else -> strings.liveStream
             }
             PipelineStageCard(
                 step = "1",
-                title = "Source",
-                primary = info.sourceLabel.ifBlank { "YouTube Music Stream" },
+                title = strings.audioPipelineSource,
+                primary = localizePipelineSourceLabel(
+                    info.sourceLabel.ifBlank { "YouTube Music" },
+                    strings,
+                ),
                 secondary = deliveryTag,
-                badgeLabel = if (info.fromOfflineDownload || info.fromCache) "Cached" else "Live",
+                badgeLabel = if (info.fromOfflineDownload || info.fromCache) strings.offlineLabel else strings.liveStream,
                 badgeActive = info.fromOfflineDownload || info.fromCache,
                 accent = mistAccent,
             )
 
             // Stage 2: Decoder
-            val bitrateText = if (info.bitrateKbps > 0) "${info.bitrateKbps} kbps" else "Variable bitrate"
+            val bitrateText = if (info.bitrateKbps > 0) "${info.bitrateKbps} kbps" else "VBR"
             PipelineStageCard(
                 step = "2",
-                title = "Decoder",
+                title = strings.audioPipelineCodec,
                 primary = "${info.codec.ifBlank { "Auto" }} · $bitrateText",
                 secondary = "${info.sampleRateLabel} · ${info.channelLabel}",
-                badgeLabel = "Active",
+                badgeLabel = strings.audioPipelineBitrate,
                 badgeActive = true,
                 accent = activeAccent,
             )
 
             // Stage 3: Playback Processing
             val activeStages = buildList {
-                if (info.skipSilenceActive) add("Skip Silence")
+                if (info.eqActive) add(localizedEqualizerLabel(strings))
+                if (info.loudnessNormActive) add(localizedLoudnessLabel(strings))
+                if (info.crossfadeSeconds > 0) add("${strings.crossfade} (${info.crossfadeSeconds}s)")
+                if (info.skipSilenceActive) add(strings.skipSilence)
                 if (info.playbackSpeed != 1.0f) {
-                    add(String.format(Locale.US, "%.2fx Speed", info.playbackSpeed))
+                    add(String.format(Locale.US, "%.2fx", info.playbackSpeed))
                 }
             }
             PipelineStageCard(
                 step = "3",
-                title = "Playback Processing",
-                primary = if (activeStages.isEmpty()) "Bit-Transparent Passthrough" else activeStages.joinToString(" · "),
+                title = strings.audioPipelineMode,
+                primary = if (activeStages.isEmpty()) strings.audioPipelineBitTransparent else activeStages.joinToString(" · "),
                 secondary = if (activeStages.isEmpty()) {
-                    "No DSP or time-stretching applied"
+                    strings.audioPipelineBitTransparent
                 } else {
-                    "Processed inside Media3 playback chain"
+                    "Media3 DSP"
                 },
-                badgeLabel = if (activeStages.isEmpty()) "Bypass" else "Active",
+                badgeLabel = strings.audioPipelineMode,
                 badgeActive = activeStages.isNotEmpty(),
                 accent = glowAccent,
             )
@@ -173,10 +189,10 @@ fun AudioPipelineModal(
             // Stage 4: Output
             PipelineStageCard(
                 step = "4",
-                title = "Output",
+                title = strings.audioPipelineOutput,
                 primary = info.outputPath.ifBlank { "Media3 AudioTrack" },
                 secondary = "${info.sampleRateLabel} · ${info.channelLabel}",
-                badgeLabel = "Active",
+                badgeLabel = strings.audioPipelineSampleRate,
                 badgeActive = true,
                 accent = activeAccent,
             )
@@ -209,6 +225,7 @@ fun SleepTimerSheet(
                 .padding(horizontal = 20.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
+            val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -216,15 +233,15 @@ fun SleepTimerSheet(
             ) {
                 Column {
                     Text(
-                        text = "Sleep Timer",
+                        text = strings.sleepTimer,
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
                     )
                     Text(
                         text = when {
-                            remainingMinutes == null -> "Playback will continue normally"
-                            remainingMinutes == 0 -> "Stopping at end of current track"
-                            else -> "Pausing in $remainingMinutes min"
+                            remainingMinutes == null -> strings.sleepOff
+                            remainingMinutes == 0 -> strings.sleepEndOfTrack
+                            else -> strings.sleepMinutesRemaining(remainingMinutes)
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -232,7 +249,7 @@ fun SleepTimerSheet(
                 }
                 if (remainingMinutes != null) {
                     StatusBadge(
-                        label = if (remainingMinutes == 0) "End of Track" else "${remainingMinutes}m left",
+                        label = if (remainingMinutes == 0) strings.sleepEndOfTrack else strings.sleepMinutesRemaining(remainingMinutes),
                         highlighted = true,
                         accent = accent,
                     )
@@ -240,12 +257,12 @@ fun SleepTimerSheet(
             }
 
             val options: List<Pair<String, Int?>> = listOf(
-                "Off" to null,
+                strings.sleepOff to null,
                 "15m" to 15,
                 "30m" to 30,
                 "45m" to 45,
                 "60m" to 60,
-                "End of Track" to 0,
+                strings.sleepEndOfTrack to 0,
             )
 
             FlowRow(
@@ -298,8 +315,9 @@ fun AudioControlsSheet(
                 .padding(horizontal = 20.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
+            val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
             Text(
-                text = "Audio Controls",
+                text = strings.audioControls,
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
             )
@@ -324,7 +342,7 @@ fun AudioControlsSheet(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        text = "Playback Speed",
+                        text = dev.sonata.android.ui.i18n.LocalSonataStrings.current.playbackSpeed,
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
                     )
@@ -378,8 +396,8 @@ fun AudioControlsSheet(
                     .padding(horizontal = 14.dp, vertical = 6.dp),
             ) {
                 ToggleRow(
-                    title = "Skip Silence",
-                    subtitle = "Trim long silent intros and gaps",
+                    title = dev.sonata.android.ui.i18n.LocalSonataStrings.current.skipSilence,
+                    subtitle = dev.sonata.android.ui.i18n.LocalSonataStrings.current.skipSilenceDesc,
                     checked = skipSilence,
                     onCheckedChange = onSkipSilenceToggle,
                 )
@@ -546,4 +564,50 @@ private fun ToggleRow(
         }
         Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
+}
+
+private fun localizePipelineSourceLabel(raw: String, strings: SonataStrings): String {
+    return when (raw) {
+        "Offline Download" -> when (strings) {
+            TurkishSonataStrings -> "Çevrimdışı İndirme"
+            RussianSonataStrings -> "Офлайн-загрузка"
+            else -> "Offline Download"
+        }
+        "YouTube Music" -> "YouTube Music"
+        "Audio Stream" -> when (strings) {
+            TurkishSonataStrings -> "Ses Akışı"
+            RussianSonataStrings -> "Аудиопоток"
+            else -> "Audio Stream"
+        }
+        "Idle" -> when (strings) {
+            TurkishSonataStrings -> "Boşta"
+            RussianSonataStrings -> "Ожидание"
+            else -> "Idle"
+        }
+        else -> raw
+    }
+}
+
+private fun localizedBypassedLabel(strings: SonataStrings): String = when (strings) {
+    TurkishSonataStrings -> "Doğrudan"
+    RussianSonataStrings -> "Обход DSP"
+    else -> "Bypassed"
+}
+
+private fun localizedDspActiveLabel(strings: SonataStrings): String = when (strings) {
+    TurkishSonataStrings -> "DSP Etkin"
+    RussianSonataStrings -> "DSP активен"
+    else -> "DSP Active"
+}
+
+private fun localizedEqualizerLabel(strings: SonataStrings): String = when (strings) {
+    TurkishSonataStrings -> "Ekolayzer"
+    RussianSonataStrings -> "Эквалайзер"
+    else -> "Equalizer"
+}
+
+private fun localizedLoudnessLabel(strings: SonataStrings): String = when (strings) {
+    TurkishSonataStrings -> "Ses Dengeleme"
+    RussianSonataStrings -> "Нормализация"
+    else -> "Loudness Norm"
 }

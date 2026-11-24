@@ -369,6 +369,41 @@ impl SonataDesktopView {
                             )
                         }),
                 )
+                .child({
+                    let autoplay_active = self.snapshot.autoplay;
+                    let autoplay_tip = if autoplay_active {
+                        s.autoplay_on
+                    } else {
+                        s.autoplay_off
+                    };
+                    div()
+                        .relative()
+                        .size(px(32.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon_action_button(
+                            "pb-autoplay",
+                            IconName::Infinity,
+                            autoplay_active,
+                            Some(autoplay_tip),
+                            &self.palette,
+                            {
+                                let b = self.backend.clone();
+                                move |_, _| b.send(BackendCmd::ToggleAutoplay)
+                            },
+                        ))
+                        .when(autoplay_active, |d| {
+                            d.child(
+                                div()
+                                    .absolute()
+                                    .bottom(px(0.0))
+                                    .size(px(4.0))
+                                    .rounded_full()
+                                    .bg(self.palette.accent),
+                            )
+                        })
+                })
             });
 
         let pos_secs = if self.progress_dragging {

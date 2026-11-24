@@ -3,12 +3,17 @@ package dev.sonata.android.data
 import kotlinx.coroutines.CancellationException
 import uniffi.sonata_android.AndroidAccountProfile
 import uniffi.sonata_android.AndroidArtistPage
+import uniffi.sonata_android.AndroidExploreFeed
 import uniffi.sonata_android.AndroidHomeShelf
 import uniffi.sonata_android.AndroidJioSaavnStream
 import uniffi.sonata_android.AndroidJsCipherSolver
 import uniffi.sonata_android.AndroidLyricLine
+import uniffi.sonata_android.AndroidMoodCategory
+import uniffi.sonata_android.AndroidMoodChip
 import uniffi.sonata_android.AndroidMotionMedia
+import uniffi.sonata_android.AndroidMusicVideoCandidate
 import uniffi.sonata_android.AndroidPlaylist
+import uniffi.sonata_android.AndroidResolvedMusicVideo
 import uniffi.sonata_android.AndroidResolvedStream
 import uniffi.sonata_android.AndroidTrack
 import uniffi.sonata_android.AndroidUpdateInfo
@@ -47,8 +52,14 @@ interface SonataEngineGateway {
 
     suspend fun fetchLibraryPlaylists(): List<AndroidPlaylist>
     suspend fun fetchHomeFeed(): List<AndroidHomeShelf>
+    suspend fun setLanguage(languageCode: String)
+    suspend fun fetchExploreFeed(): AndroidExploreFeed
+    suspend fun fetchMoodCategory(browseId: String, params: String): List<AndroidHomeShelf>
+    suspend fun fetchHomeMoodChips(): List<AndroidMoodChip>
+    suspend fun fetchHomeMoodFeed(params: String?): List<AndroidHomeShelf>
     suspend fun searchSongs(query: String): List<AndroidTrack>
     suspend fun fetchCollectionTracks(browseId: String): List<AndroidTrack>
+    suspend fun fetchCollectionTracksFresh(browseId: String): List<AndroidTrack>
     suspend fun fetchArtistPage(browseId: String): AndroidArtistPage
     suspend fun resolveArtistBrowseId(name: String): String?
     suspend fun fetchArtistByName(name: String): AndroidArtistPage
@@ -57,11 +68,18 @@ interface SonataEngineGateway {
     suspend fun fetchListeningHistory(): List<AndroidTrack>
     suspend fun resolveExplicitCounterpart(track: AndroidTrack): AndroidTrack?
     suspend fun fetchRadioQueue(videoId: String): List<AndroidTrack>
+    suspend fun fetchEndlessRadioQueue(
+        seedVideoIds: List<String>,
+        playlistId: String?,
+        excludeVideoIds: List<String>,
+        preferredArtists: List<String>,
+    ): List<AndroidTrack>
 
     suspend fun setLikeStatus(videoId: String, liked: Boolean)
     suspend fun reportPlayback(videoId: String, playlistId: String?, durationSecs: ULong?)
     suspend fun addTracksToPlaylist(playlistId: String, videoIds: List<String>)
     suspend fun createPlaylist(title: String, description: String, videoIds: List<String>): String
+    suspend fun setPlaylistSaved(playlistId: String, saved: Boolean)
     suspend fun editPlaylistMetadata(
         playlistId: String,
         title: String?,
@@ -97,6 +115,8 @@ interface SonataEngineGateway {
         storefront: String?,
         countryCode: String?,
     ): AndroidMotionMedia?
+    suspend fun resolveMusicVideoCandidate(track: AndroidTrack): AndroidMusicVideoCandidate?
+    suspend fun resolveMusicVideoStreams(videoId: String): AndroidResolvedMusicVideo
 }
 
 /** Production [SonataEngineGateway] backed directly by UniFFI async [SonataAndroidEngine]. */
@@ -127,10 +147,27 @@ class NativeSonataEngineGateway(
 
     override suspend fun fetchHomeFeed(): List<AndroidHomeShelf> = engine.fetchHomeFeed()
 
+    override suspend fun setLanguage(languageCode: String) = engine.setLanguage(languageCode)
+
+    override suspend fun fetchExploreFeed(): AndroidExploreFeed = engine.fetchExploreFeed()
+
+    override suspend fun fetchMoodCategory(
+        browseId: String,
+        params: String,
+    ): List<AndroidHomeShelf> = engine.fetchMoodCategory(browseId, params)
+
+    override suspend fun fetchHomeMoodChips(): List<AndroidMoodChip> = engine.fetchHomeMoodChips()
+
+    override suspend fun fetchHomeMoodFeed(params: String?): List<AndroidHomeShelf> =
+        engine.fetchHomeMoodFeed(params)
+
     override suspend fun searchSongs(query: String): List<AndroidTrack> = engine.searchSongs(query)
 
     override suspend fun fetchCollectionTracks(browseId: String): List<AndroidTrack> =
         engine.fetchCollectionTracks(browseId)
+
+    override suspend fun fetchCollectionTracksFresh(browseId: String): List<AndroidTrack> =
+        engine.fetchCollectionTracksFresh(browseId)
 
     override suspend fun fetchArtistPage(browseId: String): AndroidArtistPage =
         engine.fetchArtistPage(browseId)
@@ -155,6 +192,18 @@ class NativeSonataEngineGateway(
     override suspend fun fetchRadioQueue(videoId: String): List<AndroidTrack> =
         engine.fetchRadioQueue(videoId)
 
+    override suspend fun fetchEndlessRadioQueue(
+        seedVideoIds: List<String>,
+        playlistId: String?,
+        excludeVideoIds: List<String>,
+        preferredArtists: List<String>,
+    ): List<AndroidTrack> = engine.fetchEndlessRadioQueue(
+        seedVideoIds = seedVideoIds,
+        playlistId = playlistId,
+        excludeVideoIds = excludeVideoIds,
+        preferredArtists = preferredArtists,
+    )
+
     override suspend fun setLikeStatus(videoId: String, liked: Boolean) =
         engine.setLikeStatus(videoId, liked)
 
@@ -172,6 +221,9 @@ class NativeSonataEngineGateway(
         description: String,
         videoIds: List<String>,
     ): String = engine.createPlaylist(title, description, videoIds)
+
+    override suspend fun setPlaylistSaved(playlistId: String, saved: Boolean) =
+        engine.setPlaylistSaved(playlistId, saved)
 
     override suspend fun editPlaylistMetadata(
         playlistId: String,
@@ -223,4 +275,12 @@ class NativeSonataEngineGateway(
         storefront: String?,
         countryCode: String?,
     ): AndroidMotionMedia? = engine.resolveMotionMedia(track, storefront, countryCode)
+
+    override suspend fun resolveMusicVideoCandidate(
+        track: AndroidTrack,
+    ): AndroidMusicVideoCandidate? = engine.resolveMusicVideoCandidate(track)
+
+    override suspend fun resolveMusicVideoStreams(
+        videoId: String,
+    ): AndroidResolvedMusicVideo = engine.resolveMusicVideoStreams(videoId)
 }

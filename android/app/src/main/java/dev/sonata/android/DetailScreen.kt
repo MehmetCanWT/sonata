@@ -218,8 +218,8 @@ import dev.sonata.android.ui.ReleaseArt
 import dev.sonata.android.ui.ReplayCreditCard
 import dev.sonata.android.ui.SHELF_CARD_WIDTH
 import dev.sonata.android.ui.SearchField
-import dev.sonata.android.ui.SonataAccent
 import dev.sonata.android.ui.SonataIcons
+import dev.sonata.android.ui.sonataThemeAccent
 import dev.sonata.android.ui.SonataShimmerHost
 import dev.sonata.android.ui.SonataTheme
 import dev.sonata.android.ui.theme.LunariaColors
@@ -305,7 +305,7 @@ internal fun CompactTrackRow(
     onClick: () -> Unit,
     leadingIndex: Int? = null,
     onArtworkWash: Boolean = false,
-    accentColor: Color = SonataAccent,
+    accentColor: Color = sonataThemeAccent(),
     onOptionsClick: ((Rect?) -> Unit)? = null,
     onLongClick: ((Rect?) -> Unit)? = null,
 ) {
@@ -492,7 +492,7 @@ internal fun ShelfCard(
                     Icon(
                         imageVector = SonataIcons.GraphicEq,
                         contentDescription = null,
-                        tint = SonataAccent,
+                        tint = sonataThemeAccent(),
                         modifier = Modifier.size(28.dp),
                     )
                 }
@@ -574,7 +574,7 @@ internal fun VideoShelfCard(
                     Icon(
                         imageVector = SonataIcons.GraphicEq,
                         contentDescription = null,
-                        tint = SonataAccent,
+                        tint = sonataThemeAccent(),
                         modifier = Modifier.size(28.dp),
                     )
                 }
@@ -612,6 +612,7 @@ internal fun DetailScreen(
     isDownloading: Boolean = false,
     allDownloaded: Boolean = false,
     fullScreenDetailCover: Boolean = false,
+    artworkTintedPages: Boolean = true,
     onPlayTrack: (AndroidTrack) -> Unit,
     onTrackOptions: (AndroidTrack, Rect?) -> Unit = { _, _ -> },
     onTrackLongClick: (AndroidTrack, Int, Rect?) -> Unit = { _, _, _ -> },
@@ -619,17 +620,32 @@ internal fun DetailScreen(
     onShuffleAll: () -> Unit,
     onDownloadAll: (() -> Unit)? = null,
     onEditPlaylist: (() -> Unit)? = null,
+    isPinned: Boolean = false,
+    onTogglePin: (() -> Unit)? = null,
+    isSavedToLibrary: Boolean = false,
+    onToggleSaveToLibrary: (() -> Unit)? = null,
     onMoreOptions: (() -> Unit)? = null,
     onOpenArtist: ((String) -> Unit)? = null,
 ) {
     val themeTokens = LocalLunariaColors.current
+    val useArtworkTint = artworkTintedPages && !themeTokens.isBasic
     val rawPalette = rememberArtworkPalette(
-        artworkUrl = state.collectionCoverUrl,
+        artworkUrl = if (useArtworkTint) state.collectionCoverUrl else null,
         dark = themeTokens.isDark,
         artPx = HEADER_ART_PX,
     )
-    val palette = remember(rawPalette, themeTokens.designTheme, themeTokens.isDark) {
-        if (!themeTokens.isDark) {
+    val palette = remember(rawPalette, themeTokens.designTheme, themeTokens.isDark, useArtworkTint) {
+        if (!useArtworkTint) {
+            rawPalette.copy(
+                background = themeTokens.eclipseBase,
+                wash = themeTokens.eclipseSurface,
+                elevated = themeTokens.eclipseCard,
+                accent = themeTokens.petalLavender,
+                onBackground = themeTokens.onSurfacePrimary,
+                onBackgroundVariant = themeTokens.onSurfaceSecondary,
+                divider = themeTokens.cardStroke,
+            )
+        } else if (!themeTokens.isDark) {
             rawPalette.copy(
                 background = androidx.compose.ui.graphics.lerp(
                     rawPalette.background,
@@ -682,7 +698,7 @@ internal fun DetailScreen(
         modifier = modifier
             .fillMaxSize()
             .background(
-                if (themeTokens.isBasic) {
+                if (!useArtworkTint) {
                     Brush.verticalGradient(listOf(themeTokens.eclipseBase, themeTokens.eclipseBase))
                 } else {
                     Brush.verticalGradient(
@@ -704,8 +720,11 @@ internal fun DetailScreen(
                 ),
             ) {
                 item(key = "detail_header", contentType = "detail_header") {
+                    val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
                     val subtitleArtist = state.collectionSubtitle?.takeIf {
-                        it.isNotBlank() && state.collectionKindLabel != "Offline Library"
+                        it.isNotBlank() &&
+                            state.collectionKindLabel != "Offline Library" &&
+                            state.collectionKindLabel != strings.offlineLibrary
                     }
                     if (themeTokens.isBasic) {
                         dev.sonata.android.ui.screens.BasicDetailHeroHeader(
@@ -722,6 +741,10 @@ internal fun DetailScreen(
                             isDownloading = isDownloading,
                             allDownloaded = allDownloaded,
                             onEditPlaylist = onEditPlaylist,
+                            isPinned = isPinned,
+                            onTogglePin = onTogglePin,
+                            isSavedToLibrary = isSavedToLibrary,
+                            onToggleSaveToLibrary = onToggleSaveToLibrary,
                             onOpenArtist = subtitleArtist?.let { artist -> { onOpenArtist?.invoke(artist) } },
                             fullScreenDetailCover = fullScreenDetailCover,
                         )
@@ -743,6 +766,10 @@ internal fun DetailScreen(
                             isDownloading = isDownloading,
                             allDownloaded = allDownloaded,
                             onEditPlaylist = onEditPlaylist,
+                            isPinned = isPinned,
+                            onTogglePin = onTogglePin,
+                            isSavedToLibrary = isSavedToLibrary,
+                            onToggleSaveToLibrary = onToggleSaveToLibrary,
                             onMoreOptions = onMoreOptions,
                             onOpenArtist = subtitleArtist?.let { artist -> { onOpenArtist?.invoke(artist) } },
                         )

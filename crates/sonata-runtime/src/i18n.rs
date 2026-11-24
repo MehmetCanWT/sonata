@@ -1,9 +1,10 @@
-//! Shared English and Turkish UI localization catalog for Linux Sonata clients.
+//! Shared English, Turkish, and Russian UI localization catalog for Linux Sonata clients.
 //!
-//! 1. **Language Preference (`AppLanguage`)**: Serializable `en` / `tr` selector defaulting to English (`En`) for Desktop and TUI.
-//! 2. **Static String Catalog (`UiStrings`)**: Zero-allocation compile-time verified translation tables (`EN`, `TR`) powering menus, settings, modals, empty states, and playback controls.
+//! 1. **Language Preference (`AppLanguage`)**: Serializable `en` / `tr` / `ru` selector defaulting to English (`En`) for Desktop and TUI.
+//! 2. **Static String Catalog (`UiStrings`)**: Zero-allocation compile-time verified translation tables (`EN`, `TR`, `RU`) powering menus, settings, modals, empty states, and playback controls.
 
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 
 /// Supported UI languages for Sonata Desktop and TUI (defaults to English).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -219,6 +220,202 @@ pub struct UiStrings {
     pub tui_import_spotify_title: &'static str,
     pub tui_create_playlist_title: &'static str,
     pub tui_add_to_playlist_title: &'static str,
+    pub autoplay: &'static str,
+    pub autoplay_on: &'static str,
+    pub autoplay_off: &'static str,
+    pub autoplay_desc: &'static str,
+    pub radio_mixes: &'static str,
+    pub quick_radio: &'static str,
+    pub moods_genres: &'static str,
+    pub recent_searches: &'static str,
+    pub library_playlists: &'static str,
+    pub recently_played: &'static str,
+    pub start_radio: &'static str,
+    pub play_next: &'static str,
+    pub add_to_queue: &'static str,
+    pub go_to_album: &'static str,
+    pub go_to_artist: &'static str,
+    pub add_to_playlist: &'static str,
+    pub remove_from_playlist: &'static str,
+    pub play_now: &'static str,
+    pub top_songs: &'static str,
+    pub releases: &'static str,
+    pub fans_might_like: &'static str,
+    pub you_liked: &'static str,
+    pub retry: &'static str,
+    pub all_tab: &'static str,
+    pub videos_tab: &'static str,
+    pub youtube_music: &'static str,
+    pub your_library: &'static str,
+    pub sign_in_library_title: &'static str,
+    pub sign_in_library_desc: &'static str,
+    pub sign_in_browser: &'static str,
+    pub dbl_click_play: &'static str,
+    pub dbl_click_play_desc: &'static str,
+    pub cache_budget: &'static str,
+    pub cache_budget_desc: &'static str,
+    pub pinned: &'static str,
+    pub pin: &'static str,
+    pub unpin: &'static str,
+    pub find_your_mood: &'static str,
+    pub in_library: &'static str,
+    pub add_to_library: &'static str,
+    pub remove_from_library: &'static str,
+}
+
+/// Translates common YouTube Music mood and genre chip/tile titles into `Tr` / `Ru`.
+pub fn localize_mood_title(lang: AppLanguage, raw: &str) -> Cow<'_, str> {
+    if lang == AppLanguage::En {
+        return Cow::Borrowed(raw);
+    }
+    let key = raw.trim().to_ascii_lowercase();
+    let translated = match (lang, key.as_str()) {
+        (AppLanguage::Tr, "chill") => Some("Rahatlatıcı"),
+        (AppLanguage::Tr, "focus") => Some("Odaklanma"),
+        (AppLanguage::Tr, "workout") => Some("Antrenman"),
+        (AppLanguage::Tr, "energize" | "energy") => Some("Enerjik"),
+        (AppLanguage::Tr, "party") => Some("Parti"),
+        (AppLanguage::Tr, "romance") => Some("Romantik"),
+        (AppLanguage::Tr, "sleep") => Some("Uyku"),
+        (AppLanguage::Tr, "sad") => Some("Hüzünlü"),
+        (AppLanguage::Tr, "commute") => Some("Yolculuk"),
+        (AppLanguage::Tr, "feel good") => Some("İyi Hisset"),
+        (AppLanguage::Tr, "gaming") => Some("Oyun"),
+        (AppLanguage::Tr, "classical") => Some("Klasik"),
+        (AppLanguage::Tr, "electronic") => Some("Elektronik"),
+        (AppLanguage::Tr, "rock") => Some("Rock"),
+        (AppLanguage::Tr, "pop") => Some("Pop"),
+        (AppLanguage::Tr, "jazz") => Some("Caz"),
+        (AppLanguage::Tr, "hip-hop" | "hip hop") => Some("Hip-Hop"),
+        (AppLanguage::Tr, "indie & alternative" | "indie") => Some("Indie ve Alternatif"),
+        (AppLanguage::Tr, "metal") => Some("Metal"),
+        (AppLanguage::Tr, "folk & acoustic") => Some("Folk ve Akustik"),
+        (AppLanguage::Tr, "decades") => Some("Dönemler"),
+        (AppLanguage::Ru, "chill") => Some("Спокойная"),
+        (AppLanguage::Ru, "focus") => Some("Фокус"),
+        (AppLanguage::Ru, "workout") => Some("Тренировка"),
+        (AppLanguage::Ru, "energize" | "energy") => Some("Энергия"),
+        (AppLanguage::Ru, "party") => Some("Вечеринка"),
+        (AppLanguage::Ru, "romance") => Some("Романтика"),
+        (AppLanguage::Ru, "sleep") => Some("Сон"),
+        (AppLanguage::Ru, "sad") => Some("Грустная"),
+        (AppLanguage::Ru, "commute") => Some("В дороге"),
+        (AppLanguage::Ru, "feel good") => Some("Хорошее настроение"),
+        (AppLanguage::Ru, "gaming") => Some("Для игр"),
+        (AppLanguage::Ru, "classical") => Some("Классика"),
+        (AppLanguage::Ru, "electronic") => Some("Электроника"),
+        (AppLanguage::Ru, "jazz") => Some("Джаз"),
+        (AppLanguage::Ru, "hip-hop" | "hip hop") => Some("Хип-хоп"),
+        (AppLanguage::Ru, "indie & alternative" | "indie") => Some("Инди и альтернатива"),
+        (AppLanguage::Ru, "metal") => Some("Метал"),
+        (AppLanguage::Ru, "folk & acoustic") => Some("Фолк и акустика"),
+        (AppLanguage::Ru, "decades") => Some("Эпохи"),
+        _ => None,
+    };
+    match translated {
+        Some(t) => Cow::Borrowed(t),
+        None => Cow::Borrowed(raw),
+    }
+}
+
+/// Translates common YouTube Music shelf headings into `Tr` / `Ru` while keeping unknown
+/// or dynamic headings intact.
+pub fn localize_shelf_title(lang: AppLanguage, raw: &str) -> Cow<'_, str> {
+    if lang == AppLanguage::En {
+        return Cow::Borrowed(raw);
+    }
+    let trimmed = raw.trim();
+    let key = trimmed.to_ascii_lowercase();
+
+    if trimmed.len() > 11
+        && trimmed.is_char_boundary(11)
+        && trimmed[..11].eq_ignore_ascii_case("similar to ")
+    {
+        let subject = trimmed[11..].trim();
+        if !subject.is_empty() {
+            return match lang {
+                AppLanguage::En => Cow::Borrowed(raw),
+                AppLanguage::Tr => Cow::Owned(format!("{subject} benzeri")),
+                AppLanguage::Ru => Cow::Owned(format!("Похожее на {subject}")),
+            };
+        }
+    }
+
+    if trimmed.len() > 10
+        && trimmed.is_char_boundary(10)
+        && trimmed[..10].eq_ignore_ascii_case("more from ")
+    {
+        let subject = trimmed[10..].trim();
+        if !subject.is_empty() {
+            return match lang {
+                AppLanguage::En => Cow::Borrowed(raw),
+                AppLanguage::Tr => Cow::Owned(format!("{subject} sanatçısından daha fazlası")),
+                AppLanguage::Ru => Cow::Owned(format!("Ещё от {subject}")),
+            };
+        }
+    }
+
+    let translated = match (lang, key.as_str()) {
+        (AppLanguage::Tr, "quick picks") => Some("Hızlı seçimler"),
+        (AppLanguage::Tr, "listen again") => Some("Tekrar dinle"),
+        (AppLanguage::Tr, "new releases") => Some("Yeni çıkanlar"),
+        (AppLanguage::Tr, "new albums & singles") => Some("Yeni albümler ve tekliler"),
+        (AppLanguage::Tr, "trending") => Some("Trendler"),
+        (AppLanguage::Tr, "charts") => Some("Listeler"),
+        (AppLanguage::Tr, "mixed for you") => Some("Senin için miksler"),
+        (AppLanguage::Tr, "featured playlists for you") => {
+            Some("Senin için öne çıkan çalma listeleri")
+        }
+        (AppLanguage::Tr, "from the community") => Some("Topluluktan"),
+        (AppLanguage::Tr, "top songs") => Some("Popüler şarkılar"),
+        (AppLanguage::Tr, "albums") => Some("Albümler"),
+        (AppLanguage::Tr, "singles") => Some("Tekliler"),
+        (AppLanguage::Tr, "singles & eps") => Some("Tekliler ve EP'ler"),
+        (AppLanguage::Tr, "videos") => Some("Videolar"),
+        (AppLanguage::Tr, "playlists") => Some("Çalma listeleri"),
+        (AppLanguage::Tr, "your mixes") => Some("Mikslerin"),
+        (AppLanguage::Tr, "signature mixes") => Some("Öne çıkan miksler"),
+        (AppLanguage::Tr, "mood mixes") => Some("Ruh hali miksleri"),
+        (AppLanguage::Tr, "featured mixes") => Some("Öne çıkan miksler"),
+        (AppLanguage::Tr, "recommended albums") => Some("Önerilen albümler"),
+        (AppLanguage::Tr, "recommended music videos") => Some("Önerilen müzik videoları"),
+        (AppLanguage::Tr, "similar artists") => Some("Benzer sanatçılar"),
+        (AppLanguage::Tr, "from your library") => Some("Kitaplığından"),
+        (AppLanguage::Tr, "long listening") => Some("Uzun dinleme"),
+        (AppLanguage::Tr, "moods & genres") => Some("Ruh halleri ve türler"),
+        (AppLanguage::Tr, "start radio from a song") => Some("Bir şarkıdan radyo başlat"),
+        (AppLanguage::Ru, "quick picks") => Some("Быстрый выбор"),
+        (AppLanguage::Ru, "listen again") => Some("Послушать снова"),
+        (AppLanguage::Ru, "new releases") => Some("Новинки"),
+        (AppLanguage::Ru, "new albums & singles") => Some("Новые альбомы и синглы"),
+        (AppLanguage::Ru, "trending") => Some("В тренде"),
+        (AppLanguage::Ru, "charts") => Some("Чарты"),
+        (AppLanguage::Ru, "mixed for you") => Some("Миксы для вас"),
+        (AppLanguage::Ru, "featured playlists for you") => Some("Избранные плейлисты для вас"),
+        (AppLanguage::Ru, "from the community") => Some("От сообщества"),
+        (AppLanguage::Ru, "top songs") => Some("Популярные треки"),
+        (AppLanguage::Ru, "albums") => Some("Альбомы"),
+        (AppLanguage::Ru, "singles") => Some("Синглы"),
+        (AppLanguage::Ru, "singles & eps") => Some("Синглы и мини-альбомы"),
+        (AppLanguage::Ru, "videos") => Some("Видео"),
+        (AppLanguage::Ru, "playlists") => Some("Плейлисты"),
+        (AppLanguage::Ru, "your mixes") => Some("Ваши миксы"),
+        (AppLanguage::Ru, "signature mixes") => Some("Фирменные миксы"),
+        (AppLanguage::Ru, "mood mixes") => Some("Миксы по настроению"),
+        (AppLanguage::Ru, "featured mixes") => Some("Избранные миксы"),
+        (AppLanguage::Ru, "recommended albums") => Some("Рекомендуемые альбомы"),
+        (AppLanguage::Ru, "recommended music videos") => Some("Рекомендуемые клипы"),
+        (AppLanguage::Ru, "similar artists") => Some("Похожие исполнители"),
+        (AppLanguage::Ru, "from your library") => Some("Из вашей медиатеки"),
+        (AppLanguage::Ru, "long listening") => Some("Для долгого прослушивания"),
+        (AppLanguage::Ru, "moods & genres") => Some("Настроения и жанры"),
+        (AppLanguage::Ru, "start radio from a song") => Some("Радио на основе песни"),
+        _ => None,
+    };
+    match translated {
+        Some(s) => Cow::Borrowed(s),
+        None => Cow::Borrowed(raw),
+    }
 }
 
 pub const EN: UiStrings = UiStrings {
@@ -376,6 +573,48 @@ pub const EN: UiStrings = UiStrings {
     tui_import_spotify_title: " Import Spotify Playlist ",
     tui_create_playlist_title: " Create Playlist ",
     tui_add_to_playlist_title: " Add to Playlist ",
+    autoplay: "Endless Autoplay",
+    autoplay_on: "Endless Autoplay: On",
+    autoplay_off: "Endless Autoplay: Off",
+    autoplay_desc: "Keep playing similar recommended tracks when a playlist or queue ends.",
+    radio_mixes: "Radio & Mixes",
+    quick_radio: "Quick Radio",
+    moods_genres: "Moods & genres",
+    recent_searches: "Recent searches",
+    library_playlists: "Library Playlists",
+    recently_played: "Recently Played",
+    start_radio: "Start radio",
+    play_next: "Play next",
+    add_to_queue: "Add to queue",
+    go_to_album: "Go to album",
+    go_to_artist: "Go to artist",
+    add_to_playlist: "Add to playlist",
+    remove_from_playlist: "Remove from playlist",
+    play_now: "Play now",
+    top_songs: "Top songs",
+    releases: "Releases",
+    fans_might_like: "Fans might also like",
+    you_liked: "You Liked",
+    retry: "Retry",
+    all_tab: "All",
+    videos_tab: "Videos",
+    youtube_music: "YouTube Music",
+    your_library: "Your Library",
+    sign_in_library_title: "Sign in to view your library",
+    sign_in_library_desc:
+        "Connect your browser YouTube Music session to sync liked songs, playlists, saved albums, and artists.",
+    sign_in_browser: "Sign in with browser",
+    dbl_click_play: "Double-click to play rows",
+    dbl_click_play_desc: "Require a double-click on track rows instead of single-click playback",
+    cache_budget: "Audio Media Cache Limit",
+    cache_budget_desc: "Bounded SQLite/disk LRU storage for cached audio streams",
+    pinned: "Pinned",
+    pin: "Pin",
+    unpin: "Unpin",
+    find_your_mood: "Find your mood",
+    in_library: "In Library",
+    add_to_library: "Add to Library",
+    remove_from_library: "Remove from Library",
 };
 
 pub const TR: UiStrings = UiStrings {
@@ -528,6 +767,48 @@ pub const TR: UiStrings = UiStrings {
     tui_import_spotify_title: " Spotify Çalma Listesi Aktar ",
     tui_create_playlist_title: " Çalma Listesi Oluştur ",
     tui_add_to_playlist_title: " Çalma Listesine Ekle ",
+    autoplay: "Sonsuz Çalma",
+    autoplay_on: "Sonsuz Çalma: Açık",
+    autoplay_off: "Sonsuz Çalma: Kapalı",
+    autoplay_desc: "Çalma listesi veya kuyruk bittiğinde benzer önerilen parçaları çalmaya devam et.",
+    radio_mixes: "Radyo ve Miksler",
+    quick_radio: "Hızlı Radyo",
+    moods_genres: "Ruh halleri ve türler",
+    recent_searches: "Son aramalar",
+    library_playlists: "Kitaplık Çalma Listeleri",
+    recently_played: "Son Çalınanlar",
+    start_radio: "Radyo başlat",
+    play_next: "Sonraki çal",
+    add_to_queue: "Sıraya ekle",
+    go_to_album: "Albüme git",
+    go_to_artist: "Sanatçıya git",
+    add_to_playlist: "Çalma listesine ekle",
+    remove_from_playlist: "Çalma listesinden kaldır",
+    play_now: "Şimdi oynat",
+    top_songs: "Popüler şarkılar",
+    releases: "Yayınlar",
+    fans_might_like: "Benzer sanatçılar",
+    you_liked: "Beğendiklerin",
+    retry: "Tekrar dene",
+    all_tab: "Tümü",
+    videos_tab: "Videolar",
+    youtube_music: "YouTube Music",
+    your_library: "Kitaplığın",
+    sign_in_library_title: "Kitaplığını görmek için giriş yap",
+    sign_in_library_desc:
+        "Beğenilen şarkıları, çalma listelerini, albümleri ve sanatçıları eşitlemek için tarayıcı YouTube Music oturumunu bağla.",
+    sign_in_browser: "Tarayıcıyla giriş yap",
+    dbl_click_play: "Satırları çift tıklamayla oynat",
+    dbl_click_play_desc: "Tek tıklama yerine parça satırlarında çift tıklama iste",
+    cache_budget: "Ses Medya Önbellek Sınırı",
+    cache_budget_desc: "Önbellekli ses akışları için sınırlı SQLite/disk LRU deposu",
+    pinned: "Sabitlenenler",
+    pin: "Sabitle",
+    unpin: "Sabitlemeyi kaldır",
+    find_your_mood: "Ruh halini bul",
+    in_library: "Kitaplıkta",
+    add_to_library: "Kitaplığa ekle",
+    remove_from_library: "Kitaplıktan çıkar",
 };
 
 pub const RU: UiStrings = UiStrings {
@@ -681,6 +962,48 @@ pub const RU: UiStrings = UiStrings {
     tui_import_spotify_title: " Импорт плейлиста Spotify ",
     tui_create_playlist_title: " Создать плейлист ",
     tui_add_to_playlist_title: " Добавить в плейлист ",
+    autoplay: "Бесконечное воспроизведение",
+    autoplay_on: "Бесконечное воспроизведение: Вкл",
+    autoplay_off: "Бесконечное воспроизведение: Выкл",
+    autoplay_desc: "Продолжать похожими треками после окончания плейлиста или очереди.",
+    radio_mixes: "Радио и миксы",
+    quick_radio: "Быстрое радио",
+    moods_genres: "Настроения и жанры",
+    recent_searches: "Недавние запросы",
+    library_playlists: "Плейлисты медиатеки",
+    recently_played: "Недавно прослушанные",
+    start_radio: "Запустить радио",
+    play_next: "Включить следующим",
+    add_to_queue: "Добавить в очередь",
+    go_to_album: "К альбому",
+    go_to_artist: "К исполнителю",
+    add_to_playlist: "Добавить в плейлист",
+    remove_from_playlist: "Удалить из плейлиста",
+    play_now: "Слушать сейчас",
+    top_songs: "Популярные треки",
+    releases: "Релизы",
+    fans_might_like: "Похожие исполнители",
+    you_liked: "Понравилось",
+    retry: "Повторить",
+    all_tab: "Все",
+    videos_tab: "Видео",
+    youtube_music: "YouTube Music",
+    your_library: "Медиатека",
+    sign_in_library_title: "Войдите, чтобы открыть медиатеку",
+    sign_in_library_desc:
+        "Подключите сессию YouTube Music из браузера для синхронизации лайков, плейлистов, альбомов и исполнителей.",
+    sign_in_browser: "Войти через браузер",
+    dbl_click_play: "Двойной клик для воспроизведения",
+    dbl_click_play_desc: "Запускать треки двойным кликом вместо одиночного",
+    cache_budget: "Лимит кэша аудио",
+    cache_budget_desc: "Ограниченное хранилище SQLite/диска для кэшированных потоков",
+    pinned: "Закреплённые",
+    pin: "Закрепить",
+    unpin: "Открепить",
+    find_your_mood: "Под настроение",
+    in_library: "В медиатеке",
+    add_to_library: "Добавить в медиатеку",
+    remove_from_library: "Убрать из медиатеки",
 };
 
 #[cfg(test)]
@@ -708,5 +1031,40 @@ mod tests {
         assert_eq!(strings(ru).settings, "Настройки");
         assert_eq!(ru.next(), AppLanguage::En);
         assert_eq!(default_lang.prev(), AppLanguage::Ru);
+        assert_eq!(
+            localize_shelf_title(AppLanguage::Tr, "Quick picks"),
+            "Hızlı seçimler"
+        );
+        assert_eq!(
+            localize_shelf_title(AppLanguage::Ru, "New releases"),
+            "Новинки"
+        );
+        assert_eq!(
+            localize_shelf_title(AppLanguage::En, "Quick picks"),
+            "Quick picks"
+        );
+        assert_eq!(
+            localize_shelf_title(AppLanguage::Tr, "Featured playlists for you"),
+            "Senin için öne çıkan çalma listeleri"
+        );
+        assert_eq!(
+            localize_shelf_title(AppLanguage::Ru, "From the community"),
+            "От сообщества"
+        );
+        assert_eq!(
+            localize_shelf_title(AppLanguage::Tr, "Singles & EPs"),
+            "Tekliler ve EP'ler"
+        );
+        assert_eq!(
+            localize_shelf_title(AppLanguage::Tr, "Similar to The Weeknd"),
+            "The Weeknd benzeri"
+        );
+        assert_eq!(
+            localize_shelf_title(AppLanguage::Ru, "More from Daft Punk"),
+            "Ещё от Daft Punk"
+        );
+        assert_eq!(localize_mood_title(AppLanguage::Tr, "Workout"), "Antrenman");
+        assert_eq!(localize_mood_title(AppLanguage::Ru, "Focus"), "Фокус");
+        assert_eq!(localize_mood_title(AppLanguage::En, "Chill"), "Chill");
     }
 }

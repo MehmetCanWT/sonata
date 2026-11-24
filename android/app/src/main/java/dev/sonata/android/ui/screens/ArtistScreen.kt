@@ -188,10 +188,12 @@ fun ArtistScreen(
     onOpenAllTopSongs: (ArtistScreenData) -> Unit = {},
     onOpenSimilarArtist: (ArtistSimilarItem) -> Unit = {},
     backdrop: LayerBackdrop? = null,
+    artworkTintedPages: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val statusTop = rememberSafeTopInset()
     val themeTokens = LocalLunariaColors.current
+    val useArtworkTint = artworkTintedPages && !themeTokens.isBasic
     val resolvedHeroUrl = remember(artist) {
         artist?.avatarUrl?.takeIf { it.isNotBlank() }
             ?: artist?.latestRelease?.thumbnailUrl?.takeIf { it.isNotBlank() }
@@ -199,12 +201,22 @@ fun ArtistScreen(
             ?: artist?.topSongs?.firstOrNull()?.track?.thumbnailUrl
     }
     val rawPalette = rememberArtworkPalette(
-        artworkUrl = resolvedHeroUrl,
+        artworkUrl = if (useArtworkTint) resolvedHeroUrl else null,
         dark = themeTokens.isDark,
         artPx = HEADER_ART_PX,
     )
-    val palette = remember(rawPalette, themeTokens.designTheme, themeTokens.isDark) {
-        if (!themeTokens.isDark) {
+    val palette = remember(rawPalette, themeTokens.designTheme, themeTokens.isDark, useArtworkTint) {
+        if (!useArtworkTint) {
+            rawPalette.copy(
+                background = themeTokens.eclipseBase,
+                wash = themeTokens.eclipseSurface,
+                elevated = themeTokens.eclipseCard,
+                accent = themeTokens.petalLavender,
+                onBackground = themeTokens.onSurfacePrimary,
+                onBackgroundVariant = themeTokens.onSurfaceSecondary,
+                divider = themeTokens.cardStroke,
+            )
+        } else if (!themeTokens.isDark) {
             val baseTarget = themeTokens.eclipseBase
             val washTarget = themeTokens.eclipseSurface
             val cardTarget = themeTokens.eclipseCard
@@ -231,8 +243,8 @@ fun ArtistScreen(
         }
     }
     val moodyWash = palette.wash
-    val artistBgBrush = remember(moodyWash, palette.background, themeTokens.eclipseBase, themeTokens.isBasic) {
-        if (themeTokens.isBasic) {
+    val artistBgBrush = remember(moodyWash, palette.background, themeTokens.eclipseBase, useArtworkTint) {
+        if (!useArtworkTint) {
             Brush.verticalGradient(listOf(themeTokens.eclipseBase, themeTokens.eclipseBase))
         } else {
             Brush.verticalGradient(
@@ -377,8 +389,9 @@ fun ArtistScreen(
                                     },
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
+                                val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
                                 Text(
-                                    text = "Popular tracks",
+                                    text = strings.topSongs,
                                     style = MaterialTheme.typography.titleLarge.copy(
                                         fontSize = 22.sp,
                                         fontWeight = FontWeight.Bold,
@@ -389,7 +402,7 @@ fun ArtistScreen(
                                 Spacer(Modifier.width(4.dp))
                                 Icon(
                                     imageVector = SonataIcons.ChevronRight,
-                                    contentDescription = "See all",
+                                    contentDescription = strings.seeAll,
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.size(20.dp),
                                 )
@@ -459,7 +472,7 @@ fun ArtistScreen(
                 if (artist.albums.isNotEmpty()) {
                     item(key = "albums_${artist.id}", contentType = "artist_albums") {
                         Spacer(Modifier.height(24.dp))
-                        SectionHeaderRow(title = "Albums & singles", showChevron = true)
+                        SectionHeaderRow(title = dev.sonata.android.ui.i18n.LocalSonataStrings.current.albums, showChevron = true)
                         ReleaseHorizontalShelf(
                             releases = artist.albums,
                             onReleaseClick = onOpenRelease,
@@ -472,7 +485,7 @@ fun ArtistScreen(
                 if (artist.singles.isNotEmpty()) {
                     item(key = "singles_${artist.id}", contentType = "artist_singles") {
                         Spacer(Modifier.height(24.dp))
-                        SectionHeaderRow(title = "Singles & EPs", showChevron = true)
+                        SectionHeaderRow(title = dev.sonata.android.ui.i18n.LocalSonataStrings.current.releases, showChevron = true)
                         ReleaseHorizontalShelf(
                             releases = artist.singles,
                             onReleaseClick = onOpenRelease,
@@ -485,7 +498,7 @@ fun ArtistScreen(
                 if (artist.similarArtists.isNotEmpty()) {
                     item(key = "similar_${artist.id}", contentType = "artist_similar") {
                         Spacer(Modifier.height(24.dp))
-                        SectionHeaderRow(title = "Similar artists", showChevron = true)
+                        SectionHeaderRow(title = dev.sonata.android.ui.i18n.LocalSonataStrings.current.similarArtists, showChevron = true)
                         LazyRow(
                             contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
                             horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -576,10 +589,10 @@ private fun ArtistHeroHeader(
     val heroBackdrop = rememberLayerBackdrop()
     val glassOn = LocalLiquidGlassEnabled.current && isGlassSupported() && !LocalReduceDynamicBlur.current
     val heroTopVignetteBrush = remember {
-        Brush.verticalGradient(
-            0.0f to Color.Black.copy(alpha = 0.32f),
-            0.30f to Color.Transparent,
-            1.0f to Color.Transparent,
+        dev.sonata.android.ui.smoothScrimBrush(
+            from = Color.Black.copy(alpha = 0.32f),
+            to = Color.Black.copy(alpha = 0f),
+            endFraction = 0.30f,
         )
     }
 
@@ -606,13 +619,13 @@ private fun ArtistHeroHeader(
                         .drawWithCache {
                             val blurFadeBrush = Brush.verticalGradient(
                                 colorStops = arrayOf(
-                                    0.00f to Color.Transparent,
-                                    0.24f to Color.Transparent,
+                                    0.00f to Color.Black.copy(alpha = 0f),
+                                    0.24f to Color.Black.copy(alpha = 0f),
                                     0.46f to Color.Black.copy(alpha = 0.92f),
                                     0.74f to Color.Black.copy(alpha = 0.54f),
                                     0.90f to Color.Black.copy(alpha = 0.16f),
-                                    0.98f to Color.Transparent,
-                                    1.00f to Color.Transparent,
+                                    0.98f to Color.Black.copy(alpha = 0f),
+                                    1.00f to Color.Black.copy(alpha = 0f),
                                 ),
                                 startY = 0f,
                                 endY = size.height,
@@ -638,8 +651,8 @@ private fun ArtistHeroHeader(
                                     0.00f to Color.Black,
                                     0.30f to Color.Black,
                                     0.54f to Color.Black.copy(alpha = 0.45f),
-                                    0.72f to Color.Transparent,
-                                    1.00f to Color.Transparent,
+                                    0.72f to Color.Black.copy(alpha = 0f),
+                                    1.00f to Color.Black.copy(alpha = 0f),
                                 ),
                                 startY = 0f,
                                 endY = size.height,
@@ -655,9 +668,9 @@ private fun ArtistHeroHeader(
                     modifier = Modifier
                         .fillMaxSize()
                         .background(
-                            Brush.verticalGradient(
-                                0f to moodyWash.copy(alpha = 0.65f),
-                                1f to Color.Transparent,
+                            dev.sonata.android.ui.smoothScrimBrush(
+                                from = moodyWash.copy(alpha = 0.65f),
+                                to = moodyWash.copy(alpha = 0f),
                             ),
                         ),
                     contentAlignment = Alignment.Center,
@@ -753,6 +766,7 @@ private fun ArtistHeroHeader(
                     horizontalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterHorizontally),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
                     // Circular Liquid Glass Shuffle button
                     Box(
                         modifier = Modifier
@@ -766,7 +780,7 @@ private fun ArtistHeroHeader(
                     ) {
                         Icon(
                             imageVector = SonataIcons.Shuffle,
-                            contentDescription = "Shuffle",
+                            contentDescription = strings.shuffle,
                             tint = buttonTint,
                             modifier = Modifier.size(22.dp),
                         )
@@ -797,7 +811,7 @@ private fun ArtistHeroHeader(
                                 modifier = Modifier.size(18.dp),
                             )
                             Text(
-                                text = "Play",
+                                text = strings.play,
                                 style = MaterialTheme.typography.titleSmall.copy(
                                     fontSize = 16.sp,
                                     fontWeight = FontWeight.Bold,
@@ -830,7 +844,7 @@ private fun ArtistHeroHeader(
                     ) {
                         Icon(
                             imageVector = if (artist.isSubscribed) SonataIcons.StarFilled else SonataIcons.Star,
-                            contentDescription = if (artist.isSubscribed) "Subscribed" else "Subscribe",
+                            contentDescription = if (artist.isSubscribed) strings.subscribed else strings.subscribe,
                             tint = if (artist.isSubscribed) themeTokens.petalLavender else buttonTint,
                             modifier = Modifier.size(22.dp),
                         )
@@ -986,7 +1000,7 @@ private fun LatestReleaseCard(
                         .background(themeTokens.petalLavender),
                 )
                 Text(
-                    text = "Latest release",
+                    text = dev.sonata.android.ui.i18n.LocalSonataStrings.current.latestRelease,
                     style = MaterialTheme.typography.labelMedium.copy(
                         fontSize = 13.5.sp,
                         fontWeight = FontWeight.SemiBold,
@@ -1562,7 +1576,7 @@ private fun AboutArtistSection(
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Text(
-            text = "About $artistName",
+            text = "${dev.sonata.android.ui.i18n.LocalSonataStrings.current.aboutArtist} $artistName",
             style = MaterialTheme.typography.titleLarge.copy(
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Bold,
@@ -1681,10 +1695,17 @@ private fun ArtistLoadingSkeleton(
                         modifier = Modifier
                             .fillMaxSize()
                             .background(
-                                Brush.verticalGradient(
-                                    0.0f to Color.Black.copy(alpha = 0.34f),
-                                    0.35f to Color.Transparent,
-                                    1.0f to moodyWash,
+                                dev.sonata.android.ui.smoothScrimBrush(
+                                    from = Color.Black.copy(alpha = 0.34f),
+                                    to = Color.Black.copy(alpha = 0f),
+                                    endFraction = 0.35f,
+                                ),
+                            )
+                            .background(
+                                dev.sonata.android.ui.smoothScrimBrush(
+                                    from = moodyWash.copy(alpha = 0f),
+                                    to = moodyWash,
+                                    startFraction = 0.35f,
                                 ),
                             ),
                     )

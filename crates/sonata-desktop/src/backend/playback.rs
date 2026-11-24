@@ -10,6 +10,7 @@ use super::types::{ExportFingerprint, InternalEvent};
 use super::BackendEngine;
 use crate::integrations::mpris::MprisUpdate;
 use sonata_core::lyrics::{active_line_index, lrclib, LyricsState};
+use sonata_core::player::RepeatMode;
 use sonata_core::providers::Track;
 use sonata_runtime::media;
 use sonata_runtime::motion;
@@ -34,6 +35,7 @@ impl BackendEngine {
                 if let Some(msg) = status {
                     self.status_line = msg;
                 }
+                self.maybe_prefetch_endless_autoplay();
             }
             SessionEvent::TrackTransition {
                 generation,
@@ -52,6 +54,7 @@ impl BackendEngine {
                 self.status_line = format!("Loading: {} — {}", track.title, track.artist);
                 self.record_played_track(track.clone());
                 self.start_client_media_for_track(generation.value(), track);
+                self.maybe_prefetch_endless_autoplay();
             }
             SessionEvent::PreparingNextTrack { track, .. } => {
                 self.playback.loading_track = true;
@@ -241,11 +244,50 @@ impl BackendEngine {
             }
             SessionEvent::TrackEnded { .. } => {}
             SessionEvent::QueueFinished { .. } => {
-                self.playback.paused = true;
-                self.playback.loading_track = false;
-                self.playback.position_secs = 0.0;
-                self.playback.stream_badge = "Finished".to_string();
-                self.status_line = "Queue finished".to_string();
+                if self.config.autoplay
+                    && self.playback.repeat == RepeatMode::Off
+                    && !self.playback.queue.is_empty()
+                {
+                    let play_seq = self.play_seq;
+                    if !self.prefetched_autoplay_tracks.is_empty() {
+                        let ready = std::mem::take(&mut self.prefetched_autoplay_tracks);
+                        self.prefetched_autoplay_seed = None;
+                        let _ = self.int_tx.send(InternalEvent::AutoplayTracksReady {
+                            play_seq,
+                            tracks: ready,
+                        });
+                        return;
+                    }
+                    let seeds = self.endless_autoplay_seeds();
+                    let excludes = self.endless_autoplay_excludes();
+                    let preferred_artists = self.listener_preferred_artists();
+                    let playlist_id = self.active_queue_playlist_id.clone();
+                    let ytm = self.ytm.clone();
+                    let int_tx = self.int_tx.clone();
+                    self.playback.loading_track = true;
+                    self.playback.paused = true;
+                    self.playback.stream_badge = "Radio...".to_string();
+                    self.status_line = "Finding similar tracks...".to_string();
+                    self.media_tasks.spawn(async move {
+                        let tracks = ytm
+                            .fetch_endless_radio_queue(
+                                &seeds,
+                                playlist_id.as_deref(),
+                                &excludes,
+                                &preferred_artists,
+                            )
+                            .await
+                            .unwrap_or_default();
+                        let _ =
+                            int_tx.send(InternalEvent::AutoplayTracksReady { play_seq, tracks });
+                    });
+                } else {
+                    self.playback.paused = true;
+                    self.playback.loading_track = false;
+                    self.playback.position_secs = 0.0;
+                    self.playback.stream_badge = "Finished".to_string();
+                    self.status_line = "Queue finished".to_string();
+                }
             }
             SessionEvent::Stopped { generation } => {
                 self.play_seq = generation.value();
@@ -284,6 +326,107 @@ impl BackendEngine {
             }
             SessionEvent::PrecacheUpdated { .. } => {}
         }
+    }
+
+    pub(super) fn listener_preferred_artists(&self) -> Vec<String> {
+        let mut weights: std::collections::HashMap<String, (String, u32)> =
+            std::collections::HashMap::new();
+        let mut bump = |raw: &str, pts: u32| {
+            let trimmed = raw.split(['•', ',', ';']).next().unwrap_or(raw).trim();
+            if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("unknown artist") {
+                return;
+            }
+            let key = trimmed.to_ascii_lowercase();
+            let entry = weights
+                .entry(key)
+                .or_insert_with(|| (trimmed.to_string(), 0));
+            entry.1 = entry.1.saturating_add(pts);
+        };
+        for (i, t) in self.playback.queue.iter().rev().take(8).enumerate() {
+            bump(&t.artist, 12u32.saturating_sub(i as u32));
+        }
+        for (i, t) in self.last_played_tracks.iter().take(20).enumerate() {
+            bump(&t.artist, 10u32.saturating_sub((i / 2) as u32).max(2));
+        }
+        for (i, t) in self.history_tracks.iter().take(30).enumerate() {
+            bump(&t.artist, 6u32.saturating_sub((i / 6) as u32).max(1));
+        }
+        let mut ranked: Vec<(String, u32)> = weights.into_values().collect();
+        ranked.sort_by_key(|a| std::cmp::Reverse(a.1));
+        ranked.into_iter().take(12).map(|(name, _)| name).collect()
+    }
+
+    pub(super) fn endless_autoplay_seeds(&self) -> Vec<String> {
+        self.playback
+            .queue
+            .iter()
+            .rev()
+            .map(|t| t.id.clone())
+            .filter(|id| {
+                !id.is_empty() && !id.starts_with("local:") && !id.starts_with("jiosaavn:")
+            })
+            .take(3)
+            .collect()
+    }
+
+    pub(super) fn endless_autoplay_excludes(&self) -> Vec<String> {
+        self.playback
+            .queue
+            .iter()
+            .map(|t| t.id.clone())
+            .chain(
+                self.last_played_tracks
+                    .iter()
+                    .take(40)
+                    .map(|t| t.id.clone()),
+            )
+            .collect()
+    }
+
+    pub(super) fn maybe_prefetch_endless_autoplay(&mut self) {
+        if !self.config.autoplay
+            || self.playback.repeat != RepeatMode::Off
+            || self.playback.queue.is_empty()
+        {
+            return;
+        }
+        let Some(cur_idx) = self.playback.current_index else {
+            return;
+        };
+        if cur_idx + 2 < self.playback.queue.len() {
+            return;
+        }
+        let seeds = self.endless_autoplay_seeds();
+        if seeds.is_empty() {
+            return;
+        }
+        let seed_key = format!(
+            "{}|{}",
+            seeds.join(","),
+            self.active_queue_playlist_id.as_deref().unwrap_or("")
+        );
+        if self.prefetched_autoplay_seed.as_deref() == Some(seed_key.as_str()) {
+            return;
+        }
+        self.prefetched_autoplay_seed = Some(seed_key.clone());
+        self.prefetched_autoplay_tracks.clear();
+        let excludes = self.endless_autoplay_excludes();
+        let preferred_artists = self.listener_preferred_artists();
+        let playlist_id = self.active_queue_playlist_id.clone();
+        let ytm = self.ytm.clone();
+        let int_tx = self.int_tx.clone();
+        tokio::spawn(async move {
+            let tracks = ytm
+                .fetch_endless_radio_queue(
+                    &seeds,
+                    playlist_id.as_deref(),
+                    &excludes,
+                    &preferred_artists,
+                )
+                .await
+                .unwrap_or_default();
+            let _ = int_tx.send(InternalEvent::AutoplayPrefetched { seed_key, tracks });
+        });
     }
 
     pub(super) fn start_cover_enrichment(&mut self) {

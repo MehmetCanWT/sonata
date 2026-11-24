@@ -88,7 +88,13 @@ private fun isMixLikeCard(card: AndroidHomeCard): Boolean {
         "supermix" in t ||
         "discover" in t ||
         "replay" in t ||
-        "station" in t
+        "station" in t ||
+        "karışık" in t ||
+        "radyo" in t ||
+        "keşfet" in t ||
+        "микс" in t ||
+        "радио" in t ||
+        "открыт" in t
 }
 
 private fun canonicalCardId(card: AndroidHomeCard): String =
@@ -117,6 +123,8 @@ fun RadioMixesScreen(
     refreshing: Boolean = false,
     onRefresh: () -> Unit = {},
     onStartTrackRadio: (AndroidTrack) -> Unit = { onStartQuickRadio() },
+    onStartPersonalStation: () -> Unit = onStartQuickRadio,
+    onStartDiscoveryStation: () -> Unit = onStartQuickRadio,
 ) {
     val themeTokens = LocalLunariaColors.current
     val sourceShelves = remember(radioMixShelves, homeShelves) {
@@ -128,13 +136,15 @@ fun RadioMixesScreen(
                 shelf.cards.isNotEmpty() && (
                     "mix" in t || "radio" in t || "station" in t || "mood" in t ||
                         "energy" in t || "focus" in t || "chill" in t ||
+                        "karışık" in t || "radyo" in t || "istasyon" in t || "ruh hali" in t ||
+                        "микс" in t || "радио" in t || "станци" in t || "настроен" in t ||
                         shelf.cards.any(::isMixLikeCard)
                     )
             }
         }
         raw.filterNot { shelf ->
             val t = shelf.title.lowercase()
-            "forgotten" in t || "unutulan" in t
+            "forgotten" in t || "unutulan" in t || "забыт" in t
         }
     }
 
@@ -176,14 +186,27 @@ fun RadioMixesScreen(
     }
 
     val artistRadioSeeds = remember(activeTrack, lastPlayedTracks, homeShelves) {
+        val artistScores = HashMap<String, Int>()
+        lastPlayedTracks.take(40).forEachIndexed { idx, tr ->
+            val key = primaryArtistLabel(tr.artist).lowercase()
+            if (key.isNotBlank()) {
+                artistScores[key] = (artistScores[key] ?: 0) + (40 - idx).coerceAtLeast(3)
+            }
+        }
+        val shelfTracks = homeShelves.flatMap { shelf ->
+            shelf.tracks + shelf.cards.mapNotNull { it.track }
+        }
+        val weightedHistory = lastPlayedTracks
+            .filter { primaryArtistLabel(it.artist).isNotBlank() }
+            .sortedByDescending { artistScores[primaryArtistLabel(it.artist).lowercase()] ?: 0 }
+        val weightedShelf = shelfTracks.sortedByDescending {
+            artistScores[primaryArtistLabel(it.artist).lowercase()] ?: 0
+        }
         val seenArtists = HashSet<String>()
         val candidates = buildList {
             activeTrack?.let { add(it) }
-            addAll(lastPlayedTracks)
-            homeShelves.forEach { shelf ->
-                addAll(shelf.tracks)
-                shelf.cards.mapNotNullTo(this) { it.track }
-            }
+            addAll(weightedHistory)
+            addAll(weightedShelf)
         }
         candidates.filter { track ->
             val artist = primaryArtistLabel(track.artist)
@@ -216,26 +239,61 @@ fun RadioMixesScreen(
             ),
             verticalArrangement = Arrangement.spacedBy(22.dp),
         ) {
-            // Page heading
+            // Page heading + personalized quick station triggers
             item(key = "radio_header") {
-                Text(
-                    text = "Radio",
-                    style = MaterialTheme.typography.headlineLarge.copy(
-                        fontSize = 32.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        letterSpacing = (-0.5).sp,
-                    ),
-                    color = MaterialTheme.colorScheme.onBackground,
+                val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier.padding(horizontal = PAGE_GUTTER),
-                )
+                ) {
+                    Text(
+                        text = strings.radioHeading,
+                        style = MaterialTheme.typography.headlineLarge.copy(
+                            fontSize = 32.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            letterSpacing = (-0.5).sp,
+                        ),
+                        color = MaterialTheme.colorScheme.onBackground,
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        listOf(
+                            strings.myStation to onStartPersonalStation,
+                            strings.discoveryStation to onStartDiscoveryStation,
+                            strings.radio to onStartQuickRadio,
+                        ).forEach { (label, action) ->
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(themeTokens.eclipseSurface.copy(alpha = 0.72f))
+                                    .border(0.75.dp, themeTokens.cardStroke, RoundedCornerShape(14.dp))
+                                    .clickable(onClick = action)
+                                    .padding(horizontal = 10.dp, vertical = 10.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    text = label,
+                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                                    color = MaterialTheme.colorScheme.onBackground,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+                }
             }
 
             // "Featured Mixes" album-cover cards (never duplicates items in secondary shelves)
             if (featuredMixes.isNotEmpty()) {
                 item(key = "your_mixes_section") {
+                    val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Text(
-                            text = "Featured Mixes",
+                            text = strings.featuredMixes,
                             style = MaterialTheme.typography.titleLarge.copy(
                                 fontSize = 20.sp,
                                 fontWeight = FontWeight.Bold,
@@ -266,12 +324,13 @@ fun RadioMixesScreen(
                 }
             } else if (activeTrack != null) {
                 item(key = "active_track_station") {
+                    val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
                     Column(
                         modifier = Modifier.padding(horizontal = PAGE_GUTTER),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         Text(
-                            text = "Featured Station",
+                            text = strings.featuredStation,
                             style = MaterialTheme.typography.titleLarge.copy(
                                 fontSize = 20.sp,
                                 fontWeight = FontWeight.Bold,
@@ -303,7 +362,10 @@ fun RadioMixesScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
                         Text(
-                            text = shelf.title,
+                            text = dev.sonata.android.ui.i18n.localizeShelfTitle(
+                                shelf.title,
+                                dev.sonata.android.ui.i18n.LocalSonataStrings.current,
+                            ),
                             style = MaterialTheme.typography.titleLarge.copy(
                                 fontSize = 20.sp,
                                 fontWeight = FontWeight.Bold,
@@ -345,9 +407,10 @@ fun RadioMixesScreen(
             // Personalized Artist & Track Stations built from listener history & feed
             if (artistRadioSeeds.isNotEmpty()) {
                 item(key = "artist_track_stations") {
+                    val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Text(
-                            text = "Artist & Track Stations",
+                            text = strings.artistAndTrackStations,
                             style = MaterialTheme.typography.titleLarge.copy(
                                 fontSize = 20.sp,
                                 fontWeight = FontWeight.Bold,
@@ -365,8 +428,8 @@ fun RadioMixesScreen(
                             ) { _, tr ->
                                 val artistName = primaryArtistLabel(tr.artist)
                                 SonataEditorialCard(
-                                    title = "$artistName Radio",
-                                    subtitle = "Based on ${tr.title}",
+                                    title = strings.artistRadioTitle(artistName),
+                                    subtitle = strings.basedOnTrack(tr.title),
                                     artworkUrl = tr.thumbnailUrl,
                                     onClick = { onStartTrackRadio(tr) },
                                     width = 148.dp,
@@ -380,7 +443,7 @@ fun RadioMixesScreen(
             // Mood & Genre Radio Stations (animated theme-matched sleeves filling out the Radio page)
             item(key = "mood_radio_stations_header") {
                 Text(
-                    text = "Mood & Genre Stations",
+                    text = dev.sonata.android.ui.i18n.LocalSonataStrings.current.moodAndGenreStations,
                     style = MaterialTheme.typography.titleLarge.copy(
                         fontSize = 20.sp,
                         fontWeight = FontWeight.Bold,
@@ -401,8 +464,9 @@ fun RadioMixesScreen(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     rowItems.forEach { mood ->
+                        val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
                         MoodGenreSleeve(
-                            title = mood.displayName,
+                            title = dev.sonata.android.ui.i18n.localizeMoodTitle(mood.displayName, strings),
                             modifier = Modifier
                                 .weight(1f)
                                 .aspectRatio(1.9f)
@@ -481,11 +545,10 @@ private fun FeaturedMixCoverCard(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
-                    Brush.verticalGradient(
-                        0.0f to Color.Transparent,
-                        0.48f to themeTokens.heroCardScrimColor.copy(alpha = 0.18f),
-                        0.74f to themeTokens.heroCardScrimColor.copy(alpha = 0.68f),
-                        1.0f to themeTokens.heroCardScrimColor.copy(alpha = 0.94f),
+                    dev.sonata.android.ui.smoothScrimBrush(
+                        from = themeTokens.heroCardScrimColor.copy(alpha = 0f),
+                        to = themeTokens.heroCardScrimColor.copy(alpha = 0.94f),
+                        startFraction = 0.12f,
                     ),
                 ),
         )
@@ -556,13 +619,14 @@ private fun FeaturedTrackRadioCoverCard(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
-                    Brush.verticalGradient(
-                        0.0f to Color.Transparent,
-                        0.50f to themeTokens.heroCardScrimColor.copy(alpha = 0.25f),
-                        1.0f to themeTokens.heroCardScrimColor.copy(alpha = 0.92f),
+                    dev.sonata.android.ui.smoothScrimBrush(
+                        from = themeTokens.heroCardScrimColor.copy(alpha = 0f),
+                        to = themeTokens.heroCardScrimColor.copy(alpha = 0.92f),
+                        startFraction = 0.12f,
                     ),
                 ),
         )
+        val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
@@ -571,7 +635,7 @@ private fun FeaturedTrackRadioCoverCard(
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Text(
-                text = "${track.title} Radio",
+                text = strings.artistRadioTitle(track.title),
                 style = MaterialTheme.typography.titleMedium.copy(
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold,
@@ -581,7 +645,7 @@ private fun FeaturedTrackRadioCoverCard(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                text = "Based on ${track.artist}",
+                text = strings.basedOnTrack(track.artist),
                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
                 color = Color.White.copy(alpha = 0.76f),
                 maxLines = 1,

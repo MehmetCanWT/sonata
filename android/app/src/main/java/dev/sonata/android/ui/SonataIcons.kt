@@ -970,6 +970,75 @@ object SonataIcons {
         ).build()
     }
 
+    val Add: ImageVector by lazy {
+        ImageVector.Builder(
+            name = "sonata_add",
+            defaultWidth = 24.dp,
+            defaultHeight = 24.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f,
+        ).apply {
+            path(
+                stroke = stroke,
+                strokeLineWidth = STROKE,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                moveTo(12f, 5f); lineTo(12f, 19f)
+                moveTo(5f, 12f); lineTo(19f, 12f)
+            }
+        }.build()
+    }
+
+    val Pin: ImageVector by lazy {
+        ImageVector.Builder(
+            name = "sonata_pin",
+            defaultWidth = 24.dp,
+            defaultHeight = 24.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f,
+        ).apply {
+            path(
+                stroke = stroke,
+                strokeLineWidth = 1.9f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                moveTo(9f, 4.5f); lineTo(15f, 4.5f)
+                moveTo(10f, 4.5f); lineTo(9.2f, 10.2f); lineTo(6.5f, 13.4f); lineTo(17.5f, 13.4f); lineTo(14.8f, 10.2f); lineTo(14f, 4.5f)
+                moveTo(12f, 13.4f); lineTo(12f, 20.5f)
+            }
+        }.build()
+    }
+
+    val PinFilled: ImageVector by lazy {
+        ImageVector.Builder(
+            name = "sonata_pin_filled",
+            defaultWidth = 24.dp,
+            defaultHeight = 24.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f,
+        ).apply {
+            path(
+                fill = stroke,
+                stroke = stroke,
+                strokeLineWidth = 1.6f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                moveTo(9f, 4.5f); lineTo(15f, 4.5f); lineTo(14.6f, 10.2f); lineTo(17.5f, 13.4f)
+                lineTo(6.5f, 13.4f); lineTo(9.4f, 10.2f); close()
+            }
+            path(
+                stroke = stroke,
+                strokeLineWidth = 2.0f,
+                strokeLineCap = StrokeCap.Round,
+            ) {
+                moveTo(12f, 13.4f); lineTo(12f, 20.5f)
+            }
+        }.build()
+    }
+
     val GraphicEq: ImageVector by lazy {
         ImageVector.Builder(
             name = "sonata_graphic_eq",
@@ -1090,6 +1159,74 @@ object SonataIcons {
             ),
             fill = stroke,
         ).build()
+    }
+
+    val Fullscreen: ImageVector by lazy {
+        ImageVector.Builder(
+            name = "sonata_fullscreen",
+            defaultWidth = 24.dp,
+            defaultHeight = 24.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f,
+        ).apply {
+            path(
+                stroke = stroke,
+                strokeLineWidth = 2f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                moveTo(4f, 9f); lineTo(4f, 4f); lineTo(9f, 4f)
+                moveTo(15f, 4f); lineTo(20f, 4f); lineTo(20f, 9f)
+                moveTo(20f, 15f); lineTo(20f, 20f); lineTo(15f, 20f)
+                moveTo(9f, 20f); lineTo(4f, 20f); lineTo(4f, 15f)
+            }
+        }.build()
+    }
+
+    val FullscreenExit: ImageVector by lazy {
+        ImageVector.Builder(
+            name = "sonata_fullscreen_exit",
+            defaultWidth = 24.dp,
+            defaultHeight = 24.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f,
+        ).apply {
+            path(
+                stroke = stroke,
+                strokeLineWidth = 2f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                moveTo(4f, 9f); lineTo(9f, 9f); lineTo(9f, 4f)
+                moveTo(20f, 9f); lineTo(15f, 9f); lineTo(15f, 4f)
+                moveTo(15f, 20f); lineTo(15f, 15f); lineTo(20f, 15f)
+                moveTo(9f, 20f); lineTo(9f, 15f); lineTo(4f, 15f)
+            }
+        }.build()
+    }
+
+    val Tune: ImageVector by lazy {
+        ImageVector.Builder(
+            name = "sonata_tune",
+            defaultWidth = 24.dp,
+            defaultHeight = 24.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f,
+        ).apply {
+            path(
+                stroke = stroke,
+                strokeLineWidth = 1.9f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                moveTo(4f, 7f); lineTo(14f, 7f); moveTo(18f, 7f); lineTo(20f, 7f)
+                moveTo(16f, 5f); lineTo(16f, 9f)
+                moveTo(4f, 12f); lineTo(7f, 12f); moveTo(11f, 12f); lineTo(20f, 12f)
+                moveTo(9f, 10f); lineTo(9f, 14f)
+                moveTo(4f, 17f); lineTo(13f, 17f); moveTo(17f, 17f); lineTo(20f, 17f)
+                moveTo(15f, 15f); lineTo(15f, 19f)
+            }
+        }.build()
     }
 }
 

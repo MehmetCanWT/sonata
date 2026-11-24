@@ -218,8 +218,8 @@ import dev.sonata.android.ui.ReleaseArt
 import dev.sonata.android.ui.ReplayCreditCard
 import dev.sonata.android.ui.SHELF_CARD_WIDTH
 import dev.sonata.android.ui.SearchField
-import dev.sonata.android.ui.SonataAccent
 import dev.sonata.android.ui.SonataIcons
+import dev.sonata.android.ui.sonataThemeAccent
 import dev.sonata.android.ui.SonataShimmerHost
 import dev.sonata.android.ui.SonataTheme
 import dev.sonata.android.ui.theme.LunariaColors
@@ -329,8 +329,9 @@ internal fun SearchTabContent(
         else -> 6
     }
 
+    val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
     var selectedSegment by remember { mutableIntStateOf(0) }
-    val segments = remember { listOf("YouTube", "Library", "Playlists") }
+    val segments = remember(strings) { listOf("YouTube", strings.libraryHeading, strings.playlists) }
     val filteredLibraryTracks = remember(state.tracks, state.query, selectedSegment) {
         if (state.query.isBlank()) state.tracks
         else state.tracks.filter {
@@ -394,16 +395,17 @@ internal fun SearchTabContent(
                 ) {
                     quickChips.forEach { chipText ->
                         val isActiveQuery = state.query.equals(chipText, ignoreCase = true)
+                        val themeAccent = sonataThemeAccent()
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(22.dp))
                                 .background(
-                                    if (isActiveQuery) SonataAccent.copy(alpha = 0.20f)
+                                    if (isActiveQuery) themeAccent.copy(alpha = 0.20f)
                                     else MaterialTheme.colorScheme.surfaceVariant,
                                 )
                                 .border(
                                     width = 0.5.dp,
-                                    color = if (isActiveQuery) SonataAccent.copy(alpha = 0.6f)
+                                    color = if (isActiveQuery) themeAccent.copy(alpha = 0.6f)
                                     else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
                                     shape = RoundedCornerShape(22.dp),
                                 )
@@ -417,7 +419,7 @@ internal fun SearchTabContent(
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.Medium,
                                 ),
-                                color = if (isActiveQuery) SonataAccent else MaterialTheme.colorScheme.onBackground,
+                                color = if (isActiveQuery) themeAccent else MaterialTheme.colorScheme.onBackground,
                                 maxLines = 1,
                             )
                         }
@@ -443,7 +445,7 @@ internal fun SearchTabContent(
                         )
                         Spacer(Modifier.width(12.dp))
                         Text(
-                            text = "Recent searches",
+                            text = strings.recentSearches,
                             style = MaterialTheme.typography.titleLarge.copy(
                                 fontSize = 21.sp,
                                 fontWeight = FontWeight.Bold,
@@ -454,9 +456,9 @@ internal fun SearchTabContent(
                         )
                         if (state.recentSearches.isNotEmpty()) {
                             Text(
-                                text = "Clear",
+                                text = strings.clear,
                                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                                color = SonataAccent,
+                                color = sonataThemeAccent(),
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(12.dp))
                                     .clickable(onClick = onClearRecentSearches)
@@ -504,7 +506,7 @@ internal fun SearchTabContent(
                         )
                         Spacer(Modifier.width(12.dp))
                         Text(
-                            text = "Samples",
+                            text = strings.samples,
                             style = MaterialTheme.typography.titleLarge.copy(
                                 fontSize = 21.sp,
                                 fontWeight = FontWeight.Bold,

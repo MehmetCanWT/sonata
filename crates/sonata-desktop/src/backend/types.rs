@@ -16,6 +16,7 @@ use sonata_core::providers::{Playlist, ProviderSource, Track};
 use sonata_core::updater::UpdateCheckResult;
 use sonata_runtime::auth::BrowserOption;
 use sonata_runtime::config::AppConfig;
+use sonata_runtime::i18n::AppLanguage;
 use sonata_runtime::motion::MotionCover;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -76,6 +77,7 @@ pub enum BackendCmd {
         browse_id: String,
         params: String,
     },
+    OpenMoodByTitle(String),
     OpenShelfDetail(HomeShelf),
     SelectHomeChip(Option<MoodChip>),
     RefreshActivePlaylist,
@@ -120,14 +122,22 @@ pub enum BackendCmd {
     SetShuffle(bool),
     CycleRepeat,
     SetRepeat(RepeatMode),
+    ToggleAutoplay,
     ToggleHiFi,
     ToggleJioSaavn,
     StepCacheLimit(bool),
     ToggleMotionCovers,
     ToggleReduceMotion,
+    SetLanguage(AppLanguage),
     ToggleLike(Track),
     DislikeTrack(Track),
     ToggleSaveAlbum,
+    ToggleSavePlaylist {
+        id: String,
+        title: String,
+        thumbnail_url: Option<String>,
+        save: bool,
+    },
     CreateYtmPlaylist(String),
     EditPlaylist {
         playlist_id: String,
@@ -210,6 +220,7 @@ pub struct DesktopSnapshot {
     pub volume: u8,
     pub shuffle: bool,
     pub repeat: RepeatMode,
+    pub autoplay: bool,
     pub stream_badge: String,
     pub upgrading_quality: bool,
     pub loading_track: bool,
@@ -220,6 +231,7 @@ pub struct DesktopSnapshot {
     pub spotify_notice: Option<String>,
     pub update_info: Option<UpdateCheckResult>,
     pub checking_updates: bool,
+    pub thumb_rev: u64,
 }
 
 impl DesktopSnapshot {
@@ -245,7 +257,7 @@ impl DesktopSnapshot {
     pub fn writable_ytm_playlists(&self) -> Vec<Playlist> {
         self.ytm_playlists
             .iter()
-            .filter(|p| p.source == ProviderSource::YouTubeMusic && p.id != "VLLM")
+            .filter(|p| p.source == ProviderSource::YouTubeMusic && p.is_owned && p.id != "VLLM")
             .cloned()
             .collect()
     }
@@ -329,6 +341,14 @@ pub(super) enum InternalEvent {
     RadioQueueReady {
         tracks: Vec<Track>,
         label: String,
+    },
+    AutoplayTracksReady {
+        play_seq: u64,
+        tracks: Vec<Track>,
+    },
+    AutoplayPrefetched {
+        seed_key: String,
+        tracks: Vec<Track>,
     },
     ArtistResolveFallback(String),
     AlbumDetailLoaded {

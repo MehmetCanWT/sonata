@@ -825,6 +825,26 @@ internal open class UniffiVTableCallbackInterfaceAndroidJsCipherSolver(
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -858,13 +878,25 @@ fun uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_artist_page(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_collection_tracks(
 ): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_collection_tracks_fresh(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_endless_radio_queue(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_explore_feed(
+): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_home_feed(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_home_mood_chips(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_home_mood_feed(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_library_playlists(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_listening_history(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_lyrics(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_mood_category(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_radio_mixes(
 ): Short
@@ -894,6 +926,10 @@ fun uniffi_sonata_android_checksum_method_sonataandroidengine_resolve_jiosaavn_b
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_resolve_motion_media(
 ): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_resolve_music_video_candidate(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_resolve_music_video_streams(
+): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_resolve_recovery(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_resolve_stream(
@@ -904,7 +940,11 @@ fun uniffi_sonata_android_checksum_method_sonataandroidengine_search_songs(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_set_js_cipher_solver(
 ): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_set_language(
+): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_set_like_status(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_set_playlist_saved(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_set_ytm_cookie_header(
 ): Short
@@ -994,13 +1034,25 @@ fun uniffi_sonata_android_fn_method_sonataandroidengine_fetch_artist_page(`ptr`:
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_fetch_collection_tracks(`ptr`: Pointer,`browseId`: RustBuffer.ByValue,
 ): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_fetch_collection_tracks_fresh(`ptr`: Pointer,`browseId`: RustBuffer.ByValue,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_fetch_endless_radio_queue(`ptr`: Pointer,`seedVideoIds`: RustBuffer.ByValue,`playlistId`: RustBuffer.ByValue,`excludeVideoIds`: RustBuffer.ByValue,`preferredArtists`: RustBuffer.ByValue,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_fetch_explore_feed(`ptr`: Pointer,
+): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_fetch_home_feed(`ptr`: Pointer,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_fetch_home_mood_chips(`ptr`: Pointer,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_fetch_home_mood_feed(`ptr`: Pointer,`params`: RustBuffer.ByValue,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_fetch_library_playlists(`ptr`: Pointer,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_fetch_listening_history(`ptr`: Pointer,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_fetch_lyrics(`ptr`: Pointer,`track`: RustBuffer.ByValue,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_fetch_mood_category(`ptr`: Pointer,`browseId`: RustBuffer.ByValue,`params`: RustBuffer.ByValue,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_fetch_radio_mixes(`ptr`: Pointer,
 ): Long
@@ -1030,6 +1082,10 @@ fun uniffi_sonata_android_fn_method_sonataandroidengine_resolve_jiosaavn_by_id(`
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_resolve_motion_media(`ptr`: Pointer,`track`: RustBuffer.ByValue,`storefront`: RustBuffer.ByValue,`countryCode`: RustBuffer.ByValue,
 ): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_resolve_music_video_candidate(`ptr`: Pointer,`track`: RustBuffer.ByValue,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_resolve_music_video_streams(`ptr`: Pointer,`videoId`: RustBuffer.ByValue,
+): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_resolve_recovery(`ptr`: Pointer,`track`: RustBuffer.ByValue,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_resolve_stream(`ptr`: Pointer,`track`: RustBuffer.ByValue,
@@ -1040,7 +1096,11 @@ fun uniffi_sonata_android_fn_method_sonataandroidengine_search_songs(`ptr`: Poin
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_set_js_cipher_solver(`ptr`: Pointer,`solver`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+fun uniffi_sonata_android_fn_method_sonataandroidengine_set_language(`ptr`: Pointer,`languageCode`: RustBuffer.ByValue,
+): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_set_like_status(`ptr`: Pointer,`videoId`: RustBuffer.ByValue,`liked`: Byte,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_set_playlist_saved(`ptr`: Pointer,`playlistId`: RustBuffer.ByValue,`saved`: Byte,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_set_ytm_cookie_header(`ptr`: Pointer,`cookieHeader`: RustBuffer.ByValue,
 ): Long
@@ -1205,7 +1265,22 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_collection_tracks() != 13098.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_collection_tracks_fresh() != 49147.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_endless_radio_queue() != 2150.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_explore_feed() != 2441.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_home_feed() != 24710.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_home_mood_chips() != 11087.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_home_mood_feed() != 8667.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_library_playlists() != 54359.toShort()) {
@@ -1215,6 +1290,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_lyrics() != 13324.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_mood_category() != 22019.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_fetch_radio_mixes() != 4419.toShort()) {
@@ -1259,6 +1337,12 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_resolve_motion_media() != 14597.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_resolve_music_video_candidate() != 51245.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_resolve_music_video_streams() != 18683.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_resolve_recovery() != 10519.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1274,7 +1358,13 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_set_js_cipher_solver() != 46801.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_set_language() != 25779.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_set_like_status() != 46935.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_set_playlist_saved() != 35695.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_set_ytm_cookie_header() != 54700.toShort()) {
@@ -1827,9 +1917,36 @@ public interface SonataAndroidEngineInterface {
     suspend fun `fetchCollectionTracks`(`browseId`: kotlin.String): List<AndroidTrack>
     
     /**
+     * Invalidates any cached playlist entry for `browse_id` and fetches live tracks from YouTube Music.
+     */
+    suspend fun `fetchCollectionTracksFresh`(`browseId`: kotlin.String): List<AndroidTrack>
+    
+    /**
+     * Fetches personalized endless continuation tracks combining playlist automix and seed
+     * radios, excluding played/seed IDs and diversifying artists.
+     */
+    suspend fun `fetchEndlessRadioQueue`(`seedVideoIds`: List<kotlin.String>, `playlistId`: kotlin.String?, `excludeVideoIds`: List<kotlin.String>, `preferredArtists`: List<kotlin.String>): List<AndroidTrack>
+    
+    /**
+     * Fetches `FEmusic_explore` shelves alongside `FEmusic_moods_and_genres` category tiles.
+     */
+    suspend fun `fetchExploreFeed`(): AndroidExploreFeed
+    
+    /**
      * Fetches fresh YouTube Music home/discovery shelves live without persisting to disk.
      */
     suspend fun `fetchHomeFeed`(): List<AndroidHomeShelf>
+    
+    /**
+     * Fetches top-level YouTube Music home mood filter chips.
+     */
+    suspend fun `fetchHomeMoodChips`(): List<AndroidMoodChip>
+    
+    /**
+     * Fetches the home feed filtered by an optional mood chip `params` token, or the full
+     * home feed when `params` is `None` or empty.
+     */
+    suspend fun `fetchHomeMoodFeed`(`params`: kotlin.String?): List<AndroidHomeShelf>
     
     /**
      * Fetches the signed-in user's YouTube Music library playlists.
@@ -1845,6 +1962,11 @@ public interface SonataAndroidEngineInterface {
      * Fetches synced or plain lyrics lines for the active track.
      */
     suspend fun `fetchLyrics`(`track`: AndroidTrack): List<AndroidLyricLine>
+    
+    /**
+     * Fetches curated shelves for a mood or genre category browse endpoint.
+     */
+    suspend fun `fetchMoodCategory`(`browseId`: kotlin.String, `params`: kotlin.String): List<AndroidHomeShelf>
     
     /**
      * Fetches personalized YouTube Music radio & mix shelves (excluding manual user playlists).
@@ -1918,6 +2040,16 @@ public interface SonataAndroidEngineInterface {
     suspend fun `resolveMotionMedia`(`track`: AndroidTrack, `storefront`: kotlin.String?, `countryCode`: kotlin.String?): AndroidMotionMedia?
     
     /**
+     * Checks whether an official or counterpart Music Video exists for `track`.
+     */
+    suspend fun `resolveMusicVideoCandidate`(`track`: AndroidTrack): AndroidMusicVideoCandidate?
+    
+    /**
+     * Resolves adaptive/fallback video quality streams and companion audio for `video_id`.
+     */
+    suspend fun `resolveMusicVideoStreams`(`videoId`: kotlin.String): AndroidResolvedMusicVideo
+    
+    /**
      * Invalidates stale cached streams and re-resolves a fresh recovery stream after mid-track error.
      */
     suspend fun `resolveRecovery`(`track`: AndroidTrack): AndroidResolvedStream
@@ -1943,9 +2075,20 @@ public interface SonataAndroidEngineInterface {
     fun `setJsCipherSolver`(`solver`: AndroidJsCipherSolver)
     
     /**
+     * Updates the active YouTube Music `hl` language (`"tr"`, `"ru"`, or `"en"`) and clears
+     * cached playlists and artist pages when changed.
+     */
+    suspend fun `setLanguage`(`languageCode`: kotlin.String)
+    
+    /**
      * Persists like/unlike status for a YouTube Music track.
      */
     suspend fun `setLikeStatus`(`videoId`: kotlin.String, `liked`: kotlin.Boolean)
+    
+    /**
+     * Saves or removes an external playlist in the signed-in user's YouTube Music library.
+     */
+    suspend fun `setPlaylistSaved`(`playlistId`: kotlin.String, `saved`: kotlin.Boolean)
     
     /**
      * Installs YouTube Music WebView cookies, persists them privately, and returns the account profile.
@@ -2282,6 +2425,79 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
 
     
     /**
+     * Invalidates any cached playlist entry for `browse_id` and fetches live tracks from YouTube Music.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `fetchCollectionTracksFresh`(`browseId`: kotlin.String) : List<AndroidTrack> {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_fetch_collection_tracks_fresh(
+                thisPtr,
+                FfiConverterString.lower(`browseId`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterSequenceTypeAndroidTrack.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Fetches personalized endless continuation tracks combining playlist automix and seed
+     * radios, excluding played/seed IDs and diversifying artists.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `fetchEndlessRadioQueue`(`seedVideoIds`: List<kotlin.String>, `playlistId`: kotlin.String?, `excludeVideoIds`: List<kotlin.String>, `preferredArtists`: List<kotlin.String>) : List<AndroidTrack> {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_fetch_endless_radio_queue(
+                thisPtr,
+                FfiConverterSequenceString.lower(`seedVideoIds`),FfiConverterOptionalString.lower(`playlistId`),FfiConverterSequenceString.lower(`excludeVideoIds`),FfiConverterSequenceString.lower(`preferredArtists`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterSequenceTypeAndroidTrack.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Fetches `FEmusic_explore` shelves alongside `FEmusic_moods_and_genres` category tiles.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `fetchExploreFeed`() : AndroidExploreFeed {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_fetch_explore_feed(
+                thisPtr,
+                
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterTypeAndroidExploreFeed.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
      * Fetches fresh YouTube Music home/discovery shelves live without persisting to disk.
      */
     @Throws(SonataAndroidException::class)
@@ -2292,6 +2508,55 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
             UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_fetch_home_feed(
                 thisPtr,
                 
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterSequenceTypeAndroidHomeShelf.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Fetches top-level YouTube Music home mood filter chips.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `fetchHomeMoodChips`() : List<AndroidMoodChip> {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_fetch_home_mood_chips(
+                thisPtr,
+                
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterSequenceTypeAndroidMoodChip.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Fetches the home feed filtered by an optional mood chip `params` token, or the full
+     * home feed when `params` is `None` or empty.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `fetchHomeMoodFeed`(`params`: kotlin.String?) : List<AndroidHomeShelf> {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_fetch_home_mood_feed(
+                thisPtr,
+                FfiConverterOptionalString.lower(`params`),
             )
         },
         { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
@@ -2372,6 +2637,30 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
         { FfiConverterSequenceTypeAndroidLyricLine.lift(it) },
         // Error FFI converter
         UniffiNullRustCallStatusErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Fetches curated shelves for a mood or genre category browse endpoint.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `fetchMoodCategory`(`browseId`: kotlin.String, `params`: kotlin.String) : List<AndroidHomeShelf> {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_fetch_mood_category(
+                thisPtr,
+                FfiConverterString.lower(`browseId`),FfiConverterString.lower(`params`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterSequenceTypeAndroidHomeShelf.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
     )
     }
 
@@ -2701,6 +2990,53 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
 
     
     /**
+     * Checks whether an official or counterpart Music Video exists for `track`.
+     */
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `resolveMusicVideoCandidate`(`track`: AndroidTrack) : AndroidMusicVideoCandidate? {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_resolve_music_video_candidate(
+                thisPtr,
+                FfiConverterTypeAndroidTrack.lower(`track`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterOptionalTypeAndroidMusicVideoCandidate.lift(it) },
+        // Error FFI converter
+        UniffiNullRustCallStatusErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Resolves adaptive/fallback video quality streams and companion audio for `video_id`.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `resolveMusicVideoStreams`(`videoId`: kotlin.String) : AndroidResolvedMusicVideo {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_resolve_music_video_streams(
+                thisPtr,
+                FfiConverterString.lower(`videoId`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterTypeAndroidResolvedMusicVideo.lift(it) },
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
      * Invalidates stale cached streams and re-resolves a fresh recovery stream after mid-track error.
      */
     @Throws(SonataAndroidException::class)
@@ -2811,6 +3147,31 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
 
     
     /**
+     * Updates the active YouTube Music `hl` language (`"tr"`, `"ru"`, or `"en"`) and clears
+     * cached playlists and artist pages when changed.
+     */
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `setLanguage`(`languageCode`: kotlin.String) {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_set_language(
+                thisPtr,
+                FfiConverterString.lower(`languageCode`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_void(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_void(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_void(future) },
+        // lift function
+        { Unit },
+        
+        // Error FFI converter
+        UniffiNullRustCallStatusErrorHandler,
+    )
+    }
+
+    
+    /**
      * Persists like/unlike status for a YouTube Music track.
      */
     @Throws(SonataAndroidException::class)
@@ -2821,6 +3182,31 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
             UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_set_like_status(
                 thisPtr,
                 FfiConverterString.lower(`videoId`),FfiConverterBoolean.lower(`liked`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_void(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_void(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_void(future) },
+        // lift function
+        { Unit },
+        
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Saves or removes an external playlist in the signed-in user's YouTube Music library.
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `setPlaylistSaved`(`playlistId`: kotlin.String, `saved`: kotlin.Boolean) {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_set_playlist_saved(
+                thisPtr,
+                FfiConverterString.lower(`playlistId`),FfiConverterBoolean.lower(`saved`),
             )
         },
         { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_void(future, callback, continuation) },
@@ -3084,6 +3470,38 @@ public object FfiConverterTypeAndroidArtistPage: FfiConverterRustBuffer<AndroidA
 
 
 
+data class AndroidExploreFeed (
+    var `shelves`: List<AndroidHomeShelf>, 
+    var `moods`: List<AndroidMoodCategory>
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAndroidExploreFeed: FfiConverterRustBuffer<AndroidExploreFeed> {
+    override fun read(buf: ByteBuffer): AndroidExploreFeed {
+        return AndroidExploreFeed(
+            FfiConverterSequenceTypeAndroidHomeShelf.read(buf),
+            FfiConverterSequenceTypeAndroidMoodCategory.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AndroidExploreFeed) = (
+            FfiConverterSequenceTypeAndroidHomeShelf.allocationSize(value.`shelves`) +
+            FfiConverterSequenceTypeAndroidMoodCategory.allocationSize(value.`moods`)
+    )
+
+    override fun write(value: AndroidExploreFeed, buf: ByteBuffer) {
+            FfiConverterSequenceTypeAndroidHomeShelf.write(value.`shelves`, buf)
+            FfiConverterSequenceTypeAndroidMoodCategory.write(value.`moods`, buf)
+    }
+}
+
+
+
 data class AndroidHeader (
     var `name`: kotlin.String, 
     var `value`: kotlin.String
@@ -3324,6 +3742,78 @@ public object FfiConverterTypeAndroidLyricWord: FfiConverterRustBuffer<AndroidLy
 
 
 
+data class AndroidMoodCategory (
+    var `title`: kotlin.String, 
+    var `browseId`: kotlin.String, 
+    var `params`: kotlin.String, 
+    var `accentColor`: kotlin.UInt
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAndroidMoodCategory: FfiConverterRustBuffer<AndroidMoodCategory> {
+    override fun read(buf: ByteBuffer): AndroidMoodCategory {
+        return AndroidMoodCategory(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterUInt.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AndroidMoodCategory) = (
+            FfiConverterString.allocationSize(value.`title`) +
+            FfiConverterString.allocationSize(value.`browseId`) +
+            FfiConverterString.allocationSize(value.`params`) +
+            FfiConverterUInt.allocationSize(value.`accentColor`)
+    )
+
+    override fun write(value: AndroidMoodCategory, buf: ByteBuffer) {
+            FfiConverterString.write(value.`title`, buf)
+            FfiConverterString.write(value.`browseId`, buf)
+            FfiConverterString.write(value.`params`, buf)
+            FfiConverterUInt.write(value.`accentColor`, buf)
+    }
+}
+
+
+
+data class AndroidMoodChip (
+    var `label`: kotlin.String, 
+    var `params`: kotlin.String
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAndroidMoodChip: FfiConverterRustBuffer<AndroidMoodChip> {
+    override fun read(buf: ByteBuffer): AndroidMoodChip {
+        return AndroidMoodChip(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AndroidMoodChip) = (
+            FfiConverterString.allocationSize(value.`label`) +
+            FfiConverterString.allocationSize(value.`params`)
+    )
+
+    override fun write(value: AndroidMoodChip, buf: ByteBuffer) {
+            FfiConverterString.write(value.`label`, buf)
+            FfiConverterString.write(value.`params`, buf)
+    }
+}
+
+
+
 data class AndroidMotionMedia (
     var `url`: kotlin.String, 
     var `fallbackUrl`: kotlin.String?, 
@@ -3368,10 +3858,91 @@ public object FfiConverterTypeAndroidMotionMedia: FfiConverterRustBuffer<Android
 
 
 
+data class AndroidMusicVideoCandidate (
+    var `videoId`: kotlin.String, 
+    var `title`: kotlin.String, 
+    var `thumbnailUrl`: kotlin.String?, 
+    var `durationSecs`: kotlin.ULong?, 
+    var `syncSegments`: List<AndroidMusicVideoSyncSegment>
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAndroidMusicVideoCandidate: FfiConverterRustBuffer<AndroidMusicVideoCandidate> {
+    override fun read(buf: ByteBuffer): AndroidMusicVideoCandidate {
+        return AndroidMusicVideoCandidate(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalULong.read(buf),
+            FfiConverterSequenceTypeAndroidMusicVideoSyncSegment.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AndroidMusicVideoCandidate) = (
+            FfiConverterString.allocationSize(value.`videoId`) +
+            FfiConverterString.allocationSize(value.`title`) +
+            FfiConverterOptionalString.allocationSize(value.`thumbnailUrl`) +
+            FfiConverterOptionalULong.allocationSize(value.`durationSecs`) +
+            FfiConverterSequenceTypeAndroidMusicVideoSyncSegment.allocationSize(value.`syncSegments`)
+    )
+
+    override fun write(value: AndroidMusicVideoCandidate, buf: ByteBuffer) {
+            FfiConverterString.write(value.`videoId`, buf)
+            FfiConverterString.write(value.`title`, buf)
+            FfiConverterOptionalString.write(value.`thumbnailUrl`, buf)
+            FfiConverterOptionalULong.write(value.`durationSecs`, buf)
+            FfiConverterSequenceTypeAndroidMusicVideoSyncSegment.write(value.`syncSegments`, buf)
+    }
+}
+
+
+
+data class AndroidMusicVideoSyncSegment (
+    var `musicStartMs`: kotlin.ULong, 
+    var `videoStartMs`: kotlin.ULong, 
+    var `durationMs`: kotlin.ULong
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAndroidMusicVideoSyncSegment: FfiConverterRustBuffer<AndroidMusicVideoSyncSegment> {
+    override fun read(buf: ByteBuffer): AndroidMusicVideoSyncSegment {
+        return AndroidMusicVideoSyncSegment(
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AndroidMusicVideoSyncSegment) = (
+            FfiConverterULong.allocationSize(value.`musicStartMs`) +
+            FfiConverterULong.allocationSize(value.`videoStartMs`) +
+            FfiConverterULong.allocationSize(value.`durationMs`)
+    )
+
+    override fun write(value: AndroidMusicVideoSyncSegment, buf: ByteBuffer) {
+            FfiConverterULong.write(value.`musicStartMs`, buf)
+            FfiConverterULong.write(value.`videoStartMs`, buf)
+            FfiConverterULong.write(value.`durationMs`, buf)
+    }
+}
+
+
+
 data class AndroidPlaylist (
     var `id`: kotlin.String, 
     var `name`: kotlin.String, 
-    var `thumbnailUrl`: kotlin.String?
+    var `thumbnailUrl`: kotlin.String?, 
+    var `isOwned`: kotlin.Boolean = false
 ) {
     
     companion object
@@ -3386,19 +3957,66 @@ public object FfiConverterTypeAndroidPlaylist: FfiConverterRustBuffer<AndroidPla
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
             FfiConverterOptionalString.read(buf),
+            FfiConverterBoolean.read(buf),
         )
     }
 
     override fun allocationSize(value: AndroidPlaylist) = (
             FfiConverterString.allocationSize(value.`id`) +
             FfiConverterString.allocationSize(value.`name`) +
-            FfiConverterOptionalString.allocationSize(value.`thumbnailUrl`)
+            FfiConverterOptionalString.allocationSize(value.`thumbnailUrl`) +
+            FfiConverterBoolean.allocationSize(value.`isOwned`)
     )
 
     override fun write(value: AndroidPlaylist, buf: ByteBuffer) {
             FfiConverterString.write(value.`id`, buf)
             FfiConverterString.write(value.`name`, buf)
             FfiConverterOptionalString.write(value.`thumbnailUrl`, buf)
+            FfiConverterBoolean.write(value.`isOwned`, buf)
+    }
+}
+
+
+
+data class AndroidResolvedMusicVideo (
+    var `videoId`: kotlin.String, 
+    var `qualities`: List<AndroidVideoQualityStream>, 
+    var `audioUrl`: kotlin.String?, 
+    var `audioBadge`: kotlin.String, 
+    var `headers`: List<AndroidHeader>
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAndroidResolvedMusicVideo: FfiConverterRustBuffer<AndroidResolvedMusicVideo> {
+    override fun read(buf: ByteBuffer): AndroidResolvedMusicVideo {
+        return AndroidResolvedMusicVideo(
+            FfiConverterString.read(buf),
+            FfiConverterSequenceTypeAndroidVideoQualityStream.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterSequenceTypeAndroidHeader.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AndroidResolvedMusicVideo) = (
+            FfiConverterString.allocationSize(value.`videoId`) +
+            FfiConverterSequenceTypeAndroidVideoQualityStream.allocationSize(value.`qualities`) +
+            FfiConverterOptionalString.allocationSize(value.`audioUrl`) +
+            FfiConverterString.allocationSize(value.`audioBadge`) +
+            FfiConverterSequenceTypeAndroidHeader.allocationSize(value.`headers`)
+    )
+
+    override fun write(value: AndroidResolvedMusicVideo, buf: ByteBuffer) {
+            FfiConverterString.write(value.`videoId`, buf)
+            FfiConverterSequenceTypeAndroidVideoQualityStream.write(value.`qualities`, buf)
+            FfiConverterOptionalString.write(value.`audioUrl`, buf)
+            FfiConverterString.write(value.`audioBadge`, buf)
+            FfiConverterSequenceTypeAndroidHeader.write(value.`headers`, buf)
     }
 }
 
@@ -3575,6 +4193,58 @@ public object FfiConverterTypeAndroidUpdateInfo: FfiConverterRustBuffer<AndroidU
             FfiConverterString.write(value.`releaseUrl`, buf)
             FfiConverterOptionalString.write(value.`apkDownloadUrl`, buf)
             FfiConverterString.write(value.`releaseNotes`, buf)
+    }
+}
+
+
+
+data class AndroidVideoQualityStream (
+    var `qualityLabel`: kotlin.String, 
+    var `height`: kotlin.UInt, 
+    var `fps`: kotlin.UInt, 
+    var `videoUrl`: kotlin.String, 
+    var `mimeType`: kotlin.String, 
+    var `bitrateBps`: kotlin.ULong, 
+    var `isMuxed`: kotlin.Boolean
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAndroidVideoQualityStream: FfiConverterRustBuffer<AndroidVideoQualityStream> {
+    override fun read(buf: ByteBuffer): AndroidVideoQualityStream {
+        return AndroidVideoQualityStream(
+            FfiConverterString.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AndroidVideoQualityStream) = (
+            FfiConverterString.allocationSize(value.`qualityLabel`) +
+            FfiConverterUInt.allocationSize(value.`height`) +
+            FfiConverterUInt.allocationSize(value.`fps`) +
+            FfiConverterString.allocationSize(value.`videoUrl`) +
+            FfiConverterString.allocationSize(value.`mimeType`) +
+            FfiConverterULong.allocationSize(value.`bitrateBps`) +
+            FfiConverterBoolean.allocationSize(value.`isMuxed`)
+    )
+
+    override fun write(value: AndroidVideoQualityStream, buf: ByteBuffer) {
+            FfiConverterString.write(value.`qualityLabel`, buf)
+            FfiConverterUInt.write(value.`height`, buf)
+            FfiConverterUInt.write(value.`fps`, buf)
+            FfiConverterString.write(value.`videoUrl`, buf)
+            FfiConverterString.write(value.`mimeType`, buf)
+            FfiConverterULong.write(value.`bitrateBps`, buf)
+            FfiConverterBoolean.write(value.`isMuxed`, buf)
     }
 }
 
@@ -4192,6 +4862,38 @@ public object FfiConverterOptionalTypeAndroidMotionMedia: FfiConverterRustBuffer
 /**
  * @suppress
  */
+public object FfiConverterOptionalTypeAndroidMusicVideoCandidate: FfiConverterRustBuffer<AndroidMusicVideoCandidate?> {
+    override fun read(buf: ByteBuffer): AndroidMusicVideoCandidate? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeAndroidMusicVideoCandidate.read(buf)
+    }
+
+    override fun allocationSize(value: AndroidMusicVideoCandidate?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeAndroidMusicVideoCandidate.allocationSize(value)
+        }
+    }
+
+    override fun write(value: AndroidMusicVideoCandidate?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeAndroidMusicVideoCandidate.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterOptionalTypeAndroidResolvedStream: FfiConverterRustBuffer<AndroidResolvedStream?> {
     override fun read(buf: ByteBuffer): AndroidResolvedStream? {
         if (buf.get().toInt() == 0) {
@@ -4456,6 +5158,90 @@ public object FfiConverterSequenceTypeAndroidLyricWord: FfiConverterRustBuffer<L
 /**
  * @suppress
  */
+public object FfiConverterSequenceTypeAndroidMoodCategory: FfiConverterRustBuffer<List<AndroidMoodCategory>> {
+    override fun read(buf: ByteBuffer): List<AndroidMoodCategory> {
+        val len = buf.getInt()
+        return List<AndroidMoodCategory>(len) {
+            FfiConverterTypeAndroidMoodCategory.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<AndroidMoodCategory>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeAndroidMoodCategory.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<AndroidMoodCategory>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeAndroidMoodCategory.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeAndroidMoodChip: FfiConverterRustBuffer<List<AndroidMoodChip>> {
+    override fun read(buf: ByteBuffer): List<AndroidMoodChip> {
+        val len = buf.getInt()
+        return List<AndroidMoodChip>(len) {
+            FfiConverterTypeAndroidMoodChip.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<AndroidMoodChip>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeAndroidMoodChip.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<AndroidMoodChip>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeAndroidMoodChip.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeAndroidMusicVideoSyncSegment: FfiConverterRustBuffer<List<AndroidMusicVideoSyncSegment>> {
+    override fun read(buf: ByteBuffer): List<AndroidMusicVideoSyncSegment> {
+        val len = buf.getInt()
+        return List<AndroidMusicVideoSyncSegment>(len) {
+            FfiConverterTypeAndroidMusicVideoSyncSegment.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<AndroidMusicVideoSyncSegment>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeAndroidMusicVideoSyncSegment.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<AndroidMusicVideoSyncSegment>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeAndroidMusicVideoSyncSegment.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterSequenceTypeAndroidPlaylist: FfiConverterRustBuffer<List<AndroidPlaylist>> {
     override fun read(buf: ByteBuffer): List<AndroidPlaylist> {
         val len = buf.getInt()
@@ -4502,6 +5288,34 @@ public object FfiConverterSequenceTypeAndroidTrack: FfiConverterRustBuffer<List<
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeAndroidTrack.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeAndroidVideoQualityStream: FfiConverterRustBuffer<List<AndroidVideoQualityStream>> {
+    override fun read(buf: ByteBuffer): List<AndroidVideoQualityStream> {
+        val len = buf.getInt()
+        return List<AndroidVideoQualityStream>(len) {
+            FfiConverterTypeAndroidVideoQualityStream.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<AndroidVideoQualityStream>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeAndroidVideoQualityStream.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<AndroidVideoQualityStream>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeAndroidVideoQualityStream.write(it, buf)
         }
     }
 }

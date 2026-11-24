@@ -199,6 +199,21 @@ fn piecewise_linear(knots: &[(f32, f32)], x: f32) -> f32 {
     knots.last().map(|k| k.1).unwrap_or(1.0)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PinnedCollection {
+    pub id: String,
+    pub title: String,
+    pub subtitle: String,
+    pub thumbnail_url: Option<String>,
+    #[serde(default)]
+    pub is_album: bool,
+}
+
+pub fn normalize_collection_id(id: &str) -> String {
+    let trimmed = id.trim();
+    trimmed.strip_prefix("VL").unwrap_or(trimmed).to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DesktopSettings {
@@ -221,6 +236,10 @@ pub struct DesktopSettings {
     pub show_lyrics_panel: bool,
     pub double_click_to_play: bool,
     pub sidebar_playlist_order: Vec<String>,
+    #[serde(default)]
+    pub pinned_collections: Vec<PinnedCollection>,
+    #[serde(default)]
+    pub saved_external_playlists: Vec<PinnedCollection>,
 }
 
 impl Default for DesktopSettings {
@@ -243,6 +262,8 @@ impl Default for DesktopSettings {
             show_lyrics_panel: false,
             double_click_to_play: false,
             sidebar_playlist_order: Vec::new(),
+            pinned_collections: Vec::new(),
+            saved_external_playlists: Vec::new(),
         }
     }
 }
@@ -300,6 +321,51 @@ impl DesktopSettings {
             if fs::write(&tmp, json).is_ok() {
                 let _ = fs::rename(tmp, path);
             }
+        }
+    }
+
+    pub fn is_pinned(&self, id: &str) -> bool {
+        let norm = normalize_collection_id(id);
+        self.pinned_collections
+            .iter()
+            .any(|p| normalize_collection_id(&p.id) == norm)
+    }
+
+    pub fn pin_index(&self, id: &str) -> Option<usize> {
+        let norm = normalize_collection_id(id);
+        self.pinned_collections
+            .iter()
+            .position(|p| normalize_collection_id(&p.id) == norm)
+    }
+
+    pub fn toggle_pin(&mut self, item: PinnedCollection) -> bool {
+        let norm = normalize_collection_id(&item.id);
+        if let Some(pos) = self
+            .pinned_collections
+            .iter()
+            .position(|p| normalize_collection_id(&p.id) == norm)
+        {
+            self.pinned_collections.remove(pos);
+            false
+        } else {
+            self.pinned_collections.insert(0, item);
+            true
+        }
+    }
+
+    pub fn is_saved_external(&self, id: &str) -> bool {
+        let norm = normalize_collection_id(id);
+        self.saved_external_playlists
+            .iter()
+            .any(|p| normalize_collection_id(&p.id) == norm)
+    }
+
+    pub fn set_saved_external(&mut self, item: PinnedCollection, save: bool) {
+        let norm = normalize_collection_id(&item.id);
+        self.saved_external_playlists
+            .retain(|p| normalize_collection_id(&p.id) != norm);
+        if save {
+            self.saved_external_playlists.insert(0, item);
         }
     }
 

@@ -57,6 +57,41 @@ enum class PlayerBackdropMode {
 }
 
 /**
+ * Preferred maximum video resolution when switching Now Playing into Video mode.
+ */
+enum class VideoQualityPreference(
+    val label: String,
+    val maxHeight: Int?,
+) {
+    AUTO(label = "Auto", maxHeight = 1080),
+    P1080(label = "1080p", maxHeight = 1080),
+    P720(label = "720p", maxHeight = 720),
+    P480(label = "480p", maxHeight = 480),
+    P360(label = "360p", maxHeight = 360),
+}
+
+/**
+ * Preferred video resolution when downloading tracks with companion music videos offline.
+ */
+enum class VideoDownloadQuality(
+    val maxHeight: Int,
+    val approxMbPerVideo: String,
+) {
+    P1080(maxHeight = 1080, approxMbPerVideo = "~45 MB / video"),
+    P720(maxHeight = 720, approxMbPerVideo = "~22 MB / video"),
+    P480(maxHeight = 480, approxMbPerVideo = "~12 MB / video"),
+    P360(maxHeight = 360, approxMbPerVideo = "~7 MB / video"),
+    ;
+
+    fun toVideoQualityPreference(): VideoQualityPreference = when (this) {
+        P1080 -> VideoQualityPreference.P1080
+        P720 -> VideoQualityPreference.P720
+        P480 -> VideoQualityPreference.P480
+        P360 -> VideoQualityPreference.P360
+    }
+}
+
+/**
  * Preferred streaming audio quality tier.
  */
 enum class AudioQualityTier {
@@ -165,6 +200,8 @@ data class SonataSettingsState(
     val eqPreset: String = "Flat",
     val eqBandsDb: List<Float> = listOf(0f, 0f, 0f, 0f, 0f),
     val autoplayEnabled: Boolean = true,
+    val shuffleEnabled: Boolean = false,
+    val repeatMode: Int = 0,
 
     // Lyrics
     val lyricsBlurEnabled: Boolean = true,
@@ -181,6 +218,8 @@ data class SonataSettingsState(
     val wifiOnlyDownloads: Boolean = true,
     val exportDownloads: Boolean = false,
     val autoDownloadLiked: Boolean = false,
+    val downloadVideosIfAvailable: Boolean = false,
+    val videoDownloadQuality: VideoDownloadQuality = VideoDownloadQuality.P720,
 
     // Miscellaneous
     val hideStatusBarInPlayer: Boolean = false,
@@ -190,6 +229,10 @@ data class SonataSettingsState(
 
     // Modules
     val jioSaavnEnabled: Boolean = false,
+
+    // Music Video Mode
+    val suppressVideoAudioQualityWarning: Boolean = false,
+    val videoQuality: VideoQualityPreference = VideoQualityPreference.AUTO,
 ) {
     fun resolvedDesignTheme(): DesignTheme = when (themeMode) {
         ThemeMode.VIOLET_LIGHT, ThemeMode.VIOLET_DARK -> DesignTheme.VIOLET
@@ -375,6 +418,8 @@ class SonataPreferences(context: Context) {
                     eqPreset = settingsObj.optString(KEY_EQ_PRESET, defaults.eqPreset).ifBlank { defaults.eqPreset },
                     eqBandsDb = parsedBands,
                     autoplayEnabled = settingsObj.optBoolean(KEY_AUTOPLAY_ENABLED, defaults.autoplayEnabled),
+                    shuffleEnabled = settingsObj.optBoolean(KEY_SHUFFLE_ENABLED, defaults.shuffleEnabled),
+                    repeatMode = settingsObj.optInt(KEY_REPEAT_MODE, defaults.repeatMode),
 
                     lyricsBlurEnabled = settingsObj.optBoolean(KEY_LYRICS_BLUR_ENABLED, defaults.lyricsBlurEnabled),
                     lyricsTranslationEnabled = settingsObj.optBoolean(
@@ -408,6 +453,14 @@ class SonataPreferences(context: Context) {
                     wifiOnlyDownloads = settingsObj.optBoolean(KEY_WIFI_ONLY_DOWNLOADS, defaults.wifiOnlyDownloads),
                     exportDownloads = settingsObj.optBoolean(KEY_EXPORT_DOWNLOADS, defaults.exportDownloads),
                     autoDownloadLiked = settingsObj.optBoolean(KEY_AUTO_DOWNLOAD_LIKED, defaults.autoDownloadLiked),
+                    downloadVideosIfAvailable = settingsObj.optBoolean(
+                        KEY_DOWNLOAD_VIDEOS_IF_AVAILABLE,
+                        defaults.downloadVideosIfAvailable,
+                    ),
+                    videoDownloadQuality = parseEnum(
+                        settingsObj.optString(KEY_VIDEO_DOWNLOAD_QUALITY),
+                        defaults.videoDownloadQuality,
+                    ),
 
                     hideStatusBarInPlayer = settingsObj.optBoolean(
                         KEY_HIDE_STATUS_BAR_IN_PLAYER,
@@ -417,6 +470,14 @@ class SonataPreferences(context: Context) {
                     stopMusicOnClose = settingsObj.optBoolean(KEY_STOP_MUSIC_ON_CLOSE, defaults.stopMusicOnClose),
                     showNerdStats = settingsObj.optBoolean(KEY_SHOW_NERD_STATS, defaults.showNerdStats),
                     jioSaavnEnabled = settingsObj.optBoolean(KEY_JIOSAAVN_ENABLED, defaults.jioSaavnEnabled),
+                    suppressVideoAudioQualityWarning = settingsObj.optBoolean(
+                        KEY_SUPPRESS_VIDEO_AUDIO_WARNING,
+                        defaults.suppressVideoAudioQualityWarning,
+                    ),
+                    videoQuality = parseEnum(
+                        settingsObj.optString(KEY_VIDEO_QUALITY),
+                        defaults.videoQuality,
+                    ),
                 ),
             )
 
@@ -501,6 +562,8 @@ class SonataPreferences(context: Context) {
                     ?: defaults.eqPreset,
                 eqBandsDb = parsedBands,
                 autoplayEnabled = prefs.getBoolean(KEY_AUTOPLAY_ENABLED, defaults.autoplayEnabled),
+                shuffleEnabled = prefs.getBoolean(KEY_SHUFFLE_ENABLED, defaults.shuffleEnabled),
+                repeatMode = prefs.getInt(KEY_REPEAT_MODE, defaults.repeatMode),
 
                 lyricsBlurEnabled = prefs.getBoolean(KEY_LYRICS_BLUR_ENABLED, defaults.lyricsBlurEnabled),
                 lyricsTranslationEnabled = prefs.getBoolean(
@@ -533,6 +596,14 @@ class SonataPreferences(context: Context) {
                 wifiOnlyDownloads = prefs.getBoolean(KEY_WIFI_ONLY_DOWNLOADS, defaults.wifiOnlyDownloads),
                 exportDownloads = prefs.getBoolean(KEY_EXPORT_DOWNLOADS, defaults.exportDownloads),
                 autoDownloadLiked = prefs.getBoolean(KEY_AUTO_DOWNLOAD_LIKED, defaults.autoDownloadLiked),
+                downloadVideosIfAvailable = prefs.getBoolean(
+                    KEY_DOWNLOAD_VIDEOS_IF_AVAILABLE,
+                    defaults.downloadVideosIfAvailable,
+                ),
+                videoDownloadQuality = parseEnum(
+                    prefs.getString(KEY_VIDEO_DOWNLOAD_QUALITY, null),
+                    defaults.videoDownloadQuality,
+                ),
 
                 hideStatusBarInPlayer = prefs.getBoolean(
                     KEY_HIDE_STATUS_BAR_IN_PLAYER,
@@ -542,6 +613,11 @@ class SonataPreferences(context: Context) {
                 stopMusicOnClose = prefs.getBoolean(KEY_STOP_MUSIC_ON_CLOSE, defaults.stopMusicOnClose),
                 showNerdStats = prefs.getBoolean(KEY_SHOW_NERD_STATS, defaults.showNerdStats),
                 jioSaavnEnabled = prefs.getBoolean(KEY_JIOSAAVN_ENABLED, defaults.jioSaavnEnabled),
+                suppressVideoAudioQualityWarning = prefs.getBoolean(
+                    KEY_SUPPRESS_VIDEO_AUDIO_WARNING,
+                    defaults.suppressVideoAudioQualityWarning,
+                ),
+                videoQuality = parseEnum(prefs.getString(KEY_VIDEO_QUALITY, null), defaults.videoQuality),
             ),
         )
     }
@@ -584,6 +660,8 @@ class SonataPreferences(context: Context) {
             .putString(KEY_EQ_PRESET, state.eqPreset)
             .putString(KEY_EQ_BANDS_DB, encodeBands(state.eqBandsDb))
             .putBoolean(KEY_AUTOPLAY_ENABLED, state.autoplayEnabled)
+            .putBoolean(KEY_SHUFFLE_ENABLED, state.shuffleEnabled)
+            .putInt(KEY_REPEAT_MODE, state.repeatMode)
             .putBoolean(KEY_LYRICS_BLUR_ENABLED, state.lyricsBlurEnabled)
             .putBoolean(KEY_LYRICS_TRANSLATION_ENABLED, state.lyricsTranslationEnabled)
             .putString(KEY_LYRICS_TRANSLATION_LANG, state.lyricsTranslationLang)
@@ -596,11 +674,15 @@ class SonataPreferences(context: Context) {
             .putBoolean(KEY_WIFI_ONLY_DOWNLOADS, state.wifiOnlyDownloads)
             .putBoolean(KEY_EXPORT_DOWNLOADS, state.exportDownloads)
             .putBoolean(KEY_AUTO_DOWNLOAD_LIKED, state.autoDownloadLiked)
+            .putBoolean(KEY_DOWNLOAD_VIDEOS_IF_AVAILABLE, state.downloadVideosIfAvailable)
+            .putString(KEY_VIDEO_DOWNLOAD_QUALITY, state.videoDownloadQuality.name)
             .putBoolean(KEY_HIDE_STATUS_BAR_IN_PLAYER, state.hideStatusBarInPlayer)
             .putBoolean(KEY_HIDE_SONG_STATUS, state.hideSongStatus)
             .putBoolean(KEY_STOP_MUSIC_ON_CLOSE, state.stopMusicOnClose)
             .putBoolean(KEY_SHOW_NERD_STATS, state.showNerdStats)
             .putBoolean(KEY_JIOSAAVN_ENABLED, state.jioSaavnEnabled)
+            .putBoolean(KEY_SUPPRESS_VIDEO_AUDIO_WARNING, state.suppressVideoAudioQualityWarning)
+            .putString(KEY_VIDEO_QUALITY, state.videoQuality.name)
 
         if (trackOffsetsOverride != null) {
             editor.putString(KEY_TRACK_LYRIC_OFFSETS, encodeTrackOffsets(trackOffsetsOverride))
@@ -676,6 +758,7 @@ class SonataPreferences(context: Context) {
                 playbackSpeed = normalizedSpeed,
                 eqPreset = state.eqPreset.trim().ifEmpty { "Flat" },
                 eqBandsDb = normalizedBands,
+                repeatMode = state.repeatMode.coerceIn(0, 2),
                 lyricsTranslationLang = state.lyricsTranslationLang.trim().lowercase().ifEmpty { "en" },
                 lyricsOffsetMs = state.lyricsOffsetMs.coerceIn(MIN_LYRIC_OFFSET_MS, MAX_LYRIC_OFFSET_MS),
             )
@@ -712,8 +795,8 @@ class SonataPreferences(context: Context) {
         private const val MAX_SPEED = 2.0f
         private const val MIN_CROSSFADE_SEC = 1
         private const val MAX_CROSSFADE_SEC = 12
-        private const val MIN_LYRIC_OFFSET_MS = -5_000L
-        private const val MAX_LYRIC_OFFSET_MS = 5_000L
+        private const val MIN_LYRIC_OFFSET_MS = -30_000L
+        private const val MAX_LYRIC_OFFSET_MS = 30_000L
 
         private const val BACKUP_APP_ID = "sonata"
         private const val BACKUP_SCHEMA_VERSION = 1
@@ -758,6 +841,8 @@ class SonataPreferences(context: Context) {
         private const val KEY_EQ_PRESET = "eq_preset"
         private const val KEY_EQ_BANDS_DB = "eq_bands_db"
         private const val KEY_AUTOPLAY_ENABLED = "autoplay_enabled"
+        private const val KEY_SHUFFLE_ENABLED = "shuffle_enabled"
+        private const val KEY_REPEAT_MODE = "repeat_mode"
 
         private const val KEY_LYRICS_BLUR_ENABLED = "lyrics_blur_enabled"
         private const val KEY_LYRICS_TRANSLATION_ENABLED = "lyrics_translation_enabled"
@@ -772,12 +857,16 @@ class SonataPreferences(context: Context) {
         private const val KEY_WIFI_ONLY_DOWNLOADS = "wifi_only_downloads"
         private const val KEY_EXPORT_DOWNLOADS = "export_downloads"
         private const val KEY_AUTO_DOWNLOAD_LIKED = "auto_download_liked"
+        private const val KEY_DOWNLOAD_VIDEOS_IF_AVAILABLE = "download_videos_if_available"
+        private const val KEY_VIDEO_DOWNLOAD_QUALITY = "video_download_quality"
 
         private const val KEY_HIDE_STATUS_BAR_IN_PLAYER = "hide_status_bar_in_player"
         private const val KEY_HIDE_SONG_STATUS = "hide_song_status"
         private const val KEY_STOP_MUSIC_ON_CLOSE = "stop_music_on_close"
         private const val KEY_SHOW_NERD_STATS = "show_nerd_stats"
         private const val KEY_JIOSAAVN_ENABLED = "jiosaavn_enabled"
+        private const val KEY_SUPPRESS_VIDEO_AUDIO_WARNING = "suppress_video_audio_warning"
+        private const val KEY_VIDEO_QUALITY = "video_quality"
 
         private const val KEY_TRACK_LYRIC_OFFSETS = "track_lyric_offsets"
 
@@ -822,6 +911,8 @@ class SonataPreferences(context: Context) {
                 put(KEY_EQ_PRESET, current.eqPreset)
                 put(KEY_EQ_BANDS_DB, JSONArray().apply { current.eqBandsDb.forEach { put(it.toDouble()) } })
                 put(KEY_AUTOPLAY_ENABLED, current.autoplayEnabled)
+                put(KEY_SHUFFLE_ENABLED, current.shuffleEnabled)
+                put(KEY_REPEAT_MODE, current.repeatMode)
 
                 put(KEY_LYRICS_BLUR_ENABLED, current.lyricsBlurEnabled)
                 put(KEY_LYRICS_TRANSLATION_ENABLED, current.lyricsTranslationEnabled)
@@ -836,12 +927,16 @@ class SonataPreferences(context: Context) {
                 put(KEY_WIFI_ONLY_DOWNLOADS, current.wifiOnlyDownloads)
                 put(KEY_EXPORT_DOWNLOADS, current.exportDownloads)
                 put(KEY_AUTO_DOWNLOAD_LIKED, current.autoDownloadLiked)
+                put(KEY_DOWNLOAD_VIDEOS_IF_AVAILABLE, current.downloadVideosIfAvailable)
+                put(KEY_VIDEO_DOWNLOAD_QUALITY, current.videoDownloadQuality.name)
 
                 put(KEY_HIDE_STATUS_BAR_IN_PLAYER, current.hideStatusBarInPlayer)
                 put(KEY_HIDE_SONG_STATUS, current.hideSongStatus)
                 put(KEY_STOP_MUSIC_ON_CLOSE, current.stopMusicOnClose)
                 put(KEY_SHOW_NERD_STATS, current.showNerdStats)
                 put(KEY_JIOSAAVN_ENABLED, current.jioSaavnEnabled)
+                put(KEY_SUPPRESS_VIDEO_AUDIO_WARNING, current.suppressVideoAudioQualityWarning)
+                put(KEY_VIDEO_QUALITY, current.videoQuality.name)
             }
 
             val offsetsObj = JSONObject().apply {

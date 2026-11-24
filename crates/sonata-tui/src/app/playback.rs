@@ -11,6 +11,7 @@ use super::{ActiveModal, App, AppEvent, ExportFingerprint};
 use base64::Engine as _;
 use ratatui_image::picker::ProtocolType;
 use sonata_core::lyrics::{active_line_index, lrclib, LyricsState};
+use sonata_core::player::RepeatMode;
 use sonata_core::providers::Track;
 use sonata_runtime::media;
 use sonata_runtime::player::{SessionCommand, SessionEvent};
@@ -218,10 +219,59 @@ impl App {
             }
             SessionEvent::TrackEnded { .. } => {}
             SessionEvent::QueueFinished { .. } => {
-                self.playback.paused = true;
-                self.playback.loading_track = false;
-                self.playback.position_secs = 0.0;
-                self.playback.stream_badge = "Finished".to_string();
+                if self.config.autoplay
+                    && self.playback.repeat == RepeatMode::Off
+                    && !self.playback.queue.is_empty()
+                {
+                    let play_seq = self.play_seq;
+                    let seeds: Vec<String> = self
+                        .playback
+                        .queue
+                        .iter()
+                        .rev()
+                        .map(|t| t.id.clone())
+                        .filter(|id| {
+                            !id.is_empty()
+                                && !id.starts_with("local:")
+                                && !id.starts_with("jiosaavn:")
+                        })
+                        .take(2)
+                        .collect();
+                    let excludes: Vec<String> =
+                        self.playback.queue.iter().map(|t| t.id.clone()).collect();
+                    let preferred_artists: Vec<String> = self
+                        .playback
+                        .queue
+                        .iter()
+                        .rev()
+                        .take(8)
+                        .map(|t| t.artist.clone())
+                        .filter(|a| !a.is_empty())
+                        .collect();
+                    let playlist_id = self.current_playlist_id.clone();
+                    let ytm = self.ytm.clone();
+                    let tx = self.tx.clone();
+                    self.playback.loading_track = true;
+                    self.playback.paused = true;
+                    self.playback.stream_badge = "Radio...".to_string();
+                    self.media_tasks.spawn(async move {
+                        let tracks = ytm
+                            .fetch_endless_radio_queue(
+                                &seeds,
+                                playlist_id.as_deref(),
+                                &excludes,
+                                &preferred_artists,
+                            )
+                            .await
+                            .unwrap_or_default();
+                        let _ = tx.send(AppEvent::AutoplayTracksReady { play_seq, tracks });
+                    });
+                } else {
+                    self.playback.paused = true;
+                    self.playback.loading_track = false;
+                    self.playback.position_secs = 0.0;
+                    self.playback.stream_badge = "Finished".to_string();
+                }
             }
             SessionEvent::Stopped { generation } => {
                 self.play_seq = generation.value();
@@ -649,6 +699,18 @@ impl App {
         let _ = self.config.save();
         self.enqueue_session_cmd(SessionCommand::SetRepeat(self.playback.repeat));
         self.status_line = format!("Repeat: {}", self.playback.repeat.label());
+    }
+
+    pub fn toggle_autoplay(&mut self) {
+        self.config.autoplay = !self.config.autoplay;
+        let _ = self.config.save();
+        let s = sonata_runtime::i18n::strings(self.config.language);
+        self.status_line = if self.config.autoplay {
+            s.autoplay_on
+        } else {
+            s.autoplay_off
+        }
+        .to_string();
     }
 
     pub fn seek(&mut self, secs: f64) {

@@ -140,9 +140,16 @@ impl App {
                     };
                     let db_key = format!("{}:{}", pl.source.short_tag(), pl.id);
                     let mut had_cached = false;
-                    if let Some((cached_name, cached_tracks, is_fresh)) =
-                        cache_db.as_ref().and_then(|db| db.get_playlist(&db_key))
-                    {
+                    let cached_playlist = if let Some(db) = cache_db.clone() {
+                        let key = db_key.clone();
+                        tokio::task::spawn_blocking(move || db.get_playlist(&key))
+                            .await
+                            .ok()
+                            .flatten()
+                    } else {
+                        None
+                    };
+                    if let Some((cached_name, cached_tracks, is_fresh)) = cached_playlist {
                         had_cached = !cached_tracks.is_empty();
                         let _ = tx.send(AppEvent::TracksLoaded {
                             req_id,
@@ -216,8 +223,14 @@ impl App {
                     };
                     match res {
                         Ok(()) => {
-                            if let Some(db) = &cache_db {
-                                db.put_playlist(&db_key, &cached_name, &all_tracks);
+                            if let Some(db) = cache_db.clone() {
+                                let key = db_key.clone();
+                                let name = cached_name.clone();
+                                let tracks_to_cache = all_tracks.clone();
+                                let _ = tokio::task::spawn_blocking(move || {
+                                    db.put_playlist(&key, &name, &tracks_to_cache);
+                                })
+                                .await;
                             }
                             if had_cached && !all_tracks.is_empty() {
                                 let _ = tx.send(AppEvent::TracksLoaded {
@@ -347,8 +360,11 @@ impl App {
             };
             match ytm.set_like_status(&vid, new_liked).await {
                 Ok(()) => {
-                    if let Some(db) = &cache_db {
-                        db.invalidate_playlist(Some("YTM:VLLM"));
+                    if let Some(db) = cache_db.clone() {
+                        let _ = tokio::task::spawn_blocking(move || {
+                            db.invalidate_playlist(Some("YTM:VLLM"));
+                        })
+                        .await;
                     }
                     let msg = if new_liked {
                         format!("Saved \"{title}\" to YouTube Music Liked Songs")
@@ -413,8 +429,12 @@ impl App {
             };
             match ytm.add_to_playlist(&pl.id, &vid).await {
                 Ok(()) => {
-                    if let Some(db) = &cache_db {
-                        db.invalidate_playlist(Some(&format!("YTM:{}", pl.id)));
+                    if let Some(db) = cache_db.clone() {
+                        let key = format!("YTM:{}", pl.id);
+                        let _ = tokio::task::spawn_blocking(move || {
+                            db.invalidate_playlist(Some(&key));
+                        })
+                        .await;
                     }
                     let _ = tx.send(AppEvent::StatusMessage(format!(
                         "Added \"{}\" to {}",
@@ -464,8 +484,12 @@ impl App {
         tokio::spawn(async move {
             match ytm.remove_from_playlist(&pl_id, &track.id, &set_vid).await {
                 Ok(()) => {
-                    if let Some(db) = &cache_db {
-                        db.invalidate_playlist(Some(&format!("YTM:{pl_id}")));
+                    if let Some(db) = cache_db.clone() {
+                        let key = format!("YTM:{pl_id}");
+                        let _ = tokio::task::spawn_blocking(move || {
+                            db.invalidate_playlist(Some(&key));
+                        })
+                        .await;
                     }
                     let _ = tx.send(AppEvent::StatusMessage(format!(
                         "Removed \"{}\" from YouTube Music playlist",
@@ -500,6 +524,7 @@ impl App {
                         source: ProviderSource::YouTubeMusic,
                         track_count: Some(0),
                         thumbnail_url: None,
+                        is_owned: true,
                     };
                     let _ = tx.send(AppEvent::PlaylistCreated(pl));
                 }

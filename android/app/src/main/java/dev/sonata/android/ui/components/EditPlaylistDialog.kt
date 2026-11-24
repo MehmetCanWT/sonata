@@ -59,12 +59,20 @@ import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 
 /**
- * Returns `true` when [browseId] points to a user-created YouTube Music playlist
- * whose title, description, privacy, and custom cover image can be edited.
+ * Normalizes a YouTube Music collection/playlist browse ID by trimming whitespace
+ * and stripping any leading `"VL"` prefix for consistent ownership and saved-item comparisons.
  */
-fun isEditableUserPlaylist(browseId: String?, signedIn: Boolean): Boolean {
-    if (!signedIn || browseId.isNullOrBlank()) return false
-    val normalized = browseId.trim().removePrefix("VL")
+fun normalizeCollectionId(browseId: String?): String {
+    val trimmed = browseId?.trim().orEmpty()
+    if (trimmed.isEmpty()) return ""
+    return if (trimmed.startsWith("VL", ignoreCase = true) && trimmed.length > 2) {
+        trimmed.substring(2)
+    } else {
+        trimmed
+    }
+}
+
+private fun isRemoteEditablePlaylistFormat(normalized: String): Boolean {
     if (normalized.isEmpty()) return false
     if (normalized.equals("LM", ignoreCase = true) ||
         normalized.equals("SE", ignoreCase = true) ||
@@ -73,6 +81,45 @@ fun isEditableUserPlaylist(browseId: String?, signedIn: Boolean): Boolean {
         return false
     }
     return normalized.startsWith("PL")
+}
+
+/**
+ * Returns `true` ONLY when [browseId] points to a user-owned YouTube Music playlist
+ * whose title, description, privacy, and custom cover image can be edited.
+ */
+fun isEditableUserPlaylist(
+    browseId: String?,
+    signedIn: Boolean,
+    ownedPlaylistIds: Set<String>? = null,
+    savedExternalPlaylistIds: Set<String> = emptySet(),
+): Boolean {
+    if (!signedIn || browseId.isNullOrBlank()) return false
+    val normalized = normalizeCollectionId(browseId)
+    if (!isRemoteEditablePlaylistFormat(normalized)) return false
+    if (normalized in savedExternalPlaylistIds) return false
+    return ownedPlaylistIds == null || normalized in ownedPlaylistIds
+}
+
+/**
+ * Returns `true` when [browseId] refers to an external (non-owned) playlist or album
+ * that can be added to or removed from the user's Library with the `+` / `✓` button.
+ */
+fun isSaveableExternalCollection(
+    browseId: String?,
+    isOwned: Boolean,
+): Boolean {
+    if (isOwned || browseId.isNullOrBlank()) return false
+    val trimmed = browseId.trim()
+    if (trimmed == "__sonata_downloads__" || trimmed.startsWith("local_pl_")) return false
+    val normalized = normalizeCollectionId(trimmed)
+    if (normalized.isEmpty()) return false
+    if (normalized.equals("LM", ignoreCase = true) ||
+        normalized.equals("SE", ignoreCase = true) ||
+        normalized.equals("SS", ignoreCase = true)
+    ) {
+        return false
+    }
+    return true
 }
 
 private data class EncodedCoverImage(

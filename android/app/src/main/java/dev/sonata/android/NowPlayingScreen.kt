@@ -82,6 +82,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.CornerBasedShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import dev.sonata.android.ui.i18n.LocalSonataStrings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -219,8 +220,8 @@ import dev.sonata.android.ui.ReleaseArt
 import dev.sonata.android.ui.ReplayCreditCard
 import dev.sonata.android.ui.SHELF_CARD_WIDTH
 import dev.sonata.android.ui.SearchField
-import dev.sonata.android.ui.SonataAccent
 import dev.sonata.android.ui.SonataIcons
+import dev.sonata.android.ui.sonataThemeAccent
 import dev.sonata.android.ui.SonataShimmerHost
 import dev.sonata.android.ui.SonataTheme
 import dev.sonata.android.ui.theme.LunariaColors
@@ -252,6 +253,8 @@ import dev.sonata.android.data.PlayerBackdropMode
 import dev.sonata.android.data.SonataSettingsState
 import dev.sonata.android.data.SonataThumbnailInterceptor
 import dev.sonata.android.data.ThemeMode
+import dev.sonata.android.playback.mapMusicToVideoMs
+import dev.sonata.android.playback.mapVideoToMusicMs
 import dev.sonata.android.ui.components.AddToPlaylistSheet
 import dev.sonata.android.ui.components.HeldContextMenu
 import dev.sonata.android.ui.components.HeldContextTarget
@@ -313,6 +316,9 @@ internal data class NowPlayingExtras(
     val onToggleLyricsTranslation: () -> Unit = {},
     val onToggleLyricsRomanization: () -> Unit = {},
     val onStepLyricOffsetMs: (Long) -> Unit = {},
+    val onToggleAutoplay: () -> Unit = {},
+    val onOpenVideoQualityPicker: () -> Unit = {},
+    val onEnterVideoFullscreen: () -> Unit = {},
 )
 
 internal val LocalDownloadedTrackIds = androidx.compose.runtime.compositionLocalOf<Set<String>> { emptySet() }
@@ -350,6 +356,7 @@ internal fun NowPlayingScreen(
     onToggleLyricsRomanization: () -> Unit,
     onStepLyricOffsetMs: (Long) -> Unit,
     onResetLyricOffsetMs: () -> Unit,
+    onToggleAutoplay: () -> Unit = {},
     onShareInApp: () -> Unit,
     onStartRadio: () -> Unit,
     onPlayNext: () -> Unit,
@@ -358,8 +365,15 @@ internal fun NowPlayingScreen(
     onOpenArtist: () -> Unit,
     onOpenSettings: () -> Unit,
     onAddToPlaylist: () -> Unit = {},
+    onEnableVideoMode: () -> Unit = {},
+    onDisableVideoMode: () -> Unit = {},
+    onSelectVideoQuality: (dev.sonata.android.data.VideoQualityPreference, Int?) -> Unit = { _, _ -> },
+    onSetVideoFullscreen: (Boolean) -> Unit = {},
+    onSuppressVideoWarning: (Boolean) -> Unit = {},
     onDismiss: () -> Unit,
 ) {
+    var showVideoWarningDialog by remember { mutableStateOf(false) }
+    var showVideoQualityDialog by remember { mutableStateOf(false) }
     val extras = remember(
         track.id,
         settings,
@@ -385,6 +399,9 @@ internal fun NowPlayingScreen(
             onToggleLyricsTranslation = onToggleLyricsTranslation,
             onToggleLyricsRomanization = onToggleLyricsRomanization,
             onStepLyricOffsetMs = onStepLyricOffsetMs,
+            onToggleAutoplay = onToggleAutoplay,
+            onOpenVideoQualityPicker = { showVideoQualityDialog = true },
+            onEnterVideoFullscreen = { onSetVideoFullscreen(true) },
         )
     }
     CompositionLocalProvider(LocalNowPlayingExtras provides extras) {
@@ -417,6 +434,33 @@ internal fun NowPlayingScreen(
         fpsLimit = settings.fpsLimit,
         trackKey = track.id,
     )
+    val effectiveLyricClockMs = remember(
+        smoothClockMs,
+        state.videoModeEnabled,
+        state.musicVideoCandidate,
+    ) {
+        derivedStateOf {
+            if (state.videoModeEnabled) {
+                mapVideoToMusicMs(
+                    videoMs = smoothClockMs.value,
+                    segments = state.musicVideoCandidate?.syncSegments.orEmpty(),
+                )
+            } else {
+                smoothClockMs.value
+            }
+        }
+    }
+    val lyricSeekTo: (Long) -> Unit = { musicPosMs ->
+        val mappedPosMs = if (state.videoModeEnabled) {
+            mapMusicToVideoMs(
+                musicMs = musicPosMs,
+                segments = state.musicVideoCandidate?.syncSegments.orEmpty(),
+            )
+        } else {
+            musicPosMs
+        }
+        onSeekTo(mappedPosMs)
+    }
     val density = LocalDensity.current
     val screenWidth = LocalConfiguration.current.screenWidthDp.dp
     val screenHeight = LocalConfiguration.current.screenHeightDp.dp
@@ -429,20 +473,26 @@ internal fun NowPlayingScreen(
 
     val isLandscapePlayer = screenWidth > screenHeight && screenWidth >= 560.dp
     val compactLandscape = isLandscapePlayer && screenHeight < 440.dp
-    // Portrait viewports use full-bleed hero artwork unless user switches to framed cover art.
-    val playerFillsWindow = !isLandscapePlayer && settings.fullScreenCoverArt
+    // Portrait viewports use full-bleed hero artwork unless user switches to framed cover art or video mode.
+    val playerFillsWindow = !isLandscapePlayer && settings.fullScreenCoverArt && !state.videoModeEnabled
     val showPortraitHero = playerFillsWindow && !panelOpen
 
     val playerView = androidx.compose.ui.platform.LocalView.current
-    DisposableEffect(settings.hideStatusBarInPlayer, playerView) {
+    DisposableEffect(settings.hideStatusBarInPlayer, state.videoModeEnabled, playerView) {
         val window = (playerView.context as? android.app.Activity)?.window
         val insetsController = window?.let { androidx.core.view.WindowCompat.getInsetsController(it, playerView) }
         if (settings.hideStatusBarInPlayer) {
             insetsController?.hide(androidx.core.view.WindowInsetsCompat.Type.statusBars())
         }
+        if (state.videoModeEnabled) {
+            window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
         onDispose {
             if (settings.hideStatusBarInPlayer) {
                 insetsController?.show(androidx.core.view.WindowInsetsCompat.Type.statusBars())
+            }
+            if (state.videoModeEnabled) {
+                window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             }
         }
     }
@@ -510,7 +560,8 @@ internal fun NowPlayingScreen(
         modifier = Modifier
             .fillMaxSize()
             .offset { IntOffset(0, dragOffsetY.roundToInt().coerceAtLeast(0)) }
-            .pointerInput(onDismiss) {
+            .pointerInput(onDismiss, state.videoFullscreen) {
+                if (state.videoFullscreen) return@pointerInput
                 detectVerticalDragGestures(
                     onVerticalDrag = { change, amount ->
                         change.consume()
@@ -619,7 +670,11 @@ internal fun NowPlayingScreen(
                         )
                     }
                 }
-                if (settings.animatedArtwork && currentCanvas != null) {
+                if (settings.animatedArtwork &&
+                    currentCanvas != null &&
+                    !state.videoModeEnabled &&
+                    !state.videoLoading
+                ) {
                     CanvasVideoSurface(
                         media = currentCanvas,
                         isVisible = showPortraitHero && state.isPlaying,
@@ -634,12 +689,9 @@ internal fun NowPlayingScreen(
                         .fillMaxWidth()
                         .height(statusBarTop + 36.dp)
                         .background(
-                            Brush.verticalGradient(
-                                listOf(
-                                    Color.Black.copy(alpha = 0.42f),
-                                    Color.Black.copy(alpha = 0.16f),
-                                    Color.Transparent,
-                                ),
+                            dev.sonata.android.ui.smoothScrimBrush(
+                                from = Color.Black.copy(alpha = 0.42f),
+                                to = Color.Black.copy(alpha = 0f),
                             ),
                         ),
                 )
@@ -684,6 +736,22 @@ internal fun NowPlayingScreen(
                 )
             }
 
+            if (state.musicVideoCandidate != null || state.videoModeEnabled) {
+                Spacer(Modifier.height(4.dp))
+                dev.sonata.android.ui.player.MusicVideoModePill(
+                    videoModeEnabled = state.videoModeEnabled,
+                    videoLoading = state.videoLoading,
+                    onSelectMusic = onDisableVideoMode,
+                    onSelectVideo = {
+                        if (settings.suppressVideoAudioQualityWarning) {
+                            onEnableVideoMode()
+                        } else {
+                            showVideoWarningDialog = true
+                        }
+                    },
+                )
+            }
+
             if (isLandscapePlayer) {
                 NowPlayingLandscapeLayout(
                     track = track,
@@ -695,7 +763,7 @@ internal fun NowPlayingScreen(
                     heroRequest = heroRequest,
                     hasArtwork = hasArtwork,
                     coverScale = coverScale,
-                    smoothClockMs = smoothClockMs,
+                    smoothClockMs = effectiveLyricClockMs,
                     screenWidth = screenWidth,
                     screenHeight = screenHeight,
                     compactLandscape = compactLandscape,
@@ -724,7 +792,7 @@ internal fun NowPlayingScreen(
                     onPrevious = onPrevious,
                     onToggleShuffle = onToggleShuffle,
                     onToggleRepeat = onToggleRepeat,
-                    onSeekTo = onSeekTo,
+                    onSeekTo = lyricSeekTo,
                     onJumpToQueueIndex = onJumpToQueueIndex,
                     onOpenSettings = { showPlayerOptions = true },
                     modifier = Modifier.weight(1f),
@@ -741,7 +809,7 @@ internal fun NowPlayingScreen(
                     heroRequest = heroRequest,
                     hasArtwork = hasArtwork,
                     coverScale = coverScale,
-                    smoothClockMs = smoothClockMs,
+                    smoothClockMs = effectiveLyricClockMs,
                     playerMaxWidth = playerMaxWidth,
                     headerHeight = headerHeight,
                     artTitleGap = artTitleGap,
@@ -775,7 +843,7 @@ internal fun NowPlayingScreen(
                     onPrevious = onPrevious,
                     onToggleShuffle = onToggleShuffle,
                     onToggleRepeat = onToggleRepeat,
-                    onSeekTo = onSeekTo,
+                    onSeekTo = lyricSeekTo,
                     onJumpToQueueIndex = onJumpToQueueIndex,
                     onOpenSettings = { showPlayerOptions = true },
                     modifier = Modifier.weight(1f),
@@ -815,6 +883,49 @@ internal fun NowPlayingScreen(
             onOpenAlbum = onOpenAlbum,
             onOpenArtist = onOpenArtist,
         )
+
+        if (state.videoModeEnabled && state.videoFullscreen) {
+            dev.sonata.android.ui.player.FullscreenMusicVideoOverlay(
+                track = track,
+                isPlaying = state.isPlaying,
+                isBuffering = state.isBuffering || state.videoLoading,
+                hasNext = state.hasNext,
+                hasPrevious = state.hasPrevious(clock.positionMs),
+                clock = clock,
+                qualityLabel = state.activeVideoQualityLabel,
+                suspendAutoHide = showVideoQualityDialog,
+                onTogglePlayPause = onTogglePlayPause,
+                onNext = onNext,
+                onPrevious = onPrevious,
+                onSeekTo = onSeekTo,
+                onSeekFraction = onSeekFraction,
+                onOpenQualityPicker = { showVideoQualityDialog = true },
+                onExitFullscreen = { onSetVideoFullscreen(false) },
+            )
+        }
+
+        if (showVideoWarningDialog) {
+            dev.sonata.android.ui.player.VideoAudioQualityWarningDialog(
+                onConfirm = { dontShowAgain ->
+                    if (dontShowAgain) {
+                        onSuppressVideoWarning(true)
+                    }
+                    showVideoWarningDialog = false
+                    onEnableVideoMode()
+                },
+                onDismiss = { showVideoWarningDialog = false },
+            )
+        }
+
+        if (showVideoQualityDialog) {
+            dev.sonata.android.ui.player.VideoQualityPickerDialog(
+                qualities = state.availableVideoQualities,
+                selectedPreference = settings.videoQuality,
+                activeHeight = state.activeVideoQualityHeight,
+                onSelect = onSelectVideoQuality,
+                onDismiss = { showVideoQualityDialog = false },
+            )
+        }
     }
     }
 }
@@ -842,12 +953,13 @@ internal fun NowPlayingActionRowBlock(
         ) {
             Icon(
                 imageVector = SonataIcons.LyricsQuote,
-                contentDescription = "Lyrics",
+                contentDescription = LocalSonataStrings.current.lyrics,
                 tint = Color.White,
                 modifier = Modifier.size(26.dp),
             )
         }
 
+        val themeAccent = sonataThemeAccent()
         if (showQueue) {
             Row(
                 modifier = Modifier
@@ -863,8 +975,8 @@ internal fun NowPlayingActionRowBlock(
                 ) {
                     Icon(
                         imageVector = SonataIcons.Shuffle,
-                        contentDescription = "Shuffle",
-                        tint = if (state.shuffleEnabled) SonataAccent else Color.White.copy(alpha = 0.72f),
+                        contentDescription = LocalSonataStrings.current.shuffle,
+                        tint = if (state.shuffleEnabled) themeAccent else Color.White.copy(alpha = 0.72f),
                         modifier = Modifier.size(18.dp),
                     )
                 }
@@ -878,23 +990,28 @@ internal fun NowPlayingActionRowBlock(
                         } else {
                             SonataIcons.Repeat
                         },
-                        contentDescription = "Repeat",
+                        contentDescription = when (state.repeatMode) {
+                            androidx.media3.common.Player.REPEAT_MODE_ALL -> LocalSonataStrings.current.repeatAll
+                            androidx.media3.common.Player.REPEAT_MODE_ONE -> LocalSonataStrings.current.repeatOne
+                            else -> LocalSonataStrings.current.repeatOff
+                        },
                         tint = if (state.repeatMode != Player.REPEAT_MODE_OFF) {
-                            SonataAccent
+                            themeAccent
                         } else {
                             Color.White.copy(alpha = 0.72f)
                         },
                         modifier = Modifier.size(18.dp),
                     )
                 }
-                Box(
+                val autoplayEnabled = extras.settings.autoplayEnabled
+                IconButton(
+                    onClick = extras.onToggleAutoplay,
                     modifier = Modifier.size(32.dp),
-                    contentAlignment = Alignment.Center,
                 ) {
                     Icon(
                         imageVector = SonataIcons.Infinity,
-                        contentDescription = "Autoplay",
-                        tint = Color.White.copy(alpha = 0.72f),
+                        contentDescription = LocalSonataStrings.current.autoplay,
+                        tint = if (autoplayEnabled) themeAccent else Color.White.copy(alpha = 0.42f),
                         modifier = Modifier.size(18.dp),
                     )
                 }
@@ -906,12 +1023,8 @@ internal fun NowPlayingActionRowBlock(
             ) {
                 Icon(
                     imageVector = SonataIcons.Translate,
-                    contentDescription = if (extras.settings.lyricsTranslationEnabled) {
-                        "Disable Lyrics Translation"
-                    } else {
-                        "Translate Lyrics"
-                    },
-                    tint = if (extras.settings.lyricsTranslationEnabled) SonataAccent else Color.White,
+                    contentDescription = LocalSonataStrings.current.translateLyrics,
+                    tint = if (extras.settings.lyricsTranslationEnabled) themeAccent else Color.White,
                     modifier = Modifier.size(23.dp),
                 )
             }
@@ -923,7 +1036,7 @@ internal fun NowPlayingActionRowBlock(
         ) {
             Icon(
                 imageVector = SonataIcons.Queue,
-                contentDescription = "Queue",
+                contentDescription = LocalSonataStrings.current.queue,
                 tint = Color.White,
                 modifier = Modifier.size(26.dp),
             )
@@ -1109,7 +1222,7 @@ internal fun NowPlayingScrubberAndTransportBlock(
         ) {
             Icon(
                 painter = painterResource(R.drawable.ic_player_previous),
-                contentDescription = "Previous",
+                contentDescription = LocalSonataStrings.current.previous,
                 tint = if (hasPrevious) Color.White else Color.White.copy(alpha = 0.35f),
                 modifier = Modifier
                     .size(sideIconSize)
@@ -1137,7 +1250,7 @@ internal fun NowPlayingScrubberAndTransportBlock(
                     painter = painterResource(
                         if (state.isPlaying) R.drawable.ic_player_pause else R.drawable.ic_player_play
                     ),
-                    contentDescription = if (state.isPlaying) "Pause" else "Play",
+                    contentDescription = if (state.isPlaying) LocalSonataStrings.current.pause else LocalSonataStrings.current.play,
                     tint = Color.White,
                     modifier = Modifier.size(playIconSize),
                 )
@@ -1151,7 +1264,7 @@ internal fun NowPlayingScrubberAndTransportBlock(
         ) {
             Icon(
                 painter = painterResource(R.drawable.ic_player_next),
-                contentDescription = "Next",
+                contentDescription = LocalSonataStrings.current.next,
                 tint = if (state.hasNext) Color.White else Color.White.copy(alpha = 0.35f),
                 modifier = Modifier
                     .size(sideIconSize)
@@ -1249,6 +1362,21 @@ internal fun NowPlayingLandscapeLayout(
                 } else {
                     minOf(screenWidth * 0.40f, screenHeight * 0.66f).coerceIn(200.dp, 360.dp)
                 }
+                val extras = LocalNowPlayingExtras.current
+                if (state.videoModeEnabled && !state.videoFullscreen) {
+                    dev.sonata.android.ui.player.InlineMusicVideoStage(
+                        artworkUrl = state.musicVideoCandidate?.thumbnailUrl ?: track.thumbnailUrl,
+                        qualityLabel = state.activeVideoQualityLabel,
+                        isBuffering = state.isBuffering,
+                        videoLoading = state.videoLoading,
+                        onOpenQualityPicker = extras.onOpenVideoQualityPicker,
+                        onEnterFullscreen = extras.onEnterVideoFullscreen,
+                        modifier = Modifier
+                            .widthIn(max = 480.dp)
+                            .fillMaxWidth()
+                            .aspectRatio(16f / 9f),
+                    )
+                } else {
                 Box(
                     modifier = Modifier
                         .size(coverSize)
@@ -1285,8 +1413,11 @@ internal fun NowPlayingLandscapeLayout(
                             modifier = Modifier.size(84.dp),
                         )
                     }
-                    val extras = LocalNowPlayingExtras.current
-                    if (extras.settings.animatedArtwork && extras.currentCanvas != null) {
+                    if (extras.settings.animatedArtwork &&
+                        extras.currentCanvas != null &&
+                        !state.videoModeEnabled &&
+                        !state.videoLoading
+                    ) {
                         CanvasVideoSurface(
                             media = extras.currentCanvas,
                             isVisible = state.isPlaying,
@@ -1294,6 +1425,7 @@ internal fun NowPlayingLandscapeLayout(
                             modifier = Modifier.fillMaxSize(),
                         )
                     }
+                }
                 }
             }
 
@@ -1408,7 +1540,7 @@ internal fun NowPlayingLandscapeLayout(
                                 icon = if (isLiked) SonataIcons.StarFilled else SonataIcons.Star,
                                 contentDescription = "Favorite",
                                 active = isLiked,
-                                tint = if (isLiked) SonataAccent else Color.White,
+                                tint = if (isLiked) sonataThemeAccent() else Color.White,
                                 onClick = onToggleStar,
                             )
                             Spacer(Modifier.width(10.dp))
@@ -1577,7 +1709,7 @@ internal fun NowPlayingPortraitLayout(
                                 icon = if (isLiked) SonataIcons.StarFilled else SonataIcons.Star,
                                 contentDescription = "Favorite",
                                 active = isLiked,
-                                tint = if (isLiked) SonataAccent else Color.White,
+                                tint = if (isLiked) sonataThemeAccent() else Color.White,
                                 onClick = onToggleStar,
                             )
                             Spacer(Modifier.width(8.dp))
@@ -1625,6 +1757,20 @@ internal fun NowPlayingPortraitLayout(
                                     .fillMaxWidth(),
                                 contentAlignment = Alignment.Center,
                             ) {
+                                val portraitExtras = LocalNowPlayingExtras.current
+                                if (state.videoModeEnabled && !state.videoFullscreen) {
+                                    dev.sonata.android.ui.player.InlineMusicVideoStage(
+                                        artworkUrl = state.musicVideoCandidate?.thumbnailUrl ?: track.thumbnailUrl,
+                                        qualityLabel = state.activeVideoQualityLabel,
+                                        isBuffering = state.isBuffering,
+                                        videoLoading = state.videoLoading,
+                                        onOpenQualityPicker = portraitExtras.onOpenVideoQualityPicker,
+                                        onEnterFullscreen = portraitExtras.onEnterVideoFullscreen,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .aspectRatio(16f / 9f),
+                                    )
+                                } else {
                                 val portraitArtSize = portraitWantArt.coerceIn(260.dp, 460.dp)
                                 Box(
                                     modifier = Modifier
@@ -1659,6 +1805,20 @@ internal fun NowPlayingPortraitLayout(
                                             modifier = Modifier.size(84.dp),
                                         )
                                     }
+                                    if (portraitExtras.settings.animatedArtwork &&
+                                        portraitExtras.currentCanvas != null &&
+                                        !state.videoModeEnabled &&
+                                        !state.videoLoading &&
+                                        !panelOpen
+                                    ) {
+                                        CanvasVideoSurface(
+                                            media = portraitExtras.currentCanvas,
+                                            isVisible = state.isPlaying,
+                                            preferPortrait = false,
+                                            modifier = Modifier.fillMaxSize(),
+                                        )
+                                    }
+                                }
                                 }
                             }
                             Spacer(Modifier.height(artTitleGap))
@@ -1696,7 +1856,7 @@ internal fun NowPlayingPortraitLayout(
                                 icon = if (isLiked) SonataIcons.StarFilled else SonataIcons.Star,
                                 contentDescription = "Favorite",
                                 active = isLiked,
-                                tint = if (isLiked) SonataAccent else Color.White,
+                                tint = if (isLiked) sonataThemeAccent() else Color.White,
                                 onClick = onToggleStar,
                             )
                             Spacer(Modifier.width(10.dp))
@@ -1817,7 +1977,7 @@ internal fun CurrentLyricStrip(
     ) {
         when {
             lyricsLoading -> Text(
-                text = "Loading lyrics...",
+                text = LocalSonataStrings.current.loadingLyrics,
                 style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.5.sp),
                 color = Color.White.copy(alpha = 0.55f),
                 maxLines = 1,
@@ -1868,7 +2028,7 @@ internal fun CurrentLyricStrip(
             }
 
             showUnavailable -> Text(
-                text = "Lyrics not available",
+                text = LocalSonataStrings.current.noLyricsAvailable,
                 style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.5.sp),
                 color = Color.White.copy(alpha = 0.55f),
                 maxLines = 1,
@@ -1973,7 +2133,7 @@ internal fun NowPlayingQueuePanel(
     ) {
         item(key = "queue_header", contentType = "queue_header") {
             Text(
-                text = "Up Next",
+                text = LocalSonataStrings.current.upNext,
                 style = MaterialTheme.typography.titleMedium.copy(
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold,
@@ -2030,7 +2190,7 @@ internal fun NowPlayingQueuePanel(
                             Icon(
                                 imageVector = if (isPlaying) SonataIcons.GraphicEq else SonataIcons.Pause,
                                 contentDescription = null,
-                                tint = SonataAccent,
+                                tint = sonataThemeAccent(),
                                 modifier = Modifier.size(18.dp),
                             )
                         }
@@ -2044,7 +2204,7 @@ internal fun NowPlayingQueuePanel(
                             fontSize = 15.sp,
                             fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
                         ),
-                        color = if (isCurrent) SonataAccent else Color.White,
+                        color = if (isCurrent) sonataThemeAccent() else Color.White,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -2130,6 +2290,7 @@ internal fun UpdateAvailableDialog(
         parseChangelogEntries(info.releaseNotes)
     }
     val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
+    val themeAccent = sonataThemeAccent()
     val dialogSurface = MaterialTheme.colorScheme.surface
     val dialogInk = MaterialTheme.colorScheme.onSurface
     val dialogMuted = MaterialTheme.colorScheme.onSurfaceVariant
@@ -2158,13 +2319,13 @@ internal fun UpdateAvailableDialog(
                     modifier = Modifier
                         .size(44.dp)
                         .clip(RoundedCornerShape(14.dp))
-                        .background(SonataAccent.copy(alpha = 0.18f)),
+                        .background(themeAccent.copy(alpha = 0.18f)),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
                         painter = painterResource(id = R.drawable.ic_sonata_moon),
                         contentDescription = null,
-                        tint = SonataAccent,
+                        tint = themeAccent,
                         modifier = Modifier.size(24.dp),
                     )
                 }
@@ -2177,7 +2338,7 @@ internal fun UpdateAvailableDialog(
                     Text(
                         text = "v${info.currentVersion}  →  v${info.latestVersion}",
                         style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
-                        color = SonataAccent,
+                        color = themeAccent,
                     )
                 }
             }
@@ -2203,7 +2364,7 @@ internal fun UpdateAvailableDialog(
                                         fontWeight = FontWeight.Bold,
                                         letterSpacing = 0.8.sp,
                                     ),
-                                    color = SonataAccent,
+                                    color = themeAccent,
                                 )
                             }
                             is ChangelogEntry.Bullet -> {
@@ -2215,7 +2376,7 @@ internal fun UpdateAvailableDialog(
                                     Text(
                                         text = "•",
                                         style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
-                                        color = SonataAccent,
+                                        color = themeAccent,
                                     )
                                     val formatted = androidx.compose.ui.text.buildAnnotatedString {
                                         if (!entry.lead.isNullOrBlank()) {

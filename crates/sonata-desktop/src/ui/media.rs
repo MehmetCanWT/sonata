@@ -18,7 +18,7 @@ const MAX_SQUARE_ART_DIM: u32 = 320;
 const MAX_WIDE_BANNER_W: u32 = 1600;
 const MAX_WIDE_BANNER_H: u32 = 720;
 const BLUR_TEX_SIZE: u32 = 64;
-const MAX_CONCURRENT_DECODES: usize = 8;
+const MAX_CONCURRENT_DECODES: usize = 16;
 const EVICT_PROTECT_WINDOW: Duration = Duration::from_secs(4);
 const FAILED_RETRY_COOLDOWN: Duration = Duration::from_secs(30);
 const MISSING_RETRY_COOLDOWN: Duration = Duration::from_secs(2);
@@ -605,5 +605,17 @@ mod tests {
         assert!(rgba_to_render_image(2, 2, &[1, 2, 3]).is_none());
         let tex = rgba_to_render_image(1, 1, &[10, 20, 30, 255]).expect("valid texture");
         assert_eq!(tex.as_bytes(0).expect("bgra bytes"), &[30, 20, 10, 255]);
+    }
+
+    #[test]
+    fn clear_missing_resets_negative_cache_entries() {
+        let cache = MediaCache::default();
+        let path = PathBuf::from("/tmp/sonata-nonexistent-media-cache-test.png");
+        if let Ok(mut guard) = cache.inner.lock() {
+            guard.missing.insert(path.clone(), Instant::now());
+        }
+        assert!(cache.inner.lock().unwrap().missing.contains_key(&path));
+        cache.clear_missing();
+        assert!(!cache.inner.lock().unwrap().missing.contains_key(&path));
     }
 }

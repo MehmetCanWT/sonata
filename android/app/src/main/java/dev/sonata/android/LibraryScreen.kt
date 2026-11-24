@@ -263,6 +263,7 @@ import dev.sonata.android.ui.components.SonataPersonalStationArt
 import dev.sonata.android.ui.components.SonataSplitHeroHeader
 import dev.sonata.android.ui.components.TrackOptionsMenu
 import dev.sonata.android.ui.components.UserMenuSheet
+import dev.sonata.android.ui.components.normalizeCollectionId
 import dev.sonata.android.ui.lyrics.EnhancedLyricsPanel
 import dev.sonata.android.ui.player.AudioControlsSheet
 import dev.sonata.android.ui.player.AudioPipelineModal
@@ -309,9 +310,9 @@ internal fun LibraryTabContent(
     onPlaylistLongClick: (AndroidPlaylist, Rect?) -> Unit = { _, _ -> },
     onPlayTrack: (AndroidTrack, List<AndroidTrack>) -> Unit,
     onOpenDownloads: () -> Unit,
-    onOpenDownloadsManager: () -> Unit,
     onOpenArtist: (String, String) -> Unit,
 ) {
+    val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
     val screenWidthDp = LocalConfiguration.current.screenWidthDp
     val playlistColumns = ((screenWidthDp - 32) / 160).coerceIn(2, 6)
     val replayArt = remember(state.tracks, state.playlists) {
@@ -319,22 +320,60 @@ internal fun LibraryTabContent(
             ?: state.playlists.firstOrNull { !it.thumbnailUrl.isNullOrBlank() }?.thumbnailUrl
     }
     val holderName = state.accountProfile?.name?.takeIf { it.isNotBlank() } ?: "SONATA LISTENER"
-    val downloadsPlaylist = remember(latestDownloadCoverUrl) {
+    val downloadsPlaylist = remember(latestDownloadCoverUrl, strings) {
         AndroidPlaylist(
             id = SonataViewModel.DOWNLOADS_PLAYLIST_ID,
-            name = "Downloads",
+            name = strings.downloads,
             thumbnailUrl = latestDownloadCoverUrl,
         )
     }
-    val combinedPlaylists = remember(downloadsPlaylist, state.playlists) {
-        listOf(downloadsPlaylist) + state.playlists.filterNot {
-            it.id == SonataViewModel.DOWNLOADS_PLAYLIST_ID
+    val pinnedIdSet = remember(state.pinnedCollections) {
+        state.pinnedCollections.mapTo(HashSet()) { normalizeCollectionId(it.id) }
+    }
+    val combinedPlaylists = remember(downloadsPlaylist, state.playlists, state.pinnedCollections, pinnedIdSet) {
+        val baseById = LinkedHashMap<String, AndroidPlaylist>().apply {
+            put(normalizeCollectionId(downloadsPlaylist.id), downloadsPlaylist)
+            state.playlists.forEach { pl ->
+                val norm = normalizeCollectionId(pl.id)
+                if (norm.isNotBlank() && norm != normalizeCollectionId(SonataViewModel.DOWNLOADS_PLAYLIST_ID)) {
+                    putIfAbsent(norm, pl)
+                }
+            }
         }
+        val ordered = ArrayList<AndroidPlaylist>(state.pinnedCollections.size + baseById.size)
+        val addedKeys = HashSet<String>()
+        state.pinnedCollections.forEach { pinned ->
+            val norm = normalizeCollectionId(pinned.id)
+            if (norm.isNotBlank() && addedKeys.add(norm)) {
+                val base = baseById[norm]
+                val resolved = if (base != null) {
+                    if (base.thumbnailUrl.isNullOrBlank() && !pinned.coverUrl.isNullOrBlank()) {
+                        base.copy(thumbnailUrl = pinned.coverUrl)
+                    } else {
+                        base
+                    }
+                } else {
+                    AndroidPlaylist(
+                        id = pinned.id,
+                        name = pinned.title,
+                        thumbnailUrl = pinned.coverUrl,
+                        isOwned = false,
+                    )
+                }
+                ordered.add(resolved)
+            }
+        }
+        baseById.forEach { (norm, pl) ->
+            if (norm !in pinnedIdSet && addedKeys.add(norm)) {
+                ordered.add(pl)
+            }
+        }
+        ordered
     }
     val playlistRows = remember(combinedPlaylists, playlistColumns) {
         combinedPlaylists.chunked(playlistColumns)
     }
-    val libraryArtists = remember(state.recentArtistCards, state.lastPlayedTracks, state.shelves) {
+    val libraryArtists = remember(state.recentArtistCards, state.lastPlayedTracks, state.shelves, strings) {
         val merged = linkedMapOf<String, AndroidHomeCard>()
         state.recentArtistCards.forEach { card ->
             val key = card.title.trim().lowercase()
@@ -352,7 +391,7 @@ internal fun LibraryTabContent(
                     kind = AndroidHomeCardKind.ARTIST,
                     id = "",
                     title = cleanArtist,
-                    subtitle = "Recently played",
+                    subtitle = strings.recentlyPlayedFallback,
                     thumbnailUrl = track.thumbnailUrl,
                     track = null,
                 )
@@ -377,7 +416,7 @@ internal fun LibraryTabContent(
     ) {
         item(key = "library_heading", contentType = "tab_heading") {
             Text(
-                text = "Library",
+                text = strings.libraryHeading,
                 style = MaterialTheme.typography.displayLarge.copy(
                     fontSize = 34.sp,
                     fontWeight = FontWeight.Bold,
@@ -395,9 +434,9 @@ internal fun LibraryTabContent(
             ) {
                 item(key = "replay_card_tracks", contentType = "replay_card") {
                     ReplayCreditCard(
-                        label = "Tracks Ready",
-                        value = "${state.tracks.size} Tracks",
-                        detail = state.activeTrack?.title ?: "Tap to resume listening",
+                        label = strings.quickPicks,
+                        value = strings.tracksCount(state.tracks.size),
+                        detail = state.activeTrack?.title ?: strings.playSongsToBuildHistory,
                         artworkUrl = replayArt.artworkAt(CARD_ART_PX),
                         holder = holderName,
                         cardIndex = 0,
@@ -409,9 +448,9 @@ internal fun LibraryTabContent(
                 }
                 item(key = "replay_card_playlists", contentType = "replay_card") {
                     ReplayCreditCard(
-                        label = "Offline Library",
-                        value = "$downloadsCount Downloaded",
-                        detail = if (downloadsCount > 0) "Ready without network" else "Save songs for offline play",
+                        label = strings.offlineLabel,
+                        value = strings.savedCount(downloadsCount),
+                        detail = if (downloadsCount > 0) strings.downloaded else strings.noDownloadsHint,
                         artworkUrl = latestDownloadCoverUrl?.artworkAt(CARD_ART_PX)
                             ?: replayArt.artworkAt(CARD_ART_PX),
                         holder = holderName,
@@ -424,24 +463,14 @@ internal fun LibraryTabContent(
             Spacer(Modifier.height(10.dp))
         }
 
-        // Downloads Playlist & Download Manager rows (never navigate to Search!)
+        // Downloads Playlist row (never navigates to Search!)
         item(key = "library_device_rows", contentType = "device_rows") {
             Column(modifier = Modifier.padding(horizontal = PAGE_GUTTER)) {
                 LibraryNavRow(
                     icon = SonataIcons.Download,
-                    label = "Downloads",
-                    subtitle = if (downloadsCount > 0) "$downloadsCount offline tracks" else "Offline cached streams",
+                    label = strings.downloads,
+                    subtitle = if (downloadsCount > 0) strings.tracksCount(downloadsCount) else strings.offlineLabel,
                     onClick = onOpenDownloads,
-                )
-                HorizontalDivider(
-                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f),
-                    modifier = Modifier.padding(start = 40.dp),
-                )
-                LibraryNavRow(
-                    icon = SonataIcons.Folder,
-                    label = "Manage Downloads",
-                    subtitle = "Storage & download queue",
-                    onClick = onOpenDownloadsManager,
                 )
             }
             Spacer(Modifier.height(14.dp))
@@ -450,7 +479,7 @@ internal fun LibraryTabContent(
         if (libraryArtists.isNotEmpty()) {
             item(key = "library_artists_shelf", contentType = "library_artists") {
                 Column(Modifier.padding(bottom = 18.dp)) {
-                    SectionHeader(title = "Artists")
+                    SectionHeader(title = strings.artists)
                     LazyRow(
                         contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
                         horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -480,7 +509,7 @@ internal fun LibraryTabContent(
         }
 
         item(key = "library_playlists_header", contentType = "section_header") {
-            SectionHeader(title = "Playlists")
+            SectionHeader(title = strings.playlists)
         }
         items(
             items = playlistRows,
@@ -496,6 +525,7 @@ internal fun LibraryTabContent(
                 rowPlaylists.forEach { playlist ->
                     PlaylistGridCard(
                         playlist = playlist,
+                        isPinned = normalizeCollectionId(playlist.id) in pinnedIdSet,
                         onClick = {
                             if (playlist.id == SonataViewModel.DOWNLOADS_PLAYLIST_ID) {
                                 onOpenDownloads()
@@ -555,6 +585,8 @@ internal fun LibraryNavRow(
 
 internal val LikedPlaylistBrush = Brush.linearGradient(listOf(Color(0xFF7B52FF), Color(0xFFB79CED)))
 internal val DownloadsPlaylistBrush = Brush.linearGradient(listOf(Color(0xFF1D1A2B), Color(0xFF8F96D9)))
+internal val BasicLikedPlaylistBrush = Brush.linearGradient(listOf(Color(0xFF2C2C2E), Color(0xFF1C1C1E)))
+internal val BasicDownloadsPlaylistBrush = Brush.linearGradient(listOf(Color(0xFF2C2C2E), Color(0xFF161618)))
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -562,12 +594,18 @@ internal fun PlaylistGridCard(
     playlist: AndroidPlaylist,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    isPinned: Boolean = false,
     onLongClick: ((Rect?) -> Unit)? = null,
 ) {
     val haptics = LocalHapticFeedback.current
+    val tokens = LocalLunariaColors.current
     val cardBounds = rememberLayoutBoundsHolder()
     val isDownloadsPlaylist = playlist.id == SonataViewModel.DOWNLOADS_PLAYLIST_ID
-    val isLikedPlaylist = !isDownloadsPlaylist && (playlist.id == "LM" || playlist.name.contains("Liked", ignoreCase = true))
+    val isLikedPlaylist = !isDownloadsPlaylist && (
+        playlist.id.equals("LM", ignoreCase = true) ||
+            playlist.id.equals("VLLM", ignoreCase = true) ||
+            playlist.name.contains("Liked", ignoreCase = true)
+        )
     val cover = remember(playlist.thumbnailUrl) { playlist.thumbnailUrl.artworkAt(CARD_ART_PX) }
     val coverRequest = rememberArtworkRequest(cover, 360, 360)
     Column(
@@ -587,52 +625,39 @@ internal fun PlaylistGridCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(1f)
-                .clip(LocalLunariaColors.current.cardShape)
+                .clip(tokens.cardShape)
                 .then(
                     when {
-                        isDownloadsPlaylist && coverRequest == null -> Modifier.background(DownloadsPlaylistBrush)
-                        isLikedPlaylist || coverRequest == null -> Modifier.background(LikedPlaylistBrush)
-                        else -> Modifier.background(LocalLunariaColors.current.eclipseCard)
+                        coverRequest != null -> Modifier.background(tokens.eclipseCard)
+                        isDownloadsPlaylist -> Modifier.background(
+                            if (tokens.isBasic) BasicDownloadsPlaylistBrush else DownloadsPlaylistBrush,
+                        )
+                        else -> Modifier.background(
+                            if (tokens.isBasic) BasicLikedPlaylistBrush else LikedPlaylistBrush,
+                        )
                     }
                 )
-                .border(0.75.dp, LocalLunariaColors.current.cardStroke, LocalLunariaColors.current.cardShape),
+                .border(0.75.dp, tokens.cardStroke, tokens.cardShape),
             contentAlignment = Alignment.Center,
         ) {
             when {
-                isDownloadsPlaylist -> {
-                    if (coverRequest != null) {
-                        AsyncImage(
-                            model = coverRequest,
-                            contentDescription = null,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.BottomEnd)
-                                .padding(8.dp)
-                                .size(30.dp)
-                                .clip(CircleShape)
-                                .background(Color.Black.copy(alpha = 0.72f)),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                imageVector = SonataIcons.Download,
-                                contentDescription = null,
-                                tint = SonataAccent,
-                                modifier = Modifier.size(16.dp),
-                            )
-                        }
-                    } else {
-                        Icon(
-                            imageVector = SonataIcons.Download,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(54.dp),
-                        )
-                    }
+                coverRequest != null -> {
+                    AsyncImage(
+                        model = coverRequest,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize(),
+                    )
                 }
-                isLikedPlaylist || coverRequest == null -> {
+                isDownloadsPlaylist -> {
+                    Icon(
+                        imageVector = SonataIcons.Download,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(54.dp),
+                    )
+                }
+                else -> {
                     Icon(
                         imageVector = SonataIcons.ThumbUp,
                         contentDescription = null,
@@ -640,12 +665,23 @@ internal fun PlaylistGridCard(
                         modifier = Modifier.size(64.dp),
                     )
                 }
-                else -> {
-                    AsyncImage(
-                        model = coverRequest,
+            }
+            if (isPinned) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(8.dp)
+                        .size(26.dp)
+                        .clip(CircleShape)
+                        .background(tokens.eclipseSurface.copy(alpha = 0.88f))
+                        .border(0.75.dp, tokens.cardStroke, CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = SonataIcons.PinFilled,
                         contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize(),
+                        tint = if (tokens.isBasic) tokens.onSurfacePrimary else tokens.petalLavender,
+                        modifier = Modifier.size(14.dp),
                     )
                 }
             }

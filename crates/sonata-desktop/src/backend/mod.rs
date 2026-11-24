@@ -140,6 +140,7 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
         volume: config.volume,
         shuffle: config.shuffle,
         repeat: config.repeat_mode,
+        autoplay: config.autoplay,
         stream_badge: "Idle".to_string(),
         upgrading_quality: false,
         loading_track: false,
@@ -150,6 +151,7 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
         spotify_notice: None,
         update_info: None,
         checking_updates: false,
+        thumb_rev: 0,
     });
 
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -200,6 +202,7 @@ struct BackendEngine {
     pub(super) http: Client,
     pub(super) cookies: ExtractedCookies,
     pub(super) ytm: YtMusicClient,
+    pub(super) ytm_language: sonata_runtime::i18n::AppLanguage,
     pub(super) resolver: LinuxStreamResolver,
     pub(super) cache_db: Option<CacheDb>,
     pub(super) session: PlaybackSessionHandle,
@@ -255,6 +258,9 @@ struct BackendEngine {
     pub(super) playlist_editable: bool,
     pub(super) playlist_tracks: Vec<Track>,
     pub(super) playlist_loading: bool,
+    pub(super) active_queue_playlist_id: Option<String>,
+    pub(super) prefetched_autoplay_seed: Option<String>,
+    pub(super) prefetched_autoplay_tracks: Vec<Track>,
     pub(super) album_detail: Option<AlbumDetail>,
     pub(super) album_loading: bool,
     pub(super) album_error: Option<String>,
@@ -289,6 +295,8 @@ struct BackendEngine {
     pub(super) last_exported_state: Option<ExportFingerprint>,
     pub(super) in_flight_thumbs: Arc<Mutex<HashSet<String>>>,
     pub(super) thumbnail_slots: Arc<Semaphore>,
+    pub(super) urgent_thumbnail_slots: Arc<Semaphore>,
+    pub(super) thumb_rev: u64,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -318,7 +326,8 @@ async fn run_backend_loop(
 
     let http = build_http_client();
     let cookies = ExtractedCookies::default();
-    let ytm = YtMusicClient::new(http.clone(), cookies.clone());
+    let initial_lang = crate::settings::DesktopSettings::load().language;
+    let ytm = YtMusicClient::new(http.clone(), cookies.clone()).with_language(initial_lang.code());
     let resolver = LinuxStreamResolver::with_profile(
         http.clone(),
         ytm.clone(),
@@ -373,6 +382,7 @@ async fn run_backend_loop(
         http,
         cookies,
         ytm,
+        ytm_language: initial_lang,
         resolver,
         cache_db,
         session,
@@ -386,6 +396,9 @@ async fn run_backend_loop(
         ui_compact: false,
         deferred_media_play_seq: None,
         hyprland_window: None,
+        active_queue_playlist_id: None,
+        prefetched_autoplay_seed: None,
+        prefetched_autoplay_tracks: Vec::new(),
         active_nav: NavTarget::Home,
         status_line: initial_status,
         available_browsers,
@@ -461,7 +474,9 @@ async fn run_backend_loop(
         config_dirty: false,
         last_exported_state: None,
         in_flight_thumbs: Arc::new(Mutex::new(HashSet::new())),
-        thumbnail_slots: Arc::new(Semaphore::new(6)),
+        thumbnail_slots: Arc::new(Semaphore::new(8)),
+        urgent_thumbnail_slots: Arc::new(Semaphore::new(12)),
+        thumb_rev: 0,
     };
 
     let cached_playlist_thumbs: Vec<String> = engine
@@ -629,6 +644,7 @@ impl BackendEngine {
                 browse_id,
                 params,
             } => self.open_mood_category(title, browse_id, params),
+            BackendCmd::OpenMoodByTitle(title) => self.open_mood_by_title(title),
             BackendCmd::OpenShelfDetail(shelf) => {
                 self.active_nav = NavTarget::ShelfDetail {
                     title: shelf.title.clone(),
@@ -696,6 +712,11 @@ impl BackendEngine {
                 if tracks.is_empty() {
                     return;
                 }
+                self.active_queue_playlist_id = match self.active_nav {
+                    NavTarget::Playlist(ref pid) => Some(pid.clone()),
+                    NavTarget::Album(ref aid) => Some(aid.clone()),
+                    _ => None,
+                };
                 let idx = if shuffle {
                     self.playback.shuffle = true;
                     self.config.shuffle = true;
@@ -836,6 +857,14 @@ impl BackendEngine {
                 let _ = self.config.save();
                 let _ = self.session.send(SessionCommand::SetRepeat(mode)).await;
             }
+            BackendCmd::ToggleAutoplay => {
+                self.config.autoplay = !self.config.autoplay;
+                let _ = self.config.save();
+                self.status_line = format!(
+                    "Endless autoplay: {}",
+                    if self.config.autoplay { "On" } else { "Off" }
+                );
+            }
             BackendCmd::ToggleHiFi => {
                 self.config.hifi_substitution = !self.config.hifi_substitution;
                 let _ = self.config.save();
@@ -938,6 +967,20 @@ impl BackendEngine {
                     }
                 );
             }
+            BackendCmd::SetLanguage(lang) => {
+                if self.ytm_language != lang {
+                    self.ytm_language = lang;
+                    self.config.language = lang;
+                    let _ = self.config.save();
+                    self.ytm.set_language(lang.code()).await;
+                    if let Some(db) = &self.cache_db {
+                        db.invalidate_playlist(None);
+                    }
+                    self.load_home_feed();
+                    self.load_explore();
+                    self.load_radio_mixes();
+                }
+            }
             BackendCmd::ToggleLike(track) => {
                 self.toggle_like_track(track);
             }
@@ -946,6 +989,14 @@ impl BackendEngine {
             }
             BackendCmd::ToggleSaveAlbum => {
                 self.toggle_save_album();
+            }
+            BackendCmd::ToggleSavePlaylist {
+                id,
+                title,
+                thumbnail_url,
+                save,
+            } => {
+                self.toggle_save_playlist(id, title, thumbnail_url, save);
             }
             BackendCmd::CreateYtmPlaylist(title) => {
                 self.create_ytm_playlist(&title);
@@ -1024,12 +1075,14 @@ impl BackendEngine {
                     }
                     self.status_line = err;
                     self.load_home_feed();
+                    self.load_explore();
                     return;
                 }
 
                 self.sign_in_error = None;
                 self.cookies = cookies;
-                self.ytm = YtMusicClient::new(self.http.clone(), self.cookies.clone());
+                self.ytm = YtMusicClient::new(self.http.clone(), self.cookies.clone())
+                    .with_language(self.ytm_language.code());
                 self.resolver = LinuxStreamResolver::with_profile(
                     self.http.clone(),
                     self.ytm.clone(),
@@ -1110,6 +1163,23 @@ impl BackendEngine {
                     self.home_chips = chips;
                 }
                 if !shelves.is_empty() {
+                    let mut shelves = shelves;
+                    let preferred = self.listener_preferred_artists();
+                    if !preferred.is_empty() {
+                        let pref_lower: Vec<String> =
+                            preferred.iter().map(|a| a.to_ascii_lowercase()).collect();
+                        for shelf in &mut shelves {
+                            if !shelf.tracks.is_empty() && shelf.cards.is_empty() {
+                                shelf.tracks.sort_by_key(|t| {
+                                    let a = t.artist.to_ascii_lowercase();
+                                    pref_lower
+                                        .iter()
+                                        .position(|p| a.contains(p.as_str()))
+                                        .unwrap_or(usize::MAX)
+                                });
+                            }
+                        }
+                    }
                     let mut urls = Vec::new();
                     for shelf in &shelves {
                         for t in &shelf.tracks {
@@ -1163,6 +1233,21 @@ impl BackendEngine {
                     return;
                 }
                 self.mood_page_loading = false;
+                let mut urls = Vec::new();
+                for s in &shelves {
+                    for c in &s.cards {
+                        if let Some(u) = &c.thumbnail_url {
+                            urls.push(u.clone());
+                        }
+                    }
+                    for t in &s.tracks {
+                        if let Some(u) = &t.thumbnail_url {
+                            urls.push(u.clone());
+                        }
+                    }
+                }
+                self.prefetch_thumbnails_urgent(urls);
+                self.status_line = format!("Loaded {title}");
                 self.mood_page_title = title;
                 self.mood_page_shelves = shelves;
             }
@@ -1243,6 +1328,59 @@ impl BackendEngine {
                     .await;
                 self.status_line = format!("Playing {label}");
             }
+            InternalEvent::AutoplayTracksReady { play_seq, tracks } => {
+                if play_seq != self.play_seq {
+                    return;
+                }
+                if tracks.is_empty() {
+                    self.playback.paused = true;
+                    self.playback.loading_track = false;
+                    self.playback.position_secs = 0.0;
+                    self.playback.stream_badge = "Finished".to_string();
+                    self.status_line = "Queue finished".to_string();
+                    return;
+                }
+                let urls: Vec<String> = tracks
+                    .iter()
+                    .filter_map(|t| t.thumbnail_url.clone())
+                    .collect();
+                self.prefetch_thumbnails(urls);
+                let mut combined = self.playback.queue.clone();
+                let start_index = combined.len();
+                let mut seen: HashSet<String> = combined.iter().map(|t| t.id.clone()).collect();
+                for tr in tracks {
+                    if seen.insert(tr.id.clone()) {
+                        combined.push(tr);
+                    }
+                }
+                if start_index >= combined.len() {
+                    self.playback.paused = true;
+                    self.playback.loading_track = false;
+                    self.playback.position_secs = 0.0;
+                    self.playback.stream_badge = "Finished".to_string();
+                    self.status_line = "Queue finished".to_string();
+                    return;
+                }
+                let _ = self
+                    .session
+                    .send(SessionCommand::PlayQueue {
+                        tracks: combined,
+                        start_index,
+                        push_history: false,
+                    })
+                    .await;
+                self.status_line = "Playing similar tracks".to_string();
+            }
+            InternalEvent::AutoplayPrefetched { seed_key, tracks } => {
+                if self.prefetched_autoplay_seed.as_deref() == Some(seed_key.as_str()) {
+                    let urls: Vec<String> = tracks
+                        .iter()
+                        .filter_map(|t| t.thumbnail_url.clone())
+                        .collect();
+                    self.prefetch_thumbnails(urls);
+                    self.prefetched_autoplay_tracks = tracks;
+                }
+            }
             InternalEvent::ArtistResolveFallback(query) => {
                 self.artist_loading = false;
                 self.album_loading = false;
@@ -1269,7 +1407,7 @@ impl BackendEngine {
                             urls.push(u.clone());
                         }
                     }
-                    self.prefetch_thumbnails(urls);
+                    self.prefetch_thumbnails_urgent(urls);
                     self.active_nav = NavTarget::Album(alb.id.clone());
                     self.status_line = format!("Loaded {}", alb.title);
                 }
@@ -1325,7 +1463,7 @@ impl BackendEngine {
                             urls.push(u.clone());
                         }
                     }
-                    self.prefetch_thumbnails(urls);
+                    self.prefetch_thumbnails_urgent(urls);
                 }
                 self.artist_page = artist;
                 self.status_line = self
@@ -1367,7 +1505,7 @@ impl BackendEngine {
                         urls.push(u.clone());
                     }
                 }
-                self.prefetch_thumbnails(urls);
+                self.prefetch_thumbnails_urgent(urls);
                 let count = tracks.len();
                 self.search_results = tracks;
                 self.search_rich = rich;
@@ -1390,10 +1528,17 @@ impl BackendEngine {
                     .iter()
                     .filter_map(|t| t.thumbnail_url.clone())
                     .collect();
-                self.prefetch_thumbnails(urls);
+                self.prefetch_thumbnails_urgent(urls);
                 let count = tracks.len();
                 if self.playlist_id.as_deref() == Some("VLLM") {
                     self.liked_track_ids = tracks.iter().map(|t| t.id.clone()).collect();
+                    if let Some(latest_thumb) = tracks.first().and_then(|t| t.thumbnail_url.clone())
+                    {
+                        self.playlist_cover_url = Some(latest_thumb.clone());
+                        if let Some(pl) = self.ytm_playlists.iter_mut().find(|p| p.id == "VLLM") {
+                            pl.thumbnail_url = Some(latest_thumb);
+                        }
+                    }
                 } else {
                     for t in &tracks {
                         if t.liked {
@@ -1416,7 +1561,7 @@ impl BackendEngine {
                     .iter()
                     .filter_map(|t| t.thumbnail_url.clone())
                     .collect();
-                self.prefetch_thumbnails(urls);
+                self.prefetch_thumbnails_urgent(urls);
                 self.playlist_tracks.extend(tracks);
             }
             InternalEvent::LyricsReady {
@@ -1511,7 +1656,9 @@ impl BackendEngine {
                     self.motion_cover = Some(cover);
                 }
             }
-            InternalEvent::ThumbnailsReady => {}
+            InternalEvent::ThumbnailsReady => {
+                self.thumb_rev = self.thumb_rev.wrapping_add(1);
+            }
             InternalEvent::PlaylistCreated(pl) => {
                 self.ytm_playlists.push(pl.clone());
                 if let Some(db) = &self.cache_db {
@@ -1665,6 +1812,7 @@ impl BackendEngine {
             volume: self.playback.volume,
             shuffle: self.playback.shuffle,
             repeat: self.playback.repeat,
+            autoplay: self.config.autoplay,
             stream_badge: self.playback.stream_badge.clone(),
             upgrading_quality: self.upgrading_quality,
             loading_track: self.playback.loading_track,
@@ -1675,6 +1823,7 @@ impl BackendEngine {
             spotify_notice: self.spotify_notice.clone(),
             update_info: self.update_info.clone(),
             checking_updates: self.checking_updates,
+            thumb_rev: self.thumb_rev,
         });
 
         if self.window_visible {
@@ -1833,6 +1982,7 @@ mod tests {
             volume: 80,
             shuffle: false,
             repeat: sonata_core::player::RepeatMode::Off,
+            autoplay: true,
             stream_badge: String::new(),
             upgrading_quality: false,
             loading_track: false,
@@ -1843,6 +1993,7 @@ mod tests {
             spotify_notice: None,
             update_info: None,
             checking_updates: false,
+            thumb_rev: 0,
         }));
         let (_progress_tx, progress_rx) = watch::channel((0.0_f64, 0.0_f64));
         let handle = BackendHandle {

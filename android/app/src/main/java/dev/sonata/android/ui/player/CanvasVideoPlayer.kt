@@ -17,6 +17,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -317,8 +318,9 @@ fun CanvasVideoSurface(
         }.distinct()
     }
 
-    var candidateIndex by remember(candidateUrls) { mutableStateOf(0) }
+    var candidateIndex by remember(candidateUrls) { mutableIntStateOf(0) }
     val activeUrl = candidateUrls.getOrElse(candidateIndex) { media.url }
+    var retryAttempt by remember(activeUrl) { mutableIntStateOf(0) }
     var firstFrameRendered by remember(media) { mutableStateOf(false) }
     var videoAspect by remember(media) { mutableFloatStateOf(0f) }
     var isResumed by remember { mutableStateOf(true) }
@@ -380,6 +382,12 @@ fun CanvasVideoSurface(
                 markFirstFrameReady("onRenderedFirstFrame")
             }
 
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY && videoAspect > 0f && !firstFrameRendered) {
+                    markFirstFrameReady("stateReady")
+                }
+            }
+
             override fun onVideoSizeChanged(videoSize: VideoSize) {
                 val width = videoSize.width * videoSize.pixelWidthHeightRatio
                 if (width.isFinite() && width > 0f && videoSize.height > 0) {
@@ -391,12 +399,14 @@ fun CanvasVideoSurface(
             override fun onPlayerError(error: PlaybackException) {
                 Log.w(
                     TAG,
-                    "player error code=${error.errorCodeName} msg=${error.message} url=$activeUrl",
+                    "player error code=${error.errorCodeName} msg=${error.message} url=$activeUrl retry=$retryAttempt",
                     error,
                 )
                 firstFrameRendered = false
                 if (candidateIndex + 1 < candidateUrls.size) {
                     candidateIndex += 1
+                } else if (retryAttempt < 2) {
+                    retryAttempt += 1
                 }
             }
         }
@@ -411,22 +421,27 @@ fun CanvasVideoSurface(
             mountedTexture.getAndSet(null)?.let { tv ->
                 exoPlayer.clearVideoTextureView(tv)
             }
-            exoPlayer.pause()
+            runCatching {
+                exoPlayer.pause()
+                exoPlayer.stop()
+            }
             mainHandler.postDelayed(
                 {
                     runCatching {
-                        exoPlayer.stop()
                         exoPlayer.release()
                     }
                 },
-                150L,
+                50L,
             )
         }
     }
 
-    LaunchedEffect(activeUrl) {
+    LaunchedEffect(activeUrl, retryAttempt) {
         firstFrameRendered = false
         videoAspect = 0f
+        if (retryAttempt > 0) {
+            delay(450L)
+        }
         val path = activeUrl.substringBefore('?').lowercase(Locale.ROOT)
         val isHlsUrl = path.endsWith(".m3u8") || (media.isHls && activeUrl == media.url)
 
@@ -446,17 +461,23 @@ fun CanvasVideoSurface(
             }
         }
 
-        mountedTexture.get()?.let { exoPlayer.setVideoTextureView(it) }
         exoPlayer.setMediaItem(itemBuilder.build())
         exoPlayer.playWhenReady = isVisible && isResumed
         exoPlayer.prepare()
     }
 
-    LaunchedEffect(isVisible, isResumed, activeUrl) {
+    LaunchedEffect(isVisible, isResumed, activeUrl, retryAttempt) {
         val shouldPlay = isVisible && isResumed
         exoPlayer.playWhenReady = shouldPlay
-        if (shouldPlay && exoPlayer.playbackState == Player.STATE_IDLE && exoPlayer.mediaItemCount > 0) {
-            exoPlayer.prepare()
+        if (shouldPlay) {
+            if (exoPlayer.playbackState == Player.STATE_IDLE && exoPlayer.mediaItemCount > 0) {
+                exoPlayer.prepare()
+            } else if (!exoPlayer.isPlaying) {
+                exoPlayer.play()
+            }
+            if (exoPlayer.playbackState == Player.STATE_READY && videoAspect > 0f && !firstFrameRendered) {
+                markFirstFrameReady("resumeReady")
+            }
         }
     }
 

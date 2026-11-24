@@ -23,13 +23,14 @@ impl SonataDesktopView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let s = sonata_runtime::i18n::strings(self.settings.language);
         let name = self
             .snapshot
             .user_profile
             .as_ref()
             .map(|p| p.name.clone())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "Signed in".to_string());
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| s.signed_in.to_string());
         let handle = self
             .snapshot
             .user_profile
@@ -89,7 +90,7 @@ impl SonataDesktopView {
                     .child(menu_item_row(
                         "acc-go-lib",
                         IconName::Library,
-                        "Your Library",
+                        s.your_library,
                         &self.palette,
                         cx.listener(|this, _, _, cx| {
                             this.navigate_to(NavTarget::Library, cx);
@@ -98,7 +99,7 @@ impl SonataDesktopView {
                     .child(menu_item_row(
                         "acc-go-set",
                         IconName::Settings,
-                        "Settings",
+                        s.settings,
                         &self.palette,
                         cx.listener(|this, _, _, cx| {
                             this.navigate_to(NavTarget::Settings, cx);
@@ -107,7 +108,7 @@ impl SonataDesktopView {
                     .child(menu_item_row(
                         "acc-signout",
                         IconName::LogOut,
-                        "Sign out",
+                        s.sign_out,
                         &self.palette,
                         cx.listener(|this, _, _, cx| {
                             this.account_menu_open = false;
@@ -133,6 +134,7 @@ impl SonataDesktopView {
         let left = menu_state.pos.x.min((vp_w - 230.0).max(8.0));
         let top = menu_state.pos.y.min((vp_h - 320.0).max(8.0));
 
+        let s = sonata_runtime::i18n::strings(self.settings.language);
         let mut items: Vec<AnyElement> = Vec::new();
         match menu_state.kind {
             ContextMenuKind::Track {
@@ -152,7 +154,7 @@ impl SonataDesktopView {
                 items.push(menu_item_row(
                     "ctx-play-next",
                     IconName::ListPlus,
-                    "Play next",
+                    s.play_next,
                     &self.palette,
                     cx.listener(move |this, _, _, cx| {
                         this.context_menu = None;
@@ -164,7 +166,7 @@ impl SonataDesktopView {
                 items.push(menu_item_row(
                     "ctx-add-q",
                     IconName::ListMusic,
-                    "Add to queue",
+                    s.add_to_queue,
                     &self.palette,
                     cx.listener(move |this, _, _, cx| {
                         this.context_menu = None;
@@ -175,7 +177,7 @@ impl SonataDesktopView {
                 items.push(menu_item_row(
                     "ctx-radio",
                     IconName::Radio,
-                    "Start radio",
+                    s.start_radio,
                     &self.palette,
                     cx.listener(move |this, _, _, cx| {
                         this.context_menu = None;
@@ -188,7 +190,7 @@ impl SonataDesktopView {
                     items.push(menu_item_row(
                         "ctx-album",
                         IconName::Disc3,
-                        "Go to album",
+                        s.go_to_album,
                         &self.palette,
                         cx.listener(move |this, _, _, cx| {
                             this.context_menu = None;
@@ -199,7 +201,7 @@ impl SonataDesktopView {
                 items.push(menu_item_row(
                     "ctx-artist",
                     IconName::User,
-                    "Go to artist",
+                    s.go_to_artist,
                     &self.palette,
                     cx.listener(move |this, _, _, cx| {
                         this.context_menu = None;
@@ -209,7 +211,7 @@ impl SonataDesktopView {
                 items.push(menu_item_row(
                     "ctx-like",
                     IconName::ThumbsUp,
-                    if liked { "Remove like" } else { "Like song" },
+                    if liked { s.remove_like } else { s.like },
                     &self.palette,
                     cx.listener(move |this, _, _, cx| {
                         this.context_menu = None;
@@ -220,7 +222,7 @@ impl SonataDesktopView {
                 items.push(menu_item_row(
                     "ctx-dislike",
                     IconName::ThumbsDown,
-                    "Dislike",
+                    s.dislike,
                     &self.palette,
                     cx.listener(move |this, _, _, cx| {
                         this.context_menu = None;
@@ -231,7 +233,7 @@ impl SonataDesktopView {
                 items.push(menu_item_row(
                     "ctx-add-pl",
                     IconName::Plus,
-                    "Add to playlist",
+                    s.add_to_playlist,
                     &self.palette,
                     cx.listener(move |this, _, _, cx| {
                         this.context_menu = None;
@@ -243,7 +245,7 @@ impl SonataDesktopView {
                     items.push(menu_item_row(
                         "ctx-rm-pl",
                         IconName::Trash,
-                        "Remove from playlist",
+                        s.remove_from_playlist,
                         &self.palette,
                         cx.listener(move |this, _, _, cx| {
                             this.context_menu = None;
@@ -260,7 +262,7 @@ impl SonataDesktopView {
                 items.push(menu_item_row(
                     "ctx-q-play",
                     IconName::Play,
-                    "Play now",
+                    s.play_now,
                     &self.palette,
                     cx.listener(move |this, _, _, cx| {
                         this.context_menu = None;
@@ -271,7 +273,7 @@ impl SonataDesktopView {
                 items.push(menu_item_row(
                     "ctx-q-rad",
                     IconName::Radio,
-                    "Start radio",
+                    s.start_radio,
                     &self.palette,
                     cx.listener(move |this, _, _, cx| {
                         this.context_menu = None;

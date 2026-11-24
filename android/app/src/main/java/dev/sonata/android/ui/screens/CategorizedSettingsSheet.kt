@@ -86,6 +86,7 @@ import dev.sonata.android.data.PlayerBackdropMode
 import dev.sonata.android.data.SonataDownloadManager
 import dev.sonata.android.data.SonataSettingsState
 import dev.sonata.android.data.ThemeMode
+import dev.sonata.android.data.VideoDownloadQuality
 import dev.sonata.android.isGlassSupported
 import dev.sonata.android.ui.PillSegmentedControl
 import dev.sonata.android.ui.SonataIcons
@@ -128,11 +129,23 @@ enum class SettingsCategory(
 private enum class SettingsChoiceKind(val title: String) {
     STREAMING_QUALITY("Streaming Quality"),
     DOWNLOAD_QUALITY("Download Quality"),
+    VIDEO_DOWNLOAD_QUALITY("Video Download Quality"),
     DOWNLOAD_STORAGE("Storage Location"),
     APP_LANGUAGE("Language"),
     DESIGN_THEME("Theme"),
     PLAYER_BACKDROP("Player Backdrop"),
     LYRICS_LANGUAGE("Translation Language"),
+}
+
+private fun SettingsChoiceKind.localizedTitle(strings: SonataStrings): String = when (this) {
+    SettingsChoiceKind.STREAMING_QUALITY -> strings.streamingQuality
+    SettingsChoiceKind.DOWNLOAD_QUALITY -> strings.downloadQuality
+    SettingsChoiceKind.VIDEO_DOWNLOAD_QUALITY -> strings.videoDownloadQuality
+    SettingsChoiceKind.DOWNLOAD_STORAGE -> strings.downloadLocation
+    SettingsChoiceKind.APP_LANGUAGE -> strings.appLanguage
+    SettingsChoiceKind.DESIGN_THEME -> strings.designTheme
+    SettingsChoiceKind.PLAYER_BACKDROP -> strings.playerBackdrop
+    SettingsChoiceKind.LYRICS_LANGUAGE -> strings.translationLanguage
 }
 
 private fun SettingsCategory.localizedTitle(strings: SonataStrings): String = when (this) {
@@ -210,6 +223,7 @@ fun SonataSettingsScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val strings = LocalSonataStrings.current
     val tokens = LocalLunariaColors.current
     val statusTop = rememberSafeTopInset()
     var route by remember { mutableStateOf<SettingsRoute>(SettingsRoute.Root) }
@@ -242,11 +256,13 @@ fun SonataSettingsScreen(
             containerColor = cardBg,
             titleContentColor = primaryText,
             textContentColor = secondaryText,
-            title = { Text("Remove all downloads?") },
+            title = { Text(strings.removeAllDownloadsConfirmTitle) },
             text = {
                 Text(
-                    "This deletes ${downloadStorageStats.trackCount} downloaded songs " +
-                        "(${formatStorageBytes(downloadStorageStats.downloadedBytes)}) from offline storage.",
+                    strings.removeAllDownloadsConfirmBody(
+                        downloadStorageStats.trackCount,
+                        formatStorageBytes(downloadStorageStats.downloadedBytes),
+                    ),
                 )
             },
             confirmButton = {
@@ -256,12 +272,12 @@ fun SonataSettingsScreen(
                         onClearAllDownloads()
                     },
                 ) {
-                    Text("Remove", color = BasicPalette.AccentRed, fontWeight = FontWeight.SemiBold)
+                    Text(strings.remove, color = BasicPalette.AccentRed, fontWeight = FontWeight.SemiBold)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { confirmClearDownloads = false }) {
-                    Text("Cancel", color = primaryText)
+                    Text(strings.cancel, color = primaryText)
                 }
             },
         )
@@ -297,7 +313,7 @@ fun SonataSettingsScreen(
                 ) {
                     Icon(
                         imageVector = SonataIcons.ChevronLeft,
-                        contentDescription = "Back",
+                        contentDescription = strings.back,
                         tint = primaryText,
                         modifier = Modifier.size(22.dp),
                     )
@@ -305,11 +321,11 @@ fun SonataSettingsScreen(
                 Spacer(Modifier.width(12.dp))
                 val topCaption = when (val current = route) {
                     SettingsRoute.Root -> ""
-                    is SettingsRoute.Category -> "Settings"
+                    is SettingsRoute.Category -> strings.settingsTitle
                     is SettingsRoute.Choice -> when (val p = current.parent) {
-                        SettingsRoute.Root -> "Settings"
-                        is SettingsRoute.Category -> p.category.title
-                        is SettingsRoute.Choice -> p.kind.title
+                        SettingsRoute.Root -> strings.settingsTitle
+                        is SettingsRoute.Category -> p.category.localizedTitle(strings)
+                        is SettingsRoute.Choice -> p.kind.localizedTitle(strings)
                     }
                 }
                 if (topCaption.isNotEmpty()) {
@@ -439,7 +455,7 @@ fun SonataSettingsScreen(
                                             SettingsRow(
                                                 icon = SonataIcons.GraphicEq,
                                                 title = strings.streamingQuality,
-                                                value = audioQualityShortLabel(settings.audioQuality),
+                                                value = audioQualityShortLabel(settings.audioQuality, strings),
                                                 primaryText = primaryText,
                                                 secondaryText = secondaryText,
                                                 onClick = {
@@ -450,11 +466,11 @@ fun SonataSettingsScreen(
                                                 },
                                             )
                                         }
-                                        if (search.matches("Download Quality", "İndirme", "Offline", "320 kbps", "MB")) {
+                                        if (search.matches("Download Quality", "İndirme", "Загрузка", "Offline", "320 kbps", "MB")) {
                                             SettingsRow(
                                                 icon = SonataIcons.Download,
                                                 title = strings.downloadQuality,
-                                                value = "${downloadQualityShortLabel(settings.downloadQuality)} · ${settings.downloadQuality.approxMbPerSong}",
+                                                value = "${downloadQualityShortLabel(settings.downloadQuality, strings)} · ${settings.downloadQuality.approxMbPerSong}",
                                                 primaryText = primaryText,
                                                 secondaryText = secondaryText,
                                                 onClick = {
@@ -501,7 +517,7 @@ fun SonataSettingsScreen(
                                                 SettingsCategory.YOUR_DATA -> strings.yourDataSummary
                                                 SettingsCategory.MISC -> strings.miscSummary
                                                 SettingsCategory.ACCOUNT ->
-                                                    "v$installedVersionName${if (updateInfo?.updateAvailable == true) " · Update" else ""}"
+                                                    "v$installedVersionName${if (updateInfo?.updateAvailable == true) " · ${strings.updateAvailable}" else ""}"
                                             }
                                             SettingsRow(
                                                 icon = cat.icon,
@@ -520,6 +536,14 @@ fun SonataSettingsScreen(
                                     if (search.matches(
                                             "Downloads",
                                             "Download Quality",
+                                            "Video",
+                                            "Video Download",
+                                            "1080p",
+                                            "720p",
+                                            "480p",
+                                            "360p",
+                                            "Video İndirme",
+                                            "Видео",
                                             "JioSaavn",
                                             "Wi-Fi",
                                             "Storage",
@@ -749,7 +773,7 @@ fun SonataSettingsScreen(
                                             contentAlignment = Alignment.Center,
                                         ) {
                                             Text(
-                                                text = "No settings match \"$searchQuery\"",
+                                                text = strings.searchNoMatch(searchQuery),
                                                 style = MaterialTheme.typography.bodyMedium,
                                                 color = secondaryText,
                                             )
@@ -892,19 +916,20 @@ private fun DownloadsCategoryContent(
     onOpenChoice: (SettingsChoiceKind) -> Unit,
     onRequestClearAllDownloads: () -> Unit,
 ) {
+    val strings = LocalSonataStrings.current
     SettingsGroup(
         cardBg = cardBg,
         dividerColor = dividerColor,
-        header = "Quality & Sources",
-        footer = "Average song size assumes a ~3.5 minute track. Enabling Include JioSaavn lets offline downloads pick 320 kbps AAC when higher than YouTube Music.",
+        header = strings.hdrQualitySources,
+        footer = strings.footerQualitySources,
         secondaryText = secondaryText,
     ) {
-        if (search.matches("Download Quality", "Highest", "High", "Standard", "Data Saver", "MB")) {
+        if (search.matches("Download Quality", "İndirme", "Загрузка", "Highest", "High", "Standard", "Data Saver", "MB")) {
             SettingsRow(
                 icon = SonataIcons.Download,
-                title = "Download Quality",
+                title = strings.downloadQuality,
                 subtitle = settings.downloadQuality.approxMbPerSong,
-                value = downloadQualityShortLabel(settings.downloadQuality),
+                value = downloadQualityShortLabel(settings.downloadQuality, strings),
                 primaryText = primaryText,
                 secondaryText = secondaryText,
                 onClick = { onOpenChoice(SettingsChoiceKind.DOWNLOAD_QUALITY) },
@@ -912,8 +937,8 @@ private fun DownloadsCategoryContent(
         }
         if (search.matches("Include JioSaavn", "JioSaavn", "320 kbps", "Highest")) {
             SettingsSwitchRow(
-                title = "Include JioSaavn",
-                subtitle = "Search JioSaavn 320 kbps AAC when resolving highest-quality downloads",
+                title = strings.includeJioSaavnDownloads,
+                subtitle = strings.includeJioSaavnDownloadsDesc,
                 checked = settings.downloadIncludeJioSaavn,
                 primaryText = primaryText,
                 secondaryText = secondaryText,
@@ -922,10 +947,10 @@ private fun DownloadsCategoryContent(
                 },
             )
         }
-        if (search.matches("Wi-Fi", "Cellular", "Network")) {
+        if (search.matches("Wi-Fi", "Cellular", "Network", "Hücresel")) {
             SettingsSwitchRow(
-                title = "Download over Wi-Fi only",
-                subtitle = "Avoid mobile data usage for offline tracks",
+                title = strings.wifiOnlyDownloads,
+                subtitle = strings.wifiOnlyDownloadsDesc,
                 checked = settings.wifiOnlyDownloads,
                 primaryText = primaryText,
                 secondaryText = secondaryText,
@@ -934,10 +959,10 @@ private fun DownloadsCategoryContent(
                 },
             )
         }
-        if (search.matches("Auto-download", "Liked", "Favorites")) {
+        if (search.matches("Auto-download", "Liked", "Favorites", "Beğenilen")) {
             SettingsSwitchRow(
-                title = "Auto-download liked songs",
-                subtitle = "Save tracks offline automatically when starred",
+                title = strings.autoDownloadLiked,
+                subtitle = strings.autoDownloadLikedDesc,
                 checked = settings.autoDownloadLiked,
                 primaryText = primaryText,
                 secondaryText = secondaryText,
@@ -950,23 +975,55 @@ private fun DownloadsCategoryContent(
 
     Spacer(Modifier.height(14.dp))
 
+    if (search.matches("Video", "Video Download", "1080p", "720p", "480p", "360p", "Video İndirme", "Видео")) {
+        SettingsGroup(
+            cardBg = cardBg,
+            dividerColor = dividerColor,
+            header = strings.hdrVideoDownloads,
+            footer = strings.footerVideoDownloads,
+            secondaryText = secondaryText,
+        ) {
+            if (search.matches("Video", "Download videos", "Varsa videoları", "Скачивать видео")) {
+                SettingsSwitchRow(
+                    title = strings.downloadVideosIfAvailable,
+                    subtitle = strings.downloadVideosIfAvailableDesc,
+                    checked = settings.downloadVideosIfAvailable,
+                    primaryText = primaryText,
+                    secondaryText = secondaryText,
+                    onCheckedChange = { enabled ->
+                        onUpdateSettings { it.copy(downloadVideosIfAvailable = enabled) }
+                    },
+                )
+            }
+            if (search.matches("Video", "Video Download", "1080p", "720p", "480p", "360p", "Video İndirme", "Качество загрузки видео")) {
+                SettingsRow(
+                    icon = SonataIcons.Tune,
+                    title = strings.videoDownloadQuality,
+                    subtitle = videoDownloadQualitySize(settings.videoDownloadQuality, strings),
+                    value = "${settings.videoDownloadQuality.maxHeight}p",
+                    primaryText = primaryText,
+                    secondaryText = secondaryText,
+                    onClick = { onOpenChoice(SettingsChoiceKind.VIDEO_DOWNLOAD_QUALITY) },
+                )
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+    }
+
     SettingsGroup(
         cardBg = cardBg,
         dividerColor = dividerColor,
-        header = "Storage Location & Space",
-        footer = "Existing downloads remain playable from their original folder. New downloads save to the selected storage location.",
+        header = strings.hdrStorageLocation,
+        footer = strings.footerStorageLocation,
         secondaryText = secondaryText,
     ) {
-        if (search.matches("Storage", "Location", "Internal", "External", "Folder")) {
+        if (search.matches("Storage", "Depolama", "Хранилище", "Location", "Internal", "External", "Folder")) {
             SettingsRow(
                 icon = SonataIcons.Folder,
-                title = "Download Location",
-                subtitle = settings.downloadStorageLocation.detail,
-                value = if (settings.downloadStorageLocation == DownloadStorageLocation.EXTERNAL) {
-                    "External"
-                } else {
-                    "Internal"
-                },
+                title = strings.downloadLocation,
+                subtitle = downloadStorageDetail(settings.downloadStorageLocation, strings),
+                value = downloadStorageShortLabel(settings.downloadStorageLocation, strings),
                 primaryText = primaryText,
                 secondaryText = secondaryText,
                 onClick = { onOpenChoice(SettingsChoiceKind.DOWNLOAD_STORAGE) },
@@ -987,7 +1044,7 @@ private fun DownloadsCategoryContent(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = "Downloaded Storage",
+                    text = strings.downloadedStorage,
                     style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
                     color = primaryText,
                 )
@@ -997,8 +1054,13 @@ private fun DownloadsCategoryContent(
                     color = primaryText,
                 )
             }
+            val localizedStorageLabel = if (downloadStorageStats.locationLabel.contains("External", ignoreCase = true)) {
+                strings.storageExternalLabel
+            } else {
+                strings.storageInternalLabel
+            }
             Text(
-                text = "${downloadStorageStats.trackCount} ${if (downloadStorageStats.trackCount == 1) "song" else "songs"} · ${downloadStorageStats.locationLabel}",
+                text = "${strings.tracksCount(downloadStorageStats.trackCount)} · $localizedStorageLabel",
                 style = MaterialTheme.typography.bodySmall,
                 color = secondaryText,
             )
@@ -1044,7 +1106,10 @@ private fun DownloadsCategoryContent(
                     color = secondaryText,
                 )
                 Text(
-                    text = "${formatStorageBytes(downloadStorageStats.availableBytes)} free of ${formatStorageBytes(downloadStorageStats.totalBytes)}",
+                    text = strings.storageFreeOf(
+                        formatStorageBytes(downloadStorageStats.availableBytes),
+                        formatStorageBytes(downloadStorageStats.totalBytes),
+                    ),
                     style = MaterialTheme.typography.labelSmall,
                     color = secondaryText,
                 )
@@ -1054,8 +1119,8 @@ private fun DownloadsCategoryContent(
 
         if (downloadStorageStats.trackCount > 0) {
             SettingsActionRow(
-                title = "Remove All Downloads",
-                subtitle = "Delete all ${downloadStorageStats.trackCount} offline songs",
+                title = strings.removeAllDownloads,
+                subtitle = strings.deleteAllOfflineSongs(downloadStorageStats.trackCount),
                 titleColor = BasicPalette.AccentRed,
                 secondaryText = secondaryText,
                 onClick = onRequestClearAllDownloads,
@@ -1075,36 +1140,37 @@ private fun PlaybackCategoryContent(
     accentTint: Color,
     onUpdateSettings: ((SonataSettingsState) -> SonataSettingsState) -> Unit,
 ) {
+    val strings = LocalSonataStrings.current
     SettingsGroup(
         cardBg = cardBg,
         dividerColor = dividerColor,
-        header = "Queue & Transitions",
+        header = strings.hdrQueueTransitions,
         secondaryText = secondaryText,
     ) {
-        if (search.matches("Autoplay", "Queue", "Similar")) {
+        if (search.matches("Autoplay", "Sonsuz", "Бесконечный", "Queue", "Similar")) {
             SettingsSwitchRow(
-                title = "Autoplay Similar Tracks",
-                subtitle = "Continue playing related tracks when queue ends",
+                title = strings.autoplay,
+                subtitle = strings.autoplayDesc,
                 checked = settings.autoplayEnabled,
                 primaryText = primaryText,
                 secondaryText = secondaryText,
                 onCheckedChange = { enabled -> onUpdateSettings { it.copy(autoplayEnabled = enabled) } },
             )
         }
-        if (search.matches("Loudness", "Normalization", "Volume")) {
+        if (search.matches("Loudness", "Normalization", "Volume", "Ses", "Eşitleme", "Громкость", "Выравнивание")) {
             SettingsSwitchRow(
-                title = "Loudness Normalization",
-                subtitle = "Keep perceived volume balanced across tracks",
+                title = strings.loudnessNormalization,
+                subtitle = strings.loudnessNormalizationDesc,
                 checked = settings.loudnessNormEnabled,
                 primaryText = primaryText,
                 secondaryText = secondaryText,
                 onCheckedChange = { enabled -> onUpdateSettings { it.copy(loudnessNormEnabled = enabled) } },
             )
         }
-        if (search.matches("Crossfade", "Blend", "Transitions")) {
+        if (search.matches("Crossfade", "Blend", "Transitions", "Geçiş", "Кроссфейд")) {
             SettingsSwitchRow(
-                title = "Crossfade",
-                subtitle = if (settings.crossfadeEnabled) "${settings.crossfadeSeconds}s smooth overlap" else "Off",
+                title = strings.crossfade,
+                subtitle = if (settings.crossfadeEnabled) strings.crossfadeSecondsOverlap(settings.crossfadeSeconds) else strings.off,
                 checked = settings.crossfadeEnabled,
                 primaryText = primaryText,
                 secondaryText = secondaryText,
@@ -1118,7 +1184,7 @@ private fun PlaybackCategoryContent(
                         .padding(horizontal = ROW_INSET, vertical = 10.dp),
                 ) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Duration", style = MaterialTheme.typography.bodySmall, color = secondaryText)
+                        Text(strings.durationLabel, style = MaterialTheme.typography.bodySmall, color = secondaryText)
                         Text(
                             "${settings.crossfadeSeconds}s",
                             style = MaterialTheme.typography.labelMedium,
@@ -1142,20 +1208,20 @@ private fun PlaybackCategoryContent(
                 }
             }
         }
-        if (search.matches("Skip Silence", "Silence")) {
+        if (search.matches("Skip Silence", "Silence", "Sessizliği", "Тишина")) {
             SettingsSwitchRow(
-                title = "Skip Silence",
-                subtitle = "Shorten dead air between tracks",
+                title = strings.skipSilence,
+                subtitle = strings.skipSilenceDesc,
                 checked = settings.skipSilenceEnabled,
                 primaryText = primaryText,
                 secondaryText = secondaryText,
                 onCheckedChange = { enabled -> onUpdateSettings { it.copy(skipSilenceEnabled = enabled) } },
             )
         }
-        if (search.matches("Sleep Timer", "Fade Out", "Fade")) {
+        if (search.matches("Sleep Timer", "Fade Out", "Fade", "Uyku", "Таймер")) {
             SettingsSwitchRow(
-                title = "Sleep Timer Fade Out",
-                subtitle = "Gently lower volume over the final 10 seconds before pausing",
+                title = strings.sleepTimerFadeOut,
+                subtitle = strings.sleepTimerFadeOutDesc,
                 checked = settings.sleepTimerFadeOut,
                 primaryText = primaryText,
                 secondaryText = secondaryText,
@@ -1166,11 +1232,11 @@ private fun PlaybackCategoryContent(
 
     Spacer(Modifier.height(14.dp))
 
-    if (search.matches("Speed", "Tempo", "Equalizer", "EQ", "Audio")) {
+    if (search.matches("Speed", "Tempo", "Hız", "Скорость", "Equalizer", "EQ", "Audio")) {
         SettingsGroup(
             cardBg = cardBg,
             dividerColor = dividerColor,
-            header = "Speed & Equalizer",
+            header = strings.hdrSpeedAndTiming,
             secondaryText = secondaryText,
         ) {
             addRow(dividerStart = ROW_INSET) {
@@ -1180,7 +1246,7 @@ private fun PlaybackCategoryContent(
                     .padding(horizontal = ROW_INSET, vertical = 12.dp),
             ) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("Playback Speed", style = MaterialTheme.typography.bodyLarge, color = primaryText)
+                    Text(strings.playbackSpeed, style = MaterialTheme.typography.bodyLarge, color = primaryText)
                     Text(
                         String.format(Locale.US, "%.2fx", settings.playbackSpeed),
                         style = MaterialTheme.typography.labelLarge,
@@ -1204,8 +1270,12 @@ private fun PlaybackCategoryContent(
             }
 
             SettingsSwitchRow(
-                title = "5-Band Equalizer",
-                subtitle = if (settings.eqEnabled) "Preset: ${settings.eqPreset}" else "Disabled",
+                title = strings.equalizerTitle,
+                subtitle = if (settings.eqEnabled) {
+                    eqPresetLabel(settings.eqPreset, strings)
+                } else {
+                    strings.off
+                },
                 checked = settings.eqEnabled,
                 primaryText = primaryText,
                 secondaryText = secondaryText,
@@ -1226,7 +1296,7 @@ private fun PlaybackCategoryContent(
                     ) {
                         EqPresets.take(3).forEach { preset ->
                             EqPresetChip(
-                                label = preset,
+                                label = eqPresetLabel(preset, strings),
                                 selected = settings.eqPreset == preset,
                                 cardBg = dividerColor,
                                 primaryText = primaryText,
@@ -1246,7 +1316,7 @@ private fun PlaybackCategoryContent(
                     ) {
                         EqPresets.drop(3).forEach { preset ->
                             EqPresetChip(
-                                label = preset,
+                                label = eqPresetLabel(preset, strings),
                                 selected = settings.eqPreset == preset,
                                 cardBg = dividerColor,
                                 primaryText = primaryText,
@@ -1315,57 +1385,58 @@ private fun ContentPreferencesCategoryContent(
     secondaryText: Color,
     onUpdateSettings: ((SonataSettingsState) -> SonataSettingsState) -> Unit,
 ) {
+    val strings = LocalSonataStrings.current
     SettingsGroup(
         cardBg = cardBg,
         dividerColor = dividerColor,
-        header = "Home Feed",
-        footer = "Customize which shelves appear on the Home tab and how video cards are framed.",
+        header = strings.hdrHomeFeed,
+        footer = strings.footerHomeFeed,
         secondaryText = secondaryText,
     ) {
-        if (search.matches("Hide Recents", "Recents", "Recently Played", "Last Played")) {
+        if (search.matches("Hide Recents", "Recents", "Recently Played", "Last Played", "Son")) {
             SettingsSwitchRow(
-                title = "Hide Recents",
-                subtitle = "Hide Last Played and Recently Played shelves on Home",
+                title = strings.hideRecents,
+                subtitle = strings.hideRecentsDesc,
                 checked = settings.hideRecents,
                 primaryText = primaryText,
                 secondaryText = secondaryText,
                 onCheckedChange = { enabled -> onUpdateSettings { it.copy(hideRecents = enabled) } },
             )
         }
-        if (search.matches("Hide Top Picks", "Top Picks", "Featured")) {
+        if (search.matches("Hide Top Picks", "Top Picks", "Featured", "Önerilen", "Рекомендации")) {
             SettingsSwitchRow(
-                title = "Hide Top Picks",
-                subtitle = "Hide the Top Picks for You shelf on Home",
+                title = strings.hideTopPicks,
+                subtitle = strings.hideTopPicksDesc,
                 checked = settings.hideTopPicks,
                 primaryText = primaryText,
                 secondaryText = secondaryText,
                 onCheckedChange = { enabled -> onUpdateSettings { it.copy(hideTopPicks = enabled) } },
             )
         }
-        if (search.matches("Hide Find Your Mood", "Mood", "Moods")) {
+        if (search.matches("Hide Find Your Mood", "Mood", "Moods", "Ruh Hali", "Настроение")) {
             SettingsSwitchRow(
-                title = "Hide Find Your Mood",
-                subtitle = "Hide the mood carousel from Home",
+                title = strings.hideHomeMoods,
+                subtitle = strings.hideHomeMoodsDesc,
                 checked = settings.hideHomeMoods,
                 primaryText = primaryText,
                 secondaryText = secondaryText,
                 onCheckedChange = { enabled -> onUpdateSettings { it.copy(hideHomeMoods = enabled) } },
             )
         }
-        if (search.matches("Hide Home Videos", "Videos", "Music Videos")) {
+        if (search.matches("Hide Home Videos", "Videos", "Music Videos", "Video", "Видео")) {
             SettingsSwitchRow(
-                title = "Hide Home Videos",
-                subtitle = "Filter out video shelves from the Home feed",
+                title = strings.hideHomeVideos,
+                subtitle = strings.hideHomeVideosDesc,
                 checked = settings.hideHomeVideos,
                 primaryText = primaryText,
                 secondaryText = secondaryText,
                 onCheckedChange = { enabled -> onUpdateSettings { it.copy(hideHomeVideos = enabled) } },
             )
         }
-        if (search.matches("Square Video Thumbnails", "Square", "Thumbnails", "Videos")) {
+        if (search.matches("Square Video Thumbnails", "Square", "Thumbnails", "Videos", "Kare", "Квадратные")) {
             SettingsSwitchRow(
-                title = "Square Video Thumbnails",
-                subtitle = "Crop 16:9 music video cards into clean 1:1 album sleeves",
+                title = strings.squareVideoThumbnails,
+                subtitle = strings.squareVideoThumbnailsDesc,
                 checked = settings.squareVideoThumbnails,
                 primaryText = primaryText,
                 secondaryText = secondaryText,
@@ -1415,13 +1486,13 @@ private fun AppearanceCategoryContent(
             cardBg = cardBg,
             dividerColor = dividerColor,
             header = strings.sectionTheme,
-            footer = "Basic applies the monochrome editorial layout on Home, Explore, Album, and Artist pages. Violet and Moonflower keep their full atmospheric layouts.",
+            footer = strings.footerAppearanceTheme,
             secondaryText = secondaryText,
         ) {
             SettingsRow(
                 icon = SonataIcons.Sparkles,
                 title = strings.designTheme,
-                subtitle = designThemeDescription(activeDesign),
+                subtitle = designThemeDescription(activeDesign, strings),
                 value = designThemeLabel(activeDesign),
                 primaryText = primaryText,
                 secondaryText = secondaryText,
@@ -1480,17 +1551,17 @@ private fun AppearanceCategoryContent(
         SettingsGroup(
             cardBg = cardBg,
             dividerColor = dividerColor,
-            header = "Glass & Motion",
+            header = strings.sectionGlassMotion,
             secondaryText = secondaryText,
         ) {
             if (search.matches("Liquid Glass", "Glass")) {
                 val glassApiSupported = isGlassSupported()
                 SettingsSwitchRow(
-                    title = "Liquid Glass",
+                    title = strings.liquidGlass,
                     subtitle = if (glassApiSupported) {
-                        "Crystal-clear refracted navigation bar and floating chrome"
+                        strings.liquidGlassDesc
                     } else {
-                        "Requires Android 13+ (API 33)"
+                        strings.liquidGlassApiHint
                     },
                     checked = settings.liquidGlassEnabled && glassApiSupported,
                     enabled = glassApiSupported,
@@ -1501,8 +1572,8 @@ private fun AppearanceCategoryContent(
             }
             if (search.matches("Glass Performance", "Glass", "Performance")) {
                 SettingsSwitchRow(
-                    title = "Glass Performance Mode",
-                    subtitle = "Lighter single-pass glass rendering for smoother scrolling",
+                    title = strings.glassPerformanceMode,
+                    subtitle = strings.glassPerformanceDesc,
                     checked = settings.glassPerformance,
                     enabled = settings.liquidGlassEnabled && isGlassSupported(),
                     primaryText = primaryText,
@@ -1512,8 +1583,8 @@ private fun AppearanceCategoryContent(
             }
             if (search.matches("Reduce Dynamic Blur", "Dynamic Blur", "Blur")) {
                 SettingsSwitchRow(
-                    title = "Reduce Dynamic Blur",
-                    subtitle = "Use crisp static frosted surfaces instead of live lens sampling",
+                    title = strings.reduceDynamicBlur,
+                    subtitle = strings.reduceDynamicBlurDesc,
                     checked = settings.reduceDynamicBlur,
                     primaryText = primaryText,
                     secondaryText = secondaryText,
@@ -1522,8 +1593,8 @@ private fun AppearanceCategoryContent(
             }
             if (search.matches("Reduce Animation", "Animation", "Motion")) {
                 SettingsSwitchRow(
-                    title = "Reduce Animation",
-                    subtitle = "Minimize spring transitions and ambient wave motion",
+                    title = strings.reduceAnimation,
+                    subtitle = strings.reduceAnimationDesc,
                     checked = settings.reduceAnimation,
                     primaryText = primaryText,
                     secondaryText = secondaryText,
@@ -1549,13 +1620,13 @@ private fun AppearanceCategoryContent(
         SettingsGroup(
             cardBg = cardBg,
             dividerColor = dividerColor,
-            header = "Player & Covers",
+            header = strings.sectionPlayerCovers,
             secondaryText = secondaryText,
         ) {
             if (search.matches("Full-Screen Cover Art", "Full-Screen", "Cover Art")) {
                 SettingsSwitchRow(
-                    title = "Full-Screen Cover Art",
-                    subtitle = "Edge-to-edge dissolving hero cover in portrait Now Playing",
+                    title = strings.fullScreenCoverArt,
+                    subtitle = strings.fullScreenCoverArtDesc,
                     checked = settings.fullScreenCoverArt,
                     primaryText = primaryText,
                     secondaryText = secondaryText,
@@ -1564,8 +1635,8 @@ private fun AppearanceCategoryContent(
             }
             if (search.matches("Full-Screen Detail Cover", "Detail Cover", "Album")) {
                 SettingsSwitchRow(
-                    title = "Full-Screen Detail Cover",
-                    subtitle = "Edge-to-edge album and playlist artwork in Basic detail pages",
+                    title = strings.fullScreenDetailCover,
+                    subtitle = strings.fullScreenDetailCoverDesc,
                     checked = settings.fullScreenDetailCover,
                     primaryText = primaryText,
                     secondaryText = secondaryText,
@@ -1574,8 +1645,8 @@ private fun AppearanceCategoryContent(
             }
             if (search.matches("Show Total Duration", "Total Duration", "Time", "Remaining")) {
                 SettingsSwitchRow(
-                    title = "Show Total Duration",
-                    subtitle = "Show total song length instead of remaining countdown",
+                    title = strings.showTotalDuration,
+                    subtitle = strings.showTotalDurationDesc,
                     checked = settings.showTotalDuration,
                     primaryText = primaryText,
                     secondaryText = secondaryText,
@@ -1585,8 +1656,8 @@ private fun AppearanceCategoryContent(
             if (search.matches("Player Backdrop", "Backdrop", "Mesh", "Blur")) {
                 SettingsRow(
                     icon = SonataIcons.Sparkles,
-                    title = "Player Backdrop",
-                    value = backdropLabel(settings.playerBackdropMode),
+                    title = strings.playerBackdrop,
+                    value = backdropLabel(settings.playerBackdropMode, strings),
                     primaryText = primaryText,
                     secondaryText = secondaryText,
                     onClick = { onOpenChoice(SettingsChoiceKind.PLAYER_BACKDROP) },
@@ -1594,8 +1665,8 @@ private fun AppearanceCategoryContent(
             }
             if (search.matches("Animated Cover Art", "Animated", "Canvas", "Motion")) {
                 SettingsSwitchRow(
-                    title = "Animated Cover Art",
-                    subtitle = "Play looping motion covers when available",
+                    title = strings.animatedArtwork,
+                    subtitle = strings.animatedArtworkDesc,
                     checked = settings.animatedArtwork,
                     primaryText = primaryText,
                     secondaryText = secondaryText,
@@ -1604,8 +1675,8 @@ private fun AppearanceCategoryContent(
             }
             if (search.matches("Play Animated Cover Over Cellular", "Cellular", "Animated")) {
                 SettingsSwitchRow(
-                    title = "Animated Covers Over Cellular",
-                    subtitle = "Allow loading remote animated covers on metered connections",
+                    title = strings.animatedArtworkCellular,
+                    subtitle = strings.animatedArtworkCellularDesc,
                     checked = settings.animatedArtworkCellular,
                     enabled = settings.animatedArtwork,
                     primaryText = primaryText,
@@ -1631,13 +1702,13 @@ private fun AppearanceCategoryContent(
         SettingsGroup(
             cardBg = cardBg,
             dividerColor = dividerColor,
-            header = "Lyrics",
+            header = strings.lyrics,
             secondaryText = secondaryText,
         ) {
             if (search.matches("Hide Lyrics Preview", "Preview", "Lyrics")) {
                 SettingsSwitchRow(
-                    title = "Hide Lyrics Preview",
-                    subtitle = "Hide the inline synced lyric line above the scrubber",
+                    title = strings.hideLyricsPreview,
+                    subtitle = strings.hideLyricsPreviewDesc,
                     checked = settings.hideLyricsPreview,
                     primaryText = primaryText,
                     secondaryText = secondaryText,
@@ -1646,8 +1717,8 @@ private fun AppearanceCategoryContent(
             }
             if (search.matches("Blur Unfocused Lyrics", "Blur", "Lyrics")) {
                 SettingsSwitchRow(
-                    title = "Blur Unfocused Lyrics",
-                    subtitle = "Softly defocus upcoming and past lyric lines",
+                    title = strings.blurUnfocusedLyrics,
+                    subtitle = strings.blurUnfocusedLyricsDesc,
                     checked = settings.lyricsBlurEnabled,
                     primaryText = primaryText,
                     secondaryText = secondaryText,
@@ -1656,8 +1727,8 @@ private fun AppearanceCategoryContent(
             }
             if (search.matches("Word-by-Word", "Karaoke", "Sync", "Lyrics")) {
                 SettingsSwitchRow(
-                    title = "Word-by-Word Sync",
-                    subtitle = "Prefer syllable-timed karaoke lyrics when available",
+                    title = strings.wordByWordSync,
+                    subtitle = strings.wordByWordSyncDesc,
                     checked = settings.prioritizeWordSync,
                     primaryText = primaryText,
                     secondaryText = secondaryText,
@@ -1666,8 +1737,8 @@ private fun AppearanceCategoryContent(
             }
             if (search.matches("Translate", "Translation", "Language", "Lyrics")) {
                 SettingsSwitchRow(
-                    title = "Translate Lyrics",
-                    subtitle = "Show translated line beneath original lyrics",
+                    title = strings.translateLyrics,
+                    subtitle = strings.translateLyricsDesc,
                     checked = settings.lyricsTranslationEnabled,
                     primaryText = primaryText,
                     secondaryText = secondaryText,
@@ -1678,7 +1749,7 @@ private fun AppearanceCategoryContent(
                         ?: settings.lyricsTranslationLang.uppercase(Locale.US)
                     SettingsRow(
                         icon = SonataIcons.Translate,
-                        title = "Translation Language",
+                        title = strings.translationLanguage,
                         value = langName,
                         primaryText = primaryText,
                         secondaryText = secondaryText,
@@ -1688,8 +1759,8 @@ private fun AppearanceCategoryContent(
             }
             if (search.matches("Romanize", "Romanization", "Lyrics")) {
                 SettingsSwitchRow(
-                    title = "Romanize Lyrics",
-                    subtitle = "Transliterate Japanese, Korean, and Cyrillic scripts",
+                    title = strings.romanizeLyrics,
+                    subtitle = strings.romanizeLyricsDesc,
                     checked = settings.lyricsRomanizationEnabled,
                     primaryText = primaryText,
                     secondaryText = secondaryText,
@@ -1704,7 +1775,7 @@ private fun AppearanceCategoryContent(
                         .padding(horizontal = ROW_INSET, vertical = 12.dp),
                 ) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Global Lyric Offset", style = MaterialTheme.typography.bodyLarge, color = primaryText)
+                        Text(strings.globalLyricOffset, style = MaterialTheme.typography.bodyLarge, color = primaryText)
                         Text(
                             "${if (settings.lyricsOffsetMs >= 0) "+" else ""}${settings.lyricsOffsetMs} ms",
                             style = MaterialTheme.typography.labelLarge,
@@ -1742,17 +1813,18 @@ private fun PerformanceCategoryContent(
     secondaryText: Color,
     onUpdateSettings: ((SonataSettingsState) -> SonataSettingsState) -> Unit,
 ) {
+    val strings = LocalSonataStrings.current
     SettingsGroup(
         cardBg = cardBg,
         dividerColor = dividerColor,
-        header = "Display & Rendering",
-        footer = "Lowering frame rate or enabling Glass Performance Mode reduces GPU usage and improves battery life.",
+        header = strings.hdrDisplayRendering,
+        footer = strings.footerDisplayRendering,
         secondaryText = secondaryText,
     ) {
         if (supports120Hz && search.matches("Refresh Rate", "120 Hz", "60 Hz", "FPS", "Performance")) {
             SettingsSwitchRow(
-                title = "120 Hz High Refresh Rate",
-                subtitle = "Smooth high-refresh scrolling and animations",
+                title = strings.refreshRateHigh,
+                subtitle = strings.refreshRateDesc,
                 checked = settings.fpsLimit >= 120,
                 primaryText = primaryText,
                 secondaryText = secondaryText,
@@ -1763,8 +1835,8 @@ private fun PerformanceCategoryContent(
         }
         if (search.matches("Glass Performance", "Glass", "Performance")) {
             SettingsSwitchRow(
-                title = "Glass Performance Mode",
-                subtitle = "Lighter single-pass glass rendering for smoother frame pacing",
+                title = strings.glassPerformanceMode,
+                subtitle = strings.glassPerformanceDesc,
                 checked = settings.glassPerformance,
                 enabled = settings.liquidGlassEnabled && isGlassSupported(),
                 primaryText = primaryText,
@@ -1774,8 +1846,8 @@ private fun PerformanceCategoryContent(
         }
         if (search.matches("Reduce Dynamic Blur", "Blur", "Performance")) {
             SettingsSwitchRow(
-                title = "Reduce Dynamic Blur",
-                subtitle = "Replace live backdrop refraction with crisp static surfaces",
+                title = strings.reduceDynamicBlur,
+                subtitle = strings.reduceDynamicBlurDesc,
                 checked = settings.reduceDynamicBlur,
                 primaryText = primaryText,
                 secondaryText = secondaryText,
@@ -1784,8 +1856,8 @@ private fun PerformanceCategoryContent(
         }
         if (search.matches("Reduce Animation", "Animation", "Motion")) {
             SettingsSwitchRow(
-                title = "Reduce Animation",
-                subtitle = "Minimize motion transitions across tabs and player",
+                title = strings.reduceAnimation,
+                subtitle = strings.reduceAnimationDesc,
                 checked = settings.reduceAnimation,
                 primaryText = primaryText,
                 secondaryText = secondaryText,
@@ -1807,17 +1879,23 @@ private fun StorageCategoryContent(
     onClearMediaCache: () -> Unit,
     onClearImageCache: () -> Unit,
 ) {
+    val strings = LocalSonataStrings.current
     SettingsGroup(
         cardBg = cardBg,
         dividerColor = dividerColor,
-        header = "Storage & Cache",
+        header = strings.hdrStorageCache,
         secondaryText = secondaryText,
     ) {
         if (search.matches("Downloaded", "Downloads", "Offline", "Storage")) {
+            val localizedStorageLabel = if (downloadStorageStats.locationLabel.contains("External", ignoreCase = true)) {
+                strings.storageExternalLabel
+            } else {
+                strings.storageInternalLabel
+            }
             SettingsRow(
                 icon = SonataIcons.Download,
-                title = "Downloaded Songs",
-                subtitle = "${downloadStorageStats.trackCount} songs · ${downloadStorageStats.locationLabel}",
+                title = strings.downloadedSongs,
+                subtitle = "${strings.tracksCount(downloadStorageStats.trackCount)} · $localizedStorageLabel",
                 value = formatStorageBytes(downloadStorageStats.downloadedBytes),
                 primaryText = primaryText,
                 secondaryText = secondaryText,
@@ -1826,8 +1904,8 @@ private fun StorageCategoryContent(
         }
         if (search.matches("Audio Cache", "Media Cache", "Lyrics Cache", "Clear")) {
             SettingsActionRow(
-                title = "Clear Audio & Lyrics Cache",
-                subtitle = "Free cached audio segments and synced lyrics",
+                title = strings.clearAudioCache,
+                subtitle = strings.clearAudioCacheDesc,
                 titleColor = primaryText,
                 secondaryText = secondaryText,
                 onClick = onClearMediaCache,
@@ -1835,8 +1913,8 @@ private fun StorageCategoryContent(
         }
         if (search.matches("Image Cache", "Artwork Cache", "Clear")) {
             SettingsActionRow(
-                title = "Clear Image Cache",
-                subtitle = "Clear cached album covers and thumbnails from memory and disk",
+                title = strings.clearImageCache,
+                subtitle = strings.clearImageCacheDesc,
                 titleColor = primaryText,
                 secondaryText = secondaryText,
                 onClick = onClearImageCache,
@@ -1854,23 +1932,24 @@ private fun YourDataCategoryContent(
     onExportBackup: () -> Unit,
     onImportBackup: () -> Unit,
 ) {
+    val strings = LocalSonataStrings.current
     SettingsGroup(
         cardBg = cardBg,
         dividerColor = dividerColor,
-        header = "Backup & Restore",
-        footer = "Settings backup files are plain JSON and strictly exclude session cookies and account credentials.",
+        header = strings.hdrBackupRestore,
+        footer = strings.footerBackupRestore,
         secondaryText = secondaryText,
     ) {
         SettingsActionRow(
-            title = "Export Settings Backup",
-            subtitle = "Save preferences and per-track lyric offsets as JSON",
+            title = strings.exportBackup,
+            subtitle = strings.exportBackupDesc,
             titleColor = primaryText,
             secondaryText = secondaryText,
             onClick = onExportBackup,
         )
         SettingsActionRow(
-            title = "Import Settings Backup",
-            subtitle = "Restore preferences from a previously exported JSON file",
+            title = strings.importBackup,
+            subtitle = strings.importBackupDesc,
             titleColor = primaryText,
             secondaryText = secondaryText,
             onClick = onImportBackup,
@@ -1888,16 +1967,17 @@ private fun MiscellaneousCategoryContent(
     secondaryText: Color,
     onUpdateSettings: ((SonataSettingsState) -> SonataSettingsState) -> Unit,
 ) {
+    val strings = LocalSonataStrings.current
     SettingsGroup(
         cardBg = cardBg,
         dividerColor = dividerColor,
-        header = "Player & System",
+        header = strings.hdrPlayerSystem,
         secondaryText = secondaryText,
     ) {
         if (search.matches("Hide Status Bar", "Status Bar", "Player")) {
             SettingsSwitchRow(
-                title = "Hide Status Bar in Player",
-                subtitle = "Use immersive full-height layout while Now Playing is open",
+                title = strings.hideStatusBarPlayer,
+                subtitle = strings.hideStatusBarPlayerDesc,
                 checked = settings.hideStatusBarInPlayer,
                 primaryText = primaryText,
                 secondaryText = secondaryText,
@@ -1906,8 +1986,8 @@ private fun MiscellaneousCategoryContent(
         }
         if (search.matches("Hide Quality Badge", "Quality Badge", "Song Status")) {
             SettingsSwitchRow(
-                title = "Hide Quality Badge",
-                subtitle = "Hide the audio format pill below the playback scrubber",
+                title = strings.hideQualityBadge,
+                subtitle = strings.hideQualityBadgeDesc,
                 checked = settings.hideSongStatus,
                 primaryText = primaryText,
                 secondaryText = secondaryText,
@@ -1916,8 +1996,8 @@ private fun MiscellaneousCategoryContent(
         }
         if (search.matches("Stop Music on Close", "Stop Music", "Close", "Swipe")) {
             SettingsSwitchRow(
-                title = "Stop Music on Close",
-                subtitle = "Stop playback and close media notification when swiping the app away",
+                title = strings.stopMusicOnClose,
+                subtitle = strings.stopMusicOnCloseDesc,
                 checked = settings.stopMusicOnClose,
                 primaryText = primaryText,
                 secondaryText = secondaryText,
@@ -1926,8 +2006,8 @@ private fun MiscellaneousCategoryContent(
         }
         if (search.matches("Show Nerd Stats", "Nerd Stats", "Codec", "Bitrate", "Telemetry")) {
             SettingsSwitchRow(
-                title = "Show Nerd Stats",
-                subtitle = "Display live codec, bitrate, sample rate, and cache source in Now Playing",
+                title = strings.showNerdStats,
+                subtitle = strings.showNerdStatsDesc,
                 checked = settings.showNerdStats,
                 primaryText = primaryText,
                 secondaryText = secondaryText,
@@ -1953,23 +2033,24 @@ private fun AccountCategoryContent(
     onCheckForUpdates: () -> Unit,
     onDownloadUpdate: () -> Unit,
 ) {
+    val strings = LocalSonataStrings.current
     SettingsGroup(
         cardBg = cardBg,
         dividerColor = dividerColor,
-        header = "YouTube Music Account",
+        header = strings.hdrYtmAccount,
         secondaryText = secondaryText,
     ) {
         SettingsRow(
             icon = SonataIcons.Person,
             title = if (signedIn) {
-                accountProfile?.name?.takeIf { it.isNotBlank() } ?: "Connected"
+                accountProfile?.name?.takeIf { it.isNotBlank() } ?: strings.connectedStatus
             } else {
-                "Not Signed In"
+                strings.notSignedInStatus
             },
             subtitle = if (signedIn) {
-                accountProfile?.handle?.takeIf { it.isNotBlank() } ?: "YouTube Music session active"
+                accountProfile?.handle?.takeIf { it.isNotBlank() } ?: strings.ytmSessionActive
             } else {
-                "Sign in for personalized Home, playlists, and likes"
+                strings.signInYtmSettingsSubtitle
             },
             avatarUrl = if (signedIn) accountProfile?.avatarUrl else null,
             primaryText = primaryText,
@@ -1979,16 +2060,16 @@ private fun AccountCategoryContent(
         )
         if (signedIn) {
             SettingsActionRow(
-                title = "Sign Out",
-                subtitle = "Clear local YouTube Music session cookies",
+                title = strings.signOut,
+                subtitle = strings.signOutDesc,
                 titleColor = BasicPalette.AccentRed,
                 secondaryText = secondaryText,
                 onClick = onSignOut,
             )
         } else {
             SettingsActionRow(
-                title = "Sign In to YouTube Music",
-                subtitle = "Open secure in-app browser sign-in",
+                title = strings.signInYtmTitle,
+                subtitle = strings.signInYtmDesc,
                 titleColor = primaryText,
                 secondaryText = secondaryText,
                 onClick = onSignIn,
@@ -2001,13 +2082,13 @@ private fun AccountCategoryContent(
     SettingsGroup(
         cardBg = cardBg,
         dividerColor = dividerColor,
-        header = "About & Updates",
-        footer = "Sonata Android is 100% open-source with zero trackers or proprietary analytics SDKs.",
+        header = strings.hdrAboutUpdates,
+        footer = strings.footerAboutUpdates,
         secondaryText = secondaryText,
     ) {
         SettingsRow(
             icon = SonataIcons.Sparkles,
-            title = "Sonata Version",
+            title = strings.sonataVersion,
             value = installedVersionName,
             primaryText = primaryText,
             secondaryText = secondaryText,
@@ -2016,8 +2097,8 @@ private fun AccountCategoryContent(
         )
         if (updateInfo?.updateAvailable == true) {
             SettingsActionRow(
-                title = "Download Update (${updateInfo.latestVersion})",
-                subtitle = "Open release APK download",
+                title = strings.downloadUpdateVersion(updateInfo.latestVersion),
+                subtitle = strings.openReleaseApk,
                 titleColor = primaryText,
                 secondaryText = secondaryText,
                 onClick = onDownloadUpdate,
@@ -2033,12 +2114,12 @@ private fun AccountCategoryContent(
             ) {
                 Column(Modifier.weight(1f)) {
                     Text(
-                        text = if (checkingUpdates) "Checking for Updates..." else "Check for Updates",
+                        text = if (checkingUpdates) strings.checkingForUpdates else strings.checkForUpdates,
                         style = MaterialTheme.typography.bodyLarge,
                         color = primaryText,
                     )
                     Text(
-                        text = "Compare installed build with GitHub Releases",
+                        text = strings.compareGithubReleases,
                         style = MaterialTheme.typography.bodySmall,
                         color = secondaryText,
                     )
@@ -2071,13 +2152,7 @@ private fun SettingsChoicePage(
     onSelectDone: () -> Unit,
 ) {
     val strings = LocalSonataStrings.current
-    val choiceTitle = when (kind) {
-        SettingsChoiceKind.STREAMING_QUALITY -> strings.streamingQuality
-        SettingsChoiceKind.DOWNLOAD_QUALITY -> strings.downloadQuality
-        SettingsChoiceKind.APP_LANGUAGE -> strings.appLanguage
-        SettingsChoiceKind.DESIGN_THEME -> strings.designTheme
-        else -> kind.title
-    }
+    val choiceTitle = kind.localizedTitle(strings)
     SettingsPageTitle(title = choiceTitle, color = primaryText)
 
     when (kind) {
@@ -2085,13 +2160,13 @@ private fun SettingsChoicePage(
             SettingsGroup(
                 cardBg = cardBg,
                 dividerColor = dividerColor,
-                footer = "Higher streaming tiers prioritize Opus 251 / AAC 320 kbps when available.",
+                footer = strings.footerStreamingQuality,
                 secondaryText = secondaryText,
             ) {
                 AudioQualityTier.entries.forEach { tier ->
                     SettingsChoiceRow(
-                        title = audioQualityLabel(tier),
-                        subtitle = audioQualityDetail(tier),
+                        title = audioQualityLabel(tier, strings),
+                        subtitle = audioQualityDetail(tier, strings),
                         selected = settings.audioQuality == tier,
                         primaryText = primaryText,
                         secondaryText = secondaryText,
@@ -2114,13 +2189,13 @@ private fun SettingsChoicePage(
             SettingsGroup(
                 cardBg = cardBg,
                 dividerColor = dividerColor,
-                header = "Ordered from Highest to Smallest",
-                footer = "Average per-song size assumes a standard ~3.5 minute track. Actual file size varies by song duration and codec.",
+                header = strings.hdrOrderedHighestToSmallest,
+                footer = strings.footerDownloadQuality,
                 secondaryText = secondaryText,
             ) {
                 DownloadQualityTier.entries.forEach { tier ->
                     SettingsChoiceRow(
-                        title = tier.title,
+                        title = downloadQualityShortLabel(tier, strings),
                         subtitle = tier.detail,
                         badge = tier.approxMbPerSong,
                         selected = settings.downloadQuality == tier,
@@ -2136,17 +2211,43 @@ private fun SettingsChoicePage(
             }
         }
 
+        SettingsChoiceKind.VIDEO_DOWNLOAD_QUALITY -> {
+            SettingsGroup(
+                cardBg = cardBg,
+                dividerColor = dividerColor,
+                header = strings.hdrOrderedHighestToSmallest,
+                footer = strings.footerVideoDownloads,
+                secondaryText = secondaryText,
+            ) {
+                VideoDownloadQuality.entries.forEach { quality ->
+                    SettingsChoiceRow(
+                        title = videoDownloadQualityTitle(quality, strings),
+                        subtitle = videoDownloadQualityDesc(quality, strings),
+                        badge = videoDownloadQualitySize(quality, strings),
+                        selected = settings.videoDownloadQuality == quality,
+                        primaryText = primaryText,
+                        secondaryText = secondaryText,
+                        accentTint = accentTint,
+                        onClick = {
+                            onUpdateSettings { it.copy(videoDownloadQuality = quality) }
+                            onSelectDone()
+                        },
+                    )
+                }
+            }
+        }
+
         SettingsChoiceKind.DOWNLOAD_STORAGE -> {
             SettingsGroup(
                 cardBg = cardBg,
                 dividerColor = dividerColor,
-                footer = "Internal storage keeps downloads inside Sonata's private sandbox. External storage writes tracks into Music/Sonata so file managers and other players can access them.",
+                footer = strings.footerStorageLocation,
                 secondaryText = secondaryText,
             ) {
                 DownloadStorageLocation.entries.forEach { loc ->
                     SettingsChoiceRow(
-                        title = loc.title,
-                        subtitle = loc.detail,
+                        title = downloadStorageShortLabel(loc, strings),
+                        subtitle = downloadStorageDetail(loc, strings),
                         selected = settings.downloadStorageLocation == loc,
                         primaryText = primaryText,
                         secondaryText = secondaryText,
@@ -2166,7 +2267,6 @@ private fun SettingsChoicePage(
         }
 
         SettingsChoiceKind.APP_LANGUAGE -> {
-            val strings = LocalSonataStrings.current
             SettingsGroup(
                 cardBg = cardBg,
                 dividerColor = dividerColor,
@@ -2194,14 +2294,14 @@ private fun SettingsChoicePage(
             SettingsGroup(
                 cardBg = cardBg,
                 dividerColor = dividerColor,
-                footer = "Basic activates the monochrome editorial UI overhaul on Home, Explore, Album, and Artist pages. Violet and Moonflower keep their full distinct visual styles.",
+                footer = strings.footerAppearanceTheme,
                 secondaryText = secondaryText,
             ) {
                 val activeDesign = settings.resolvedDesignTheme()
                 DesignTheme.entries.forEach { design ->
                     SettingsChoiceRow(
                         title = designThemeLabel(design),
-                        subtitle = designThemeDescription(design),
+                        subtitle = designThemeDescription(design, strings),
                         selected = activeDesign == design,
                         primaryText = primaryText,
                         secondaryText = secondaryText,
@@ -2237,8 +2337,8 @@ private fun SettingsChoicePage(
             ) {
                 PlayerBackdropMode.entries.forEach { mode ->
                     SettingsChoiceRow(
-                        title = backdropLabel(mode),
-                        subtitle = backdropDetail(mode),
+                        title = backdropLabel(mode, strings),
+                        subtitle = backdropDetail(mode, strings),
                         selected = settings.playerBackdropMode == mode,
                         primaryText = primaryText,
                         secondaryText = secondaryText,
@@ -2342,7 +2442,7 @@ private fun SettingsSearchField(
         if (query.isNotEmpty()) {
             Icon(
                 imageVector = SonataIcons.Close,
-                contentDescription = "Clear search",
+                contentDescription = LocalSonataStrings.current.clear,
                 tint = secondaryText,
                 modifier = Modifier
                     .size(18.dp)
@@ -2652,7 +2752,7 @@ private fun SettingsGroupScope.SettingsChoiceRow(
                 Spacer(Modifier.width(10.dp))
                 Icon(
                     imageVector = SonataIcons.Check,
-                    contentDescription = "Selected",
+                    contentDescription = LocalSonataStrings.current.done,
                     tint = accentTint,
                     modifier = Modifier.size(20.dp),
                 )
@@ -2757,32 +2857,63 @@ private fun formatStorageBytes(bytes: Long): String {
     }
 }
 
-private fun audioQualityShortLabel(tier: AudioQualityTier): String = when (tier) {
-    AudioQualityTier.LOSSLESS -> "Lossless"
-    AudioQualityTier.HIGH -> "High"
-    AudioQualityTier.MEDIUM -> "Medium"
-    AudioQualityTier.LOW -> "Low"
+private fun audioQualityShortLabel(tier: AudioQualityTier, strings: SonataStrings): String = when (tier) {
+    AudioQualityTier.LOSSLESS -> strings.qualityLossless
+    AudioQualityTier.HIGH -> strings.qualityHigh
+    AudioQualityTier.MEDIUM -> strings.qualityMedium
+    AudioQualityTier.LOW -> strings.qualityLow
 }
 
-private fun audioQualityLabel(tier: AudioQualityTier): String = when (tier) {
-    AudioQualityTier.LOSSLESS -> "Lossless / Maximum"
-    AudioQualityTier.HIGH -> "High (256–320 kbps)"
-    AudioQualityTier.MEDIUM -> "Medium (128 kbps)"
-    AudioQualityTier.LOW -> "Data Saver (64 kbps)"
+private fun audioQualityLabel(tier: AudioQualityTier, strings: SonataStrings): String = when (tier) {
+    AudioQualityTier.LOSSLESS -> strings.qualityLosslessDetail
+    AudioQualityTier.HIGH -> strings.qualityHighDetail
+    AudioQualityTier.MEDIUM -> strings.qualityMediumDetail
+    AudioQualityTier.LOW -> strings.qualityLowDetail
 }
 
-private fun audioQualityDetail(tier: AudioQualityTier): String = when (tier) {
-    AudioQualityTier.LOSSLESS -> "Highest bitrate stream available"
-    AudioQualityTier.HIGH -> "Best balance of fidelity and fast startup"
-    AudioQualityTier.MEDIUM -> "Standard streaming bitrate"
-    AudioQualityTier.LOW -> "Minimal mobile data usage"
+private fun audioQualityDetail(tier: AudioQualityTier, strings: SonataStrings): String = when (tier) {
+    AudioQualityTier.LOSSLESS -> strings.qualityLosslessDesc
+    AudioQualityTier.HIGH -> strings.qualityHighDesc
+    AudioQualityTier.MEDIUM -> strings.qualityMediumDesc
+    AudioQualityTier.LOW -> strings.qualityLowDesc
 }
 
-private fun downloadQualityShortLabel(tier: DownloadQualityTier): String = when (tier) {
-    DownloadQualityTier.HIGHEST -> "Highest"
-    DownloadQualityTier.HIGH -> "High"
-    DownloadQualityTier.STANDARD -> "Standard"
-    DownloadQualityTier.LOW -> "Data Saver"
+private fun downloadQualityShortLabel(tier: DownloadQualityTier, strings: SonataStrings): String = when (tier) {
+    DownloadQualityTier.HIGHEST -> strings.dlHighest
+    DownloadQualityTier.HIGH -> strings.dlHigh
+    DownloadQualityTier.STANDARD -> strings.dlStandard
+    DownloadQualityTier.LOW -> strings.dlLow
+}
+
+private fun videoDownloadQualityTitle(quality: VideoDownloadQuality, strings: SonataStrings): String = when (quality) {
+    VideoDownloadQuality.P1080 -> strings.videoDl1080Title
+    VideoDownloadQuality.P720 -> strings.videoDl720Title
+    VideoDownloadQuality.P480 -> strings.videoDl480Title
+    VideoDownloadQuality.P360 -> strings.videoDl360Title
+}
+
+private fun videoDownloadQualityDesc(quality: VideoDownloadQuality, strings: SonataStrings): String = when (quality) {
+    VideoDownloadQuality.P1080 -> strings.videoDl1080Desc
+    VideoDownloadQuality.P720 -> strings.videoDl720Desc
+    VideoDownloadQuality.P480 -> strings.videoDl480Desc
+    VideoDownloadQuality.P360 -> strings.videoDl360Desc
+}
+
+private fun videoDownloadQualitySize(quality: VideoDownloadQuality, strings: SonataStrings): String = when (quality) {
+    VideoDownloadQuality.P1080 -> strings.videoDl1080Size
+    VideoDownloadQuality.P720 -> strings.videoDl720Size
+    VideoDownloadQuality.P480 -> strings.videoDl480Size
+    VideoDownloadQuality.P360 -> strings.videoDl360Size
+}
+
+private fun downloadStorageShortLabel(loc: DownloadStorageLocation, strings: SonataStrings): String = when (loc) {
+    DownloadStorageLocation.INTERNAL -> strings.storageLocationInternal
+    DownloadStorageLocation.EXTERNAL -> strings.storageLocationExternal
+}
+
+private fun downloadStorageDetail(loc: DownloadStorageLocation, strings: SonataStrings): String = when (loc) {
+    DownloadStorageLocation.INTERNAL -> strings.storageInternalDesc
+    DownloadStorageLocation.EXTERNAL -> strings.storageExternalDesc
 }
 
 private fun designThemeLabel(design: DesignTheme): String = when (design) {
@@ -2791,29 +2922,33 @@ private fun designThemeLabel(design: DesignTheme): String = when (design) {
     DesignTheme.BASIC -> "Basic"
 }
 
-private fun designThemeDescription(design: DesignTheme): String = when (design) {
-    DesignTheme.VIOLET -> "Sculpted deep amethyst glass"
-    DesignTheme.MOONFLOWER -> "Botanical silk & floral aura"
-    DesignTheme.BASIC -> "Monochrome editorial layout overhaul"
+private fun designThemeDescription(design: DesignTheme, strings: SonataStrings): String = when (design) {
+    DesignTheme.VIOLET -> strings.themeVioletDesc
+    DesignTheme.MOONFLOWER -> strings.themeMoonflowerDesc
+    DesignTheme.BASIC -> strings.themeBasicDesc
 }
 
-private fun colorModeLabel(mode: ThemeMode): String = when (mode) {
-    ThemeMode.SYSTEM -> "System"
-    ThemeMode.AMOLED -> "AMOLED"
-    ThemeMode.VIOLET_LIGHT, ThemeMode.MOONFLOWER_LIGHT, ThemeMode.BASIC_LIGHT -> "Light"
-    ThemeMode.VIOLET_DARK, ThemeMode.MOONFLOWER_DARK, ThemeMode.BASIC_DARK -> "Dark"
+private fun backdropLabel(mode: PlayerBackdropMode, strings: SonataStrings): String = when (mode) {
+    PlayerBackdropMode.ARTWORK_MESH -> strings.backdropMesh
+    PlayerBackdropMode.AMBIENT_WAVES -> strings.backdropWaves
+    PlayerBackdropMode.BLURRED_COVER -> strings.backdropBlurred
 }
 
-private fun backdropLabel(mode: PlayerBackdropMode): String = when (mode) {
-    PlayerBackdropMode.ARTWORK_MESH -> "Artwork Mesh"
-    PlayerBackdropMode.AMBIENT_WAVES -> "Ambient Waves"
-    PlayerBackdropMode.BLURRED_COVER -> "Blurred Cover"
+private fun backdropDetail(mode: PlayerBackdropMode, strings: SonataStrings): String = when (mode) {
+    PlayerBackdropMode.ARTWORK_MESH -> strings.backdropMeshDesc
+    PlayerBackdropMode.AMBIENT_WAVES -> strings.backdropWavesDesc
+    PlayerBackdropMode.BLURRED_COVER -> strings.backdropBlurredDesc
 }
 
-private fun backdropDetail(mode: PlayerBackdropMode): String = when (mode) {
-    PlayerBackdropMode.ARTWORK_MESH -> "Rich color mesh baked from album artwork"
-    PlayerBackdropMode.AMBIENT_WAVES -> "Smooth animated ambient palette gradient"
-    PlayerBackdropMode.BLURRED_COVER -> "Full-screen softly blurred cover art"
+private fun eqPresetLabel(preset: String, strings: SonataStrings): String = when (preset) {
+    "Flat" -> strings.eqPresetFlat
+    "Bass Boost" -> strings.eqPresetBassBoost
+    "Vocal" -> strings.eqPresetVocal
+    "Acoustic" -> strings.eqPresetAcoustic
+    "Electronic" -> strings.eqPresetElectronic
+    "Late Night" -> strings.eqPresetLateNight
+    "Custom" -> strings.eqPresetCustom
+    else -> preset
 }
 
 private fun eqPresetCurve(preset: String): List<Float> = when (preset) {

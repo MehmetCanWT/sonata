@@ -21,6 +21,170 @@ const TVHTML5_USER_AGENT: &str =
     "Mozilla/5.0 (SMART-TV; Linux; Tizen 2.4.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/2.4.0 TV Safari/538.1";
 const FAST_START_RANGE_END: u64 = 1024 * 1024 - 1;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VideoQualityStream {
+    pub quality_label: String,
+    pub height: u32,
+    pub fps: u32,
+    pub video_url: String,
+    pub mime_type: String,
+    pub bitrate_bps: u64,
+    pub is_muxed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedMusicVideo {
+    pub video_id: String,
+    pub qualities: Vec<VideoQualityStream>,
+    pub audio_url: Option<String>,
+    pub audio_badge: String,
+    pub headers: Vec<(String, String)>,
+}
+
+fn video_codec_rank(mime: &str) -> u8 {
+    let lower = mime.to_ascii_lowercase();
+    if lower.contains("avc1") || lower.contains("video/mp4") && !lower.contains("av01") {
+        0
+    } else if lower.contains("vp9") || lower.contains("vp09") || lower.contains("video/webm") {
+        1
+    } else if lower.contains("av01") {
+        2
+    } else {
+        3
+    }
+}
+
+fn format_direct_or_cipher(format: &Value) -> (Option<String>, Option<String>) {
+    let raw_url = format
+        .get("url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|u| u.starts_with("https://"))
+        .map(str::to_string);
+    let sig_cipher = format
+        .get("signatureCipher")
+        .or_else(|| format.get("cipher"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    (raw_url, sig_cipher)
+}
+
+pub fn parse_innertube_video_formats(
+    payload: &Value,
+) -> Option<(Vec<VideoQualityStream>, Option<String>, String)> {
+    let audio = parse_innertube_best_audio(payload);
+    let adaptive = payload
+        .pointer("/streamingData/adaptiveFormats")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let muxed = payload
+        .pointer("/streamingData/formats")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    let mut by_bucket: std::collections::HashMap<(u32, bool), VideoQualityStream> =
+        std::collections::HashMap::new();
+
+    for (is_muxed, list) in [(false, &adaptive), (true, &muxed)] {
+        if !is_muxed && audio.is_none() {
+            continue;
+        }
+        for format in list {
+            let mime = format
+                .get("mimeType")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
+            if !mime.starts_with("video/") {
+                continue;
+            }
+            let Some(url) = format
+                .get("url")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|u| u.starts_with("https://"))
+            else {
+                continue;
+            };
+            let height = format
+                .get("height")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                .min(4320) as u32;
+            if height < 144 {
+                continue;
+            }
+            let fps = format.get("fps").and_then(Value::as_u64).unwrap_or(30) as u32;
+            let quality_label = format
+                .get("qualityLabel")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("{height}p"));
+            let bitrate_bps = format.get("bitrate").and_then(Value::as_u64).unwrap_or(0);
+            let cand = VideoQualityStream {
+                quality_label,
+                height,
+                fps,
+                video_url: url.to_string(),
+                mime_type: mime.to_string(),
+                bitrate_bps,
+                is_muxed,
+            };
+            let key = (height, is_muxed);
+            let replace = match by_bucket.get(&key) {
+                None => true,
+                Some(existing) => {
+                    let c_rank = video_codec_rank(&cand.mime_type);
+                    let e_rank = video_codec_rank(&existing.mime_type);
+                    (
+                        c_rank,
+                        std::cmp::Reverse(cand.fps),
+                        std::cmp::Reverse(cand.bitrate_bps),
+                    ) < (
+                        e_rank,
+                        std::cmp::Reverse(existing.fps),
+                        std::cmp::Reverse(existing.bitrate_bps),
+                    )
+                }
+            };
+            if replace {
+                by_bucket.insert(key, cand);
+            }
+        }
+    }
+
+    let mut best_by_height: std::collections::HashMap<u32, VideoQualityStream> =
+        std::collections::HashMap::new();
+    for ((height, is_muxed), stream) in by_bucket {
+        match best_by_height.get(&height) {
+            None => {
+                best_by_height.insert(height, stream);
+            }
+            Some(existing) if existing.is_muxed && !is_muxed => {
+                best_by_height.insert(height, stream);
+            }
+            _ => {}
+        }
+    }
+
+    let mut qualities: Vec<VideoQualityStream> = best_by_height.into_values().collect();
+    if qualities.is_empty() {
+        return None;
+    }
+    qualities.sort_by(|a, b| b.height.cmp(&a.height).then_with(|| b.fps.cmp(&a.fps)));
+    let (audio_url, audio_badge) = match audio {
+        Some(a) => (Some(a.url), a.badge),
+        None => (None, "AAC".to_string()),
+    };
+    Some((qualities, audio_url, audio_badge))
+}
+
 impl StreamResolver {
     pub async fn resolve_youtube_video_id(&self, track: &Track) -> Option<String> {
         match track.source {
@@ -736,6 +900,349 @@ impl StreamResolver {
             stream.headers = vec![("User-Agent".to_string(), user_agent.to_string())];
         }
         Some(stream)
+    }
+
+    async fn parse_innertube_video_payload(
+        &self,
+        video_id: &str,
+        payload: &Value,
+        prepared: Option<&PreparedPlayerJs>,
+        headers: Vec<(String, String)>,
+    ) -> Option<ResolvedMusicVideo> {
+        let adaptive = payload
+            .pointer("/streamingData/adaptiveFormats")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let muxed = payload
+            .pointer("/streamingData/formats")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+
+        let audio = if let Some(prep) = prepared {
+            self.parse_innertube_ciphered_audio_candidate(payload, prep, false)
+                .await
+                .map(|(_, _, s)| s)
+                .or_else(|| parse_innertube_best_audio(payload))
+        } else {
+            parse_innertube_best_audio(payload)
+        };
+
+        struct RawVideoCandidate {
+            quality_label: String,
+            height: u32,
+            fps: u32,
+            raw_url: Option<String>,
+            sig_cipher: Option<String>,
+            mime_type: String,
+            bitrate_bps: u64,
+            is_muxed: bool,
+        }
+
+        let mut grouped: std::collections::HashMap<(u32, bool), RawVideoCandidate> =
+            std::collections::HashMap::new();
+
+        for (is_muxed, list) in [(false, &adaptive), (true, &muxed)] {
+            if !is_muxed && audio.is_none() {
+                continue;
+            }
+            for format in list {
+                let mime = format
+                    .get("mimeType")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim();
+                if !mime.starts_with("video/") {
+                    continue;
+                }
+                let (raw_url, sig_cipher) = format_direct_or_cipher(format);
+                if raw_url.is_none() && (sig_cipher.is_none() || prepared.is_none()) {
+                    continue;
+                }
+                let height = format
+                    .get("height")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+                    .min(4320) as u32;
+                if height < 144 {
+                    continue;
+                }
+                let fps = format.get("fps").and_then(Value::as_u64).unwrap_or(30) as u32;
+                let quality_label = format
+                    .get("qualityLabel")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("{height}p"));
+                let bitrate_bps = format.get("bitrate").and_then(Value::as_u64).unwrap_or(0);
+                let key = (height, is_muxed);
+                let cand = RawVideoCandidate {
+                    quality_label,
+                    height,
+                    fps,
+                    raw_url,
+                    sig_cipher,
+                    mime_type: mime.to_string(),
+                    bitrate_bps,
+                    is_muxed,
+                };
+                let replace = match grouped.get(&key) {
+                    None => true,
+                    Some(existing) => {
+                        let c_rank = video_codec_rank(&cand.mime_type);
+                        let e_rank = video_codec_rank(&existing.mime_type);
+                        (
+                            c_rank,
+                            std::cmp::Reverse(cand.fps),
+                            std::cmp::Reverse(cand.bitrate_bps),
+                        ) < (
+                            e_rank,
+                            std::cmp::Reverse(existing.fps),
+                            std::cmp::Reverse(existing.bitrate_bps),
+                        )
+                    }
+                };
+                if replace {
+                    grouped.insert(key, cand);
+                }
+            }
+        }
+
+        let mut best_by_height: std::collections::HashMap<u32, VideoQualityStream> =
+            std::collections::HashMap::new();
+        for ((height, is_muxed), cand) in grouped {
+            if let Some(existing) = best_by_height.get(&height) {
+                if !existing.is_muxed || is_muxed {
+                    continue;
+                }
+            }
+            let url = if let Some(prep) = prepared {
+                self.decipher_format_url(prep, cand.raw_url.as_deref(), cand.sig_cipher.as_deref())
+                    .await
+            } else {
+                cand.raw_url
+            };
+            let Some(video_url) = url else {
+                continue;
+            };
+            best_by_height.insert(
+                height,
+                VideoQualityStream {
+                    quality_label: cand.quality_label,
+                    height: cand.height,
+                    fps: cand.fps,
+                    video_url,
+                    mime_type: cand.mime_type,
+                    bitrate_bps: cand.bitrate_bps,
+                    is_muxed: cand.is_muxed,
+                },
+            );
+        }
+
+        let mut qualities: Vec<VideoQualityStream> = best_by_height.into_values().collect();
+        if qualities.is_empty() {
+            return None;
+        }
+        qualities.sort_by(|a, b| b.height.cmp(&a.height).then_with(|| b.fps.cmp(&a.fps)));
+        let (audio_url, audio_badge) = match audio {
+            Some(a) => (Some(a.url), a.badge),
+            None => (None, "AAC".to_string()),
+        };
+        Some(ResolvedMusicVideo {
+            video_id: video_id.to_string(),
+            qualities,
+            audio_url,
+            audio_badge,
+            headers,
+        })
+    }
+
+    /// Resolves adaptive and fallback music video qualities alongside the video's paired audio stream.
+    pub async fn resolve_music_video_streams(&self, video_id: &str) -> Result<ResolvedMusicVideo> {
+        let clean_id = video_id.trim();
+        if clean_id.is_empty() {
+            return Err(anyhow!("Missing video ID"));
+        }
+
+        if self.cookies.has_ytm_auth() {
+            if let (Some(cookie_header), Some(auth_header), Some(prepared)) = (
+                self.cookies.ytm_cookie_header(),
+                self.cookies
+                    .ytm_sapisidhash_for_origin("https://www.youtube.com"),
+                self.ensure_prepared_player_js().await,
+            ) {
+                let visitor_data = self.ensure_visitor_data().await;
+                let mut client_obj = serde_json::Map::new();
+                client_obj.insert("clientName".to_string(), json!("TVHTML5"));
+                client_obj.insert("clientVersion".to_string(), json!("5.20260707"));
+                client_obj.insert("deviceMake".to_string(), json!("Samsung"));
+                client_obj.insert("deviceModel".to_string(), json!("UKS9800"));
+                client_obj.insert("userAgent".to_string(), json!(TVHTML5_USER_AGENT));
+                client_obj.insert("osName".to_string(), json!("Tizen"));
+                client_obj.insert("osVersion".to_string(), json!("2.4.0"));
+                client_obj.insert("hl".to_string(), json!("en"));
+                client_obj.insert("gl".to_string(), json!("US"));
+                if let Some(ref visitor) = visitor_data {
+                    client_obj.insert("visitorData".to_string(), json!(visitor));
+                }
+                let body = json!({
+                    "context": { "client": Value::Object(client_obj) },
+                    "videoId": clean_id,
+                    "playbackContext": {
+                        "contentPlaybackContext": {
+                            "signatureTimestamp": prepared.signature_timestamp,
+                            "html5Preference": "HTML5_PREF_WANTS"
+                        }
+                    },
+                    "contentCheckOk": true,
+                    "racyCheckOk": true
+                });
+                let mut req = self
+                    .http
+                    .post(PLAYER_API)
+                    .header("User-Agent", TVHTML5_USER_AGENT)
+                    .header("Content-Type", "application/json")
+                    .header("X-YouTube-Client-Name", "7")
+                    .header("X-YouTube-Client-Version", "5.20260707")
+                    .header("Origin", "https://www.youtube.com")
+                    .header("Referer", "https://www.youtube.com/")
+                    .header("X-Origin", "https://www.youtube.com")
+                    .header("X-Goog-AuthUser", "0")
+                    .header("Cookie", cookie_header)
+                    .header("Authorization", auth_header)
+                    .json(&body)
+                    .timeout(Duration::from_millis(5000));
+                if let Some(ref visitor) = visitor_data {
+                    req = req.header("X-Goog-Visitor-Id", visitor);
+                }
+                if let Ok(resp) = req.send().await {
+                    if resp.status().is_success() {
+                        if let Ok(payload) = resp.json::<Value>().await {
+                            let headers = vec![
+                                ("User-Agent".to_string(), TVHTML5_USER_AGENT.to_string()),
+                                ("Origin".to_string(), "https://www.youtube.com".to_string()),
+                                (
+                                    "Referer".to_string(),
+                                    "https://www.youtube.com/".to_string(),
+                                ),
+                            ];
+                            if let Some(resolved) = self
+                                .parse_innertube_video_payload(
+                                    clean_id,
+                                    &payload,
+                                    Some(&prepared),
+                                    headers,
+                                )
+                                .await
+                            {
+                                return Ok(resolved);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let visitor_data = self.ensure_visitor_data().await;
+        let mut visionos_client = serde_json::Map::new();
+        visionos_client.insert("clientName".to_string(), json!("VISIONOS"));
+        visionos_client.insert("clientVersion".to_string(), json!("1.02"));
+        visionos_client.insert("deviceMake".to_string(), json!("Apple"));
+        visionos_client.insert("deviceModel".to_string(), json!("RealityDevice17,1"));
+        visionos_client.insert("osName".to_string(), json!("visionOS"));
+        visionos_client.insert("osVersion".to_string(), json!("26.5.23O471"));
+        visionos_client.insert("userAgent".to_string(), json!(VISIONOS_USER_AGENT));
+        visionos_client.insert("hl".to_string(), json!("en"));
+        visionos_client.insert("gl".to_string(), json!("US"));
+        if let Some(ref v) = visitor_data {
+            visionos_client.insert("visitorData".to_string(), json!(v));
+        }
+        let visionos_body = json!({
+            "context": { "client": Value::Object(visionos_client) },
+            "videoId": clean_id,
+            "contentCheckOk": true,
+            "racyCheckOk": true
+        });
+        let mut v_req = self
+            .http
+            .post(PLAYER_API)
+            .header("User-Agent", VISIONOS_USER_AGENT)
+            .header("Content-Type", "application/json")
+            .header("X-YouTube-Client-Name", "101")
+            .header("X-YouTube-Client-Version", "1.02")
+            .json(&visionos_body)
+            .timeout(Duration::from_millis(4000));
+        if let Some(ref v) = visitor_data {
+            v_req = v_req.header("X-Goog-Visitor-Id", v);
+        }
+        if let Ok(resp) = v_req.send().await {
+            if resp.status().is_success() {
+                if let Ok(payload) = resp.json::<Value>().await {
+                    if let Some(resolved) = self
+                        .parse_innertube_video_payload(
+                            clean_id,
+                            &payload,
+                            None,
+                            vec![("User-Agent".to_string(), VISIONOS_USER_AGENT.to_string())],
+                        )
+                        .await
+                    {
+                        return Ok(resolved);
+                    }
+                }
+            }
+        }
+
+        let ios_ua = "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X)";
+        let ios_body = json!({
+            "context": {
+                "client": {
+                    "clientName": "IOS",
+                    "clientVersion": "20.10.4",
+                    "deviceMake": "Apple",
+                    "deviceModel": "iPhone16,2",
+                    "osName": "iPhone",
+                    "osVersion": "18.3.2.22D82",
+                    "hl": "en",
+                    "gl": "US"
+                }
+            },
+            "videoId": clean_id,
+            "contentCheckOk": true,
+            "racyCheckOk": true
+        });
+        if let Ok(resp) = self
+            .http
+            .post(PLAYER_API)
+            .header("User-Agent", ios_ua)
+            .header("Content-Type", "application/json")
+            .json(&ios_body)
+            .timeout(Duration::from_millis(4000))
+            .send()
+            .await
+        {
+            if resp.status().is_success() {
+                if let Ok(payload) = resp.json::<Value>().await {
+                    if let Some(resolved) = self
+                        .parse_innertube_video_payload(
+                            clean_id,
+                            &payload,
+                            None,
+                            vec![("User-Agent".to_string(), ios_ua.to_string())],
+                        )
+                        .await
+                    {
+                        return Ok(resolved);
+                    }
+                }
+            }
+        }
+
+        Err(anyhow!(
+            "No playable music video streams found for '{clean_id}'"
+        ))
     }
 }
 

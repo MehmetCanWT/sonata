@@ -18,6 +18,7 @@ use gpui_kit::{
     div, px, AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement,
     ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
 };
+use sonata_core::providers::ytmusic::HomeCardKind;
 
 impl SonataDesktopView {
     pub fn render_explore_page(
@@ -35,6 +36,7 @@ impl SonataDesktopView {
         let started = self.loading_started.get("explore").copied();
         let scroll_fades = self.settings.scroll_fades;
 
+        let s = sonata_runtime::i18n::strings(self.settings.language);
         let mut page = div()
             .flex()
             .flex_col()
@@ -46,7 +48,7 @@ impl SonataDesktopView {
                     .text_size(px(26.0))
                     .font_weight(FontWeight::BOLD)
                     .text_color(self.palette.text)
-                    .child("Explore"),
+                    .child(s.explore),
             );
 
         if loading && shelves.is_empty() && mood_tiles.is_empty() {
@@ -75,9 +77,14 @@ impl SonataDesktopView {
                         Rgb::from_u8(tile.accent_rgb.0, tile.accent_rgb.1, tile.accent_rgb.2),
                         1.0,
                     );
-                    let title = tile.title.clone();
+                    let title = sonata_runtime::i18n::localize_mood_title(
+                        self.settings.language,
+                        &tile.title,
+                    )
+                    .into_owned();
                     let browse_id = tile.browse_id.clone();
                     let params = tile.params.clone();
+                    let label = title.clone();
                     tiles_grid = tiles_grid.child(
                         div()
                             .id(SharedString::from(format!("mood-tile-{i}")))
@@ -108,7 +115,7 @@ impl SonataDesktopView {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(self.palette.text)
                                     .truncate()
-                                    .child(tile.title),
+                                    .child(label),
                             ),
                     );
                 }
@@ -118,7 +125,7 @@ impl SonataDesktopView {
                         .flex_col()
                         .child(section_header(
                             "exp-moods",
-                            "Moods & genres",
+                            s.moods_genres,
                             None,
                             None,
                             &self.palette,
@@ -128,6 +135,11 @@ impl SonataDesktopView {
             }
 
             for (i, shelf) in shelves.into_iter().enumerate() {
+                if !shelf.cards.is_empty()
+                    && shelf.cards.iter().all(|c| c.kind == HomeCardKind::Mood)
+                {
+                    continue;
+                }
                 if !shelf.cards.is_empty() {
                     page = page.child(self.render_cards_shelf(
                         &format!("exp-sh-{i}"),
@@ -151,13 +163,17 @@ impl SonataDesktopView {
                             cx,
                         ));
                     }
+                    let localized_shelf_title = sonata_runtime::i18n::localize_shelf_title(
+                        self.settings.language,
+                        &shelf.title,
+                    );
                     page = page.child(
                         div()
                             .flex()
                             .flex_col()
                             .child(section_header(
                                 &format!("exp-ts-{i}"),
-                                &shelf.title,
+                                &localized_shelf_title,
                                 None,
                                 None,
                                 &self.palette,
@@ -222,8 +238,21 @@ impl SonataDesktopView {
                     .text_color(self.palette.dim)
                     .child("Loading category..."),
             );
+        } else if shelves.is_empty() {
+            let empty_msg = sonata_runtime::i18n::strings(self.settings.language).playlist_empty;
+            page = page.child(
+                div()
+                    .text_size(px(13.0))
+                    .text_color(self.palette.dim)
+                    .child(empty_msg),
+            );
         } else {
             for (i, shelf) in shelves.into_iter().enumerate() {
+                if !shelf.cards.is_empty()
+                    && shelf.cards.iter().all(|c| c.kind == HomeCardKind::Mood)
+                {
+                    continue;
+                }
                 if !shelf.cards.is_empty() {
                     page = page.child(self.render_cards_shelf(
                         &format!("mood-sh-{i}"),
@@ -231,6 +260,39 @@ impl SonataDesktopView {
                         content_w,
                         cx,
                     ));
+                } else if !shelf.tracks.is_empty() {
+                    let tracks: std::sync::Arc<[sonata_core::providers::Track]> =
+                        std::sync::Arc::from(shelf.tracks.as_slice());
+                    let mut rows = div().flex().flex_col().gap(px(2.0));
+                    for t_i in 0..tracks.len().min(20) {
+                        rows = rows.child(self.render_track_row(
+                            &format!("mood-tr-{i}"),
+                            t_i,
+                            &tracks,
+                            TrackRowOpts {
+                                show_album: true,
+                                ..Default::default()
+                            },
+                            cx,
+                        ));
+                    }
+                    let localized_title = sonata_runtime::i18n::localize_shelf_title(
+                        self.settings.language,
+                        &shelf.title,
+                    );
+                    page = page.child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(section_header(
+                                &format!("mood-ts-{i}"),
+                                &localized_title,
+                                None,
+                                None,
+                                &self.palette,
+                            ))
+                            .child(rows),
+                    );
                 }
             }
         }
@@ -344,6 +406,7 @@ impl SonataDesktopView {
         let started = self.loading_started.get("radio").copied();
         let scroll_fades = self.settings.scroll_fades;
 
+        let s = sonata_runtime::i18n::strings(self.settings.language);
         let mut page = div()
             .flex()
             .flex_col()
@@ -361,14 +424,14 @@ impl SonataDesktopView {
                             .text_size(px(26.0))
                             .font_weight(FontWeight::BOLD)
                             .text_color(self.palette.text)
-                            .child("Radio & Mixes"),
+                            .child(s.radio_mixes),
                     )
                     .child(
                         Button::new("radio-quick-start")
                             .primary()
                             .small()
                             .icon(IconName::Radio)
-                            .label("Quick Radio")
+                            .label(s.quick_radio)
                             .on_click(cx.listener(|this, _, _, _| {
                                 this.backend.send(BackendCmd::StartQuickRadio);
                             })),
@@ -386,6 +449,11 @@ impl SonataDesktopView {
             ));
         } else {
             for (i, shelf) in shelves.into_iter().enumerate() {
+                if !shelf.cards.is_empty()
+                    && shelf.cards.iter().all(|c| c.kind == HomeCardKind::Mood)
+                {
+                    continue;
+                }
                 if !shelf.cards.is_empty() {
                     page = page.child(self.render_cards_shelf(
                         &format!("rad-sh-{i}"),

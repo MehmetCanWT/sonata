@@ -42,7 +42,10 @@ pub use crate::providers::profile::{
 pub use cipher::{
     apply_cipher_solution_to_url, JsCipherBridge, PreparedPlayerJs, SolvedCipherPair,
 };
-pub use innertube::{is_bounded_fast_start_url, parse_innertube_best_audio};
+pub use innertube::{
+    is_bounded_fast_start_url, parse_innertube_best_audio, parse_innertube_video_formats,
+    ResolvedMusicVideo, VideoQualityStream,
+};
 pub use matching::{
     audio_quality_badge, clean_search_title, extract_badge_kbps, pick_best_ytm_match,
     should_upgrade_candidate,
@@ -648,6 +651,86 @@ mod tests {
                 n: (!n.is_empty()).then(|| format!("solved_{n}")),
             })
         }
+    }
+
+    #[test]
+    fn parses_multi_resolution_video_streams_preferring_avc_and_sorting_desc() {
+        let payload = json!({
+            "streamingData": {
+                "adaptiveFormats": [
+                    {
+                        "itag": 140,
+                        "mimeType": "audio/mp4; codecs=\"mp4a.40.2\"",
+                        "averageBitrate": 129_500,
+                        "url": "https://rr1.googlevideo.com/videoplayback?itag=140"
+                    },
+                    {
+                        "itag": 251,
+                        "mimeType": "audio/webm; codecs=\"opus\"",
+                        "averageBitrate": 137_400,
+                        "url": "https://rr1.googlevideo.com/videoplayback?itag=251"
+                    },
+                    {
+                        "itag": 137,
+                        "mimeType": "video/mp4; codecs=\"avc1.640028\"",
+                        "height": 1080,
+                        "fps": 30,
+                        "qualityLabel": "1080p",
+                        "bitrate": 2_500_000,
+                        "url": "https://rr1.googlevideo.com/videoplayback?itag=137"
+                    },
+                    {
+                        "itag": 399,
+                        "mimeType": "video/mp4; codecs=\"av01.0.08M.08\"",
+                        "height": 1080,
+                        "fps": 30,
+                        "qualityLabel": "1080p",
+                        "bitrate": 1_900_000,
+                        "url": "https://rr1.googlevideo.com/videoplayback?itag=399"
+                    },
+                    {
+                        "itag": 247,
+                        "mimeType": "video/webm; codecs=\"vp9\"",
+                        "height": 720,
+                        "fps": 60,
+                        "qualityLabel": "720p60",
+                        "bitrate": 1_800_000,
+                        "url": "https://rr1.googlevideo.com/videoplayback?itag=247"
+                    },
+                    {
+                        "itag": 135,
+                        "mimeType": "video/mp4; codecs=\"avc1.4d401e\"",
+                        "height": 480,
+                        "fps": 30,
+                        "qualityLabel": "480p",
+                        "bitrate": 900_000,
+                        "url": "https://rr1.googlevideo.com/videoplayback?itag=135"
+                    }
+                ],
+                "formats": [
+                    {
+                        "itag": 18,
+                        "mimeType": "video/mp4; codecs=\"avc1.42001E, mp4a.40.2\"",
+                        "height": 360,
+                        "fps": 30,
+                        "qualityLabel": "360p",
+                        "bitrate": 500_000,
+                        "url": "https://rr1.googlevideo.com/videoplayback?itag=18"
+                    }
+                ]
+            }
+        });
+
+        let (qualities, audio_url, audio_badge) =
+            parse_innertube_video_formats(&payload).expect("video formats should parse");
+        assert!(audio_url.as_deref() == Some("https://rr1.googlevideo.com/videoplayback?itag=251"));
+        assert_eq!(audio_badge, "OPUS 137kbps · HQ");
+        let heights: Vec<u32> = qualities.iter().map(|q| q.height).collect();
+        assert_eq!(heights, vec![1080, 720, 480, 360]);
+        // avc1 should be preferred over av01 at 1080p
+        assert!(qualities[0].mime_type.contains("avc1"));
+        assert!(!qualities[0].is_muxed);
+        assert!(qualities[3].is_muxed);
     }
 
     #[test]

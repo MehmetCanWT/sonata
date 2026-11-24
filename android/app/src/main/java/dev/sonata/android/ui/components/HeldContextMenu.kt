@@ -140,6 +140,11 @@ fun HeldContextMenu(
     onDownloadCollection: (HeldContextTarget.AlbumOrPlaylistCard) -> Unit = {},
     onOpenCollection: (HeldContextTarget.AlbumOrPlaylistCard) -> Unit = {},
     onShareCollection: (HeldContextTarget.AlbumOrPlaylistCard) -> Unit = {},
+    isCollectionPinned: Boolean = false,
+    isCollectionSavedToLibrary: Boolean = false,
+    canSaveCollectionToLibrary: Boolean = false,
+    onTogglePinCollection: ((HeldContextTarget.AlbumOrPlaylistCard) -> Unit)? = null,
+    onToggleSaveCollectionToLibrary: ((HeldContextTarget.AlbumOrPlaylistCard) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     if (target != null) {
@@ -168,7 +173,11 @@ fun HeldContextMenu(
         val glassOn = LocalLiquidGlassEnabled.current && isGlassSupported() && !LocalReduceDynamicBlur.current
         val density = LocalDensity.current
         val outsideInteraction = remember { MutableInteractionSource() }
-        val overlayDim = if (themeTokens.isDark) Color(0x9C06060A) else Color(0x521B142B)
+        val overlayDim = when {
+            themeTokens.isDark -> Color(0x9C06060A)
+            themeTokens.isBasic -> Color(0x52000000)
+            else -> Color(0x521B142B)
+        }
         val overlayFallback = themeTokens.eclipseBase.copy(alpha = 0.90f)
 
         val blurOverlayModifier = if (glassOn) {
@@ -247,6 +256,11 @@ fun HeldContextMenu(
                         onDownloadCollection = onDownloadCollection,
                         onOpenCollection = onOpenCollection,
                         onShareCollection = onShareCollection,
+                        isCollectionPinned = isCollectionPinned,
+                        isCollectionSavedToLibrary = isCollectionSavedToLibrary,
+                        canSaveCollectionToLibrary = canSaveCollectionToLibrary,
+                        onTogglePinCollection = onTogglePinCollection,
+                        onToggleSaveCollectionToLibrary = onToggleSaveCollectionToLibrary,
                     )
                     HeldLiftedPreviewCard(target = activeTarget)
                 } else {
@@ -278,6 +292,11 @@ fun HeldContextMenu(
                         onDownloadCollection = onDownloadCollection,
                         onOpenCollection = onOpenCollection,
                         onShareCollection = onShareCollection,
+                        isCollectionPinned = isCollectionPinned,
+                        isCollectionSavedToLibrary = isCollectionSavedToLibrary,
+                        canSaveCollectionToLibrary = canSaveCollectionToLibrary,
+                        onTogglePinCollection = onTogglePinCollection,
+                        onToggleSaveCollectionToLibrary = onToggleSaveCollectionToLibrary,
                     )
                 }
             }
@@ -442,10 +461,10 @@ private fun HeldLiftedPreviewCard(target: HeldContextTarget) {
                         modifier = Modifier
                             .fillMaxSize()
                             .background(
-                                Brush.verticalGradient(
-                                    0.42f to Color.Transparent,
-                                    0.72f to themeTokens.heroCardScrimColor.copy(alpha = 0.72f),
-                                    1.0f to themeTokens.heroCardScrimColor.copy(alpha = 0.94f),
+                                dev.sonata.android.ui.smoothScrimBrush(
+                                    from = themeTokens.heroCardScrimColor.copy(alpha = 0f),
+                                    to = themeTokens.heroCardScrimColor.copy(alpha = 0.94f),
+                                    startFraction = 0.42f,
                                 ),
                             ),
                     )
@@ -574,6 +593,11 @@ private fun HeldActionMenuCard(
     onDownloadCollection: (HeldContextTarget.AlbumOrPlaylistCard) -> Unit,
     onOpenCollection: (HeldContextTarget.AlbumOrPlaylistCard) -> Unit,
     onShareCollection: (HeldContextTarget.AlbumOrPlaylistCard) -> Unit,
+    isCollectionPinned: Boolean = false,
+    isCollectionSavedToLibrary: Boolean = false,
+    canSaveCollectionToLibrary: Boolean = false,
+    onTogglePinCollection: ((HeldContextTarget.AlbumOrPlaylistCard) -> Unit)? = null,
+    onToggleSaveCollectionToLibrary: ((HeldContextTarget.AlbumOrPlaylistCard) -> Unit)? = null,
 ) {
     val themeTokens = LocalLunariaColors.current
     val glassOn = LocalLiquidGlassEnabled.current && isGlassSupported() && !LocalReduceDynamicBlur.current
@@ -619,9 +643,10 @@ private fun HeldActionMenuCard(
                         .padding(horizontal = 8.dp, vertical = 4.dp),
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
+                    val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
                     TrackQuickTile(
                         icon = if (isLiked) SonataIcons.StarFilled else SonataIcons.Star,
-                        label = if (isLiked) "Liked" else "Like",
+                        label = if (isLiked) strings.saved else strings.like,
                         tint = if (isLiked) themeTokens.petalLavender else themeTokens.onSurfacePrimary,
                         onClick = {
                             onToggleLike(track)
@@ -631,7 +656,7 @@ private fun HeldActionMenuCard(
                     )
                     TrackQuickTile(
                         icon = TrackDislikeIcon,
-                        label = "Dislike",
+                        label = strings.dislike,
                         tint = if (isDisliked) themeTokens.petalLavender else themeTokens.onSurfacePrimary,
                         onClick = {
                             onToggleDislike(track)
@@ -641,7 +666,7 @@ private fun HeldActionMenuCard(
                     )
                     TrackQuickTile(
                         icon = TrackShareIcon,
-                        label = "Share",
+                        label = strings.share,
                         tint = themeTokens.onSurfacePrimary,
                         onClick = {
                             onDismiss()
@@ -657,9 +682,10 @@ private fun HeldActionMenuCard(
                     modifier = Modifier.padding(vertical = 4.dp),
                 )
 
+                val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
                 TrackMenuRow(
                     icon = TrackPlaylistAddIcon,
-                    title = "Add to Playlist",
+                    title = strings.addToPlaylist,
                     onClick = {
                         onDismiss()
                         onAddTrackToPlaylist(track)
@@ -674,7 +700,7 @@ private fun HeldActionMenuCard(
 
                 TrackMenuRow(
                     icon = SonataRadioWavesIcon,
-                    title = "Start Radio",
+                    title = strings.startRadio,
                     onClick = {
                         onDismiss()
                         onStartRadio(track)
@@ -682,7 +708,7 @@ private fun HeldActionMenuCard(
                 )
                 TrackMenuRow(
                     icon = TrackPlayNextIcon,
-                    title = "Play Next",
+                    title = strings.playNext,
                     onClick = {
                         onDismiss()
                         onPlayTrackNext(track)
@@ -690,16 +716,16 @@ private fun HeldActionMenuCard(
                 )
                 TrackMenuRow(
                     icon = SonataIcons.Queue,
-                    title = "Add to Queue",
+                    title = strings.addToQueue,
                     onClick = {
                         onDismiss()
                         onAddTrackToQueue(track)
                     },
                 )
                 val downloadTitle = when {
-                    activeDownload != null -> "Downloading ${(activeDownload.progress * 100f).roundToInt()}%"
-                    isDownloaded -> "Downloaded"
-                    else -> "Download"
+                    activeDownload != null -> "${(activeDownload.progress * 100f).roundToInt()}%"
+                    isDownloaded -> strings.downloaded
+                    else -> strings.download
                 }
                 TrackMenuRow(
                     icon = if (isDownloaded) SonataIcons.Check else SonataIcons.Download,
@@ -712,7 +738,7 @@ private fun HeldActionMenuCard(
                 )
                 TrackMenuRow(
                     icon = TrackTrashIcon,
-                    title = "Remove from Cache",
+                    title = strings.removeFromCache,
                     onClick = {
                         onRemoveFromCache(track)
                         onDismiss()
@@ -727,7 +753,7 @@ private fun HeldActionMenuCard(
 
                 TrackMenuRow(
                     icon = SonataIcons.MusicNote,
-                    title = "Open Album",
+                    title = strings.openAlbum,
                     subtitle = track.album.takeIf { it.isNotBlank() } ?: track.title,
                     onClick = {
                         onDismiss()
@@ -737,7 +763,7 @@ private fun HeldActionMenuCard(
                 if (track.artist.isNotBlank()) {
                     TrackMenuRow(
                         icon = SonataIcons.Person,
-                        title = "Open Artist",
+                        title = strings.goToArtist,
                         subtitle = track.artist,
                         onClick = {
                             onDismiss()
@@ -747,7 +773,7 @@ private fun HeldActionMenuCard(
                 }
                 TrackMenuRow(
                     icon = TrackInfoIcon,
-                    title = "Song Info",
+                    title = strings.songInfo,
                     onClick = {
                         onDismiss()
                         onSongInfo(track)
@@ -756,9 +782,10 @@ private fun HeldActionMenuCard(
             }
 
             is HeldContextTarget.AlbumOrPlaylistCard -> {
+                val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
                 TrackMenuRow(
                     icon = SonataIcons.Play,
-                    title = "Play",
+                    title = strings.playCollection,
                     onClick = {
                         onDismiss()
                         onPlayCollection(target)
@@ -766,7 +793,7 @@ private fun HeldActionMenuCard(
                 )
                 TrackMenuRow(
                     icon = SonataIcons.Shuffle,
-                    title = "Shuffle",
+                    title = strings.shufflePlay,
                     onClick = {
                         onDismiss()
                         onShuffleCollection(target)
@@ -774,7 +801,7 @@ private fun HeldActionMenuCard(
                 )
                 TrackMenuRow(
                     icon = TrackPlaylistAddIcon,
-                    title = "Add to Playlist",
+                    title = strings.addToPlaylist,
                     onClick = {
                         onDismiss()
                         onAddCollectionToPlaylist(target)
@@ -782,7 +809,7 @@ private fun HeldActionMenuCard(
                 )
                 TrackMenuRow(
                     icon = TrackPlayNextIcon,
-                    title = "Play Next",
+                    title = strings.playNext,
                     onClick = {
                         onDismiss()
                         onPlayCollectionNext(target)
@@ -790,7 +817,7 @@ private fun HeldActionMenuCard(
                 )
                 TrackMenuRow(
                     icon = SonataIcons.Queue,
-                    title = "Add to Queue",
+                    title = strings.addToQueue,
                     onClick = {
                         onDismiss()
                         onAddCollectionToQueue(target)
@@ -798,7 +825,7 @@ private fun HeldActionMenuCard(
                 )
                 TrackMenuRow(
                     icon = SonataIcons.Download,
-                    title = "Download All",
+                    title = strings.downloadAll,
                     onClick = {
                         onDismiss()
                         onDownloadCollection(target)
@@ -806,15 +833,37 @@ private fun HeldActionMenuCard(
                 )
                 TrackMenuRow(
                     icon = SonataIcons.ChevronRight,
-                    title = if (target.isAlbum) "Open Album" else "Open Playlist",
+                    title = if (target.isAlbum) strings.openAlbum else strings.openPlaylist,
                     onClick = {
                         onDismiss()
                         onOpenCollection(target)
                     },
                 )
+                if (onTogglePinCollection != null) {
+                    TrackMenuRow(
+                        icon = if (isCollectionPinned) SonataIcons.PinFilled else SonataIcons.Pin,
+                        title = if (isCollectionPinned) strings.unpinFromLibrary else strings.pinToLibrary,
+                        tint = if (isCollectionPinned && !themeTokens.isBasic) themeTokens.petalLavender else themeTokens.onSurfacePrimary,
+                        onClick = {
+                            onDismiss()
+                            onTogglePinCollection(target)
+                        },
+                    )
+                }
+                if (canSaveCollectionToLibrary && onToggleSaveCollectionToLibrary != null) {
+                    TrackMenuRow(
+                        icon = if (isCollectionSavedToLibrary) SonataIcons.Check else SonataIcons.Add,
+                        title = if (isCollectionSavedToLibrary) strings.removeFromLibrary else strings.addToLibrary,
+                        tint = if (isCollectionSavedToLibrary && !themeTokens.isBasic) themeTokens.petalLavender else themeTokens.onSurfacePrimary,
+                        onClick = {
+                            onDismiss()
+                            onToggleSaveCollectionToLibrary(target)
+                        },
+                    )
+                }
                 TrackMenuRow(
                     icon = TrackShareIcon,
-                    title = "Share",
+                    title = strings.share,
                     onClick = {
                         onDismiss()
                         onShareCollection(target)

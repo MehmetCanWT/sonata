@@ -211,29 +211,29 @@ fun SonataPersonalStationArt(
                         tertiaryGlow.copy(alpha = 0.44f),
                         primaryGlow.copy(alpha = 0.28f),
                         secondaryGlow.copy(alpha = 0.10f),
-                        Color.Transparent,
+                        secondaryGlow.copy(alpha = 0f),
                     ),
                     center = Offset.Zero,
                     radius = haloR,
                 )
                 val ribbonBrushA = Brush.horizontalGradient(
                     colors = listOf(
-                        Color.Transparent,
+                        secondaryGlow.copy(alpha = 0f),
                         secondaryGlow.copy(alpha = 0.72f),
                         Color.White.copy(alpha = 0.90f),
                         primaryGlow.copy(alpha = 0.78f),
-                        Color.Transparent,
+                        primaryGlow.copy(alpha = 0f),
                     ),
                     startX = startX,
                     endX = startX + ribbonSpan,
                 )
                 val ribbonBrushB = Brush.horizontalGradient(
                     colors = listOf(
-                        Color.Transparent,
+                        tertiaryGlow.copy(alpha = 0f),
                         tertiaryGlow.copy(alpha = 0.65f),
                         primaryGlow.copy(alpha = 0.85f),
                         secondaryGlow.copy(alpha = 0.65f),
-                        Color.Transparent,
+                        secondaryGlow.copy(alpha = 0f),
                     ),
                     startX = startX,
                     endX = startX + ribbonSpan,
@@ -391,7 +391,7 @@ fun SonataDiscoveryStationArt(
                         sunHighlight.copy(alpha = 0.86f),
                         trailAccent.copy(alpha = 0.56f),
                         trailPrimary.copy(alpha = 0.22f),
-                        Color.Transparent,
+                        trailPrimary.copy(alpha = 0f),
                     ),
                     center = Offset(cx, cy * 0.90f),
                     radius = horizonR,
@@ -562,7 +562,7 @@ fun SonataMoodAnimatedArt(
                     radius = minDim * 0.18f,
                 )
                 val sphereHaloBrush = Brush.radialGradient(
-                    colors = listOf(palette.primary.copy(alpha = 0.45f), Color.Transparent),
+                    colors = listOf(palette.primary.copy(alpha = 0.45f), palette.primary.copy(alpha = 0f)),
                     center = Offset.Zero,
                     radius = minDim * 0.32f,
                 )
@@ -570,28 +570,28 @@ fun SonataMoodAnimatedArt(
                 val ribbonStartX = cx - ribbonSpan * 0.5f
                 val ribbonPrimaryBrush = Brush.horizontalGradient(
                     colors = listOf(
-                        Color.Transparent,
+                        palette.primary.copy(alpha = 0f),
                         palette.primary.copy(alpha = 0.84f),
                         palette.highlight.copy(alpha = 0.94f),
                         palette.secondary.copy(alpha = 0.82f),
-                        Color.Transparent,
+                        palette.secondary.copy(alpha = 0f),
                     ),
                     startX = ribbonStartX,
                     endX = ribbonStartX + ribbonSpan,
                 )
                 val ribbonSecondaryBrush = Brush.horizontalGradient(
                     colors = listOf(
-                        Color.Transparent,
+                        palette.secondary.copy(alpha = 0f),
                         palette.secondary.copy(alpha = 0.68f),
                         Color.White.copy(alpha = 0.78f),
                         palette.primary.copy(alpha = 0.68f),
-                        Color.Transparent,
+                        palette.primary.copy(alpha = 0f),
                     ),
                     startX = ribbonStartX,
                     endX = ribbonStartX + ribbonSpan,
                 )
                 val sunriseBrush = Brush.radialGradient(
-                    colors = listOf(palette.highlight.copy(alpha = 0.82f), palette.primary.copy(alpha = 0.40f), Color.Transparent),
+                    colors = listOf(palette.highlight.copy(alpha = 0.82f), palette.primary.copy(alpha = 0.40f), palette.primary.copy(alpha = 0f)),
                     center = Offset(cx, cy),
                     radius = minDim * 0.36f,
                 )

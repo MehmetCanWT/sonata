@@ -203,6 +203,7 @@ import dev.sonata.android.ui.i18n.resolveSonataStrings
 import dev.sonata.android.lightweightLiquidGlass
 import dev.sonata.android.ui.components.SonataMoodAnimatedArt
 import dev.sonata.android.ui.player.CardCanvasSurface
+import dev.sonata.android.ui.theme.BasicPalette
 import dev.sonata.android.ui.theme.LocalLunariaColors
 import dev.sonata.android.ui.theme.LunariaColors
 import dev.sonata.android.ui.theme.SonataAppFontFamily
@@ -233,8 +234,15 @@ import kotlin.random.Random
 // 1. Theme, Colors & Typography
 // =============================================================================
 
-/** Signature Lunaria Moon Lavender accent across Sonata themes. */
+/** Signature Lunaria Moon Lavender accent across Violet/Moonflower themes. */
 val SonataAccent = LunariaColors.PetalLavender
+
+/** Theme-aware accent (`BasicPalette.AccentRed` for Basic, `petalLavender` for Violet/Moonflower). */
+@Composable
+fun sonataThemeAccent(): Color {
+    val tokens = LocalLunariaColors.current
+    return if (tokens.isBasic) BasicPalette.AccentRed else tokens.petalLavender
+}
 
 private fun Typography.withFamily(family: FontFamily) = Typography(
     displayLarge = displayLarge.copy(fontFamily = family),
@@ -460,6 +468,48 @@ enum class TopPickMood(
 }
 
 
+/**
+ * Builds a smoothstep-eased vertical scrim [Brush] whose transparent end carries
+ * the target color's RGB channels rather than [Color.Transparent], preventing muddy
+ * mid-fade banding and hard seam edges.
+ */
+fun smoothScrimBrush(
+    from: Color,
+    to: Color,
+    startFraction: Float = 0f,
+    endFraction: Float = 1f,
+    startY: Float = 0f,
+    endY: Float = Float.POSITIVE_INFINITY,
+    steps: Int = 24,
+): Brush =
+    Brush.verticalGradient(
+        colorStops =
+            Array(steps + 1) { i ->
+                val t = i / steps.toFloat()
+                val position = startFraction + (endFraction - startFraction) * t
+                position to lerp(from, to, t * t * (3f - 2f * t))
+            },
+        startY = startY,
+        endY = endY,
+    )
+
+/**
+ * Convenience [smoothScrimBrush] ramping [color] from zero alpha to full [color].
+ */
+fun artworkScrimBrush(
+    color: Color,
+    startFraction: Float = 0f,
+    endFraction: Float = 1f,
+    steps: Int = 24,
+): Brush =
+    smoothScrimBrush(
+        from = color.copy(alpha = 0f),
+        to = color,
+        startFraction = startFraction,
+        endFraction = endFraction,
+        steps = steps,
+    )
+
 @Composable
 fun MoodTile(
     mood: TopPickMood,
@@ -467,6 +517,7 @@ fun MoodTile(
     modifier: Modifier = Modifier,
     tileWidth: Dp = 178.dp,
     tileHeight: Dp = 138.dp,
+    displayTitle: String = mood.displayName,
 ) {
     val tokens = LocalLunariaColors.current
     val shape = RoundedCornerShape(18.dp)
@@ -496,9 +547,10 @@ fun MoodTile(
                 Modifier
                     .matchParentSize()
                     .background(
-                        Brush.verticalGradient(
-                            0.45f to Color.Transparent,
-                            1.0f to Color.Black.copy(alpha = 0.42f),
+                        smoothScrimBrush(
+                            from = Color.Black.copy(alpha = 0f),
+                            to = Color.Black.copy(alpha = 0.42f),
+                            startFraction = 0.45f,
                         ),
                     ),
             )
@@ -520,7 +572,7 @@ fun MoodTile(
                 )
             }
             Text(
-                text = mood.displayName,
+                text = displayTitle,
                 style = MaterialTheme.typography.titleMedium.copy(
                     fontSize = 16.5.sp,
                     fontWeight = FontWeight.Bold,
@@ -538,6 +590,13 @@ fun MoodTile(
 }
 
 private data class CollagePalette(val top: Color, val bottom: Color, val eyebrow: Color)
+
+private val BasicCollagePalettes = listOf(
+    CollagePalette(Color(0xFF1C1C1E), Color(0xFF2C2C2E), Color(0xFFE5E5EA)),
+    CollagePalette(Color(0xFF141416), Color(0xFF262629), Color(0xFFE5E5EA)),
+    CollagePalette(Color(0xFF18181B), Color(0xFF303036), Color(0xFFE5E5EA)),
+    CollagePalette(Color(0xFF111113), Color(0xFF232327), Color(0xFFE5E5EA)),
+)
 
 private val VioletCollagePalettes = listOf(
     CollagePalette(Color(0xFF4A208B), Color(0xFF8C53DE), Color(0xFFE7D6FF)),
@@ -565,7 +624,11 @@ fun ArtistCollageArt(
     cardHeight: Dp? = null,
 ) {
     val tokens = LocalLunariaColors.current
-    val palettes = if (tokens.isViolet) VioletCollagePalettes else MoonflowerCollagePalettes
+    val palettes = when {
+        tokens.isBasic -> BasicCollagePalettes
+        tokens.isViolet -> VioletCollagePalettes
+        else -> MoonflowerCollagePalettes
+    }
     val palette = palettes[abs(title.hashCode()) % palettes.size]
     val cardCorner = if (tokens.isMoonflower) 26.dp else 14.dp
     val shape = remember(cardCorner) { RoundedCornerShape(cardCorner) }
@@ -643,12 +706,9 @@ fun ArtistCollageArt(
                 .fillMaxWidth()
                 .height(h * 0.48f)
                 .background(
-                    Brush.verticalGradient(
-                        listOf(
-                            Color.Transparent,
-                            palette.bottom.copy(alpha = 0.72f),
-                            palette.bottom.copy(alpha = 0.94f),
-                        ),
+                    smoothScrimBrush(
+                        from = palette.bottom.copy(alpha = 0f),
+                        to = palette.bottom.copy(alpha = 0.94f),
                     ),
                 ),
         )
@@ -717,11 +777,10 @@ fun ArtistCollageArt(
 }
 
 private val ReleaseCardShape = RoundedCornerShape(12.dp)
-private val ReleaseBottomScrim = Brush.verticalGradient(
-    0.42f to Color.Transparent,
-    0.66f to Color.Black.copy(alpha = 0.56f),
-    0.84f to Color.Black.copy(alpha = 0.86f),
-    1.0f to Color.Black.copy(alpha = 0.96f),
+private val ReleaseBottomScrim = smoothScrimBrush(
+    from = Color.Black.copy(alpha = 0f),
+    to = Color.Black.copy(alpha = 0.96f),
+    startFraction = 0.42f,
 )
 
 @Composable
@@ -750,18 +809,16 @@ fun ReleaseArt(
     val scrimColor = tokens.heroCardScrimColor
     val scrimBrush = remember(scrimColor, tokens.isMoonflower) {
         if (tokens.isMoonflower) {
-            Brush.verticalGradient(
-                0.42f to Color.Transparent,
-                0.66f to scrimColor.copy(alpha = 0.48f),
-                0.86f to scrimColor.copy(alpha = 0.82f),
-                1.0f to scrimColor.copy(alpha = 0.94f),
+            smoothScrimBrush(
+                from = scrimColor.copy(alpha = 0f),
+                to = scrimColor.copy(alpha = 0.94f),
+                startFraction = 0.42f,
             )
         } else {
-            Brush.verticalGradient(
-                0.40f to Color.Transparent,
-                0.64f to scrimColor.copy(alpha = 0.56f),
-                0.84f to scrimColor.copy(alpha = 0.88f),
-                1.0f to scrimColor.copy(alpha = 0.96f),
+            smoothScrimBrush(
+                from = scrimColor.copy(alpha = 0f),
+                to = scrimColor.copy(alpha = 0.96f),
+                startFraction = 0.40f,
             )
         }
     }
@@ -894,15 +951,17 @@ fun MoodGenreSleeve(
     title: String,
     thumbnailUrl: String? = null,
     stripeColor: Long? = null,
+    accentColor: Color? = null,
     modifier: Modifier = Modifier,
     titleStyle: TextStyle = MaterialTheme.typography.titleMedium,
 ) {
     val tokens = LocalLunariaColors.current
     val shape = RoundedCornerShape(18.dp)
-    val borderColor = if (tokens.isViolet) {
-        tokens.petalLavender.copy(alpha = 0.28f)
-    } else {
-        tokens.glassRimTopLeft.copy(alpha = 0.45f)
+    val resolvedAccent = accentColor ?: stripeColor?.let { Color(it.toInt()) }
+    val borderColor = when {
+        resolvedAccent != null -> resolvedAccent.copy(alpha = 0.55f)
+        tokens.isViolet -> tokens.petalLavender.copy(alpha = 0.28f)
+        else -> tokens.glassRimTopLeft.copy(alpha = 0.45f)
     }
     Box(
         modifier
@@ -914,10 +973,29 @@ fun MoodGenreSleeve(
             moodIndex = (title.hashCode() and 0x7FFF_FFFF),
             modifier = Modifier.fillMaxSize(),
         )
+        if (resolvedAccent != null) {
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .background(
+                        smoothScrimBrush(
+                            from = resolvedAccent.copy(alpha = 0.28f),
+                            to = resolvedAccent.copy(alpha = 0f),
+                            endFraction = 0.55f,
+                        ),
+                    ),
+            )
+        }
         Box(
             Modifier
                 .matchParentSize()
-                .background(Brush.verticalGradient(0.4f to Color.Transparent, 1.0f to Color.Black.copy(alpha = 0.44f))),
+                .background(
+                    smoothScrimBrush(
+                        from = Color.Black.copy(alpha = 0f),
+                        to = Color.Black.copy(alpha = 0.44f),
+                        startFraction = 0.4f,
+                    ),
+                ),
         )
         Box(
             modifier = Modifier
@@ -976,25 +1054,21 @@ fun ReplayCreditCard(
     modifier: Modifier = Modifier,
 ) {
     val tokens = LocalLunariaColors.current
-    val cardCorner = if (tokens.isMoonflower) 24.dp else 20.dp
-    val cardShape = remember(cardCorner) { RoundedCornerShape(cardCorner) }
-    val bgDrawable = when {
-        tokens.isMoonflower -> if (cardIndex % 2 == 0) {
-            R.drawable.bg_listening_exp_moonflower
-        } else {
-            R.drawable.bg_listening_exp_moonflower_alt
-        }
-        else -> if (cardIndex % 2 == 0) {
-            R.drawable.bg_listening_exp_violet
-        } else {
-            R.drawable.bg_listening_exp_violet_alt
-        }
+    val cardCorner = when {
+        tokens.isMoonflower -> 24.dp
+        tokens.isBasic -> 16.dp
+        else -> 20.dp
     }
-    val scrimTint = if (tokens.isMoonflower) Color(0xFF3E122F) else Color(0xFF1A0933)
-    val borderColor = if (tokens.isMoonflower) {
-        Color(0xFFFFD8ED).copy(alpha = if (tokens.isDark) 0.36f else 0.72f)
-    } else {
-        Color(0xFFCCB2FF).copy(alpha = if (tokens.isDark) 0.38f else 0.56f)
+    val cardShape = remember(cardCorner) { RoundedCornerShape(cardCorner) }
+    val scrimTint = when {
+        tokens.isBasic -> Color(0xFF000000)
+        tokens.isMoonflower -> Color(0xFF3E122F)
+        else -> Color(0xFF1A0933)
+    }
+    val borderColor = when {
+        tokens.isBasic -> Color.White.copy(alpha = if (tokens.isDark) 0.16f else 0.24f)
+        tokens.isMoonflower -> Color(0xFFFFD8ED).copy(alpha = if (tokens.isDark) 0.36f else 0.72f)
+        else -> Color(0xFFCCB2FF).copy(alpha = if (tokens.isDark) 0.38f else 0.56f)
     }
     Box(
         modifier = modifier
@@ -1004,18 +1078,44 @@ fun ReplayCreditCard(
             .border(1.dp, borderColor, cardShape)
             .clickable(onClick = onClick),
     ) {
-        Image(
-            painter = painterResource(bgDrawable),
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize(),
-        )
+        if (tokens.isBasic) {
+            val basicGradient = if (cardIndex % 2 == 0) {
+                Brush.linearGradient(listOf(Color(0xFF242428), Color(0xFF0D0D0F)))
+            } else {
+                Brush.linearGradient(listOf(Color(0xFF1C1C20), Color(0xFF08080A)))
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(basicGradient),
+            )
+        } else {
+            val bgDrawable = if (tokens.isMoonflower) {
+                if (cardIndex % 2 == 0) {
+                    R.drawable.bg_listening_exp_moonflower
+                } else {
+                    R.drawable.bg_listening_exp_moonflower_alt
+                }
+            } else {
+                if (cardIndex % 2 == 0) {
+                    R.drawable.bg_listening_exp_violet
+                } else {
+                    R.drawable.bg_listening_exp_violet_alt
+                }
+            }
+            Image(
+                painter = painterResource(bgDrawable),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
         Box(
             Modifier
                 .fillMaxSize()
                 .background(
                     Brush.radialGradient(
-                        colors = listOf(Color.White.copy(alpha = 0.14f), Color.Transparent),
+                        colors = listOf(Color.White.copy(alpha = 0.14f), Color.White.copy(alpha = 0f)),
                         radius = 650f,
                     ),
                 )
@@ -1141,6 +1241,8 @@ fun ThinSlider(
     inactiveColor: Color = Color.White.copy(alpha = 0.26f),
 ) {
     var dragging by remember { mutableStateOf(false) }
+    val latestOnValueChange = rememberUpdatedState(onValueChange)
+    val latestOnValueChangeFinished = rememberUpdatedState(onValueChangeFinished)
     val height by animateDpAsState(
         targetValue = if (dragging) activeHeight else idleHeight,
         animationSpec = spring(
@@ -1167,22 +1269,28 @@ fun ThinSlider(
             .pointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
+                    if (size.width <= 0) return@awaitEachGesture
                     dragging = true
-                    onValueChange((down.position.x / size.width).coerceIn(0f, 1f))
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val pointer = event.changes.firstOrNull { it.id == down.id } ?: break
-                        if (!pointer.pressed) {
-                            pointer.consume()
-                            break
+                    try {
+                        latestOnValueChange.value((down.position.x / size.width).coerceIn(0f, 1f))
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val pointer = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (!pointer.pressed) {
+                                pointer.consume()
+                                break
+                            }
+                            if (pointer.positionChanged()) {
+                                latestOnValueChange.value((pointer.position.x / size.width).coerceIn(0f, 1f))
+                                pointer.consume()
+                            }
                         }
-                        if (pointer.positionChanged()) {
-                            onValueChange((pointer.position.x / size.width).coerceIn(0f, 1f))
-                            pointer.consume()
+                    } finally {
+                        if (dragging) {
+                            dragging = false
+                            latestOnValueChangeFinished.value?.invoke()
                         }
                     }
-                    dragging = false
-                    onValueChangeFinished?.invoke()
                 }
             },
         contentAlignment = Alignment.Center,
@@ -1200,7 +1308,11 @@ fun ThinSlider(
                 val startX = -band + sweep * (size.width + band * 2f)
                 drawRoundRect(
                     brush = Brush.horizontalGradient(
-                        colors = listOf(Color.Transparent, activeColor.copy(alpha = 0.65f), Color.Transparent),
+                        colors = listOf(
+                            activeColor.copy(alpha = 0f),
+                            activeColor.copy(alpha = 0.65f),
+                            activeColor.copy(alpha = 0f),
+                        ),
                         startX = startX,
                         endX = startX + band,
                     ),
@@ -1266,11 +1378,11 @@ fun ShimmerText(
     )
     val spotlightStops = remember {
         arrayOf(
-            0.0f to Color.Transparent,
+            0.0f to Color.White.copy(alpha = 0f),
             0.25f to Color.White.copy(alpha = 0.25f),
             0.50f to Color.White,
             0.75f to Color.White.copy(alpha = 0.25f),
-            1.0f to Color.Transparent,
+            1.0f to Color.White.copy(alpha = 0f),
         )
     }
 
@@ -1963,7 +2075,7 @@ fun rememberSmoothLyricClock(
 private val KaraokeWordRegex = Regex("""\S+""")
 private val KaraokeSweepStops = arrayOf(
     0f to Color.Black,
-    1f to Color.Transparent,
+    1f to Color.Black.copy(alpha = 0f),
 )
 
 private data class KaraokeWordSpan(

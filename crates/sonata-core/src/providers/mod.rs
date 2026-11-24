@@ -74,6 +74,9 @@ pub struct Playlist {
     pub source: ProviderSource,
     pub track_count: Option<usize>,
     pub thumbnail_url: Option<String>,
+    /// True when this playlist is owned by the signed-in user rather than a saved community/auto playlist.
+    #[serde(default)]
+    pub is_owned: bool,
 }
 
 pub fn build_http_client() -> reqwest::Client {

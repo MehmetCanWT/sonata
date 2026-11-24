@@ -218,8 +218,8 @@ import dev.sonata.android.ui.ReleaseArt
 import dev.sonata.android.ui.ReplayCreditCard
 import dev.sonata.android.ui.SHELF_CARD_WIDTH
 import dev.sonata.android.ui.SearchField
-import dev.sonata.android.ui.SonataAccent
 import dev.sonata.android.ui.SonataIcons
+import dev.sonata.android.ui.sonataThemeAccent
 import dev.sonata.android.ui.SonataShimmerHost
 import dev.sonata.android.ui.SonataTheme
 import dev.sonata.android.ui.theme.LunariaColors
@@ -289,6 +289,7 @@ import uniffi.sonata_android.AndroidHomeCard
 import uniffi.sonata_android.AndroidHomeCardKind
 import uniffi.sonata_android.AndroidHomeShelf
 import uniffi.sonata_android.AndroidLyricLine
+import uniffi.sonata_android.AndroidMoodCategory
 import uniffi.sonata_android.AndroidPlaylist
 import uniffi.sonata_android.AndroidTrack
 import uniffi.sonata_android.AndroidUpdateInfo
@@ -300,8 +301,12 @@ import kotlin.math.roundToInt
 internal fun AllMoodsScreen(
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
+    moodCategories: List<AndroidMoodCategory> = emptyList(),
     onOpenMood: (String) -> Unit,
+    onOpenMoodCategory: (String, String, String) -> Unit = { title, _, _ -> onOpenMood(title) },
 ) {
+    val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
+    val isBasic = LocalLunariaColors.current.isBasic
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = 160.dp),
         modifier = modifier
@@ -311,16 +316,50 @@ internal fun AllMoodsScreen(
         horizontalArrangement = Arrangement.spacedBy(14.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
-        items(
-            items = TopPickMood.entries,
-            key = { it.name },
-            contentType = { "mood_grid_tile" },
-        ) { mood ->
-            MoodTile(
-                mood = mood,
-                onClick = { _, label -> onOpenMood(label) },
-                modifier = Modifier.fillMaxWidth(),
-            )
+        if (moodCategories.isNotEmpty()) {
+            items(
+                items = moodCategories,
+                key = { cat -> "all_cat_${cat.browseId}_${cat.params}_${cat.title}" },
+                contentType = { "mood_grid_tile" },
+            ) { cat ->
+                val title = dev.sonata.android.ui.i18n.localizeMoodTitle(cat.title, strings)
+                val catAccent = cat.accentColor.takeIf { it != 0u }?.let { Color(it.toInt()) }
+                if (isBasic) {
+                    dev.sonata.android.ui.screens.BasicMoodSleeveCard(
+                        title = title,
+                        artworkUrl = null,
+                        accentColor = catAccent,
+                        onClick = { onOpenMoodCategory(cat.title, cat.browseId, cat.params) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(1.72f),
+                    )
+                } else {
+                    MoodGenreSleeve(
+                        title = title,
+                        accentColor = catAccent,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(1.6f)
+                            .clip(Shape12)
+                            .clickable { onOpenMoodCategory(cat.title, cat.browseId, cat.params) },
+                    )
+                }
+            }
+        } else {
+            items(
+                items = TopPickMood.entries,
+                key = { it.name },
+                contentType = { "mood_grid_tile" },
+            ) { mood ->
+                val localizedMood = dev.sonata.android.ui.i18n.localizeMoodTitle(mood.displayName, strings)
+                MoodTile(
+                    mood = mood,
+                    displayTitle = localizedMood,
+                    onClick = { _, label -> onOpenMoodCategory(label, "", "") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
         }
     }
 }
@@ -334,11 +373,13 @@ internal fun ExploreTabContent(
     modifier: Modifier = Modifier,
     onRefresh: () -> Unit = {},
     onOpenMood: (String) -> Unit,
+    onOpenMoodCategory: (String, String, String) -> Unit = { title, _, _ -> onOpenMood(title) },
     onOpenCard: (AndroidHomeCard, List<AndroidTrack>) -> Unit,
     onCardLongClick: (AndroidHomeCard, Rect?) -> Unit = { _, _ -> },
     onPlayTrack: (AndroidTrack, List<AndroidTrack>) -> Unit = { _, _ -> },
     onTrackOptions: (AndroidTrack, Rect?) -> Unit = { _, _ -> },
     onTrackLongClick: (AndroidTrack, Int, Rect?) -> Unit = { _, _, _ -> },
+    onStartDiscoveryStation: () -> Unit = {},
 ) {
     val screenWidthDp = LocalConfiguration.current.screenWidthDp
     val moodColumns = if (screenWidthDp >= 780) 3 else 2
@@ -353,17 +394,20 @@ internal fun ExploreTabContent(
         else -> (screenWidthDp - 44).coerceIn(280, 360).dp
     }
 
-    val artPool = remember(state.shelves, state.tracks, state.playlists) {
+    val mergedSourceShelves = remember(state.exploreShelves, state.shelves) {
+        state.exploreShelves + state.shelves
+    }
+    val artPool = remember(mergedSourceShelves, state.tracks, state.playlists) {
         (
-            state.shelves.flatMap { shelf ->
+            mergedSourceShelves.flatMap { shelf ->
                 shelf.cards.mapNotNull { it.thumbnailUrl } + shelf.tracks.mapNotNull { it.thumbnailUrl }
             } +
                 state.tracks.mapNotNull { it.thumbnailUrl } +
                 state.playlists.mapNotNull { it.thumbnailUrl }
             ).distinct()
     }
-    val moodSleeves = remember(state.shelves) {
-        val fromFeed = state.shelves.flatMap { it.cards }.filter { it.kind == AndroidHomeCardKind.MOOD }
+    val moodSleeves = remember(mergedSourceShelves) {
+        val fromFeed = mergedSourceShelves.flatMap { it.cards }.filter { it.kind == AndroidHomeCardKind.MOOD }
         val fallback = TopPickMood.entries.map { mood ->
             AndroidHomeCard(
                 kind = AndroidHomeCardKind.MOOD,
@@ -376,10 +420,24 @@ internal fun ExploreTabContent(
         }
         (fromFeed + fallback).distinctBy { it.title }
     }
-    val orderedExploreShelves = remember(state.shelves) {
-        val raw = state.shelves.filter { shelf ->
+    val resolvedMoodCategories = remember(state.moodCategories, moodSleeves) {
+        if (state.moodCategories.isNotEmpty()) {
+            state.moodCategories
+        } else {
+            moodSleeves.map { card ->
+                AndroidMoodCategory(
+                    title = card.title,
+                    browseId = if (card.id.startsWith("FEmood")) card.id else "",
+                    params = "",
+                    accentColor = 0u,
+                )
+            }
+        }
+    }
+    val orderedExploreShelves = remember(mergedSourceShelves) {
+        val raw = mergedSourceShelves.filter { shelf ->
             val t = shelf.title.lowercase()
-            "forgotten" !in t && "unutulan" !in t &&
+            "forgotten" !in t && "unutulan" !in t && "забыт" !in t &&
                 shelf.cards.any {
                     it.kind == AndroidHomeCardKind.ALBUM ||
                         it.kind == AndroidHomeCardKind.PLAYLIST ||
@@ -394,15 +452,36 @@ internal fun ExploreTabContent(
     val topReleaseAndChartShelves = remember(orderedExploreShelves) {
         orderedExploreShelves.filter { shelf ->
             val t = shelf.title.lowercase()
-            "new" in t || "release" in t || "chart" in t || "trend" in t || "album" in t || "single" in t
+            "new" in t || "release" in t || "chart" in t || "trend" in t || "album" in t || "single" in t ||
+                "yeni çıkan" in t || "listeler" in t || "albüm" in t ||
+                "новинк" in t || "чарт" in t || "тренд" in t || "альбом" in t
         }.sortedBy { homeShelfSortOrder(it.title) }
     }
     val lowerExploreShelves = remember(orderedExploreShelves, topReleaseAndChartShelves) {
         orderedExploreShelves.filter { it !in topReleaseAndChartShelves }
     }
 
-    // Editorial featured hero cards (Playlists, New Releases & Charts with rich artwork, deduplicated)
-    val editorialHeroes = remember(topReleaseAndChartShelves, orderedExploreShelves) {
+    val preferredArtistWeights = remember(state.lastPlayedTracks, state.likedTrackIds, mergedSourceShelves) {
+        val weights = HashMap<String, Int>()
+        state.lastPlayedTracks.take(25).forEachIndexed { idx, track ->
+            val artist = track.artist.trim().lowercase()
+            if (artist.isNotBlank()) {
+                weights[artist] = (weights[artist] ?: 0) + (25 - idx).coerceAtLeast(2)
+            }
+        }
+        mergedSourceShelves.flatMap { it.tracks }
+            .filter { it.id in state.likedTrackIds }
+            .forEach { track ->
+                val artist = track.artist.trim().lowercase()
+                if (artist.isNotBlank()) {
+                    weights[artist] = (weights[artist] ?: 0) + 10
+                }
+            }
+        weights
+    }
+
+    // Editorial featured hero cards (Playlists, New Releases & Charts with rich artwork, deduplicated + personalized)
+    val editorialHeroes = remember(topReleaseAndChartShelves, orderedExploreShelves, preferredArtistWeights) {
         val primary = (topReleaseAndChartShelves + orderedExploreShelves)
             .flatMap { shelf ->
                 shelf.cards.map { card -> card to shelf }
@@ -413,39 +492,59 @@ internal fun ExploreTabContent(
             }
             .distinctBy { (card, _) -> card.id.removePrefix("VL").ifBlank { card.dedupeContentKey() } }
             .distinctBy { (card, _) -> card.dedupeContentKey() }
+            .sortedByDescending { (card, _) ->
+                val text = "${card.title} ${card.subtitle}".lowercase()
+                preferredArtistWeights.entries.firstOrNull { (k, _) -> text.contains(k) }?.value ?: 0
+            }
             .take(8)
         primary
     }
 
-    // Trending / Viral Hits 4-row horizontal paging song columns
-    val viralHitsTracks = remember(state.shelves, state.tracks) {
-        val trendShelves = state.shelves.filter { shelf ->
+    // Trending / Viral Hits 4-row horizontal paging song columns (tailored to listener taste)
+    val viralHitsTracks = remember(mergedSourceShelves, state.tracks, state.lastPlayedTracks, preferredArtistWeights) {
+        val recentPlayedIds = state.lastPlayedTracks.take(4).map { it.id }.toSet()
+        val trendShelves = mergedSourceShelves.filter { shelf ->
             val t = shelf.title.lowercase()
-            ("trend" in t || "chart" in t || "hit" in t || "quick" in t || "new" in t || "pop" in t) &&
-                "forgotten" !in t && "unutulan" !in t
+            ("trend" in t || "chart" in t || "hit" in t || "quick" in t || "new" in t || "pop" in t ||
+                "hızlı seçimler" in t || "yeni çıkan" in t || "listeler" in t ||
+                "быстрый выбор" in t || "новинк" in t || "чарт" in t) &&
+                "forgotten" !in t && "unutulan" !in t && "забыт" !in t
         }
         val fromTrend = trendShelves.flatMap { shelf ->
             shelf.tracks + shelf.cards.mapNotNull { it.track }
         }
-        val fromAll = state.shelves.flatMap { shelf ->
+        val fromAll = mergedSourceShelves.flatMap { shelf ->
             shelf.tracks + shelf.cards.mapNotNull { it.track }
         }
-        (fromTrend + fromAll + state.tracks)
-            .distinctBy { it.id }
+        val pool = (fromTrend + fromAll + state.tracks).distinctBy { it.id }
+        val nonRecent = pool.filter { it.id !in recentPlayedIds }
+        val candidatePool = if (nonRecent.size >= 12) nonRecent else pool
+        candidatePool
+            .sortedByDescending { tr ->
+                preferredArtistWeights[tr.artist.trim().lowercase()] ?: 0
+            }
             .take(24)
     }
     val viralColumns = remember(viralHitsTracks) { viralHitsTracks.chunked(4) }
 
-    val moodRows = remember(moodSleeves, moodColumns) { moodSleeves.chunked(moodColumns) }
+    val moodRows = remember(resolvedMoodCategories, moodColumns) { resolvedMoodCategories.chunked(moodColumns) }
     if (LocalLunariaColors.current.isBasic) {
         dev.sonata.android.ui.screens.BasicExploreScreen(
             moodCards = moodSleeves,
+            moodCategories = state.moodCategories,
             artPool = artPool,
             listState = listState,
             refreshing = state.refreshing,
             onRefresh = onRefresh,
             onOpenMood = onOpenMood,
+            onOpenMoodCategory = onOpenMoodCategory,
             contentPadding = contentPadding,
+            personalizedHeroCards = editorialHeroes.map { it.first },
+            onOpenCard = { card ->
+                val shelfTracks = editorialHeroes.firstOrNull { it.first.id == card.id }?.second?.tracks.orEmpty()
+                onOpenCard(card, shelfTracks)
+            },
+            onStartDiscoveryStation = onStartDiscoveryStation,
             modifier = modifier,
         )
         return
@@ -468,7 +567,7 @@ internal fun ExploreTabContent(
         ) {
         item(key = "explore_heading", contentType = "tab_heading") {
             Text(
-                text = "Explore",
+                text = dev.sonata.android.ui.i18n.LocalSonataStrings.current.exploreHeading,
                 style = MaterialTheme.typography.displayLarge.copy(
                     fontSize = 34.sp,
                     fontWeight = FontWeight.Bold,
@@ -493,10 +592,14 @@ internal fun ExploreTabContent(
                         key = { (card, _) -> "hero_${card.kind}_${card.id}" },
                         contentType = { "editorial_hero_card" },
                     ) { (card, shelf) ->
+                        val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
+                        val shelfLower = shelf.title.lowercase()
                         val eyebrow = when {
-                            card.kind == AndroidHomeCardKind.ALBUM -> "NEW RELEASE"
-                            "chart" in shelf.title.lowercase() || "trend" in shelf.title.lowercase() -> "FEATURED CHART"
-                            else -> "UPDATED PLAYLIST"
+                            card.kind == AndroidHomeCardKind.ALBUM -> strings.newReleaseEyebrow
+                            "chart" in shelfLower || "trend" in shelfLower ||
+                                "listeler" in shelfLower || "чарт" in shelfLower || "тренд" in shelfLower ->
+                                strings.featuredChartEyebrow
+                            else -> strings.updatedPlaylistEyebrow
                         }
                         val caption = card.subtitle.ifBlank { shelf.title }
                         ExploreEditorialHeroCard(
@@ -531,7 +634,7 @@ internal fun ExploreTabContent(
                         )
                         Spacer(Modifier.width(7.dp))
                         Text(
-                            text = "Trending & Viral Hits",
+                            text = dev.sonata.android.ui.i18n.LocalSonataStrings.current.trendingViralHits,
                             style = MaterialTheme.typography.titleLarge.copy(
                                 fontSize = 21.sp,
                                 fontWeight = FontWeight.Bold,
@@ -603,8 +706,9 @@ internal fun ExploreTabContent(
                     .distinctBy { "${it.kind}_${it.id}_${it.title}" }
             }
             if (cards.isNotEmpty()) {
+                val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
                 Column(Modifier.padding(top = 4.dp, bottom = 14.dp)) {
-                    SectionHeader(title = shelf.title)
+                    SectionHeader(title = dev.sonata.android.ui.i18n.localizeShelfTitle(shelf.title, strings))
                     LazyRow(
                         contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
                         horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -635,32 +739,31 @@ internal fun ExploreTabContent(
 
         // 2. Moods & Genres section (always-animated SonataMoodAnimatedArt)
         item(key = "explore_moods_header", contentType = "section_header") {
-            SectionHeader(title = "Moods & Genres")
+            SectionHeader(title = dev.sonata.android.ui.i18n.LocalSonataStrings.current.allMoodsAndGenres)
         }
 
         itemsIndexed(
             items = moodRows,
             key = { rowIdx, row -> "mood_row_${rowIdx}_${row.firstOrNull()?.title.orEmpty()}" },
             contentType = { _, _ -> "explore_mood_row" },
-        ) { rowIdx, rowItems ->
+        ) { _, rowItems ->
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = PAGE_GUTTER, vertical = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                rowItems.forEachIndexed { colIdx, mood ->
-                    val globalIdx = rowIdx * moodColumns + colIdx
-                    val resolvedThumb = mood.thumbnailUrl?.takeIf { it.isNotBlank() }
-                        ?: if (artPool.isNotEmpty()) artPool[globalIdx % artPool.size] else null
+                rowItems.forEach { cat ->
+                    val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
+                    val catAccent = cat.accentColor.takeIf { it != 0u }?.let { Color(it.toInt()) }
                     MoodGenreSleeve(
-                        title = mood.title,
-                        thumbnailUrl = resolvedThumb,
+                        title = dev.sonata.android.ui.i18n.localizeMoodTitle(cat.title, strings),
+                        accentColor = catAccent,
                         modifier = Modifier
                             .weight(1f)
                             .aspectRatio(1.9f)
                             .clip(Shape12)
-                            .clickable { onOpenMood(mood.title) },
+                            .clickable { onOpenMoodCategory(cat.title, cat.browseId, cat.params) },
                     )
                 }
                 repeat(moodColumns - rowItems.size) {
@@ -683,7 +786,12 @@ internal fun ExploreTabContent(
             if (cards.isNotEmpty()) {
                 val isVideoShelf = remember(cards) { cards.all { it.kind == AndroidHomeCardKind.VIDEO } }
                 Column(Modifier.padding(top = 18.dp, bottom = 10.dp)) {
-                    SectionHeader(title = shelf.title)
+                    SectionHeader(
+                        title = dev.sonata.android.ui.i18n.localizeShelfTitle(
+                            shelf.title,
+                            dev.sonata.android.ui.i18n.LocalSonataStrings.current,
+                        ),
+                    )
                     LazyRow(
                         contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
                         horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -743,11 +851,10 @@ internal fun ExploreEditorialHeroCard(
     val sizedUrl = remember(artworkUrl) { artworkUrl.artworkAt(HEADER_ART_PX) }
     val artRequest = rememberArtworkRequest(sizedUrl, HEADER_ART_PX, HEADER_ART_PX)
     val captionScrim = remember {
-        Brush.verticalGradient(
-            0.0f to Color.Transparent,
-            0.52f to Color.Transparent,
-            0.82f to Color.Black.copy(alpha = 0.56f),
-            1.0f to Color.Black.copy(alpha = 0.80f),
+        dev.sonata.android.ui.smoothScrimBrush(
+            from = Color.Black.copy(alpha = 0f),
+            to = Color.Black.copy(alpha = 0.80f),
+            startFraction = 0.52f,
         )
     }
 
@@ -855,6 +962,9 @@ internal fun ExploreViralHitRow(
     val thumbReq = rememberArtworkRequest(thumb, ROW_ART_PX, ROW_ART_PX)
     val isDownloaded = track.id in LocalDownloadedTrackIds.current
 
+    val tokens = LocalLunariaColors.current
+    val themeAccent = sonataThemeAccent()
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -874,13 +984,12 @@ internal fun ExploreViralHitRow(
             Icon(
                 imageVector = SonataIcons.StarFilled,
                 contentDescription = "Liked",
-                tint = SonataAccent,
+                tint = themeAccent,
                 modifier = Modifier
                     .padding(end = 5.dp)
                     .size(10.dp),
             )
         }
-        val tokens = LocalLunariaColors.current
         Box(
             modifier = Modifier
                 .size(50.dp)
@@ -914,7 +1023,7 @@ internal fun ExploreViralHitRow(
                     Icon(
                         imageVector = if (isPlaying) SonataIcons.GraphicEq else SonataIcons.Pause,
                         contentDescription = null,
-                        tint = SonataAccent,
+                        tint = themeAccent,
                         modifier = Modifier.size(20.dp),
                     )
                 }
@@ -932,7 +1041,7 @@ internal fun ExploreViralHitRow(
                         fontSize = 15.sp,
                         fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Medium,
                     ),
-                    color = if (isCurrent) SonataAccent else MaterialTheme.colorScheme.onBackground,
+                    color = if (isCurrent) themeAccent else MaterialTheme.colorScheme.onBackground,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false),
@@ -965,7 +1074,7 @@ internal fun ExploreViralHitRow(
                     Icon(
                         imageVector = SonataIcons.Download,
                         contentDescription = "Downloaded",
-                        tint = SonataAccent,
+                        tint = themeAccent,
                         modifier = Modifier.size(12.dp),
                     )
                 }

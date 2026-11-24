@@ -161,7 +161,8 @@ impl App {
         let cache_limit_bytes = Arc::new(AtomicU64::new(config.cache_limit_bytes()));
         let cookies = ExtractedCookies::default();
         let cache_db = CacheDb::open_with_paths(&paths, config.cache_limit_gb > 0);
-        let ytm = YtMusicClient::new(http.clone(), cookies.clone());
+        let ytm =
+            YtMusicClient::new(http.clone(), cookies.clone()).with_language(config.language.code());
         let spotify = SpotifyClient::with_paths(http.clone(), None, paths.clone());
         let resolver = LinuxStreamResolver::with_profile(
             http.clone(),
@@ -331,6 +332,7 @@ impl App {
         let saved_spotify_ids = self.config.spotify_playlists.clone();
         let http = self.http.clone();
         let paths = self.paths.clone();
+        let lang_code = self.config.language.code();
 
         tokio::spawn(async move {
             let cookies = tokio::task::spawn_blocking(move || {
@@ -339,7 +341,7 @@ impl App {
             .await
             .unwrap_or_default();
 
-            let ytm = YtMusicClient::new(http.clone(), cookies.clone());
+            let ytm = YtMusicClient::new(http.clone(), cookies.clone()).with_language(lang_code);
             let spotify = SpotifyClient::with_paths(http, cookies.spotify_sp_dc.clone(), paths);
 
             let (ytm_res, spot_res) = tokio::join!(
@@ -356,6 +358,7 @@ impl App {
                         source: ProviderSource::Spotify,
                         track_count: Some(tracks.len()),
                         thumbnail_url: None,
+                        is_owned: false,
                     });
                 }
             }
@@ -382,7 +385,8 @@ impl App {
                     .clone()
                     .unwrap_or_else(|| "Guest (No Browser Login)".to_string());
                 self.cookies = cookies;
-                self.ytm = YtMusicClient::new(self.http.clone(), self.cookies.clone());
+                self.ytm = YtMusicClient::new(self.http.clone(), self.cookies.clone())
+                    .with_language(self.config.language.code());
                 self.spotify = SpotifyClient::with_paths(
                     self.http.clone(),
                     self.cookies.spotify_sp_dc.clone(),
@@ -564,6 +568,40 @@ impl App {
                 }
                 self.rebuild_sidebar();
             }
+            AppEvent::AutoplayTracksReady { play_seq, tracks } => {
+                if play_seq != self.play_seq {
+                    return;
+                }
+                if tracks.is_empty() {
+                    self.playback.paused = true;
+                    self.playback.loading_track = false;
+                    self.playback.position_secs = 0.0;
+                    self.playback.stream_badge = "Finished".to_string();
+                    return;
+                }
+                let mut combined = self.playback.queue.clone();
+                let start_index = combined.len();
+                let mut seen: std::collections::HashSet<String> =
+                    combined.iter().map(|t| t.id.clone()).collect();
+                for tr in tracks {
+                    if seen.insert(tr.id.clone()) {
+                        combined.push(tr);
+                    }
+                }
+                if start_index >= combined.len() {
+                    self.playback.paused = true;
+                    self.playback.loading_track = false;
+                    self.playback.position_secs = 0.0;
+                    self.playback.stream_badge = "Finished".to_string();
+                    return;
+                }
+                self.enqueue_session_cmd(SessionCommand::PlayQueue {
+                    tracks: combined,
+                    start_index,
+                    push_history: false,
+                });
+                self.status_line = "Autoplay: playing similar tracks".to_string();
+            }
             AppEvent::UpdateChecked(info) => {
                 if info.update_available {
                     if self.status_line == "Checking for updates..." {
@@ -632,6 +670,14 @@ impl App {
             self.config.language.prev()
         };
         let _ = self.config.save();
+        let ytm = self.ytm.clone();
+        let lang_code = self.config.language.code();
+        tokio::spawn(async move {
+            ytm.set_language(lang_code).await;
+        });
+        if let Some(db) = &self.cache_db {
+            db.invalidate_playlist(None);
+        }
         self.status_line = format!(
             "{}: {}",
             sonata_runtime::i18n::strings(self.config.language).language,

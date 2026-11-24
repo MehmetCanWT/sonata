@@ -117,6 +117,8 @@ pub struct AppConfig {
     pub volume: u8,
     pub shuffle: bool,
     pub repeat_mode: RepeatMode,
+    #[serde(default = "default_true")]
+    pub autoplay: bool,
     pub provider_mode: ProviderMode,
     pub hifi_substitution: bool,
     #[serde(default)]
@@ -148,6 +150,7 @@ impl Default for AppConfig {
             volume: 85,
             shuffle: false,
             repeat_mode: RepeatMode::Off,
+            autoplay: true,
             provider_mode: ProviderMode::Both,
             hifi_substitution: true,
             jiosaavn_enabled: false,
@@ -306,5 +309,16 @@ mod tests {
         let enabled: AppConfig =
             toml::from_str("liquid_glass = true\n").expect("enabled liquid_glass should parse");
         assert!(enabled.liquid_glass);
+        assert!(default_cfg.autoplay);
+        assert!(legacy.autoplay);
+        let autoplay_off: AppConfig =
+            toml::from_str("autoplay = false\nshuffle = true\nrepeat_mode = \"all\"\n")
+                .expect("autoplay/shuffle/repeat should parse");
+        assert!(!autoplay_off.autoplay);
+        assert!(autoplay_off.shuffle);
+        assert_eq!(
+            autoplay_off.repeat_mode,
+            sonata_core::player::RepeatMode::All
+        );
     }
 }

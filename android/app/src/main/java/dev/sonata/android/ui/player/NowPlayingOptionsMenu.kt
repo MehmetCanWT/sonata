@@ -188,6 +188,7 @@ fun NowPlayingOptionsMenu(
                     .verticalScroll(rememberScrollState())
                     .padding(12.dp),
             ) {
+                val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
                 // Top 3-button quick strip: Like, Add to Playlist, Share (strictly in-app)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -195,7 +196,7 @@ fun NowPlayingOptionsMenu(
                 ) {
                     QuickTopTile(
                         icon = if (isLiked) SonataIcons.HeartFilled else SonataIcons.Heart,
-                        label = if (isLiked) "Liked" else "Like",
+                        label = if (isLiked) strings.saved else strings.like,
                         tint = if (isLiked) themeTokens.petalLavender else themeTokens.onSurfacePrimary,
                         onClick = {
                             onToggleLike()
@@ -205,7 +206,7 @@ fun NowPlayingOptionsMenu(
                     )
                     QuickTopTile(
                         icon = PopoverPlaylistAddIcon,
-                        label = "Playlist",
+                        label = strings.playlistLabel,
                         tint = themeTokens.onSurfacePrimary,
                         onClick = {
                             onDismiss()
@@ -215,7 +216,7 @@ fun NowPlayingOptionsMenu(
                     )
                     QuickTopTile(
                         icon = PopoverShareIcon,
-                        label = "Share",
+                        label = strings.share,
                         tint = themeTokens.onSurfacePrimary,
                         onClick = {
                             onDismiss()
@@ -231,8 +232,8 @@ fun NowPlayingOptionsMenu(
                 // Audio Controls & Audio Pipeline
                 PopoverActionRow(
                     icon = SonataIcons.GraphicEq,
-                    title = "Audio Controls",
-                    subtitle = "Playback speed & silence skip",
+                    title = strings.audioControls,
+                    subtitle = strings.audioPipelineSubtitle,
                     onClick = {
                         onDismiss()
                         onOpenAudioControls()
@@ -240,7 +241,7 @@ fun NowPlayingOptionsMenu(
                 )
                 PopoverActionRow(
                     icon = PopoverInfoIcon,
-                    title = "Audio Pipeline & Info",
+                    title = strings.audioPipeline,
                     subtitle = pipelineSummary,
                     onClick = {
                         onDismiss()
@@ -250,13 +251,13 @@ fun NowPlayingOptionsMenu(
 
                 // Download Track
                 val downloadSubtitle = when {
-                    activeDownload != null -> "Downloading ${(activeDownload.progress * 100f).roundToInt()}%"
-                    isDownloaded -> "Downloaded for offline playback"
-                    else -> "Save audio locally"
+                    activeDownload != null -> "${(activeDownload.progress * 100f).roundToInt()}%"
+                    isDownloaded -> strings.downloaded
+                    else -> strings.download
                 }
                 PopoverActionRow(
                     icon = if (isDownloaded) SonataIcons.Check else SonataIcons.Download,
-                    title = if (isDownloaded) "Downloaded" else "Download Track",
+                    title = if (isDownloaded) strings.downloaded else strings.download,
                     subtitle = downloadSubtitle,
                     tint = if (isDownloaded) themeTokens.petalLavender else themeTokens.onSurfacePrimary,
                     onClick = {
@@ -268,8 +269,8 @@ fun NowPlayingOptionsMenu(
                 // Sleep Timer
                 PopoverActionRow(
                     icon = SonataIcons.History,
-                    title = "Sleep Timer",
-                    subtitle = sleepTimerRemainingMinutes?.let { "${it}m remaining" } ?: "Off",
+                    title = strings.sleepTimer,
+                    subtitle = sleepTimerRemainingMinutes?.let { strings.sleepMinutesRemaining(it) } ?: strings.sleepOff,
                     tint = if (sleepTimerRemainingMinutes != null) themeTokens.petalLavender else themeTokens.onSurfacePrimary,
                     onClick = {
                         onDismiss()
@@ -293,7 +294,7 @@ fun NowPlayingOptionsMenu(
                 // Romanize Lyrics toggle
                 PopoverSwitchRow(
                     icon = SonataIcons.LyricsQuote,
-                    title = "Romanize Lyrics",
+                    title = strings.romanizeLyrics,
                     checked = romanizationEnabled,
                     onCheckedChange = { onToggleRomanization() },
                 )
@@ -301,7 +302,7 @@ fun NowPlayingOptionsMenu(
                 // Translate Lyrics toggle
                 PopoverSwitchRow(
                     icon = SonataIcons.Sparkles,
-                    title = "Translate Lyrics",
+                    title = strings.translateLyrics,
                     checked = translationEnabled,
                     onCheckedChange = { onToggleTranslation() },
                 )
@@ -315,7 +316,7 @@ fun NowPlayingOptionsMenu(
                 // Queue & Radio actions
                 PopoverActionRow(
                     icon = SonataRadioWavesIcon,
-                    title = "Start Radio",
+                    title = strings.startRadio,
                     onClick = {
                         onDismiss()
                         onStartRadio()
@@ -323,7 +324,7 @@ fun NowPlayingOptionsMenu(
                 )
                 PopoverActionRow(
                     icon = SonataIcons.Play,
-                    title = "Play Next",
+                    title = strings.playNext,
                     onClick = {
                         onDismiss()
                         onPlayNext()
@@ -331,7 +332,7 @@ fun NowPlayingOptionsMenu(
                 )
                 PopoverActionRow(
                     icon = SonataIcons.Queue,
-                    title = "Add to Queue",
+                    title = strings.addToQueue,
                     onClick = {
                         onDismiss()
                         onAddToQueue()
@@ -347,7 +348,7 @@ fun NowPlayingOptionsMenu(
                 // In-app Navigation
                 PopoverActionRow(
                     icon = SonataIcons.MusicNote,
-                    title = "Open Album",
+                    title = strings.openAlbum,
                     subtitle = track.album?.takeIf { it.isNotBlank() } ?: track.title,
                     onClick = {
                         onDismiss()
@@ -357,7 +358,7 @@ fun NowPlayingOptionsMenu(
                 if (track.artist.isNotBlank()) {
                     PopoverActionRow(
                         icon = SonataIcons.Person,
-                        title = "Open Artist",
+                        title = strings.goToArtist,
                         subtitle = track.artist,
                         onClick = {
                             onDismiss()
@@ -529,7 +530,7 @@ private fun LyricsOffsetStepperRow(
         )
         Spacer(Modifier.width(12.dp))
         Text(
-            text = "Lyrics Offset",
+            text = dev.sonata.android.ui.i18n.LocalSonataStrings.current.lyricsTiming,
             style = MaterialTheme.typography.bodyMedium.copy(
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Medium,

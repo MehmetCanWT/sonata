@@ -43,6 +43,7 @@ impl SonataDesktopView {
         };
         let scroll_fades = self.settings.scroll_fades;
 
+        let s = sonata_runtime::i18n::strings(self.settings.language);
         let header = div()
             .flex()
             .flex_row()
@@ -61,7 +62,7 @@ impl SonataDesktopView {
                             .text_size(px(26.0))
                             .font_weight(FontWeight::BOLD)
                             .text_color(self.palette.text)
-                            .child("Library"),
+                            .child(s.library),
                     )
                     .child(
                         TabBar::new("lib-tabs")
@@ -76,9 +77,9 @@ impl SonataDesktopView {
                                 };
                                 cx.notify();
                             }))
-                            .child(Tab::new().label("Playlists"))
-                            .child(Tab::new().label("Albums"))
-                            .child(Tab::new().label("Artists")),
+                            .child(Tab::new().label(s.playlists))
+                            .child(Tab::new().label(s.albums))
+                            .child(Tab::new().label(s.artists)),
                     ),
             )
             .child(
@@ -105,7 +106,7 @@ impl SonataDesktopView {
                             .primary()
                             .small()
                             .icon(IconName::Plus)
-                            .label("New playlist")
+                            .label(s.new_playlist)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.modal = DesktopModal::CreatePlaylist;
                                 this.playlist_name_input
@@ -135,18 +136,18 @@ impl SonataDesktopView {
                     div()
                         .text_size(px(16.0))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child("Sign in to view your library"),
+                        .child(s.sign_in_library_title),
                 )
                 .child(
                     div()
                         .text_size(px(13.0))
                         .text_color(self.palette.secondary)
-                        .child("Connect your browser YouTube Music session to sync liked songs, playlists, saved albums, and artists."),
+                        .child(s.sign_in_library_desc),
                 )
                 .child(
                     Button::new("lib-signin-cta")
                         .primary()
-                        .label("Sign in with browser")
+                        .label(s.sign_in_browser)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.modal = DesktopModal::SignInBrowser;
                             cx.notify();
@@ -167,10 +168,18 @@ impl SonataDesktopView {
                     for (i, pl) in playlists.into_iter().enumerate() {
                         let cover = self.media_for_url(pl.thumbnail_url.as_deref(), cx);
                         let is_liked = pl.id == "VLLM";
-                        let subtitle = match pl.track_count {
-                            Some(n) => format!("{n} tracks"),
-                            None if is_liked => "Liked Music".to_string(),
-                            None => "Playlist".to_string(),
+                        let is_pinned = self.settings.is_pinned(&pl.id);
+                        let subtitle = {
+                            let base = match pl.track_count {
+                                Some(n) => format!("{n} tracks"),
+                                None if is_liked => s.liked_music.to_string(),
+                                None => s.playlist.to_string(),
+                            };
+                            if is_pinned {
+                                format!("{} • {base}", s.pinned)
+                            } else {
+                                base
+                            }
                         };
                         let pl_open = pl.clone();
                         grid = grid.child(
@@ -187,7 +196,7 @@ impl SonataDesktopView {
                                         title: pl_open.name.clone(),
                                         subtitle: "YouTube Music Playlist".to_string(),
                                         thumbnail_url: pl_open.thumbnail_url.clone(),
-                                        editable: true,
+                                        editable: pl_open.is_owned && pl_open.id != "VLLM",
                                     });
                                     cx.notify();
                                 }))

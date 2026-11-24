@@ -84,14 +84,15 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                         0 => app.cycle_provider_mode(true),
                         1 => app.toggle_hifi_substitution(),
                         2 => app.toggle_jiosaavn(),
-                        3 => app.cycle_language(true),
-                        4 => app.cycle_theme(true),
-                        5 => app.toggle_motion_covers(),
-                        6 => app.toggle_transparent_bg(),
-                        7 => app.cycle_hyprland_opacity(true),
-                        8 => app.step_cache_limit(true),
-                        9 => app.refresh_account(),
-                        10 => app.check_for_updates(),
+                        3 => app.toggle_autoplay(),
+                        4 => app.cycle_language(true),
+                        5 => app.cycle_theme(true),
+                        6 => app.toggle_motion_covers(),
+                        7 => app.toggle_transparent_bg(),
+                        8 => app.cycle_hyprland_opacity(true),
+                        9 => app.step_cache_limit(true),
+                        10 => app.refresh_account(),
+                        11 => app.check_for_updates(),
                         _ => {}
                     }
                 }
@@ -99,12 +100,13 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                     0 => app.cycle_provider_mode(false),
                     1 => app.toggle_hifi_substitution(),
                     2 => app.toggle_jiosaavn(),
-                    3 => app.cycle_language(false),
-                    4 => app.cycle_theme(false),
-                    5 => app.toggle_motion_covers(),
-                    6 => app.toggle_transparent_bg(),
-                    7 => app.cycle_hyprland_opacity(false),
-                    8 => app.step_cache_limit(false),
+                    3 => app.toggle_autoplay(),
+                    4 => app.cycle_language(false),
+                    5 => app.cycle_theme(false),
+                    6 => app.toggle_motion_covers(),
+                    7 => app.toggle_transparent_bg(),
+                    8 => app.cycle_hyprland_opacity(false),
+                    9 => app.step_cache_limit(false),
                     _ => {}
                 },
                 _ => {}
@@ -229,6 +231,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('-') | KeyCode::Char('_') => app.adjust_volume(-5),
         KeyCode::Char('s') => app.toggle_shuffle(),
         KeyCode::Char('r') => app.cycle_repeat(),
+        KeyCode::Char('E') => app.toggle_autoplay(),
         KeyCode::Char('t') => {
             let cur_idx = app
                 .themes

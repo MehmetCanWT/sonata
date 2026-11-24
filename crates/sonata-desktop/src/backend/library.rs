@@ -7,7 +7,7 @@
 use super::types::{InternalEvent, NavTarget};
 use super::BackendEngine;
 use sonata_core::auth::ExtractedCookies;
-use sonata_core::providers::ytmusic::{MoodChip, YtMusicClient};
+use sonata_core::providers::ytmusic::{HomeShelf, MoodChip, YtMusicClient};
 use sonata_core::providers::{Playlist, ProviderSource, Track};
 use sonata_runtime::auth::extract_ytm_cookies_from_browser;
 use sonata_runtime::hyprland;
@@ -52,18 +52,29 @@ fn extract_primary_artist_name(raw: &str) -> String {
 
 impl BackendEngine {
     pub(super) fn prefetch_thumbnails(&self, urls: Vec<String>) {
+        self.prefetch_thumbnails_with_priority(urls, false);
+    }
+
+    pub(super) fn prefetch_thumbnails_urgent(&self, urls: Vec<String>) {
+        self.prefetch_thumbnails_with_priority(urls, true);
+    }
+
+    fn prefetch_thumbnails_with_priority(&self, urls: Vec<String>, urgent: bool) {
         let mut candidates = Vec::new();
         let mut existing_to_check = Vec::new();
+        let in_flight_cap = if urgent { 256 } else { 192 };
+        let candidate_cap = if urgent { 160 } else { 96 };
         {
             let Ok(mut in_flight) = self.in_flight_thumbs.lock() else {
                 return;
             };
             let checked = REPAIRED_ART_PATHS.get_or_init(|| Mutex::new(HashSet::new()));
+            let mut seen_urls = HashSet::with_capacity(urls.len());
             for url in urls {
-                if in_flight.len() >= 128 {
+                if in_flight.len() >= in_flight_cap {
                     break;
                 }
-                if url.is_empty() {
+                if url.is_empty() || !seen_urls.insert(url.clone()) {
                     continue;
                 }
                 let path = media::art_cache_path(&url);
@@ -84,7 +95,7 @@ impl BackendEngine {
                 }
                 in_flight.insert(url.clone());
                 candidates.push(url);
-                if candidates.len() >= 96 {
+                if candidates.len() >= candidate_cap {
                     break;
                 }
             }
@@ -112,9 +123,13 @@ impl BackendEngine {
         let cache_limit = self.config.cache_limit_bytes();
         let int_tx = self.int_tx.clone();
         let in_flight = self.in_flight_thumbs.clone();
-        let slots = self.thumbnail_slots.clone();
+        let slots = if urgent {
+            self.urgent_thumbnail_slots.clone()
+        } else {
+            self.thumbnail_slots.clone()
+        };
         tokio::spawn(async move {
-            let (done_tx, mut done_rx) = mpsc::channel::<()>(8);
+            let (done_tx, mut done_rx) = mpsc::channel::<()>(16);
             for url in candidates {
                 let slots = slots.clone();
                 let http = http.clone();
@@ -123,9 +138,16 @@ impl BackendEngine {
                 let done_tx = done_tx.clone();
                 tokio::spawn(async move {
                     let Ok(_permit) = slots.acquire().await else {
+                        if let Ok(mut guard) = in_flight.lock() {
+                            guard.remove(&url);
+                        }
                         return;
                     };
-                    let _ = media::fetch_and_decode_art(&http, &url, &paths, cache_limit).await;
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(12),
+                        media::fetch_and_decode_art(&http, &url, &paths, cache_limit),
+                    )
+                    .await;
                     if let Ok(mut guard) = in_flight.lock() {
                         guard.remove(&url);
                     }
@@ -134,10 +156,11 @@ impl BackendEngine {
             }
             drop(done_tx);
 
+            let notify_step = if urgent { 2 } else { 4 };
             let mut count = 0usize;
             while done_rx.recv().await.is_some() {
                 count += 1;
-                if count.is_multiple_of(4) {
+                if count == 1 || count.is_multiple_of(notify_step) {
                     let _ = int_tx.send(InternalEvent::ThumbnailsReady);
                 }
             }
@@ -153,6 +176,7 @@ impl BackendEngine {
         let http = self.http.clone();
         let paths = self.paths.clone();
         let cache_limit = self.config.cache_limit_bytes();
+        let lang_code = self.ytm_language.code();
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
             let bid = browser_id.clone();
@@ -179,7 +203,7 @@ impl BackendEngine {
                 return;
             }
 
-            let ytm = YtMusicClient::new(http.clone(), cookies.clone());
+            let ytm = YtMusicClient::new(http.clone(), cookies.clone()).with_language(lang_code);
             let (profile_res, playlists_res) =
                 tokio::join!(ytm.fetch_account_profile(), ytm.fetch_library_playlists());
 
@@ -251,7 +275,8 @@ impl BackendEngine {
         self.config.desktop_ytm_browser = None;
         let _ = self.config.save();
         self.cookies = ExtractedCookies::default();
-        self.ytm = YtMusicClient::new(self.http.clone(), self.cookies.clone());
+        self.ytm = YtMusicClient::new(self.http.clone(), self.cookies.clone())
+            .with_language(self.ytm_language.code());
         self.resolver = LinuxStreamResolver::with_profile(
             self.http.clone(),
             self.ytm.clone(),
@@ -347,19 +372,84 @@ impl BackendEngine {
         self.mood_page_title = title.clone();
         self.mood_page_shelves.clear();
         self.mood_page_loading = true;
+        self.status_line = format!("Loading {title}...");
         let ytm = self.ytm.clone();
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
-            let shelves = ytm
-                .fetch_mood_category(&browse_id, &params)
-                .await
-                .unwrap_or_default();
+            let mut shelves = if browse_id.is_empty() {
+                Vec::new()
+            } else {
+                ytm.fetch_mood_category(&browse_id, &params)
+                    .await
+                    .unwrap_or_default()
+            };
+            if shelves.is_empty() && !params.is_empty() {
+                if let Ok((_, chip_shelves)) = ytm.fetch_home_with_chips(Some(&params)).await {
+                    shelves = chip_shelves;
+                }
+            }
+            if shelves.is_empty() && !title.trim().is_empty() {
+                if let Ok(rich) = ytm.search_rich(&title).await {
+                    if !rich.playlists.is_empty() {
+                        shelves.push(HomeShelf {
+                            title: "Playlists".to_string(),
+                            tracks: Vec::new(),
+                            cards: rich.playlists,
+                        });
+                    }
+                    if !rich.songs.is_empty() {
+                        shelves.push(HomeShelf {
+                            title: "Songs".to_string(),
+                            tracks: rich.songs,
+                            cards: Vec::new(),
+                        });
+                    }
+                }
+            }
             let _ = int_tx.send(InternalEvent::MoodCategoryLoaded {
                 req_id,
                 title,
                 shelves,
             });
         });
+    }
+
+    pub(super) fn open_mood_by_title(&mut self, title: String) {
+        let needle = title.trim().to_lowercase();
+        if let Some(tile) = self
+            .mood_tiles
+            .iter()
+            .find(|t| {
+                t.title.trim().to_lowercase() == needle
+                    || sonata_runtime::i18n::localize_mood_title(self.ytm_language, &t.title)
+                        .trim()
+                        .to_lowercase()
+                        == needle
+            })
+            .cloned()
+        {
+            let display = sonata_runtime::i18n::localize_mood_title(self.ytm_language, &tile.title)
+                .into_owned();
+            self.open_mood_category(display, tile.browse_id, tile.params);
+            return;
+        }
+        if let Some(chip) = self
+            .home_chips
+            .iter()
+            .find(|c| {
+                c.label.trim().to_lowercase() == needle
+                    || sonata_runtime::i18n::localize_mood_title(self.ytm_language, &c.label)
+                        .trim()
+                        .to_lowercase()
+                        == needle
+            })
+            .cloned()
+        {
+            self.active_nav = NavTarget::Home;
+            self.load_home_with_chip(Some(chip));
+            return;
+        }
+        self.open_mood_category(title, String::new(), String::new());
     }
 
     pub(super) fn load_library_extras(&mut self) {
@@ -650,11 +740,38 @@ impl BackendEngine {
 
     pub(super) fn start_track_radio(&mut self, seed: Track) {
         self.status_line = format!("Starting {} radio...", seed.artist);
+        self.active_queue_playlist_id = None;
         let ytm = self.ytm.clone();
         let int_tx = self.int_tx.clone();
         let label = format!("{} Radio", seed.artist);
+        let excludes: Vec<String> = self
+            .last_played_tracks
+            .iter()
+            .take(25)
+            .map(|t| t.id.clone())
+            .collect();
+        let mut preferred = vec![seed.artist.clone()];
+        for artist in self.listener_preferred_artists() {
+            if !preferred.iter().any(|a| a.eq_ignore_ascii_case(&artist)) {
+                preferred.push(artist);
+            }
+            if preferred.len() >= 10 {
+                break;
+            }
+        }
         tokio::spawn(async move {
-            let mut radio = ytm.fetch_radio_queue(&seed.id).await.unwrap_or_default();
+            let mut radio = ytm
+                .fetch_endless_radio_queue(
+                    std::slice::from_ref(&seed.id),
+                    None,
+                    &excludes,
+                    &preferred,
+                )
+                .await
+                .unwrap_or_default();
+            if radio.is_empty() {
+                radio = ytm.fetch_radio_queue(&seed.id).await.unwrap_or_default();
+            }
             if radio.is_empty() {
                 let query = format!("{} {} mix", seed.artist, seed.title);
                 radio = ytm.search_songs(&query).await.unwrap_or_default();
@@ -731,7 +848,7 @@ impl BackendEngine {
 
         let mut had_cached = false;
         if !force_refresh {
-            if let Some((cached_name, cached_tracks, fresh)) = self
+            if let Some((cached_name, cached_tracks, _fresh)) = self
                 .cache_db
                 .as_ref()
                 .and_then(|db| db.get_playlist(&cache_key))
@@ -747,10 +864,6 @@ impl BackendEngine {
                 self.prefetch_thumbnails(urls);
                 self.playlist_tracks = cached_tracks;
                 self.playlist_loading = false;
-                if fresh {
-                    self.status_line = format!("Loaded {title} (cached)");
-                    return;
-                }
             }
         }
 
@@ -769,8 +882,9 @@ impl BackendEngine {
                 if let Some(db) = &cache_db {
                     db.invalidate_playlist(Some(&cache_key));
                 }
-                ytm.invalidate_cache(Some(&id)).await;
             }
+            // Always bypass the 5-minute in-memory playlist cache so creator edits appear live.
+            ytm.invalidate_cache(Some(&id)).await;
 
             let mut all_tracks: Vec<Track> = Vec::new();
             let res = ytm
@@ -982,6 +1096,53 @@ impl BackendEngine {
         });
     }
 
+    pub(super) fn toggle_save_playlist(
+        &mut self,
+        id: String,
+        title: String,
+        thumbnail_url: Option<String>,
+        save: bool,
+    ) {
+        let norm_target = crate::settings::normalize_collection_id(&id);
+        if save {
+            if !self
+                .ytm_playlists
+                .iter()
+                .any(|p| crate::settings::normalize_collection_id(&p.id) == norm_target)
+            {
+                self.ytm_playlists.push(Playlist {
+                    id: id.clone(),
+                    name: title.clone(),
+                    source: ProviderSource::YouTubeMusic,
+                    track_count: None,
+                    thumbnail_url,
+                    is_owned: false,
+                });
+            }
+            self.status_line = format!("Saved \"{title}\" to Library");
+        } else {
+            self.ytm_playlists.retain(|p| {
+                p.is_owned || crate::settings::normalize_collection_id(&p.id) != norm_target
+            });
+            self.status_line = format!("Removed \"{title}\" from Library");
+        }
+        if let Some(db) = &self.cache_db {
+            db.put_library("ytm", &self.ytm_playlists);
+        }
+        if !self.ytm.is_authenticated() {
+            return;
+        }
+        let ytm = self.ytm.clone();
+        let int_tx = self.int_tx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = ytm.set_playlist_saved(&id, save).await {
+                let _ = int_tx.send(InternalEvent::StatusMessage(format!(
+                    "Library sync failed: {e}"
+                )));
+            }
+        });
+    }
+
     pub(super) fn sync_hyprland_opacity(&mut self, opacity_override: Option<f32>) {
         if hyprland::is_hyprland() {
             if let Some(fresh) = hyprland::find_window_address_for_app("sonata-desktop") {
@@ -1100,6 +1261,7 @@ impl BackendEngine {
                         source: ProviderSource::YouTubeMusic,
                         track_count: Some(0),
                         thumbnail_url: None,
+                        is_owned: true,
                     };
                     let _ = int_tx.send(InternalEvent::PlaylistCreated(pl));
                 }

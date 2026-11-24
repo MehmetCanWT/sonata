@@ -235,7 +235,7 @@ fun UserMenuSheet(
                                 text = if (signedIn) {
                                     accountProfile?.name?.ifBlank { "YouTube Music" } ?: "YouTube Music"
                                 } else {
-                                    "Guest Session"
+                                    strings.notSignedInStatus
                                 },
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                 color = tokens.onSurfacePrimary,
@@ -246,9 +246,9 @@ fun UserMenuSheet(
                                 text = if (signedIn) {
                                     accountProfile?.handle
                                         ?: accountProfile?.email
-                                        ?: "Connected to YouTube Music"
+                                        ?: strings.ytmSessionActive
                                 } else {
-                                    "Sign in to sync library & mixes"
+                                    strings.signInYtmSettingsSubtitle
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = tokens.onSurfaceSecondary,
@@ -408,7 +408,7 @@ fun UserMenuSheet(
                             )
                             Spacer(Modifier.width(10.dp))
                             Text(
-                                text = "Refresh Home & Mixes",
+                                text = strings.refreshHomeMixes,
                                 style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
                                 color = tokens.onSurfacePrimary,
                                 modifier = Modifier.weight(1f),

@@ -39,13 +39,14 @@ impl SonataDesktopView {
             SearchTab::Library => 1,
         };
 
+        let s = sonata_runtime::i18n::strings(self.settings.language);
         let categories = [
-            (SearchCategory::All, "All"),
-            (SearchCategory::Songs, "Songs"),
-            (SearchCategory::Videos, "Videos"),
-            (SearchCategory::Albums, "Albums"),
-            (SearchCategory::Artists, "Artists"),
-            (SearchCategory::Playlists, "Playlists"),
+            (SearchCategory::All, s.all_tab),
+            (SearchCategory::Songs, s.songs),
+            (SearchCategory::Videos, s.videos_tab),
+            (SearchCategory::Albums, s.albums),
+            (SearchCategory::Artists, s.artists),
+            (SearchCategory::Playlists, s.playlists),
         ];
 
         let header = div()
@@ -66,9 +67,9 @@ impl SonataDesktopView {
                             .font_weight(FontWeight::BOLD)
                             .text_color(self.palette.text)
                             .child(if query.is_empty() {
-                                "Search".to_string()
+                                s.search.to_string()
                             } else {
-                                format!("Results for \"{query}\"")
+                                format!("{}: \"{query}\"", s.search)
                             }),
                     )
                     .child(
@@ -84,8 +85,8 @@ impl SonataDesktopView {
                                 };
                                 cx.notify();
                             }))
-                            .child(Tab::new().label("YouTube Music"))
-                            .child(Tab::new().label("Library")),
+                            .child(Tab::new().label(s.youtube_music))
+                            .child(Tab::new().label(s.library)),
                     ),
             )
             .when(self.search_tab == SearchTab::YouTube, |col| {
@@ -206,7 +207,7 @@ impl SonataDesktopView {
                         .flex_col()
                         .child(section_header(
                             "srch-l-pls",
-                            "Library Playlists",
+                            s.library_playlists,
                             None,
                             None,
                             &self.palette,
@@ -238,7 +239,7 @@ impl SonataDesktopView {
                         .flex_col()
                         .child(section_header(
                             "srch-l-trs",
-                            "Recently Played",
+                            s.recently_played,
                             None,
                             None,
                             &self.palette,
@@ -288,7 +289,7 @@ impl SonataDesktopView {
                         .flex_col()
                         .child(section_header(
                             "srch-songs",
-                            "Songs",
+                            s.songs,
                             None,
                             None,
                             &self.palette,
@@ -316,7 +317,7 @@ impl SonataDesktopView {
                         .flex_col()
                         .child(section_header(
                             "srch-artists",
-                            "Artists",
+                            s.artists,
                             None,
                             None,
                             &self.palette,
@@ -344,7 +345,7 @@ impl SonataDesktopView {
                         .flex_col()
                         .child(section_header(
                             "srch-albums",
-                            "Albums",
+                            s.albums,
                             None,
                             None,
                             &self.palette,

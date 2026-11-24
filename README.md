@@ -44,9 +44,9 @@
 
 #### Cross-Platform Ecosystem &amp; Sync
 - **Android (Phone &amp; Tablet)** — native Jetpack Compose + Media3 ExoPlayer client backed by async Rust (`sonata-core` via UniFFI), adaptive portrait/landscape split layouts, home-screen widget, and **60 / 90 / 120 Hz** support.
-- **Full YouTube Music Attribution &amp; History** — reports playback (`report_playback`), playlist edits, and likes across Android, Desktop, and Terminal so Listening History and Replay stay accurate, paired with an in-app **Listening History** view.
-- **Linux Wayland Desktop (`sonata-desktop`)** — native GPUI (`gpui-kit`) client with compositor blur, 29 live-reloading CSS skins, dual-hue ambient wave shaders, 60 FPS subpixel karaoke lyrics, background audio-only freeze + low-power mini mode, MPRIS2, and System Tray.
-- **Terminal Client (`sonata`)** — ultra-fast Ratatui TUI with Kitty/Sixel/Halfblock artwork, animated motion covers, 60 FPS character-by-character lyrics with `tachyonfx` transitions, and responsive Mini Mode.
+- **Full YouTube Music Attribution, Playlist Editing & Sync** — reports playback (`report_playback`), playlist metadata &amp; custom cover uploads, and likes across Android, Desktop, and Terminal so Listening History and Replay stay accurate, paired with an in-app **Listening History** view.
+- **Linux Wayland Desktop (`sonata-desktop`)** — native GPUI (`gpui-kit`) client with compositor blur, 29 live-reloading CSS skins, dual-hue ambient wave shaders, 60 FPS subpixel karaoke lyrics, background audio-only freeze + low-power mini mode, MPRIS2, System Tray, and `en`/`tr`/`ru` UI localization.
+- **Terminal Client (`sonata`)** — ultra-fast Ratatui TUI with Kitty/Sixel/Halfblock artwork, animated motion covers, 60 FPS character-by-character lyrics with `tachyonfx` transitions, `en`/`tr`/`ru` localization, and responsive Mini Mode.
 
     </td>
     <td width="50%" valign="top">
@@ -58,9 +58,9 @@
 - **Animated Album Covers (Canvas) &amp; Word-Synced Lyrics** — Apple Music HLS / Tidal / Community Canvas motion covers plus multi-provider word-synced &amp; dual-voice karaoke lyrics (`lrc.red` TTML, BetterLyrics, LyricsPlus, LRCLIB, KuGou, NetEase, QQ Music, YTM, Genius) with live translation, romanization, and per-track timing offsets.
 
 #### Controls, Privacy &amp; Security
-- **Categorized Settings &amp; Audio Pipeline** — searchable 9-category settings menu, playback speed, loudness normalization, silence skip, equalizer presets, sleep timer with fade-out, 4-stage Audio Pipeline inspector, and one-tap WebView **Account Switching**.
-- **Zero Trackers &amp; 100% FOSS** — no ads, no analytics, no Firebase or Google Play Services, reproducible APKs (`dependenciesInfo` disabled, no `REQUEST_INSTALL_PACKAGES`), and `0o600`/`0o700` private credential handling ([PRIVACY.md](PRIVACY.md)).
-- **Built-in Update Checks** — GitHub Releases update notifications across Android, Desktop, and Terminal.
+- **Categorized Settings &amp; Audio Pipeline** — searchable 9-category settings menu, playback speed, silence skip, sleep timer with fade-out, 4-stage Audio Pipeline inspector, multilingual UI (`English`, `Turkish`, `Russian` — following system locale on Android), and one-tap WebView **Account Switching**.
+- **Zero Trackers &amp; 100% FOSS** — no ads, no analytics, no Firebase or Google Play Services, reproducible APKs (`dependenciesInfo` disabled; `REQUEST_INSTALL_PACKAGES` used solely for user-initiated GitHub Releases APK updates), and `0o600`/`0o700` private credential handling ([PRIVACY.md](PRIVACY.md)).
+- **Built-in Updates** — GitHub Releases update alerts across Android, Desktop, and Terminal, plus in-app arm64 APK auto-download &amp; `PackageInstaller` launch on Android.
 
     </td>
   </tr>
@@ -97,23 +97,19 @@
 
 <h1><a id="download"></a>Download</h1>
 
-<a href="https://github.com/MehmetCanWT/sonata/releases/latest" target="_blank" rel="noopener noreferrer"><img src="https://cdn.jsdelivr.net/gh/JMcrafter26/badges@main/src/assets/supported/android/cozy.svg" alt="Download for Android" height="54"/></a>
-
-<br/><br/>
-
 <table>
   <tr>
     <td width="50%" valign="top">
 
 #### Android (Mobile &amp; Tablet, `arm64-v8a`)
 - **Obtainium (Auto-Updates):** Add `https://github.com/MehmetCanWT/sonata` with APK filter `Sonata-.*-arm64\.apk$`.
-- **Direct APK:** Grab the latest signed **`Sonata-v1.0.6-arm64.apk`** from [GitHub Releases](https://github.com/MehmetCanWT/sonata/releases/latest).
+- **Direct APK:** Grab the latest signed **`Sonata-v1.0.7-arm64.apk`** from [GitHub Releases](https://github.com/MehmetCanWT/sonata/releases/latest).
 
     </td>
     <td width="50%" valign="top">
 
 #### Linux Desktop &amp; Terminal (`x86_64`)
-- **Packages &amp; AppImage:** Download **`.deb`**, **`.rpm`**, **`.tar.gz`**, or **`Sonata-v1.0.6-x86_64.AppImage`** from [GitHub Releases](https://github.com/MehmetCanWT/sonata/releases/latest) (`--tui` launches the terminal client).
+- **Packages &amp; AppImage:** Download **`.deb`**, **`.rpm`**, **`.tar.gz`**, or **`Sonata-v1.0.7-x86_64.AppImage`** from [GitHub Releases](https://github.com/MehmetCanWT/sonata/releases/latest) (`--tui` launches the terminal client).
 - **One-Line Installer:**
   ```sh
   # Terminal client (sonata)
@@ -143,8 +139,8 @@
 | Crate / Folder | Role |
 |---|---|
 | `crates/sonata-core` | Portable Rust engine (auth, Hi-Fi cipher &amp; stream resolution, YTM/Spotify/JioSaavn providers, multi-provider TTML/YRC/KRC/LRCLIB lyrics, SQLite WAL cache, motion media discovery, redaction, updater) |
-| `crates/sonata-runtime` | Shared Linux runtime adapter (`mpv` IPC, `PlaybackSession`, browser cookie extraction, `yt-dlp` fast-start/recovery, `ffmpeg` motion decoding, XDG TOML config, Hyprland IPC) |
-| `crates/sonata-android` + `android/` | Cancellable async UniFFI Rust bridge (`libsonata_android.so`) + Jetpack Compose / Media3 ExoPlayer Android app (`Basic`, `Violet` &amp; `Moonflower` themes, Liquid Glass, Share Sheet, Widget) |
+| `crates/sonata-runtime` | Shared Linux runtime adapter (`mpv` IPC, `PlaybackSession`, browser cookie extraction, `yt-dlp` fast-start/recovery, `ffmpeg` motion decoding, `en`/`tr`/`ru` i18n, XDG TOML config, Hyprland IPC) |
+| `crates/sonata-android` + `android/` | Cancellable async UniFFI Rust bridge (`libsonata_android.so`) + Jetpack Compose / Media3 ExoPlayer Android app (`Basic`, `Violet` &amp; `Moonflower` themes, neutral Liquid Glass, `en`/`tr`/`ru` i18n, YTM playlist/cover editor, Share Sheet, Widget, in-app APK updater) |
 | `crates/sonata-desktop` | Native GPUI Wayland desktop client with ambient wave shaders, 29 CSS themes, background audio-only freeze, MPRIS2 &amp; system tray |
 | `crates/sonata-tui` | Ratatui terminal client with Kitty/Sixel/Halfblock artwork, `tachyonfx` transitions &amp; 60 FPS synced lyrics |
 

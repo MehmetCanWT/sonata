@@ -95,6 +95,7 @@ fun EnhancedLyricsPanel(
     onStepOffsetMs: (Long) -> Unit,
     onSeekTo: (Long) -> Unit,
     modifier: Modifier = Modifier,
+    prioritizeWordSync: Boolean = dev.sonata.android.LocalNowPlayingExtras.current.settings.prioritizeWordSync,
 ) {
     if (lyricsLoading) {
         LyricsSkeleton(modifier = modifier.fillMaxSize())
@@ -103,7 +104,7 @@ fun EnhancedLyricsPanel(
     if (lyrics.isEmpty()) {
         Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(
-                text = "No lyrics available",
+                text = dev.sonata.android.ui.i18n.LocalSonataStrings.current.noLyricsAvailable,
                 style = MaterialTheme.typography.titleMedium,
                 color = Color.White.copy(alpha = 0.62f),
                 textAlign = TextAlign.Center,
@@ -418,17 +419,38 @@ fun EnhancedLyricsPanel(
                                 .padding(vertical = 4.dp),
                             horizontalAlignment = if (isCounter) Alignment.End else Alignment.Start,
                         ) {
-                            SweptKaraokeLyricText(
-                                text = cleanText,
-                                lineStartMs = lineStartMs,
-                                lineEndMs = nextStartMs,
-                                words = line.words,
-                                clockMs = adjustedClockMs,
-                                style = baseStyle,
-                                active = isActive,
-                                featherDp = 28.dp,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
+                            if (prioritizeWordSync) {
+                                SweptKaraokeLyricText(
+                                    text = cleanText,
+                                    lineStartMs = lineStartMs,
+                                    lineEndMs = nextStartMs,
+                                    words = line.words,
+                                    clockMs = adjustedClockMs,
+                                    style = baseStyle,
+                                    active = isActive,
+                                    featherDp = 28.dp,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            } else {
+                                val lineStyle = if (isActive) {
+                                    baseStyle.copy(
+                                        shadow = androidx.compose.ui.graphics.Shadow(
+                                            color = Color.White.copy(alpha = 0.30f),
+                                            offset = androidx.compose.ui.geometry.Offset.Zero,
+                                            blurRadius = 16f,
+                                        ),
+                                    )
+                                } else {
+                                    baseStyle
+                                }
+                                Text(
+                                    text = cleanText,
+                                    style = lineStyle,
+                                    color = if (isActive) Color.White else Color(0xFF98989F).copy(alpha = 0.34f),
+                                    softWrap = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
 
                             if (romanizationEnabled) {
                                 val rom = romanizedLines?.getOrNull(index)

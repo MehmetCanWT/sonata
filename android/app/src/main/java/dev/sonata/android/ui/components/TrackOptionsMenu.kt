@@ -232,9 +232,10 @@ fun TrackOptionsMenu(
                             .padding(horizontal = 8.dp, vertical = 4.dp),
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
+                        val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
                         TrackQuickTile(
                             icon = if (isLiked) SonataIcons.StarFilled else SonataIcons.Star,
-                            label = if (isLiked) "Liked" else "Like",
+                            label = if (isLiked) strings.saved else strings.like,
                             tint = if (isLiked) themeTokens.petalLavender else themeTokens.onSurfacePrimary,
                             onClick = {
                                 onToggleLike(currentTrack)
@@ -244,7 +245,7 @@ fun TrackOptionsMenu(
                         )
                         TrackQuickTile(
                             icon = TrackDislikeIcon,
-                            label = "Dislike",
+                            label = strings.dislike,
                             tint = if (isDisliked) themeTokens.petalLavender else themeTokens.onSurfacePrimary,
                             onClick = {
                                 onToggleDislike(currentTrack)
@@ -254,7 +255,7 @@ fun TrackOptionsMenu(
                         )
                         TrackQuickTile(
                             icon = TrackShareIcon,
-                            label = "Share",
+                            label = strings.share,
                             tint = themeTokens.onSurfacePrimary,
                             onClick = {
                                 onDismiss()
@@ -270,9 +271,10 @@ fun TrackOptionsMenu(
                         modifier = Modifier.padding(vertical = 4.dp),
                     )
 
+                    val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
                     TrackMenuRow(
                         icon = TrackPlaylistAddIcon,
-                        title = "Add to Playlist",
+                        title = strings.addToPlaylist,
                         onClick = {
                             onDismiss()
                             onAddToPlaylist(currentTrack)
@@ -287,7 +289,7 @@ fun TrackOptionsMenu(
 
                     TrackMenuRow(
                         icon = SonataRadioWavesIcon,
-                        title = "Start Radio",
+                        title = strings.startRadio,
                         onClick = {
                             onDismiss()
                             onStartRadio(currentTrack)
@@ -295,7 +297,7 @@ fun TrackOptionsMenu(
                     )
                     TrackMenuRow(
                         icon = TrackPlayNextIcon,
-                        title = "Play Next",
+                        title = strings.playNext,
                         onClick = {
                             onDismiss()
                             onPlayNext(currentTrack)
@@ -303,7 +305,7 @@ fun TrackOptionsMenu(
                     )
                     TrackMenuRow(
                         icon = SonataIcons.Queue,
-                        title = "Add to Queue",
+                        title = strings.addToQueue,
                         onClick = {
                             onDismiss()
                             onAddToQueue(currentTrack)
@@ -311,9 +313,9 @@ fun TrackOptionsMenu(
                     )
 
                     val downloadTitle = when {
-                        activeDownload != null -> "Downloading ${(activeDownload.progress * 100f).roundToInt()}%"
-                        isDownloaded -> "Downloaded"
-                        else -> "Download"
+                        activeDownload != null -> "${(activeDownload.progress * 100f).roundToInt()}%"
+                        isDownloaded -> strings.downloaded
+                        else -> strings.download
                     }
                     TrackMenuRow(
                         icon = if (isDownloaded) SonataIcons.Check else SonataIcons.Download,
@@ -326,7 +328,7 @@ fun TrackOptionsMenu(
                     )
                     TrackMenuRow(
                         icon = TrackTrashIcon,
-                        title = "Remove from Cache",
+                        title = strings.removeFromCache,
                         onClick = {
                             onRemoveFromCache(currentTrack)
                             onDismiss()
@@ -341,7 +343,7 @@ fun TrackOptionsMenu(
 
                     TrackMenuRow(
                         icon = SonataIcons.MusicNote,
-                        title = "Open Album",
+                        title = strings.openAlbum,
                         subtitle = currentTrack.album?.takeIf { it.isNotBlank() } ?: currentTrack.title,
                         onClick = {
                             onDismiss()
@@ -351,7 +353,7 @@ fun TrackOptionsMenu(
                     if (currentTrack.artist.isNotBlank()) {
                         TrackMenuRow(
                             icon = SonataIcons.Person,
-                            title = "Open Artist",
+                            title = strings.goToArtist,
                             subtitle = currentTrack.artist,
                             onClick = {
                                 onDismiss()
@@ -368,7 +370,7 @@ fun TrackOptionsMenu(
 
                     TrackMenuRow(
                         icon = TrackInfoIcon,
-                        title = "Song Info",
+                        title = strings.songInfo,
                         onClick = {
                             onDismiss()
                             onSongInfo(currentTrack)

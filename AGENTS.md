@@ -16,27 +16,29 @@ Sonata is a 5-crate Cargo workspace (`resolver = "2"`) plus a native Jetpack Com
   - `media.rs`, `motion.rs` — Artwork URL upscaling, Deezer/iTunes cover matching, and platform-neutral `MotionMedia` discovery (Apple Music AMP/HTML, Tidal, Community Canvas)
   - `redaction.rs`, `updater.rs` — Log/error redaction and per-platform GitHub Releases updater
 - `crates/sonata-runtime` — Shared Linux runtime adapter crate backing `sonata-tui` and `sonata-desktop` (never depended on by `sonata-core` or `sonata-android`):
-  - `config.rs`, `hyprland.rs`, `telemetry.rs` — XDG TOML config, Hyprland opacity IPC, rotating `sonata.log`
+  - `config.rs`, `hyprland.rs`, `telemetry.rs`, `i18n.rs` — XDG TOML config, Hyprland opacity IPC, rotating `sonata.log`, and `en`/`tr`/`ru` UI string catalog
   - `auth/browser.rs` — Linux browser cookie extraction (`yt-dlp` / browser DBs)
   - `player/{mpv.rs,session.rs}` — Headless `mpv` JSON-IPC driver and shared Linux `PlaybackSession` (bounded command/event channels, coalesced `PlaybackProgress`, per-generation cancellation, recovery, upgrade swap/fallback, and precache adoption)
   - `process/{cipher.rs,ytdlp.rs}` — `CliJsCipherBridge` and `LinuxStreamResolver` (`yt-dlp` fast-start race & recovery)
-  - `media.rs`, `motion.rs` — Image decoding/trimming, ambient color extraction, `now_playing.json`, and `ffmpeg` motion-cover decoding
+  - `media/{mod.rs,motion.rs}` — Image decoding/trimming, ambient color extraction, `now_playing.json`, and `ffmpeg` motion-cover decoding (`motion` re-exported at crate root)
 - `crates/sonata-tui` — **`sonata`** (stable Ratatui terminal client):
   - `src/main.rs`, `src/input.rs`, `src/theme/`, `src/theme_tui.rs`
   - `src/app/` (`mod.rs`, `state.rs`, `playback.rs`, `library.rs`) — Thin adapter over `sonata_runtime::player::PlaybackSession` plus TUI-local lyrics/artwork/Kitty graphics
-  - `src/ui/` — Terminal panes, modals, Kitty/Sixel/Halfblock artwork, and word-synced lyrics rendering
+  - `src/ui/` (`mod.rs`, `fx.rs`, `modals.rs`, `now_playing.rs`, `sidebar.rs`, `track_list.rs`) — Terminal panes, modals, Kitty/Sixel/Halfblock artwork, `tachyonfx` transitions, and word-synced lyrics rendering
 - `crates/sonata-desktop` — **`sonata-desktop`** (GPUI Wayland desktop client):
-  - `src/main.rs`, `src/theme/`, `src/settings.rs`
+  - `src/main.rs`, `src/settings.rs`, `src/theme/` (+ 29 CSS skins in `themes/`)
   - `src/backend/` (`mod.rs`, `types.rs`, `playback.rs`, `library.rs`) — Thin adapter over `sonata_runtime::player::PlaybackSession` plus `DesktopSnapshot` watch state and desktop-local cover/motion/lyrics tasks
-  - `src/views/` (`mod.rs`, `home.rs`, `explore.rs`, `artist.rs`, `album.rs`, `search.rs`, `fullscreen.rs`, `settings.rs`, etc.)
+  - `src/ui/` (`mod.rs`, `components.rs`, `lyrics.rs`, `media.rs`) — Shared GPUI components, subpixel karaoke/spring lyrics renderer, and image/palette helpers
+  - `src/views/` (`mod.rs`, `artist.rs`, `chrome.rs`, `collection.rs`, `explore.rs`, `fullscreen.rs`, `home.rs`, `library.rs`, `modals.rs`, `player_bar.rs`, `right_panel.rs`, `search.rs`, `settings.rs`, `sidebar.rs`)
   - `src/integrations/` — MPRIS2 (`mpris.rs`) and StatusNotifierItem system tray (`tray.rs`)
 - `crates/sonata-android` — Cancellable async UniFFI (`0.29.5`, `async_runtime = "tokio"`, zero `Runtime::block_on`) Rust bridge backing the Jetpack Compose Android app (`android/`).
 - `android/app/` — Native Jetpack Compose + Media3 ExoPlayer Android client (JDK 21, `minSdk = 31`, `compileSdk = 35`, `targetSdk = 35`):
   - Top-level screens & chrome (`MainActivity.kt`, `SonataViewModel.kt`, `HomeScreen.kt`, `ExploreScreen.kt`, `LibraryScreen.kt`, `DetailScreen.kt`, `NowPlayingScreen.kt`, `SearchScreen.kt`, `SonataNavigationChrome.kt`, `YtMusicLoginSheet.kt`, `PlaybackService.kt`, `ApkUpdater.kt`)
   - `playback/PlaybackOrchestrator.kt` — Generation counter, generation-keyed recovery budget, typed rate-limit policy, atomic stream swap, and narrow ended-state transition guard
   - `ui/theme/` (`LunariaPalette.kt`, `BasicTheme.kt`, `VioletTheme.kt`, `MoonflowerTheme.kt`, `SonataGlassTweaks.kt`) — `Basic`, `Violet` & `Moonflower` light/dark/AMOLED theme systems (default: `Basic` + `ThemeMode.SYSTEM`)
-  - `ui/components/` (`SonataShareSheet.kt`, `SonataAnimatedArtworks.kt`, `SonataCards.kt`, `HeldContextMenu.kt`, `TrackOptionsMenu.kt`, `UserMenuSheet.kt`, `AddToPlaylistSheet.kt`)
-  - `ui/screens/` (`ArtistScreen.kt`, `RadioMixesTab.kt`, `CategorizedSettingsSheet.kt`, `DownloadsScreen.kt`), `ui/player/`, `ui/lyrics/`, `floatingtabbar/`, `backdrop/`, `widget/`
+  - `ui/i18n/SonataStrings.kt` — `en`/`tr`/`ru` UI string catalog (`AppLanguage.SYSTEM` default)
+  - `ui/components/` (`SonataShareSheet.kt`, `SonataAnimatedArtworks.kt`, `SonataCards.kt`, `HeldContextMenu.kt`, `TrackOptionsMenu.kt`, `UserMenuSheet.kt`, `AddToPlaylistSheet.kt`, `EditPlaylistDialog.kt`)
+  - `ui/screens/` (`ArtistScreen.kt`, `BasicThemeOverhaul.kt`, `RadioMixesTab.kt`, `CategorizedSettingsSheet.kt`, `DownloadsScreen.kt`), `ui/player/`, `ui/lyrics/`, `floatingtabbar/`, `backdrop/`, `widget/`
   - `data/` (`SonataEngineGateway.kt`, `SonataPreferences.kt`, `DownloadManager.kt`, `CanvasResolver.kt`, `LyricsTranslator.kt`, `AudioPipelineState.kt`, `ThumbnailFallback.kt`)
   - `src/test/java/dev/sonata/android/` — Kotlin/JVM JUnit tests (`SonataThemeAndPreferencesTest.kt`, `SonataDomainLogicTest.kt`, `JioSaavnAndMediaTest.kt`, `ShareAndChangelogTest.kt`, `SonataEngineGatewayCancellationTest.kt`, `PlaybackOrchestrationTest.kt`)
   - `src/androidTest/java/dev/sonata/android/` — Instrumented Android native-library & cancellation tests (`NativeEngineInstrumentedTest.kt`)
@@ -50,7 +52,7 @@ Note: Local UI/UX design references and Liquid Glass guidelines (`research/PROJE
 - `sonata-core` must **never** depend on `sonata-runtime`, `sonata-tui`, `sonata-desktop`, `sonata-android`, `ratatui`, `crossterm`, `gpui-kit`, or `uniffi`, and must contain zero `(std|tokio)::process::Command` launches or provider `cfg!(target_os = "android")` branches.
 - Workspace-wide dependencies live in root `Cargo.toml` under `[workspace.dependencies]`; add crate dependencies via `<dep>.workspace = true`.
 - Workspace lints (`unsafe_op_in_unsafe_fn = "deny"`, `dbg_macro = "deny"`, `todo = "deny"`, `undocumented_unsafe_blocks = "deny"`) apply to all workspace crates.
-- Android runtime APK remains 100% FOSS without proprietary tracking SDKs or `REQUEST_INSTALL_PACKAGES` (`dependenciesInfo` disabled in `android/app/build.gradle.kts`).
+- Android runtime APK remains 100% FOSS without proprietary tracking SDKs (`dependenciesInfo` disabled in `android/app/build.gradle.kts`; `REQUEST_INSTALL_PACKAGES` is scoped solely to user-initiated GitHub Releases APK updates via `ApkUpdater.kt` + `FileProvider`).
 
 ## Module Documentation & Language Standards
 
@@ -102,7 +104,7 @@ For fast single-client iteration during development, use `.cargo/config.toml` al
 
 - **Cookie files**: Persist extracted browser cookies (`~/.cache/sonata/yt_cookies.txt`) and Android WebView session cookies (`ytm_session.cookie`) using atomic/restricted creation (`0o600` file mode on Unix before writing secrets) — never write with default permissions and `chmod` afterward.
 - **Temporary & runtime directories**: Create private cache/runtime directories with `0o700` permissions on Unix.
-- **Log & error redaction**: Always pass URLs, cookie headers, and auth tokens through `sonata_core::redaction` before logging (`~/.cache/sonata/sonata.log`) or surfacing errors. Never log raw `Cookie`, `Authorization`, `SAPISID`, or `sp_dc` values.
+- **Log & error redaction**: Always pass URLs, cookie headers, and auth tokens through `sonata_core::redaction` before logging (`~/.cache/sonata/sonata.log` or TUI stderr diagnostics `~/.cache/sonata/sonata-tui.log`) or surfacing errors. Never log raw `Cookie`, `Authorization`, `SAPISID`, or `sp_dc` values.
 - **Settings backup**: `SonataPreferences.exportBackupJson()` must exclude all session cookies and credentials.
 - **Blocking I/O**: Never call blocking `std::process::Command` or synchronous file/SQLite operations on async/UI threads without bounding or offloading via `tokio::task::spawn_blocking` (or `Dispatchers.IO` on Android).
 

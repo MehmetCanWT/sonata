@@ -1,7 +1,7 @@
 # Sonata Android Architecture & Research
 
 > [!NOTE]
-> **Status: Coming Soon** — `crates/sonata-android` is currently a reserved workspace placeholder crate. This document captures the verified architectural design and platform research for building the native Android client.
+> **Historical Design & Platform Research (Archived)** — The Android client and UniFFI bridge (`crates/sonata-android` + `android/`) have shipped (`v1.0.6+`) with `minSdk = 31`, cancellable Tokio async UniFFI `0.29.5` exports, `Basic` (default) / `Violet` / `Moonflower` themes, vendored `backdrop` Liquid Glass (without Haze), and custom `SonataWidgetProvider`. This document is retained as early architecture research; see [architecture.md](architecture.md) and [PROJECT.md](../research/PROJECT.md) for current implementation details.
 
 **Target Stack:** **Kotlin (Jetpack Compose)** + **AndroidX Media3** + **Jetpack Glance** + **UniFFI (`uniffi`)** + **`cargo-ndk`** over **`sonata-core`**.
 

@@ -148,11 +148,20 @@ impl SonataDesktopView {
             let active =
                 matches!(&self.snapshot.active_nav, NavTarget::Playlist(id) if id == &pl.id);
             let is_liked = pl.id == "VLLM";
+            let is_pinned = self.settings.is_pinned(&pl.id);
             let cover = self.media_for_url(pl.thumbnail_url.as_deref(), cx);
-            let count_text = match pl.track_count {
-                Some(n) => format!("{n} tracks"),
-                None if is_liked => "Your likes".to_string(),
-                None => "Playlist".to_string(),
+            let count_text = {
+                let s = sonata_runtime::i18n::strings(self.settings.language);
+                let base = match pl.track_count {
+                    Some(n) => format!("{n} tracks"),
+                    None if is_liked => s.liked_music.to_string(),
+                    None => s.playlist.to_string(),
+                };
+                if is_pinned {
+                    format!("{} • {base}", s.pinned)
+                } else {
+                    base
+                }
             };
             let pl_open = pl.clone();
             let pl_id_drag = pl.id.clone();
@@ -252,7 +261,7 @@ impl SonataDesktopView {
                         title: pl_open.name.clone(),
                         subtitle: sub,
                         thumbnail_url: pl_open.thumbnail_url.clone(),
-                        editable: true,
+                        editable: pl_open.is_owned && pl_open.id != "VLLM",
                     });
                     cx.notify();
                 }))
@@ -336,14 +345,21 @@ impl SonataDesktopView {
                                 .text_size(px(11.0))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(self.palette.dim)
-                                .child("PLAYLISTS"),
+                                .child(
+                                    sonata_runtime::i18n::strings(self.settings.language)
+                                        .playlists
+                                        .to_uppercase(),
+                                ),
                         )
                         .child(
                             Button::new("sb-new-playlist")
                                 .ghost()
                                 .xsmall()
                                 .icon(IconName::Plus)
-                                .tooltip("New playlist")
+                                .tooltip(
+                                    sonata_runtime::i18n::strings(self.settings.language)
+                                        .new_playlist,
+                                )
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.modal = DesktopModal::CreatePlaylist;
                                     this.playlist_name_input
@@ -362,7 +378,9 @@ impl SonataDesktopView {
                             .ghost()
                             .small()
                             .icon(IconName::Plus)
-                            .tooltip("New playlist")
+                            .tooltip(
+                                sonata_runtime::i18n::strings(self.settings.language).new_playlist,
+                            )
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.modal = DesktopModal::CreatePlaylist;
                                 this.playlist_name_input

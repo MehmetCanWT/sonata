@@ -7,11 +7,11 @@ Sonata is a 5-crate Cargo workspace paired with a native Android Jetpack Compose
 | Component | Kind | Role | Status |
 |---|---|---|---|
 | [`sonata-core`](../crates/sonata-core) | Rust library | Portable auth/cookies, YTM/Spotify/JioSaavn providers, `ResolverProfile`, Hi-Fi `StreamResolver` & cipher hook, SQLite WAL cache, lyrics, `MotionMedia` discovery, `PlaybackCoordinator`, `CorePaths`, `CoreError`, `redaction`, `updater` | stable |
-| [`sonata-runtime`](../crates/sonata-runtime) | Rust library | Shared Linux runtime adapters: XDG TOML `AppConfig`, Hyprland IPC, tracing/log rotation, browser cookie extraction, `MpvController`, shared `PlaybackSession`, `CliJsCipherBridge`, `LinuxStreamResolver` (`yt-dlp`), image/`ffmpeg` decoding, `now_playing.json` | stable |
-| [`sonata-tui`](../crates/sonata-tui) | Binary `sonata` | Ratatui/crossterm terminal client (`src/app/{mod,state,playback,library}.rs`, `src/theme/`) with Kitty/Sixel/Halfblock artwork | stable |
-| [`sonata-desktop`](../crates/sonata-desktop) | Binary `sonata-desktop` | GPUI native Wayland/Hyprland client (`src/backend/`, `src/views/`, `src/theme/`) with tray and MPRIS2 | active |
+| [`sonata-runtime`](../crates/sonata-runtime) | Rust library | Shared Linux runtime adapters: XDG TOML `AppConfig`, Hyprland IPC, tracing/log rotation, `i18n` (`en`/`tr`/`ru`), browser cookie extraction, `MpvController`, shared `PlaybackSession`, `CliJsCipherBridge`, `LinuxStreamResolver` (`yt-dlp`), image/`ffmpeg` decoding, `now_playing.json` | stable |
+| [`sonata-tui`](../crates/sonata-tui) | Binary `sonata` | Ratatui/crossterm terminal client (`src/app/{mod,state,playback,library}.rs`, `src/ui/fx.rs` `tachyonfx` transitions, `src/theme/`) with Kitty/Sixel/Halfblock artwork | stable |
+| [`sonata-desktop`](../crates/sonata-desktop) | Binary `sonata-desktop` | GPUI native Wayland/Hyprland client (`src/backend/`, `src/ui/`, `src/views/`, `src/theme/`, 29 CSS skins in `themes/`) with audio-only background freeze, tray, and MPRIS2 | stable |
 | [`sonata-android`](../crates/sonata-android) | UniFFI library | Cancellable async Rust-to-Kotlin FFI bridge (`#[uniffi::export(async_runtime = "tokio")]`, zero `Runtime::block_on`) | stable |
-| [`android/`](../android) | Android app | Jetpack Compose + Media3 ExoPlayer client (`SonataEngineGateway`, `PlaybackOrchestrator`, `Violet` & `Moonflower` themes, Liquid Glass chrome, Share Sheet, Widget) | stable |
+| [`android/`](../android) | Android app | Jetpack Compose + Media3 ExoPlayer client (`SonataEngineGateway`, `PlaybackOrchestrator`, `Basic` [default], `Violet` & `Moonflower` themes, neutral Liquid Glass chrome, `en`/`tr`/`ru` `SonataStrings`, `EditPlaylistDialog`, `ApkUpdater`, Share Sheet, Widget) | stable |
 
 All five Rust crates are workspace members in [Cargo.toml](../Cargo.toml). `sonata-tui` and `sonata-desktop` are `default-members`.
 
@@ -38,7 +38,7 @@ flowchart TD
 |---|---|
 | `paths.rs`, `error.rs` | Instance-scoped `CorePaths` (no global path statics) and typed redacted `CoreError` |
 | `auth/cookies.rs` | Portable Netscape/header cookie parsing, `SAPISIDHASH`, Spotify `sp_dc`, and atomic `0o600`/`0o700` session storage |
-| `providers/ytmusic/{mod,parsers,browse,album,search}.rs` | InnerTube client & split pure parsers: library, home + mood chips, explore + mood tiles, radio mixes, artist pages & banners, album details, search suggestions & rich typed search, `FEmusic_history`, likes/dislikes, playlist edits, `report_playback` |
+| `providers/ytmusic/{mod,parsers,browse,album,search}.rs` | InnerTube client & split pure parsers: library, home + mood chips, explore + mood tiles, radio mixes, artist pages & banners, album details, search suggestions & rich typed search, `FEmusic_history`, likes/dislikes, playlist metadata editing & custom cover upload (`ACTION_SET_CUSTOM_THUMBNAIL`), `report_playback` |
 | `providers/spotify/{mod,embed}.rs` | Spotify web-player GraphQL client plus keyless embed-page playlist parsing |
 | `providers/jiosaavn.rs` | Pure-Rust DES-ECB JioSaavn decryptor, catalog search, strict metadata matching, and typed upgrade selection (shared across Linux and Android) |
 | `providers/profile.rs`, `providers/hifi.rs`, `providers/hifi/*` | Explicit `ResolverProfile`, `StreamResolver`, `TVHTML5` (`itag=774`/`141`) zero-AST `base.js` cipher hook, Hi-Fi upgrades, recovery, and bounded prefetching |
@@ -52,11 +52,11 @@ flowchart TD
 
 | Module | Responsibility |
 |---|---|
-| `config.rs`, `hyprland.rs`, `telemetry.rs` | XDG TOML `AppConfig`, Hyprland opacity IPC, rotating `sonata.log` |
+| `config.rs`, `hyprland.rs`, `telemetry.rs`, `i18n.rs` | XDG TOML `AppConfig`, Hyprland opacity IPC, rotating `sonata.log`, and `en`/`tr`/`ru` `UiStrings` catalog |
 | `auth/browser.rs` | Linux browser cookie discovery & extraction |
 | `player/{mpv.rs,session.rs}` | Headless `mpv` JSON-IPC driver and shared `PlaybackSession` actor with bounded non-dropping command/event channels, coalesced `PlaybackProgress`, per-generation cancellation, recovery budget, upgrade swap/fallback, and precache adoption |
 | `process/{cipher.rs,ytdlp.rs}` | `CliJsCipherBridge` and `LinuxStreamResolver` (`yt-dlp` fast-start race, recovery, `kill_on_drop`, `0o600` temp cookie copies) |
-| `media.rs`, `motion.rs` | Cover image decoding/pillarbox trimming, ambient color extraction, atomic `now_playing.json` writes, and `ffmpeg` motion-cover frame decoding |
+| `media/{mod.rs,motion.rs}` | Cover image decoding/pillarbox trimming, ambient color extraction, atomic `now_playing.json` writes, and `ffmpeg` motion-cover frame decoding |
 
 ## 2. Runtime Process & Threading Model
 
@@ -86,4 +86,7 @@ Paths are constructed explicitly via `CorePaths` (XDG roots from `sonata-runtime
 | `<cache>/sonata/sonata_cache.db` | SQLite (WAL) record & lyrics/stream cache |
 | `<cache>/sonata/lyrics/`, `art/`, `audio/` | Cached lyrics, covers, and prefetched audio bounded by cache limit |
 | `~/.cache/sonata/yt_cookies.txt` | Extracted Linux browser cookies (`0o600` Netscape format) |
+| `~/.cache/sonata/sonata.log` | Linux Desktop/runtime diagnostics log (`10 MiB` startup cap, `0o600`) |
+| `~/.cache/sonata/sonata-tui.log` | Linux TUI stderr diagnostics redirect (`2 MiB` startup cap) |
+| `<cache>/updates/` | Android in-app APK updater staging directory (`ApkUpdater.kt` + `FileProvider`) |
 | `$XDG_RUNTIME_DIR/sonata/now_playing.json` | Atomically written Linux now-playing export |
