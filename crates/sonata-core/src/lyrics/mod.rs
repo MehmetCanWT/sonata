@@ -8,10 +8,19 @@
 //!    `lyrics_candidate_matches` rejects unrelated lyrics candidates.
 //! 5. **Sources**: `lrclib` orchestrates the lookup chain, `ttml` parses Apple-style TTML sheets,
 //!    and `providers` queries TTML/KuGou/NetEase/Genius backends.
+//! 6. **Translation & Romanization**: `translate` handles batched `LyricsState`-aligned
+//!    translation, portable offline script romanization, and private JSON caching.
 
 pub mod lrclib;
 pub mod providers;
+pub mod translate;
 pub mod ttml;
+
+pub use translate::{
+    contains_non_latin_letter, extract_lyrics_lines, romanize_lines_offline, romanize_lyrics_lines,
+    romanize_lyrics_state, romanize_text, translate_lyrics_lines, translate_lyrics_state,
+    RomanizedText, ScriptKind,
+};
 
 use regex::Regex;
 use std::sync::OnceLock;
