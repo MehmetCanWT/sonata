@@ -15,6 +15,7 @@
 pub mod auth;
 pub mod config;
 pub mod discord;
+pub mod downloads;
 pub mod hyprland;
 pub mod i18n;
 pub mod media;

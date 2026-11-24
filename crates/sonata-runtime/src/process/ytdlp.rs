@@ -8,7 +8,8 @@
 //! 3. **Subprocess Hygiene**: Runs `yt-dlp` with `kill_on_drop(true)`, strict timeouts, redacted
 //!    stderr logging, and `0o600` temporary Netscape cookie copies cleaned up via RAII guards.
 
-use crate::config::resolve_distro_binary;
+use crate::config::{resolve_distro_binary, AppConfig};
+use crate::downloads::DownloadStore;
 use crate::process::CliJsCipherBridge;
 use anyhow::{anyhow, Result};
 use reqwest::Client;
@@ -68,6 +69,8 @@ pub struct LinuxStreamResolver {
     core: StreamResolver,
     in_flight_prefetch: Arc<std::sync::Mutex<HashSet<String>>>,
     prefetch_semaphore: Arc<Semaphore>,
+    downloads_dir: Arc<std::sync::RwLock<Option<PathBuf>>>,
+    downloads_store: Arc<std::sync::Mutex<Option<DownloadStore>>>,
 }
 
 impl LinuxStreamResolver {
@@ -87,7 +90,74 @@ impl LinuxStreamResolver {
             core,
             in_flight_prefetch: Arc::new(std::sync::Mutex::new(HashSet::new())),
             prefetch_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_PREFETCHES)),
+            downloads_dir: Arc::new(std::sync::RwLock::new(None)),
+            downloads_store: Arc::new(std::sync::Mutex::new(None)),
         }
+    }
+
+    /// Overrides the shared offline downloads directory used before network stream resolution.
+    pub fn with_downloads_dir(self, dir: impl Into<PathBuf>) -> Self {
+        self.set_downloads_dir(Some(dir.into()));
+        self
+    }
+
+    /// Injects an already-opened shared offline [`DownloadStore`] for this resolver.
+    pub fn with_downloads_store(self, store: DownloadStore) -> Self {
+        self.set_downloads_store(Some(store));
+        self
+    }
+
+    /// Updates the offline downloads directory override and clears any cached store handle.
+    pub fn set_downloads_dir(&self, dir: Option<PathBuf>) {
+        if let Ok(mut guard) = self.downloads_dir.write() {
+            *guard = dir;
+        }
+        if let Ok(mut guard) = self.downloads_store.lock() {
+            *guard = None;
+        }
+    }
+
+    /// Replaces the cached offline [`DownloadStore`] handle for this resolver.
+    pub fn set_downloads_store(&self, store: Option<DownloadStore>) {
+        let dir = store.as_ref().map(|entry| entry.root().to_path_buf());
+        if let Ok(mut guard) = self.downloads_dir.write() {
+            *guard = dir;
+        }
+        if let Ok(mut guard) = self.downloads_store.lock() {
+            *guard = store;
+        }
+    }
+
+    /// Checks the shared offline downloads manifest off the async executor thread.
+    pub async fn resolve_offline_download(&self, track_id: &str) -> Option<ResolvedStream> {
+        let track_id = track_id.to_string();
+        let downloads_dir = Arc::clone(&self.downloads_dir);
+        let downloads_store = Arc::clone(&self.downloads_store);
+
+        tokio::task::spawn_blocking(move || {
+            let existing = downloads_store.lock().ok().and_then(|guard| guard.clone());
+            let store = match existing {
+                Some(store) => store,
+                None => {
+                    let root = downloads_dir
+                        .read()
+                        .ok()
+                        .and_then(|guard| guard.clone())
+                        .unwrap_or_else(AppConfig::configured_downloads_dir);
+                    let opened = DownloadStore::open_existing(root).ok().flatten()?;
+                    if let Ok(mut guard) = downloads_store.lock() {
+                        if guard.is_none() {
+                            *guard = Some(opened.clone());
+                        }
+                    }
+                    opened
+                }
+            };
+            store.resolve_offline_stream(&track_id).ok().flatten()
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     pub fn inner(&self) -> &StreamResolver {
@@ -152,6 +222,18 @@ impl LinuxStreamResolver {
     /// Resolves an immediately playable stream before any background quality upgrade starts.
     #[tracing::instrument(level = "debug", skip(self, track), fields(track_id = %track.id, provider = ?track.source))]
     pub async fn resolve_fast(&self, track: &Track) -> Result<ResolvedStream> {
+        if let Some(offline) = self.resolve_offline_download(&track.id).await {
+            tracing::debug!(
+                "[sonata:resolver] cache-hit=offline track_id={} source=offline badge={}",
+                track.id,
+                offline.badge
+            );
+            self.core
+                .cache_average_bitrate_for(&track.id, &offline.badge)
+                .await;
+            return Ok(offline);
+        }
+
         let profile = self.profile();
         if !profile.allows_external_fallback() || track.is_jiosaavn() {
             return self.core.resolve_fast(track).await;
@@ -235,6 +317,15 @@ impl LinuxStreamResolver {
         current: &ResolvedStream,
         allow_hifi: bool,
     ) -> Option<ResolvedStream> {
+        if let Some(offline) = self.resolve_offline_download(&track.id).await {
+            if offline.url != current.url
+                && should_upgrade_candidate(&current.badge, &offline.badge)
+            {
+                return Some(offline);
+            }
+            return None;
+        }
+
         let profile = self.profile();
         if !profile.allows_external_fallback() || track.is_jiosaavn() {
             return self
@@ -367,6 +458,16 @@ impl LinuxStreamResolver {
         track: &Track,
         allow_hifi: bool,
     ) -> Option<ResolvedStream> {
+        if let Some(offline) = self.resolve_offline_download(&track.id).await {
+            tracing::debug!(
+                event = "next_precache_offline_hit",
+                track_id = %track.id,
+                quality = %offline.badge,
+                "next-track offline download hit"
+            );
+            return Some(offline);
+        }
+
         let profile = self.profile();
         if !profile.cache_enabled() || !allow_hifi {
             return None;
@@ -760,5 +861,85 @@ mod tests {
             parsed.headers,
             vec![("User-Agent".to_string(), "Sonata".to_string())]
         );
+    }
+
+    #[tokio::test]
+    async fn resolve_fast_prefers_shared_offline_download_over_cache_and_network() {
+        use crate::downloads::test_support::TempTestDir;
+        use crate::downloads::{DownloadStore, DownloadTrackInput};
+        use sonata_core::providers::profile::{FastStartMode, StreamFallbackMode, UpgradeDelivery};
+
+        let core_dir = TempTestDir::new("ytdlp_core");
+        let downloads_dir = TempTestDir::new("ytdlp_dl");
+        let store = DownloadStore::open(downloads_dir.path()).expect("open download store");
+
+        let track = Track {
+            id: "jiosaavn:offline_1".to_string(),
+            title: "Offline Track".to_string(),
+            artist: "Sonata Artist".to_string(),
+            album: "Offline Album".to_string(),
+            duration_secs: Some(180),
+            thumbnail_url: None,
+            source: ProviderSource::YouTubeMusic,
+            audio_badge: None,
+            set_video_id: None,
+            liked: false,
+            album_id: None,
+            is_explicit: false,
+        };
+
+        let saved = store
+            .save_track_bytes(
+                &DownloadTrackInput {
+                    track: track.clone(),
+                    audio_badge: "AAC 320kbps · JioSaavn".to_string(),
+                    bitrate_kbps: Some(320),
+                    container: "m4a".to_string(),
+                    artwork_url: None,
+                    collection: None,
+                },
+                b"ftypM4A_offline_audio_payload",
+                None,
+            )
+            .expect("save offline track");
+
+        let http = sonata_core::providers::build_http_client();
+        let cookies = ExtractedCookies::default();
+        let ytm = YtMusicClient::new(http.clone(), cookies.clone());
+        let paths = CorePaths::for_app_roots(core_dir.path(), core_dir.path());
+        // Disable cache and external fallback to prove offline downloads still resolve locally.
+        let profile = ResolverProfile {
+            fast_start: FastStartMode::BoundedRange,
+            upgrade_delivery: UpgradeDelivery::CacheBeforeReturn,
+            fallback: StreamFallbackMode::InnerTubeOnly,
+            bootstrap_timeout: Duration::from_millis(500),
+            jiosaavn_enabled: false,
+            cache_limit_bytes: 0,
+        };
+
+        let resolver = LinuxStreamResolver::with_profile(http, ytm, cookies, None, paths, profile)
+            .with_downloads_dir(downloads_dir.path());
+
+        let resolved = resolver
+            .resolve_fast(&track)
+            .await
+            .expect("offline download should resolve without network");
+        assert_eq!(resolved.url, saved.audio_path.to_string_lossy());
+        assert_eq!(resolved.badge, "AAC 320kbps · JioSaavn");
+        assert!(resolved.headers.is_empty());
+
+        // Also verify Hi-Fi upgrade skips redundant network upgrades for the active offline stream.
+        assert!(resolver
+            .resolve_hifi_upgrade(&track, &resolved, true)
+            .await
+            .is_none());
+
+        // Verify precache hits the offline download immediately when cache_limit_bytes > 0.
+        resolver.update_profile(|prof| prof.cache_limit_bytes = 1024 * 1024);
+        let precached = resolver
+            .precache_hifi_audio(&track, true)
+            .await
+            .expect("precache should return offline download");
+        assert_eq!(precached.url, saved.audio_path.to_string_lossy());
     }
 }
