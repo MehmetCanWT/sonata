@@ -13,7 +13,7 @@ use crate::theme::ramp::{hsla_from_rgb, Rgb};
 use crate::ui::components::{delayed_skeleton_block, scroll_edge_fades, section_header};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::{Icon, Sizable as _};
+use gpui_kit::component::Sizable as _;
 use gpui_kit::{
     div, px, AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement,
     ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
@@ -492,6 +492,3 @@ impl SonataDesktopView {
             .into_any_element()
     }
 }
-
-#[allow(dead_code)]
-fn _keep_icon(_: Icon) {}

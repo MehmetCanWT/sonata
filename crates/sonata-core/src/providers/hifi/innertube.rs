@@ -342,9 +342,8 @@ impl StreamResolver {
         let effective_fast_start = prefer_fast_start && self.profile().uses_bounded_fast_start();
         let (priority, average_bps, mut stream) =
             parse_innertube_audio_candidate(&payload, effective_fast_start)?;
-        if source == ProviderSource::YouTubeMusic {
-            stream.headers = vec![("User-Agent".to_string(), VISIONOS_USER_AGENT.to_string())];
-        }
+        apply_innertube_stream_headers(&mut stream, VISIONOS_USER_AGENT, None);
+        let _ = source;
         Some((priority, average_bps, stream))
     }
 
@@ -565,16 +564,12 @@ impl StreamResolver {
             .parse_innertube_ciphered_audio_candidate(&payload, &prepared, effective_fast_start)
             .await?;
 
-        if source == ProviderSource::YouTubeMusic {
-            stream.headers = vec![
-                ("User-Agent".to_string(), TVHTML5_USER_AGENT.to_string()),
-                ("Origin".to_string(), "https://www.youtube.com".to_string()),
-                (
-                    "Referer".to_string(),
-                    "https://www.youtube.com/".to_string(),
-                ),
-            ];
-        }
+        let _ = source;
+        apply_innertube_stream_headers(
+            &mut stream,
+            TVHTML5_USER_AGENT,
+            Some("https://www.youtube.com"),
+        );
         Some(stream)
     }
 
@@ -798,19 +793,8 @@ impl StreamResolver {
         } else {
             parse_innertube_best_audio(&payload)?
         };
-        if source == ProviderSource::YouTubeMusic {
-            stream.headers = vec![
-                ("User-Agent".to_string(), ua.to_string()),
-                (
-                    "Origin".to_string(),
-                    "https://music.youtube.com".to_string(),
-                ),
-                (
-                    "Referer".to_string(),
-                    "https://music.youtube.com/".to_string(),
-                ),
-            ];
-        }
+        let _ = source;
+        apply_innertube_stream_headers(&mut stream, ua, Some("https://music.youtube.com"));
         Some(stream)
     }
 
@@ -851,23 +835,12 @@ impl StreamResolver {
         }
         let payload: Value = response.json().await.ok()?;
         let mut stream = parse_innertube_best_audio(&payload)?;
-        if source == ProviderSource::YouTubeMusic {
-            stream.headers = if with_cookies {
-                vec![
-                    ("User-Agent".to_string(), user_agent.to_string()),
-                    (
-                        "Origin".to_string(),
-                        "https://music.youtube.com".to_string(),
-                    ),
-                    (
-                        "Referer".to_string(),
-                        "https://music.youtube.com/".to_string(),
-                    ),
-                ]
-            } else {
-                vec![("User-Agent".to_string(), user_agent.to_string())]
-            };
-        }
+        let _ = source;
+        apply_innertube_stream_headers(
+            &mut stream,
+            user_agent,
+            with_cookies.then_some("https://music.youtube.com"),
+        );
         Some(stream)
     }
 
@@ -896,9 +869,8 @@ impl StreamResolver {
         } else {
             parse_innertube_best_audio(&payload)?
         };
-        if source == ProviderSource::YouTubeMusic {
-            stream.headers = vec![("User-Agent".to_string(), user_agent.to_string())];
-        }
+        let _ = source;
+        apply_innertube_stream_headers(&mut stream, user_agent, None);
         Some(stream)
     }
 
@@ -1392,6 +1364,19 @@ fn parse_innertube_audio_candidate(
     ))
 }
 
+fn apply_innertube_stream_headers(
+    stream: &mut ResolvedStream,
+    user_agent: &str,
+    origin_referer: Option<&str>,
+) {
+    let mut headers = vec![("User-Agent".to_string(), user_agent.to_string())];
+    if let Some(origin) = origin_referer {
+        headers.push(("Origin".to_string(), origin.to_string()));
+        headers.push(("Referer".to_string(), format!("{origin}/")));
+    }
+    stream.headers = headers;
+}
+
 fn bounded_fast_start_url(url: String, content_length: Option<u64>) -> String {
     if is_bounded_fast_start_url(&url) {
         return url;
@@ -1454,6 +1439,56 @@ mod tests {
         assert_eq!(
             extract_visitor_data_from_sw_js(fallback).as_deref(),
             Some("CgtFallbackVisitorData987654321")
+        );
+    }
+
+    #[test]
+    fn attaches_googlevideo_headers_unconditionally() {
+        let mut tv_stream = ResolvedStream {
+            url: "https://rr1---sn.googlevideo.com/videoplayback".to_string(),
+            badge: "OPUS".to_string(),
+            headers: Vec::new(),
+        };
+        apply_innertube_stream_headers(
+            &mut tv_stream,
+            TVHTML5_USER_AGENT,
+            Some("https://www.youtube.com"),
+        );
+        assert_eq!(
+            tv_stream.headers,
+            vec![
+                ("User-Agent".to_string(), TVHTML5_USER_AGENT.to_string()),
+                ("Origin".to_string(), "https://www.youtube.com".to_string()),
+                (
+                    "Referer".to_string(),
+                    "https://www.youtube.com/".to_string()
+                ),
+            ]
+        );
+
+        let mut web_stream = ResolvedStream {
+            url: "https://rr1---sn.googlevideo.com/videoplayback".to_string(),
+            badge: "OPUS".to_string(),
+            headers: Vec::new(),
+        };
+        apply_innertube_stream_headers(
+            &mut web_stream,
+            VISIONOS_USER_AGENT,
+            Some("https://music.youtube.com"),
+        );
+        assert_eq!(
+            web_stream.headers,
+            vec![
+                ("User-Agent".to_string(), VISIONOS_USER_AGENT.to_string()),
+                (
+                    "Origin".to_string(),
+                    "https://music.youtube.com".to_string()
+                ),
+                (
+                    "Referer".to_string(),
+                    "https://music.youtube.com/".to_string()
+                ),
+            ]
         );
     }
 }

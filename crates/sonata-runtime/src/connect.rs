@@ -122,6 +122,8 @@ struct ConnectServerState {
     http_port: u16,
     active_pin: Mutex<String>,
     paired_devices: Mutex<HashMap<String, PairedDeviceRecord>>,
+    persist_lock: tokio::sync::Mutex<()>,
+    file_lock: Arc<Mutex<()>>,
     state_rx: watch::Receiver<ConnectStateSnapshot>,
     cmd_tx: mpsc::Sender<ConnectCommand>,
 }
@@ -137,7 +139,36 @@ impl ConnectServerState {
         next
     }
 
-    fn verify_and_record_pair(&self, req: PairRequest) -> Result<PairAck> {
+    fn snapshot_and_save_sync(
+        paired_devices: &Mutex<HashMap<String, PairedDeviceRecord>>,
+        file_lock: &Mutex<()>,
+        path: &Path,
+    ) -> Result<()> {
+        let _file_guard = file_lock.lock().expect("connect file lock");
+        let records = paired_devices
+            .lock()
+            .expect("paired devices lock")
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        save_paired_devices(path, &records)
+    }
+
+    async fn persist_current_devices_async(self: &Arc<Self>) -> Result<()> {
+        let _persist_guard = self.persist_lock.lock().await;
+        let state = Arc::clone(self);
+        tokio::task::spawn_blocking(move || {
+            Self::snapshot_and_save_sync(
+                &state.paired_devices,
+                &state.file_lock,
+                &state.config.paired_store_path,
+            )
+        })
+        .await
+        .context("save_paired_devices task panicked")?
+    }
+
+    async fn verify_and_record_pair(self: &Arc<Self>, req: PairRequest) -> Result<PairAck> {
         let trimmed_id = req.device_id.trim();
         let trimmed_name = req.device_name.trim();
         if trimmed_id.is_empty() || trimmed_name.is_empty() {
@@ -168,12 +199,21 @@ impl ConnectServerState {
             token: token.clone(),
             paired_at_unix: now_unix_secs(),
         };
-        let records = {
+        let _persist_guard = self.persist_lock.lock().await;
+        {
             let mut guard = self.paired_devices.lock().expect("paired devices lock");
             guard.insert(trimmed_id.to_string(), record);
-            guard.values().cloned().collect::<Vec<_>>()
-        };
-        save_paired_devices(&self.config.paired_store_path, &records)?;
+        }
+        let state = Arc::clone(self);
+        tokio::task::spawn_blocking(move || {
+            Self::snapshot_and_save_sync(
+                &state.paired_devices,
+                &state.file_lock,
+                &state.config.paired_store_path,
+            )
+        })
+        .await
+        .context("save_paired_devices task panicked")??;
 
         Ok(PairAck {
             accepted: true,
@@ -237,6 +277,8 @@ impl ConnectHandle {
             http_port,
             active_pin: Mutex::new(generate_pairing_pin()),
             paired_devices: Mutex::new(loaded_devices),
+            persist_lock: tokio::sync::Mutex::new(()),
+            file_lock: Arc::new(Mutex::new(())),
             state_rx,
             cmd_tx,
         });
@@ -326,18 +368,36 @@ impl ConnectHandle {
 
     /// Unpairs `device_id` and persists the updated `connect_paired.json` store.
     pub fn unpair_device(&self, device_id: &str) -> Result<bool> {
-        let (removed, records) = {
+        let removed = {
             let mut guard = self
                 .shared
                 .paired_devices
                 .lock()
                 .expect("paired devices lock");
-            let removed = guard.remove(device_id.trim()).is_some();
-            let records = guard.values().cloned().collect::<Vec<_>>();
-            (removed, records)
+            guard.remove(device_id.trim()).is_some()
         };
         if removed {
-            save_paired_devices(&self.shared.config.paired_store_path, &records)?;
+            ConnectServerState::snapshot_and_save_sync(
+                &self.shared.paired_devices,
+                &self.shared.file_lock,
+                &self.shared.config.paired_store_path,
+            )?;
+        }
+        Ok(removed)
+    }
+
+    /// Async variant of [`Self::unpair_device`] serialized via the async persistence mutex and `spawn_blocking`.
+    pub async fn unpair_device_async(&self, device_id: &str) -> Result<bool> {
+        let removed = {
+            let mut guard = self
+                .shared
+                .paired_devices
+                .lock()
+                .expect("paired devices lock");
+            guard.remove(device_id.trim()).is_some()
+        };
+        if removed {
+            self.shared.persist_current_devices_async().await?;
         }
         Ok(removed)
     }
@@ -403,8 +463,17 @@ async fn run_udp_beacon_loop(state: Arc<ConnectServerState>) {
 
 async fn run_http_accept_loop(listener: TcpListener, state: Arc<ConnectServerState>) {
     loop {
-        let Ok((stream, _peer)) = listener.accept().await else {
-            break;
+        let (stream, _peer) = match listener.accept().await {
+            Ok(conn) => conn,
+            Err(err) => {
+                tracing::warn!(
+                    event = "sonata_connect_accept_error",
+                    error = %err,
+                    "Sonata Connect HTTP accept failed; retrying"
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                continue;
+            }
         };
         let conn_state = Arc::clone(&state);
         tokio::spawn(async move {
@@ -525,7 +594,7 @@ async fn handle_http_connection(
             ("200 OK", serde_json::to_vec(&info)?)
         }
         ("POST", "/connect/pair") => match serde_json::from_slice::<PairRequest>(&req.body) {
-            Ok(pair_req) => match state.verify_and_record_pair(pair_req) {
+            Ok(pair_req) => match state.verify_and_record_pair(pair_req).await {
                 Ok(ack) if ack.accepted => ("200 OK", serde_json::to_vec(&ack)?),
                 Ok(ack) => ("403 Forbidden", serde_json::to_vec(&ack)?),
                 Err(err) => (
@@ -597,9 +666,13 @@ async fn handle_http_connection(
         "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body_json.len()
     );
-    stream.write_all(response_headers.as_bytes()).await?;
-    stream.write_all(&body_json).await?;
-    stream.flush().await?;
+    tokio::time::timeout(HTTP_IO_TIMEOUT, async {
+        stream.write_all(response_headers.as_bytes()).await?;
+        stream.write_all(&body_json).await?;
+        stream.flush().await
+    })
+    .await
+    .context("HTTP response write timed out")??;
     Ok(())
 }
 
@@ -795,6 +868,71 @@ mod tests {
             .await
             .expect("revoked command");
         assert_eq!(revoked.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn concurrent_pair_and_unpair_do_not_clobber_persisted_devices() {
+        let dir = TempTestDir::new("connect_concurrent");
+        let paired_path = dir.path().join("connect_paired.json");
+
+        let cfg = ConnectServerConfig {
+            device_id: "linux-concurrent".to_string(),
+            device_name: "Sonata Concurrent".to_string(),
+            app_version: "1.0.7".to_string(),
+            http_bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            discovery_port: DISCOVERY_PORT,
+            enable_udp_beacon: false,
+            beacon_interval: Duration::from_secs(10),
+            paired_store_path: paired_path.clone(),
+        };
+
+        let (handle, _cmd_rx) = ConnectHandle::start(cfg).await.expect("start connect");
+        let base = format!("http://127.0.0.1:{}", handle.http_port());
+        let http = reqwest::Client::new();
+        let pin = handle.current_pin();
+
+        let mut pair_tasks = Vec::new();
+        for idx in 0..8 {
+            let client = http.clone();
+            let url = format!("{base}/connect/pair");
+            let pin_clone = pin.clone();
+            pair_tasks.push(tokio::spawn(async move {
+                let resp: PairAck = client
+                    .post(&url)
+                    .json(&PairRequest {
+                        device_id: format!("dev-{idx}"),
+                        device_name: format!("Device {idx}"),
+                        pin: pin_clone,
+                    })
+                    .send()
+                    .await
+                    .expect("pair request")
+                    .json()
+                    .await
+                    .expect("pair ack");
+                assert!(resp.accepted);
+            }));
+        }
+        for t in pair_tasks {
+            t.await.expect("pair task");
+        }
+
+        assert!(handle
+            .unpair_device_async("dev-0")
+            .await
+            .expect("unpair dev-0"));
+        assert!(handle.unpair_device("dev-1").expect("unpair dev-1"));
+
+        let on_disk = load_paired_devices(&paired_path).expect("load paired devices");
+        assert_eq!(on_disk.len(), 6);
+        for idx in 2..8 {
+            assert!(
+                on_disk.iter().any(|d| d.device_id == format!("dev-{idx}")),
+                "missing dev-{idx} on disk"
+            );
+        }
 
         handle.shutdown();
     }

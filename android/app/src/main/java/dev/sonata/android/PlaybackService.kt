@@ -377,11 +377,13 @@ object PlaybackAudioBridge {
 class PlaybackService : MediaLibraryService() {
     private var mediaSession: MediaLibrarySession? = null
     private var exoPlayerInstance: ExoPlayer? = null
+    @OptIn(UnstableApi::class)
     private var videoSourceFactory: ProgressiveMediaSource.Factory? = null
     private var attachedTextureView: TextureView? = null
     private var playerHandler: Handler? = null
     private var dspProcessor: SonataDspAudioProcessor? = null
     private var loudnessEnhancer: LoudnessEnhancer? = null
+    @OptIn(UnstableApi::class)
     private var loudnessSessionId: Int = C.AUDIO_SESSION_ID_UNSET
 
     @Volatile
@@ -1034,6 +1036,7 @@ class PlaybackService : MediaLibraryService() {
         dspProcessor?.updateEqualizer(enabled, bandsDb)
     }
 
+    @OptIn(UnstableApi::class)
     internal fun applyLoudnessNormalizationInternal(enabled: Boolean) {
         loudnessEnabledFlag = enabled
         val player = exoPlayerInstance
@@ -1067,6 +1070,7 @@ class PlaybackService : MediaLibraryService() {
         dspProcessor?.setSleepFadeMultiplier(multiplier)
     }
 
+    @OptIn(UnstableApi::class)
     private fun syncLoudnessEnhancerForSession(sessionId: Int) {
         if (!loudnessEnabledFlag) {
             releaseLoudnessEnhancer()
@@ -1097,6 +1101,7 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
+    @OptIn(UnstableApi::class)
     private fun releaseLoudnessEnhancer() {
         val existing = loudnessEnhancer
         loudnessEnhancer = null
@@ -1991,6 +1996,7 @@ class PlaybackService : MediaLibraryService() {
         @OptIn(UnstableApi::class)
         private val httpFactoriesByUa = ConcurrentHashMap<String, DefaultHttpDataSource.Factory>()
 
+        @OptIn(UnstableApi::class)
         @Volatile
         private var sharedCache: SimpleCache? = null
 

@@ -307,6 +307,22 @@ fn require_mount_root(profile: &ServerProfile) -> Result<PathBuf, CoreError> {
     })
 }
 
+fn resolve_smb_file_path(root: &Path, raw_id: &str) -> Result<PathBuf, CoreError> {
+    let plain = raw_id.strip_prefix("file://").unwrap_or(raw_id);
+    let p = Path::new(plain);
+    if p.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(CoreError::invalid_response(
+            "smb",
+            "invalid SMB path traversal",
+        ));
+    }
+    if p.is_absolute() && p.starts_with(root) {
+        Ok(p.to_path_buf())
+    } else {
+        join_safe_relative(root, plain)
+    }
+}
+
 fn join_safe_relative(root: &Path, rel: &str) -> Result<PathBuf, CoreError> {
     let trimmed = rel.trim().trim_start_matches('/');
     let rel_path = Path::new(trimmed);
@@ -815,15 +831,7 @@ pub fn stream_request(
     track: &Track,
 ) -> Result<ServerStream, CoreError> {
     let root = require_mount_root(profile)?;
-    let plain = raw_id.strip_prefix("file://").unwrap_or(raw_id);
-    let candidate_path = {
-        let p = Path::new(plain);
-        if p.is_absolute() && p.starts_with(&root) {
-            p.to_path_buf()
-        } else {
-            join_safe_relative(&root, plain)?
-        }
-    };
+    let candidate_path = resolve_smb_file_path(&root, raw_id)?;
     if !candidate_path.is_file() {
         return Err(CoreError::not_found(format!(
             "SMB file `{}` not found on mounted share",
@@ -1055,6 +1063,32 @@ mod tests {
             album_dir.join("01 - One More Time.flac").to_string_lossy()
         );
         assert_eq!(stream.mime_type.as_deref(), Some("audio/flac"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rejects_parent_dir_traversal_on_absolute_and_relative_smb_paths() {
+        let root = unique_temp_dir("traversal");
+        let valid_dir = root.join("Artist");
+        fs::create_dir_all(&valid_dir).expect("mkdir");
+        let valid_file = valid_dir.join("song.flac");
+        fs::write(&valid_file, b"fLaC").expect("write");
+
+        let abs_escape = format!("{}/../../etc/passwd", root.display());
+        assert!(resolve_smb_file_path(&root, &abs_escape).is_err());
+
+        let file_uri_escape = format!("file://{}/../../etc/passwd", root.display());
+        assert!(resolve_smb_file_path(&root, &file_uri_escape).is_err());
+
+        assert!(resolve_smb_file_path(&root, "../../etc/passwd").is_err());
+
+        let resolved_abs =
+            resolve_smb_file_path(&root, &valid_file.to_string_lossy()).expect("valid abs");
+        assert_eq!(resolved_abs, valid_file);
+
+        let resolved_rel = resolve_smb_file_path(&root, "Artist/song.flac").expect("valid rel");
+        assert_eq!(resolved_rel, valid_file);
 
         let _ = fs::remove_dir_all(&root);
     }

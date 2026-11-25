@@ -26,7 +26,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::sync::{watch, Mutex};
 use tokio::task::JoinHandle;
-use tokio::time::{sleep, timeout};
+use tokio::time::{sleep_until, timeout, Instant};
 
 /// Default Discord Application ID for Sonata Rich Presence.
 pub const DEFAULT_SONATA_DISCORD_APP_ID: &str = "1520387624861438002";
@@ -1086,9 +1086,11 @@ async fn run_discord_actor<F>(
 ) where
     F: Fn() -> Vec<PathBuf> + Send + Sync + 'static,
 {
+    let discover_sockets = Arc::new(discover_sockets);
     let mut conn: Option<IpcConnection> = None;
     let mut last_sent: Option<SentActivitySnapshot> = None;
     let mut backoff = INITIAL_RECONNECT_BACKOFF;
+    let mut next_retry: Option<Instant> = Some(Instant::now());
 
     loop {
         if *shutdown_rx.borrow() {
@@ -1101,6 +1103,8 @@ async fn run_discord_actor<F>(
                 let _ = active.send_activity(None).await;
             }
             last_sent = None;
+            backoff = INITIAL_RECONNECT_BACKOFF;
+            next_retry = None;
             let _ = status_tx.send(DiscordRpcStatus::Disabled);
 
             tokio::select! {
@@ -1113,6 +1117,7 @@ async fn run_discord_actor<F>(
                     if res.is_err() {
                         break;
                     }
+                    next_retry = Some(Instant::now());
                 }
                 res = state_rx.changed() => {
                     if res.is_err() {
@@ -1124,6 +1129,10 @@ async fn run_discord_actor<F>(
             continue;
         }
 
+        if conn.is_none() && next_retry.is_none() {
+            next_retry = Some(Instant::now());
+        }
+
         let desired_app_id = current_config.effective_app_id().to_string();
         if conn
             .as_ref()
@@ -1133,12 +1142,19 @@ async fn run_discord_actor<F>(
                 let _ = active.send_activity(None).await;
             }
             last_sent = None;
+            backoff = INITIAL_RECONNECT_BACKOFF;
+            next_retry = Some(Instant::now());
         }
 
-        if conn.is_none() {
-            let sockets = discover_sockets();
+        if conn.is_none() && next_retry.is_some_and(|deadline| Instant::now() >= deadline) {
+            let discover = Arc::clone(&discover_sockets);
+            let sockets = tokio::task::spawn_blocking(move || discover())
+                .await
+                .unwrap_or_default();
             if sockets.is_empty() {
                 let _ = status_tx.send(DiscordRpcStatus::Disconnected);
+                next_retry = Some(Instant::now() + backoff);
+                backoff = (backoff * 2).min(MAX_RECONNECT_BACKOFF);
             } else {
                 let _ = status_tx.send(DiscordRpcStatus::Connecting);
                 match IpcConnection::connect(&sockets, &desired_app_id).await {
@@ -1153,11 +1169,14 @@ async fn run_discord_actor<F>(
                         conn = Some(established);
                         last_sent = None;
                         backoff = INITIAL_RECONNECT_BACKOFF;
+                        next_retry = None;
                     }
                     Err(err) => {
                         let safe_err = redact_url(&err.to_string());
                         tracing::debug!(error = %safe_err, "Discord Local IPC unavailable");
                         let _ = status_tx.send(DiscordRpcStatus::Disconnected);
+                        next_retry = Some(Instant::now() + backoff);
+                        backoff = (backoff * 2).min(MAX_RECONNECT_BACKOFF);
                     }
                 }
             }
@@ -1187,6 +1206,9 @@ async fn run_discord_actor<F>(
                         );
                         conn = None;
                         last_sent = None;
+                        backoff = INITIAL_RECONNECT_BACKOFF;
+                        next_retry = Some(Instant::now() + backoff);
+                        backoff = (backoff * 2).min(MAX_RECONNECT_BACKOFF);
                         let _ = status_tx.send(DiscordRpcStatus::Disconnected);
                         continue;
                     }
@@ -1211,6 +1233,7 @@ async fn run_discord_actor<F>(
                 }
             }
         } else {
+            let retry_deadline = next_retry.unwrap_or_else(|| Instant::now() + backoff);
             tokio::select! {
                 _ = shutdown_rx.changed() => {
                     if *shutdown_rx.borrow() {
@@ -1222,6 +1245,7 @@ async fn run_discord_actor<F>(
                         break;
                     }
                     backoff = INITIAL_RECONNECT_BACKOFF;
+                    next_retry = Some(Instant::now());
                 }
                 res = state_rx.changed() => {
                     if res.is_err() {
@@ -1229,9 +1253,7 @@ async fn run_discord_actor<F>(
                     }
                     let _ = state_rx.borrow_and_update();
                 }
-                () = sleep(backoff) => {
-                    backoff = (backoff * 2).min(MAX_RECONNECT_BACKOFF);
-                }
+                () = sleep_until(retry_deadline) => {}
             }
         }
     }
@@ -1246,6 +1268,7 @@ async fn run_discord_actor<F>(
 mod tests {
     use super::*;
     use tokio::net::UnixListener;
+    use tokio::time::sleep;
 
     fn sample_track() -> DiscordTrackInfo {
         DiscordTrackInfo {
@@ -1635,6 +1658,35 @@ mod tests {
             .update_playback(DiscordPlaybackState::playing(sample_track(), 10.0, 1.0))
             .await;
         sleep(Duration::from_millis(40)).await;
+        assert_eq!(handle.status(), DiscordRpcStatus::Disconnected);
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn disconnected_playback_ticks_do_not_cancel_backoff_or_reprobe_sockets() {
+        use std::sync::atomic::AtomicUsize;
+
+        let probe_count = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&probe_count);
+        let handle =
+            DiscordRpcHandle::spawn_with_socket_discovery(DiscordConfig::default(), move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Vec::new()
+            });
+
+        sleep(Duration::from_millis(30)).await;
+        for step in 0..8 {
+            handle
+                .update_playback(DiscordPlaybackState::playing(
+                    sample_track(),
+                    10.0 + step as f64 * 0.25,
+                    1.0,
+                ))
+                .await;
+            sleep(Duration::from_millis(20)).await;
+        }
+
+        assert_eq!(probe_count.load(Ordering::SeqCst), 1);
         assert_eq!(handle.status(), DiscordRpcStatus::Disconnected);
         handle.shutdown().await;
     }

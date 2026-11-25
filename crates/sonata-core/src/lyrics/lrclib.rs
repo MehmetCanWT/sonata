@@ -23,12 +23,52 @@ use crate::providers::{ProviderSource, Track};
 use reqwest::Client;
 use serde_json::Value;
 use sha1::{Digest, Sha1};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 type LrclibParsed = (Option<Vec<LyricLine>>, Option<Vec<String>>);
+
+const MAX_SESSION_CHECKED_ENTRIES: usize = 4096;
+
+#[derive(Default)]
+struct SessionCheckedCache {
+    entries: HashSet<String>,
+    order: VecDeque<String>,
+}
+
+impl SessionCheckedCache {
+    fn contains(&self, key: &str) -> bool {
+        self.entries.contains(key)
+    }
+
+    fn insert(&mut self, key: String) {
+        if self.entries.contains(&key) {
+            return;
+        }
+        if self.order.len() >= MAX_SESSION_CHECKED_ENTRIES {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+            }
+        }
+        self.entries.insert(key.clone());
+        self.order.push_back(key);
+    }
+}
+
+static SESSION_WORD_UPGRADE_CHECKED: OnceLock<Mutex<SessionCheckedCache>> = OnceLock::new();
+
+fn session_checked_cache() -> &'static Mutex<SessionCheckedCache> {
+    SESSION_WORD_UPGRADE_CHECKED.get_or_init(|| Mutex::new(SessionCheckedCache::default()))
+}
+
+fn should_query_ytm_native_lyrics(track: &Track) -> bool {
+    track.source == ProviderSource::YouTubeMusic
+        && !track.is_jiosaavn()
+        && !track.is_local()
+        && !track.is_self_hosted()
+}
 
 fn has_rich_timing(lines: &[LyricLine]) -> bool {
     lines
@@ -37,9 +77,7 @@ fn has_rich_timing(lines: &[LyricLine]) -> bool {
 }
 
 async fn word_upgrade_checked(cache_key: &str, check_path: &Path) -> bool {
-    static SESSION_CHECKED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    let set = SESSION_CHECKED.get_or_init(|| Mutex::new(HashSet::new()));
-    if let Ok(guard) = set.lock() {
+    if let Ok(guard) = session_checked_cache().lock() {
         if guard.contains(cache_key) {
             return true;
         }
@@ -56,9 +94,7 @@ async fn word_upgrade_checked(cache_key: &str, check_path: &Path) -> bool {
 }
 
 async fn mark_word_upgrade_checked(cache_key: &str, check_path: &Path, cache_limit_bytes: u64) {
-    static SESSION_CHECKED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    let set = SESSION_CHECKED.get_or_init(|| Mutex::new(HashSet::new()));
-    if let Ok(mut guard) = set.lock() {
+    if let Ok(mut guard) = session_checked_cache().lock() {
         guard.insert(cache_key.to_string());
     }
     if cache_limit_bytes > 0 {
@@ -82,7 +118,7 @@ pub async fn fetch_lyrics(
     let artist = clean_artist.as_str();
     let (lrc_path, txt_path, check_path) = cache_paths(paths, artist, &clean_title);
     let cache_key = format!("{}::{}", artist.to_lowercase(), clean_title.to_lowercase());
-    let is_ytm = track.source == ProviderSource::YouTubeMusic && !track.is_jiosaavn();
+    let is_ytm = should_query_ytm_native_lyrics(track);
 
     let mut cached_synced_fallback: Option<Vec<LyricLine>> = None;
     let mut cached_plain_fallback: Option<Vec<String>> = None;
@@ -658,6 +694,9 @@ async fn save_text(path: &Path, text: &str, paths: &CorePaths, cache_limit_bytes
     if cache_limit_bytes == 0 {
         return;
     }
+    if let Some(parent) = path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
@@ -785,5 +824,77 @@ mod tests {
         assert_eq!(rich_score, 40 + 300 + 80 + 120 + 50);
         assert_eq!(short_score, 35 - 150);
         assert!(rich_score > short_score);
+    }
+
+    #[tokio::test]
+    async fn shared_session_checked_cache_and_save_text_and_ytm_exclusion() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let root = std::env::temp_dir().join(format!(
+            "sonata_lrclib_test_{}_{}",
+            std::process::id(),
+            nanos
+        ));
+        let paths = CorePaths::for_app_roots(&root, &root);
+
+        let key = format!("test-artist-{nanos}::test-title");
+        let missing_check = root.join("nonexistent_check.wordcheck2");
+        assert!(!word_upgrade_checked(&key, &missing_check).await);
+        mark_word_upgrade_checked(&key, &missing_check, 0).await;
+        assert!(word_upgrade_checked(&key, &missing_check).await);
+
+        let mut bounded = SessionCheckedCache::default();
+        for i in 0..(MAX_SESSION_CHECKED_ENTRIES + 5) {
+            bounded.insert(format!("k_{i}"));
+        }
+        assert_eq!(bounded.entries.len(), MAX_SESSION_CHECKED_ENTRIES);
+        assert!(!bounded.contains("k_0"));
+        assert!(bounded.contains(&format!("k_{}", MAX_SESSION_CHECKED_ENTRIES + 4)));
+
+        let txt_path = paths.lyrics_cache_dir().join("nested.txt");
+        save_text(&txt_path, "Line one\nLine two", &paths, 1024 * 1024).await;
+        let saved = tokio::fs::read_to_string(&txt_path)
+            .await
+            .expect("txt saved with parent dir created");
+        assert_eq!(saved, "Line one\nLine two");
+
+        let make_track = |id: &str, source: ProviderSource| Track {
+            id: id.to_string(),
+            title: "Song".to_string(),
+            artist: "Artist".to_string(),
+            album: String::new(),
+            duration_secs: None,
+            thumbnail_url: None,
+            source,
+            audio_badge: None,
+            set_video_id: None,
+            liked: false,
+            album_id: None,
+            is_explicit: false,
+        };
+        assert!(should_query_ytm_native_lyrics(&make_track(
+            "dQw4w9WgXcQ",
+            ProviderSource::YouTubeMusic
+        )));
+        assert!(!should_query_ytm_native_lyrics(&make_track(
+            "local:%2Fmusic%2Fsong.flac",
+            ProviderSource::YouTubeMusic
+        )));
+        assert!(!should_query_ytm_native_lyrics(&make_track(
+            "webdav:dav-1:/song.flac",
+            ProviderSource::YouTubeMusic
+        )));
+        assert!(!should_query_ytm_native_lyrics(&make_track(
+            "smb:nas-1:song.flac",
+            ProviderSource::YouTubeMusic
+        )));
+        assert!(!should_query_ytm_native_lyrics(&make_track(
+            "jiosaavn:123",
+            ProviderSource::YouTubeMusic
+        )));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

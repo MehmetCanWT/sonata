@@ -692,3 +692,458 @@ async fn handles_gapless_and_crossfade_ramp_bypassed_in_video_mode() {
 
     session.handle.shutdown().await;
 }
+
+struct UpgradeableSource {
+    base: ResolvedStream,
+    upgraded: ResolvedStream,
+    upgrade_calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl PlaybackStreamSource for UpgradeableSource {
+    fn resolve_fast(
+        &self,
+        _track: Track,
+    ) -> Pin<Box<dyn Future<Output = Result<ResolvedStream, String>> + Send>> {
+        let s = self.base.clone();
+        Box::pin(async move { Ok(s) })
+    }
+
+    fn resolve_recovery(
+        &self,
+        _track: Track,
+    ) -> Pin<Box<dyn Future<Output = Result<ResolvedStream, String>> + Send>> {
+        let s = self.base.clone();
+        Box::pin(async move { Ok(s) })
+    }
+
+    fn resolve_hifi_upgrade(
+        &self,
+        _track: Track,
+        _current: ResolvedStream,
+        _allow_hifi: bool,
+    ) -> Pin<Box<dyn Future<Output = Option<ResolvedStream>> + Send>> {
+        let calls = Arc::clone(&self.upgrade_calls);
+        let u = self.upgraded.clone();
+        Box::pin(async move {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some(u)
+        })
+    }
+
+    fn precache_hifi_audio(
+        &self,
+        _track: Track,
+        _allow_hifi: bool,
+    ) -> Pin<Box<dyn Future<Output = Option<ResolvedStream>> + Send>> {
+        Box::pin(async { None })
+    }
+}
+
+#[tokio::test]
+async fn video_mode_blocks_hifi_upgrade_tracks_video_errors_and_preserves_paused_state() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let driver = Arc::new(RecordingDriver::default());
+    let upgrade_calls = Arc::new(AtomicUsize::new(0));
+    let source = Arc::new(UpgradeableSource {
+        base: ResolvedStream {
+            url: "https://example.com/audio-base.webm".to_string(),
+            badge: "OPUS 128kbps".to_string(),
+            headers: Vec::new(),
+        },
+        upgraded: ResolvedStream {
+            url: "https://example.com/audio-hifi.flac".to_string(),
+            badge: "FLAC · 900 kbps".to_string(),
+            headers: Vec::new(),
+        },
+        upgrade_calls: Arc::clone(&upgrade_calls),
+    });
+    let mut cfg = fast_test_config();
+    cfg.policy.hifi_substitution = true;
+    cfg.initial_gapless = false;
+    cfg.initial_muted = true;
+
+    let (mpv_tx, mpv_rx) = mpsc::channel(32);
+    let mut session = PlaybackSession::spawn(
+        cfg,
+        Arc::clone(&driver) as Arc<dyn PlaybackAudioDriver>,
+        source,
+        mpv_rx,
+    );
+
+    // Initial gapless and muted flags are pushed to driver on startup.
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let startup_calls = driver.calls();
+    assert!(startup_calls.contains(&TestDriverCall::Gapless(false)));
+    assert!(startup_calls.contains(&TestDriverCall::Volume(0)));
+
+    session
+        .handle
+        .send(SessionCommand::PlayQueue {
+            tracks: vec![make_track("v-err-1", 180)],
+            start_index: 0,
+            push_history: false,
+        })
+        .await
+        .unwrap();
+    recv_event_matching(&mut session.events, |e| {
+        matches!(e, SessionEvent::StreamLoaded { .. })
+    })
+    .await;
+    mpv_tx.send(MpvEvent::PlaybackStarted).await.unwrap();
+    recv_event_matching(&mut session.events, |e| {
+        matches!(e, SessionEvent::PlaybackStarted { .. })
+    })
+    .await;
+
+    // Pause before switching to video mode; transient PlaybackStarted/Paused(false) must keep paused.
+    session
+        .handle
+        .send(SessionCommand::SetPaused(true))
+        .await
+        .unwrap();
+    recv_event_matching(&mut session.events, |e| {
+        matches!(e, SessionEvent::PausedChanged { paused: true, .. })
+    })
+    .await;
+
+    let upgrades_before_video = upgrade_calls.load(Ordering::SeqCst);
+    session
+        .handle
+        .send(SessionCommand::SetVideoMode {
+            enabled: true,
+            url: Some("https://example.com/video720.mp4".to_string()),
+            headers: Vec::new(),
+            seek_secs: Some(15.0),
+        })
+        .await
+        .unwrap();
+    recv_event_matching(&mut session.events, |e| {
+        matches!(
+            e,
+            SessionEvent::PlaybackOptionsChanged {
+                video_mode: true,
+                ..
+            }
+        )
+    })
+    .await;
+
+    mpv_tx.send(MpvEvent::Paused(false)).await.unwrap();
+    mpv_tx.send(MpvEvent::PlaybackStarted).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    assert!(session.handle.progress().paused);
+
+    // Triggering policy update while in video mode must NOT fire Hi-Fi audio upgrade.
+    session
+        .handle
+        .send(SessionCommand::UpdatePolicy {
+            policy: SessionPolicy {
+                hifi_substitution: true,
+                jiosaavn_enabled: false,
+                cache_enabled: true,
+            },
+            trigger_upgrade: true,
+        })
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    assert_eq!(upgrade_calls.load(Ordering::SeqCst), upgrades_before_video);
+
+    // Video stream PlaybackError must NOT be dropped as stale.
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    mpv_tx
+        .send(MpvEvent::PlaybackError {
+            error: "video 403".to_string(),
+            file: Some("https://example.com/video720.mp4".to_string()),
+        })
+        .await
+        .unwrap();
+    recv_event_matching(&mut session.events, |e| {
+        matches!(e, SessionEvent::RecoveryStarted { .. })
+    })
+    .await;
+
+    session.handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn stream_upgrade_preserves_paused_state_and_non_recoverable_eof_unfreezes() {
+    let driver = Arc::new(RecordingDriver::default());
+    let source = Arc::new(UpgradeableSource {
+        base: ResolvedStream {
+            url: "/tmp/local_unknown_dur.mp3".to_string(),
+            badge: "MP3 · Local".to_string(),
+            headers: Vec::new(),
+        },
+        upgraded: ResolvedStream {
+            url: "https://example.com/upgraded.flac".to_string(),
+            badge: "FLAC · 900 kbps".to_string(),
+            headers: Vec::new(),
+        },
+        upgrade_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    });
+    let mut cfg = fast_test_config();
+    cfg.policy.hifi_substitution = true;
+
+    let (mpv_tx, mpv_rx) = mpsc::channel(32);
+    let mut session = PlaybackSession::spawn(
+        cfg,
+        Arc::clone(&driver) as Arc<dyn PlaybackAudioDriver>,
+        source,
+        mpv_rx,
+    );
+
+    let mut t1 = make_track("eof-1", 0);
+    t1.duration_secs = None;
+    let t2 = make_track("eof-2", 120);
+
+    session
+        .handle
+        .send(SessionCommand::PlayQueue {
+            tracks: vec![t1, t2],
+            start_index: 0,
+            push_history: false,
+        })
+        .await
+        .unwrap();
+    recv_event_matching(
+        &mut session.events,
+        |e| matches!(e, SessionEvent::StreamLoaded { track_id, .. } if track_id == "eof-1"),
+    )
+    .await;
+    mpv_tx.send(MpvEvent::PlaybackStarted).await.unwrap();
+    recv_event_matching(&mut session.events, |e| {
+        matches!(e, SessionEvent::StreamUpgraded { .. })
+    })
+    .await;
+    mpv_tx.send(MpvEvent::PlaybackStarted).await.unwrap();
+
+    // Wait past stale_error_grace, then emit TrackEnded with duration_secs == 0.0 -> must advance to eof-2.
+    tokio::time::sleep(Duration::from_millis(70)).await;
+    mpv_tx.send(MpvEvent::TrackEnded).await.unwrap();
+    recv_event_matching(&mut session.events, |e| {
+        matches!(
+            e,
+            SessionEvent::TrackEnded {
+                track_id,
+                advancing: true,
+                ..
+            } if track_id == "eof-1"
+        )
+    })
+    .await;
+    recv_event_matching(
+        &mut session.events,
+        |e| matches!(e, SessionEvent::StreamLoaded { track_id, .. } if track_id == "eof-2"),
+    )
+    .await;
+
+    // Also verify paused state survives StreamUpgrade when paused while upgrade is in flight.
+    struct GatedUpgradeSource {
+        base: ResolvedStream,
+        upgraded: ResolvedStream,
+        gate: Arc<tokio::sync::Notify>,
+    }
+    impl PlaybackStreamSource for GatedUpgradeSource {
+        fn resolve_fast(
+            &self,
+            _track: Track,
+        ) -> Pin<Box<dyn Future<Output = Result<ResolvedStream, String>> + Send>> {
+            let s = self.base.clone();
+            Box::pin(async move { Ok(s) })
+        }
+        fn resolve_recovery(
+            &self,
+            _track: Track,
+        ) -> Pin<Box<dyn Future<Output = Result<ResolvedStream, String>> + Send>> {
+            let s = self.base.clone();
+            Box::pin(async move { Ok(s) })
+        }
+        fn resolve_hifi_upgrade(
+            &self,
+            _track: Track,
+            _current: ResolvedStream,
+            _allow_hifi: bool,
+        ) -> Pin<Box<dyn Future<Output = Option<ResolvedStream>> + Send>> {
+            let gate = Arc::clone(&self.gate);
+            let u = self.upgraded.clone();
+            Box::pin(async move {
+                gate.notified().await;
+                Some(u)
+            })
+        }
+        fn precache_hifi_audio(
+            &self,
+            _track: Track,
+            _allow_hifi: bool,
+        ) -> Pin<Box<dyn Future<Output = Option<ResolvedStream>> + Send>> {
+            Box::pin(async { None })
+        }
+    }
+
+    session.handle.shutdown().await;
+
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let gated_driver = Arc::new(RecordingDriver::default());
+    let gated_source = Arc::new(GatedUpgradeSource {
+        base: ResolvedStream {
+            url: "https://example.com/base.webm".to_string(),
+            badge: "OPUS 128kbps".to_string(),
+            headers: Vec::new(),
+        },
+        upgraded: ResolvedStream {
+            url: "https://example.com/hifi.flac".to_string(),
+            badge: "FLAC · 900 kbps".to_string(),
+            headers: Vec::new(),
+        },
+        gate: Arc::clone(&gate),
+    });
+    let mut gated_cfg = fast_test_config();
+    gated_cfg.policy.hifi_substitution = true;
+    let (mpv_tx2, mpv_rx2) = mpsc::channel(32);
+    let mut gated_session = PlaybackSession::spawn(
+        gated_cfg,
+        Arc::clone(&gated_driver) as Arc<dyn PlaybackAudioDriver>,
+        gated_source,
+        mpv_rx2,
+    );
+    gated_session
+        .handle
+        .send(SessionCommand::PlayQueue {
+            tracks: vec![make_track("upg-pause-1", 180)],
+            start_index: 0,
+            push_history: false,
+        })
+        .await
+        .unwrap();
+    recv_event_matching(&mut gated_session.events, |e| {
+        matches!(e, SessionEvent::StreamLoaded { .. })
+    })
+    .await;
+    mpv_tx2.send(MpvEvent::PlaybackStarted).await.unwrap();
+    recv_event_matching(&mut gated_session.events, |e| {
+        matches!(e, SessionEvent::UpgradeStarted { .. })
+    })
+    .await;
+
+    // Pause before the upgrade completes, then release the upgrade.
+    gated_session
+        .handle
+        .send(SessionCommand::SetPaused(true))
+        .await
+        .unwrap();
+    recv_event_matching(&mut gated_session.events, |e| {
+        matches!(e, SessionEvent::PausedChanged { paused: true, .. })
+    })
+    .await;
+    gate.notify_one();
+    recv_event_matching(&mut gated_session.events, |e| {
+        matches!(e, SessionEvent::StreamUpgraded { .. })
+    })
+    .await;
+    mpv_tx2.send(MpvEvent::Paused(false)).await.unwrap();
+    mpv_tx2.send(MpvEvent::PlaybackStarted).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    assert!(gated_session.handle.progress().paused);
+
+    gated_session.handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn crossfade_exit_restores_volume_on_backward_seek_and_next_track_removal() {
+    let driver = Arc::new(RecordingDriver::default());
+    let source = Arc::new(StaticSource {
+        stream: ResolvedStream {
+            url: "https://example.com/audio.webm".to_string(),
+            badge: "OPUS 256kbps".to_string(),
+            headers: Vec::new(),
+        },
+    });
+    let (mpv_tx, mpv_rx) = mpsc::channel(32);
+    let mut session = PlaybackSession::spawn(
+        fast_test_config(),
+        Arc::clone(&driver) as Arc<dyn PlaybackAudioDriver>,
+        source,
+        mpv_rx,
+    );
+
+    session
+        .handle
+        .send(SessionCommand::SetCrossfade(8))
+        .await
+        .unwrap();
+    session
+        .handle
+        .send(SessionCommand::PlayQueue {
+            tracks: vec![make_track("cf-seek-1", 20), make_track("cf-seek-2", 20)],
+            start_index: 0,
+            push_history: false,
+        })
+        .await
+        .unwrap();
+    recv_event_matching(&mut session.events, |e| {
+        matches!(e, SessionEvent::StreamLoaded { .. })
+    })
+    .await;
+    mpv_tx.send(MpvEvent::PlaybackStarted).await.unwrap();
+    mpv_tx.send(MpvEvent::Duration(20.0)).await.unwrap();
+
+    // Enter fade window (final 8s).
+    mpv_tx.send(MpvEvent::Position(16.0)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let last_vol = driver
+        .calls()
+        .into_iter()
+        .filter_map(|c| match c {
+            TestDriverCall::Volume(v) => Some(v),
+            _ => None,
+        })
+        .next_back()
+        .unwrap();
+    assert!(last_vol < 80, "expected attenuated volume, got {last_vol}");
+
+    // Seek backward out of fade window -> volume immediately restores to 80.
+    session
+        .handle
+        .send(SessionCommand::SeekAbsolute(4.0))
+        .await
+        .unwrap();
+    recv_event_matching(&mut session.events, |e| {
+        matches!(e, SessionEvent::Seeked { .. })
+    })
+    .await;
+    let vol_after_seek = driver
+        .calls()
+        .into_iter()
+        .filter_map(|c| match c {
+            TestDriverCall::Volume(v) => Some(v),
+            _ => None,
+        })
+        .next_back();
+    assert_eq!(vol_after_seek, Some(80));
+
+    // Re-enter fade window, then remove next track -> volume restores to 80.
+    mpv_tx.send(MpvEvent::Position(16.0)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    session
+        .handle
+        .send(SessionCommand::RemoveFromQueue(1))
+        .await
+        .unwrap();
+    recv_event_matching(&mut session.events, |e| {
+        matches!(e, SessionEvent::QueueChanged { .. })
+    })
+    .await;
+    let vol_after_remove = driver
+        .calls()
+        .into_iter()
+        .filter_map(|c| match c {
+            TestDriverCall::Volume(v) => Some(v),
+            _ => None,
+        })
+        .next_back();
+    assert_eq!(vol_after_remove, Some(80));
+
+    session.handle.shutdown().await;
+}

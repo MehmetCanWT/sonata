@@ -695,8 +695,8 @@ impl ServerClient {
             ServerKind::Jellyfin => jellyfin::get_artists(&self.http, profile, library_id).await,
             ServerKind::Subsonic => subsonic::get_artists(&self.http, profile, library_id).await,
             ServerKind::WebDav => {
-                webdav::list_artists(&self.http, profile, library_id, self.cache_dir.as_deref())
-                    .await
+                let lib = library_id.map(|id| unwrap_item_id(ServerKind::WebDav, id));
+                webdav::list_artists(&self.http, profile, lib, self.cache_dir.as_deref()).await
             }
             ServerKind::Smb => {
                 let prof = profile.clone();
@@ -726,14 +726,9 @@ impl ServerClient {
                 }
             }
             ServerKind::WebDav => {
-                webdav::list_albums(
-                    &self.http,
-                    profile,
-                    library_id,
-                    artist_id,
-                    self.cache_dir.as_deref(),
-                )
-                .await
+                let lib = library_id.map(|id| unwrap_item_id(ServerKind::WebDav, id));
+                let art = artist_id.map(|id| unwrap_item_id(ServerKind::WebDav, id));
+                webdav::list_albums(&self.http, profile, lib, art, self.cache_dir.as_deref()).await
             }
             ServerKind::Smb => {
                 let prof = profile.clone();
@@ -1137,5 +1132,20 @@ mod tests {
         assert_eq!(loaded, vec![jf, sub]);
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unwraps_webdav_library_and_artist_ids() {
+        let lib_id = encode_server_item_id(ServerKind::WebDav, "dav-1", "/Music/Lossless/");
+        assert_eq!(
+            unwrap_item_id(ServerKind::WebDav, &lib_id),
+            "/Music/Lossless/"
+        );
+
+        let artist_id = encode_server_item_id(ServerKind::WebDav, "dav-1", "artist:Daft Punk");
+        assert_eq!(
+            unwrap_item_id(ServerKind::WebDav, &artist_id),
+            "artist:Daft Punk"
+        );
     }
 }

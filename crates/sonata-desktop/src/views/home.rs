@@ -5,7 +5,7 @@
 //! 3. **Shared Track Row (`render_track_row`)**: renders standardized `56 pt` rows with index/artwork, hover `play_overlay`, explicit `[E]` tag, clickable artist & album links, like/queue buttons, and duration.
 
 use super::{ContextMenuKind, ContextMenuState, SonataDesktopView};
-use crate::backend::{BackendCmd, MoodChip};
+use crate::backend::BackendCmd;
 use crate::settings::{ART_SIZE, CARD_STRETCH_MAX, CARD_W, PAGE_INSET_X, ROW_HEIGHT};
 use crate::theme::ramp::{hsla_from_rgb, Rgb};
 use crate::ui::components::{
@@ -1222,7 +1222,3 @@ fn trigger_card_action(backend: &crate::backend::BackendHandle, card: &HomeCard)
         HomeCardKind::Song | HomeCardKind::Video => {}
     }
 }
-
-/// Keeps `MoodChip` publicly referenced for chip helpers cleanly.
-#[allow(dead_code)]
-fn _keep_mood_chip(_: &MoodChip) {}

@@ -252,7 +252,8 @@ jobs:
           Summary:        Native GPUI desktop & terminal music player for YouTube Music and Spotify
           License:        MIT
           URL:            https://github.com/MehmetCanWT/sonata
-          Requires:       mpv, wayland, vulkan-loader, libxkbcommon, libxkbcommon-x11, libxcb, fontconfig, alsa-lib, dbus-libs
+          Requires:       mpv, libwayland-client, vulkan-loader, libxkbcommon, libxkbcommon-x11, libxcb, fontconfig, alsa-lib, dbus-libs
+          Recommends:     ffmpeg-free, yt-dlp, nodejs, xdg-utils
 
           %description
           Native Rust desktop and terminal music player for YouTube Music and Spotify.

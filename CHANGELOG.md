@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.9] - 2026-11-25
+
+### Fixed
+
+- **Core Engine & Parsers (`sonata-core`)**:
+  - Guarded MP4 `mvhd` v1 parsing (`payload.len() >= 32`), fixed `size == 0` EOF box sizing, prevented `u64` offset overflows with `checked_add`, and capped `parse_mp4_moov` recursion depth at 32 (`providers/local.rs`).
+  - Parsed `#HttpOnly_` Netscape cookie rows (`sp_dc`, `LOGIN_INFO`) instead of discarding them (`auth/cookies.rs`).
+  - Unwrapped `library_id` and `artist_id` in WebDAV `list_artists` / `list_albums` (`providers/servers/mod.rs`), and attached required YouTube `googlevideo.com` headers for Spotify-resolved InnerTube streams (`providers/hifi/innertube.rs`).
+  - Excluded `local:` and self-hosted track IDs from YouTube Music lyrics, playback reporting, video matching, and ID validation while preserving Genius plain-lyrics fallback; unified bounded `SESSION_WORD_UPGRADE_CHECKED` dedup and created parent directories in `save_text` (`lyrics/lrclib.rs`, `providers/ytmusic/mod.rs`).
+  - Preserved non-timestamp parentheticals in NetEase YRC word-timed lines, reset `current_end` on LyricsPlus `flush()`, and replaced untrusted `u64` timestamp adds with `saturating_add` (`lyrics/providers.rs`).
+  - Eliminated first-open TOCTOU truncation race on `stats.db` using atomic `create_new(true)` (`stats.rs`) and restored real-time karaoke sweep and inline parenthesized background-vocal splitting across lyrics providers.
+- **Linux Runtime & Packaging (`sonata-runtime`, `.github/workflows/release.yml`)**:
+  - Fixed `mpv` `http-header-fields` format (`Name: Value`), replaced `--really-quiet` with `--no-terminal --msg-level=all=error`, added transparent `mpv` respawn and child reaping on unexpected IPC EOF, and added 4-argument `loadfile` compatibility for `mpv < 0.38` (`player/mpv.rs`).
+  - Added explicit `-f mp4` output format and `libx264` -> `libopenh264` -> `mpeg4` -> `copy` fallbacks for Fedora `ffmpeg-free` HLS motion-cover transcoding (`media/motion.rs`).
+  - Added `:PATH` suffix for out-of-`PATH` JS runtimes, cached `--js-runtimes` fallback for older `yt-dlp`, and enabled JioSaavn-only precaching (`process/ytdlp.rs`).
+  - Preserved Discord RPC reconnect backoff across playback ticks and offloaded socket discovery (`discord.rs`); synchronized Video Mode / pause state, `duration == 0` EOF handling, crossfade seek volume restore, and startup `gapless`/`muted` settings (`player/session/`).
+  - Restricted stale download `.tmp` cleanup to files aged `>= 10` minutes (`downloads.rs`), fixed Snap Brave and temp cookie jar cleanup (`auth/browser.rs`), kept Sonata Connect HTTP accept loops resilient across transient errors (`connect.rs`), and updated Fedora `.rpm` spec `Requires: libwayland-client` plus `Recommends: ffmpeg-free, yt-dlp, nodejs, xdg-utils`.
+- **Desktop, TUI & Android (`sonata-desktop`, `sonata-tui`, `android`)**:
+  - Fixed Desktop titlebar close-to-tray leaving windows unreopenable from Tray/MPRIS (`views/chrome.rs`, `views/mod.rs`, `main.rs`), cached GTK/Qt palettes and offloaded theme reloads (`theme/`), fixed shared playlist modal `Enter` dispatch, remapped `PlayTracks` `start_index` under Personal Only Mode, guarded stale Local Music/server scans and concurrent server saves, and prevented TUI background cache maintenance task leaks and concurrent download tracking wipes.
+  - Routed Android `createPersonalPlaylist` unconditionally to local personal playlists, moved cold-start `SharedPreferences` reads off the Main thread, guarded stale Local Music scans, added native `sonata-smb://` download support and 0-byte chunked download EOF guards (`DownloadManager.kt`), scoped Discord WebView cookie clearing (`DiscordLoginScreen.kt`), preserved HTTP 429 `Retry-After` cooldowns (`DiscordRpcClient.kt`), migrated `build.gradle.kts` to `kotlin { compilerOptions }`, and cleared all non-generated Android Lint errors (`AndroidManifest.xml`, `AudioPipelineState.kt`, `PlaybackService.kt`, `RuntimeShaderCache.kt`, `DownloadsScreen.kt`).
+- **Workspace Hygiene**:
+  - Added missing `//!` module documentation headers across all Rust crates and removed unused `#[allow(dead_code)]` stubs.
+
+### Security
+
+- Enforced same-origin validation on WebDAV `PROPFIND` targets and media fetches plus unique temp filenames for cover caching (`webdav.rs`), rejected `..` parent traversal on SMB paths (`smb.rs`), and restricted offline cover download auth headers to same-origin URLs on Desktop and TUI.
+- Redacted embedded URLs and inline `Bearer` tokens inside `redaction::json_payload` (`redaction.rs`), masked server password/token inputs in Desktop (`views/mod.rs`), blocked private local/NAS IDs from hitting YouTube Music APIs on Android, and disabled Android cloud auto-backup (`android:allowBackup="false"`).
+
 ## [1.0.8] - 2026-11-24
 
 ### Added

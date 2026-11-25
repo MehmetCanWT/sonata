@@ -7,7 +7,7 @@
 //! 3. **Aggregations (`query_summary`)**: Computes totals, unique counts, daily listening streak,
 //!    top artists/tracks/albums, and source breakdowns across `Week`, `Month`, `Year`, and `AllTime`.
 
-use crate::auth::{create_private_file, ensure_private_dir};
+use crate::auth::ensure_private_dir;
 use crate::error::CoreError;
 use crate::paths::CorePaths;
 use rusqlite::{params, Connection};
@@ -109,8 +109,17 @@ impl StatsDb {
         if let Some(parent) = path.parent() {
             ensure_private_dir(parent).map_err(|err| CoreError::io(err.to_string()))?;
         }
-        if !path.exists() {
-            create_private_file(path).map_err(|err| CoreError::io(err.to_string()))?;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            opts.mode(0o600);
+        }
+        match opts.open(path) {
+            Ok(_file) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(err) => return Err(CoreError::io(err.to_string())),
         }
         let conn = Connection::open(path).map_err(|err| CoreError::cache(err.to_string()))?;
         let _ = conn.busy_timeout(Duration::from_secs(5));
@@ -531,5 +540,41 @@ mod tests {
         assert_eq!(compute_streak_days(&days, 103), 3);
         assert_eq!(compute_streak_days(&days, 104), 0);
         assert_eq!(compute_streak_days(&BTreeSet::new(), 104), 0);
+    }
+
+    #[test]
+    fn reopening_existing_stats_db_preserves_data_under_concurrency() {
+        let root = temp_stats_dir("reopen");
+        let db_path = root.join("stats.db");
+        let db = StatsDb::open_at(&db_path).expect("initial open");
+        db.record_play(
+            "t1",
+            "Song A",
+            "Artist 1",
+            "Album X",
+            "YTM",
+            200,
+            180,
+            1_700_500_000,
+        )
+        .expect("record play");
+        drop(db);
+
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let p = db_path.clone();
+                std::thread::spawn(move || StatsDb::open_at(&p).expect("reopen"))
+            })
+            .collect();
+        for handle in handles {
+            let reopened = handle.join().expect("thread join");
+            let summary = reopened
+                .query_summary_at(StatsWindow::AllTime, 1_700_500_000)
+                .expect("query after reopen");
+            assert_eq!(summary.total_plays, 1);
+            assert_eq!(summary.top_tracks[0].title, "Song A");
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

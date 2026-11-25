@@ -13,7 +13,9 @@ import dev.sonata.android.SavedExternalPlaylist
 import dev.sonata.android.SonataViewModel
 import dev.sonata.android.data.SmbClient
 import dev.sonata.android.data.SonataEngineGateway
+import dev.sonata.android.data.isLocalTrackId
 import dev.sonata.android.data.isPersonalTrackId
+import dev.sonata.android.data.resolveYtmFallbackCoverUrl
 import dev.sonata.android.data.runSuspendCatching
 import dev.sonata.android.isSelfHostedId
 import dev.sonata.android.ui.components.PERSONAL_PLAYLIST_ID_PREFIX
@@ -148,11 +150,10 @@ internal fun SonataViewModel.isLikedMusicPlaylistIdImpl(id: String): Boolean =
 
 internal fun SonataViewModel.resolveTrackCoverUrlImpl(track: AndroidTrack): String? =
     track.thumbnailUrl?.takeIf { it.isNotBlank() }
-        ?: if (!track.id.startsWith("jiosaavn:") && !track.id.startsWith("local:") && track.id.isNotBlank()) {
-            "https://i.ytimg.com/vi/${track.id}/hqdefault.jpg"
-        } else {
-            null
-        }
+        ?: resolveYtmFallbackCoverUrl(
+            trackId = track.id,
+            personalOnlyMode = preferences.state.value.personalOnlyMode,
+        )
 
 internal fun SonataViewModel.applyLatestLikedCoverImpl(playlists: List<AndroidPlaylist>): List<AndroidPlaylist> {
     val likedCover = latestLikedCoverUrl?.takeIf { it.isNotBlank() } ?: return playlists
@@ -714,6 +715,22 @@ internal fun SonataViewModel.refreshListeningHistoryImpl() {
     }
 }
 
+internal fun shouldSyncLikeToYtm(trackId: String, personalOnlyMode: Boolean): Boolean {
+    if (personalOnlyMode) return false
+    val raw = trackId.trim()
+    return raw.isNotBlank() &&
+        !isPersonalTrackId(raw) &&
+        !isSelfHostedId(raw) &&
+        !isLocalTrackId(raw) &&
+        !raw.startsWith("personal:", ignoreCase = true)
+}
+
+internal fun shouldCreatePersonalPlaylist(
+    forcePersonal: Boolean,
+    hasPersonalTrack: Boolean,
+    signedIn: Boolean,
+): Boolean = forcePersonal || hasPersonalTrack || !signedIn
+
 internal fun SonataViewModel.toggleStarTrackImpl(trackId: String) {
     val nowLiked = trackId !in _uiState.value.likedTrackIds
     _uiState.update { state ->
@@ -737,28 +754,35 @@ internal fun SonataViewModel.toggleStarTrackImpl(trackId: String) {
     }
     if (nowLiked) {
         val likedCover = snapshotTrack?.let { resolveTrackCoverUrlImpl(it) }
-            ?: if (!trackId.startsWith("jiosaavn:") && !trackId.startsWith("local:") && trackId.isNotBlank()) {
-                "https://i.ytimg.com/vi/$trackId/hqdefault.jpg"
-            } else {
-                null
-            }
+            ?: resolveYtmFallbackCoverUrl(
+                trackId = trackId,
+                personalOnlyMode = preferences.state.value.personalOnlyMode,
+            )
         updateLatestLikedCoverImpl(likedCover)
     }
     if (nowLiked &&
         settings.value.autoDownloadLiked &&
         snapshotTrack != null &&
-        !snapshotTrack.id.startsWith("local:") &&
+        !isLocalTrackId(snapshotTrack.id) &&
         !downloadManager.isDownloaded(snapshotTrack.id)
     ) {
         downloadTrack(snapshotTrack)
     }
-    if (!trackId.startsWith("local:")) {
+    val canSyncYtmLike = shouldSyncLikeToYtm(trackId, preferences.state.value.personalOnlyMode)
+    if (canSyncYtmLike) {
         viewModelScope.launch(Dispatchers.IO) {
+            if (preferences.state.value.personalOnlyMode) return@launch
             val engine = requireEngine()
             if (runCatching { engine.isSignedIn() }.getOrDefault(false)) {
                 val ytmId: String = (if (snapshotTrack != null) {
                     resolveYtmVideoIdForTrack(engine, snapshotTrack)
-                } else if (!trackId.startsWith("jiosaavn:")) {
+                } else if (
+                    !trackId.startsWith("jiosaavn:", ignoreCase = true) &&
+                    !isPersonalTrackId(trackId) &&
+                    !isSelfHostedId(trackId) &&
+                    !isLocalTrackId(trackId) &&
+                    !trackId.startsWith("personal:", ignoreCase = true)
+                ) {
                     trackId
                 } else {
                     null
@@ -929,6 +953,7 @@ internal fun SonataViewModel.createPlaylistWithTracksImpl(
     title: String,
     tracks: List<AndroidTrack>,
     onComplete: (Boolean, String) -> Unit = { _, _ -> },
+    forcePersonal: Boolean = false,
 ) {
     val s = uiStrings()
     val srcStrings = sourcesStrings(preferences.state.value.appLanguage)
@@ -945,7 +970,7 @@ internal fun SonataViewModel.createPlaylistWithTracksImpl(
         val signedIn = !personalOnly && runCatching { engine.isSignedIn() }.getOrDefault(false)
         _uiState.update { it.copy(addToPlaylistStatus = s.creatingPlaylistStatus(cleanTitle)) }
 
-        if (hasPersonalTrack || !signedIn) {
+        if (shouldCreatePersonalPlaylist(forcePersonal, hasPersonalTrack, signedIn)) {
             val createRes = runSuspendCatching {
                 var created = engine.createPersonalPlaylist(cleanTitle)
                 cleanTracks.forEach { tr ->
@@ -1220,7 +1245,35 @@ internal suspend fun SonataViewModel.fetchTracksForCollectionActionImpl(
 ): List<AndroidTrack> {
     return when {
         browseId == SonataViewModel.DOWNLOADS_PLAYLIST_ID -> downloads.value.map { downloadedRecordToAndroidTrack(it) }
+        browseId.startsWith(PERSONAL_PLAYLIST_ID_PREFIX) -> {
+            _uiState.value.personalPlaylists.firstOrNull { it.id == browseId }?.tracks
+                ?: personalPlaylistsCache.firstOrNull { it.id == browseId }?.tracks
+                ?: runSuspendCatching {
+                    engine.listPersonalPlaylists().firstOrNull { it.id == browseId }?.tracks
+                }.getOrNull().orEmpty()
+        }
         browseId.startsWith(SonataViewModel.LOCAL_PLAYLIST_PREFIX) -> getLocalPlaylistTracksImpl(browseId)
+        browseId.startsWith("local:album:") -> {
+            val library = _uiState.value.localMusicLibrary
+            library.albums.firstOrNull { it.id == browseId }?.tracks?.map { it.toAndroidTrack() }
+                ?: library.tracks
+                    .filter { it.toAndroidTrack().albumId == browseId }
+                    .map { it.toAndroidTrack() }
+        }
+        isLocalTrackId(browseId) -> emptyList()
+        browseId.startsWith("smb:") -> {
+            val srvId = browseId.removePrefix("smb:").substringBefore(':')
+            val srv = _uiState.value.servers.firstOrNull { it.id == srvId }
+            if (srv != null) {
+                runSuspendCatching { SmbClient.getAlbumTracks(srv, browseId) }.getOrDefault(emptyList())
+            } else {
+                runSuspendCatching { engine.getServerPlaylistTracks(browseId) }.getOrDefault(emptyList())
+            }
+        }
+        isSelfHostedId(browseId) -> {
+            runSuspendCatching { engine.getServerPlaylistTracks(browseId) }.getOrDefault(emptyList())
+        }
+        preferences.state.value.personalOnlyMode -> emptyList()
         else -> runSuspendCatching { engine.fetchCollectionTracks(browseId) }.getOrDefault(emptyList())
     }
 }

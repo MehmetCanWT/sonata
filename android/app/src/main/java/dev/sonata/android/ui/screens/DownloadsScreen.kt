@@ -47,6 +47,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
+import java.util.Locale
 import dev.sonata.android.data.ActiveDownload
 import dev.sonata.android.data.DownloadedTrackRecord
 import dev.sonata.android.ui.CircleGlyph
@@ -446,8 +447,8 @@ private fun formatBytes(bytes: Long): String {
     if (bytes <= 0L) return "0 MB"
     val mb = bytes / (1024.0 * 1024.0)
     return if (mb >= 1024.0) {
-        String.format("%.2f GB", mb / 1024.0)
+        String.format(Locale.US, "%.2f GB", mb / 1024.0)
     } else {
-        String.format("%.1f MB", mb)
+        String.format(Locale.US, "%.1f MB", mb)
     }
 }

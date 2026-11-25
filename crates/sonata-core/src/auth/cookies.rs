@@ -272,6 +272,7 @@ pub fn parse_netscape_cookies(content: &str) -> Vec<CookieRow> {
     let mut rows = Vec::new();
     for line in content.lines() {
         let trimmed = line.trim();
+        let trimmed = trimmed.strip_prefix("#HttpOnly_").unwrap_or(trimmed);
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
@@ -328,5 +329,28 @@ mod tests {
         assert!(triple.contains("SAPISIDHASH "));
         assert!(triple.contains("SAPISID1PHASH "));
         assert!(triple.contains("SAPISID3PHASH "));
+    }
+
+    #[test]
+    fn parses_httponly_netscape_cookie_rows() {
+        let sample = "# Netscape HTTP Cookie File\n\
+            #HttpOnly_.spotify.com\tTRUE\t/\tTRUE\t1999999999\tsp_dc\tspot_httponly\n\
+            #HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t1999999999\tLOGIN_INFO\tyt_login_info\n\
+            # Comment line\tignored\t/\tFALSE\t0\tignored\tignored\n";
+        let rows = parse_netscape_cookies(sample);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].host, ".spotify.com");
+        assert_eq!(rows[0].name, "sp_dc");
+        assert_eq!(rows[0].value, "spot_httponly");
+        assert_eq!(rows[1].host, ".youtube.com");
+        assert_eq!(rows[1].name, "LOGIN_INFO");
+        assert_eq!(rows[1].value, "yt_login_info");
+
+        let extracted = build_from_rows("test", &rows, None);
+        assert_eq!(extracted.spotify_sp_dc.as_deref(), Some("spot_httponly"));
+        assert_eq!(
+            extracted.ytm_cookies.get("LOGIN_INFO").map(String::as_str),
+            Some("yt_login_info")
+        );
     }
 }

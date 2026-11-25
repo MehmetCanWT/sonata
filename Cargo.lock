@@ -7098,7 +7098,7 @@ dependencies = [
 
 [[package]]
 name = "sonata-android"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -7112,7 +7112,7 @@ dependencies = [
 
 [[package]]
 name = "sonata-core"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -7134,7 +7134,7 @@ dependencies = [
 
 [[package]]
 name = "sonata-desktop"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "anyhow",
  "cosmic-text",
@@ -7156,7 +7156,7 @@ dependencies = [
 
 [[package]]
 name = "sonata-runtime"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "anyhow",
  "dirs 6.0.0",
@@ -7175,7 +7175,7 @@ dependencies = [
 
 [[package]]
 name = "sonata-tui"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

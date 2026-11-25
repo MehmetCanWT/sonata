@@ -27,6 +27,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -169,6 +170,8 @@ internal fun SonataViewModel.scanLocalMusicImpl() {
     val ctx = getApplication<Application>()
     val prefsState = preferences.state.value
     if (!prefsState.localMusicEnabled) {
+        localScanJob?.cancel()
+        localScanJob = null
         localContentUrisByTrackId.clear()
         localTracksById.clear()
         _uiState.update {
@@ -194,6 +197,10 @@ internal fun SonataViewModel.scanLocalMusicImpl() {
             excludeNonMusicAudio = prefsState.excludeNonMusicAudio,
             selectedFolders = prefsState.localMusicFolders,
         )
+        ensureActive()
+        if (!preferences.state.value.localMusicEnabled) {
+            return@launch
+        }
         localContentUrisByTrackId.clear()
         localTracksById.clear()
         library.tracks.forEach { localTrack ->

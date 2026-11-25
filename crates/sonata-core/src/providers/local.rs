@@ -1408,6 +1408,8 @@ fn decode_ieee80_extended(bytes: &[u8]) -> f64 {
     sign * (mantissa as f64) * (2.0_f64).powi(shift)
 }
 
+const MAX_MP4_BOX_DEPTH: usize = 32;
+
 fn parse_mp4(file: &mut File, file_size: u64, ext: &str, out: &mut ParsedTags) {
     if ext == "alac" {
         out.codec = Some("ALAC".to_string());
@@ -1417,7 +1419,7 @@ fn parse_mp4(file: &mut File, file_size: u64, ext: &str, out: &mut ParsedTags) {
     }
 
     let mut pos = 0u64;
-    while pos + 8 <= file_size {
+    while pos.checked_add(8).is_some_and(|end| end <= file_size) {
         if file.seek(SeekFrom::Start(pos)).is_err() {
             break;
         }
@@ -1435,11 +1437,12 @@ fn parse_mp4(file: &mut File, file_size: u64, ext: &str, out: &mut ParsedTags) {
             size = u64::from_be_bytes(ext_sz);
             16u64
         } else if size == 0 {
-            file_size - pos
+            size = file_size - pos;
+            8u64
         } else {
             8u64
         };
-        if size < header_len || pos + size > file_size {
+        if size < header_len || pos.checked_add(size).is_none_or(|end| end > file_size) {
             break;
         }
         if kind == b"moov" {
@@ -1452,17 +1455,29 @@ fn parse_mp4(file: &mut File, file_size: u64, ext: &str, out: &mut ParsedTags) {
             }
             break;
         }
-        pos += size;
+        pos = match pos.checked_add(size) {
+            Some(next) => next,
+            None => break,
+        };
     }
 }
 
 fn parse_mp4_moov(data: &[u8], out: &mut ParsedTags) {
+    parse_mp4_moov_depth(data, out, 0);
+}
+
+fn parse_mp4_moov_depth(data: &[u8], out: &mut ParsedTags, depth: usize) {
+    if depth >= MAX_MP4_BOX_DEPTH {
+        return;
+    }
     walk_mp4_boxes(data, &mut |kind, payload| match kind {
         b"mvhd" => parse_mp4_mvhd(payload, out),
-        b"trak" | b"mdia" | b"minf" | b"stbl" | b"udta" => parse_mp4_moov(payload, out),
+        b"trak" | b"mdia" | b"minf" | b"stbl" | b"udta" => {
+            parse_mp4_moov_depth(payload, out, depth + 1)
+        }
         b"meta" => {
             if payload.len() > 4 {
-                parse_mp4_moov(&payload[4..], out);
+                parse_mp4_moov_depth(&payload[4..], out, depth + 1);
             }
         }
         b"ilst" => parse_mp4_ilst(payload, out),
@@ -1473,10 +1488,10 @@ fn parse_mp4_moov(data: &[u8], out: &mut ParsedTags) {
 
 fn walk_mp4_boxes(data: &[u8], f: &mut dyn FnMut(&[u8; 4], &[u8])) {
     let mut pos = 0usize;
-    while pos + 8 <= data.len() {
+    while pos.checked_add(8).is_some_and(|end| end <= data.len()) {
         let size =
             u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
-        if size < 8 || pos + size > data.len() {
+        if size < 8 || pos.checked_add(size).is_none_or(|end| end > data.len()) {
             break;
         }
         let kind: &[u8; 4] = data[pos + 4..pos + 8].try_into().unwrap();
@@ -1490,7 +1505,10 @@ fn parse_mp4_mvhd(payload: &[u8], out: &mut ParsedTags) {
         return;
     }
     let version = payload[0];
-    let (timescale, duration) = if version == 1 && payload.len() >= 28 {
+    let (timescale, duration) = if version == 1 {
+        if payload.len() < 32 {
+            return;
+        }
         let ts = u32::from_be_bytes([payload[20], payload[21], payload[22], payload[23]]);
         let dur = u64::from_be_bytes([
             payload[24],
@@ -1874,6 +1892,68 @@ mod tests {
         assert_eq!(meta.channels, Some(2));
         assert_eq!(meta.sample_rate, Some(48_000));
         assert_eq!(meta.duration_secs, Some(5));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn mp4_box(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let size = (8 + payload.len()) as u32;
+        let mut out = Vec::with_capacity(size as usize);
+        out.extend_from_slice(&size.to_be_bytes());
+        out.extend_from_slice(kind);
+        out.extend_from_slice(payload);
+        out
+    }
+
+    #[test]
+    fn mp4_parser_handles_short_mvhd_v1_eof_box_overflow_and_deep_nesting() {
+        let root = unique_temp_dir("mp4_edge");
+        let ftyp = mp4_box(b"ftyp", b"M4A ");
+
+        // 1. mvhd version 1 with truncated 28-byte payload must not panic.
+        let mut short_mvhd = vec![1u8; 28];
+        short_mvhd[0] = 1;
+        let mut short_bytes = ftyp.clone();
+        short_bytes.extend_from_slice(&mp4_box(b"moov", &mp4_box(b"mvhd", &short_mvhd)));
+        let short_path = root.join("short_mvhd.m4a");
+        fs::write(&short_path, &short_bytes).expect("write short mvhd");
+        let parsed_short = parse_audio_file(&short_path).expect("parse short mvhd");
+        assert_eq!(parsed_short.duration_secs, None);
+
+        // 2. moov box with size == 0 (extends to EOF) must parse mvhd duration.
+        let mut mvhd_v0 = vec![0u8; 20];
+        mvhd_v0[12..16].copy_from_slice(&1000u32.to_be_bytes());
+        mvhd_v0[16..20].copy_from_slice(&12_000u32.to_be_bytes());
+        let mvhd_box = mp4_box(b"mvhd", &mvhd_v0);
+        let mut eof_moov = ftyp.clone();
+        eof_moov.extend_from_slice(&0u32.to_be_bytes());
+        eof_moov.extend_from_slice(b"moov");
+        eof_moov.extend_from_slice(&mvhd_box);
+        let eof_path = root.join("eof_moov.m4a");
+        fs::write(&eof_path, &eof_moov).expect("write eof moov");
+        let parsed_eof = parse_audio_file(&eof_path).expect("parse eof moov");
+        assert_eq!(parsed_eof.duration_secs, Some(12));
+
+        // 3. size == 1 extended u64::MAX must break without overflow or infinite loop.
+        let mut overflow_box = ftyp.clone();
+        overflow_box.extend_from_slice(&1u32.to_be_bytes());
+        overflow_box.extend_from_slice(b"free");
+        overflow_box.extend_from_slice(&u64::MAX.to_be_bytes());
+        let overflow_path = root.join("overflow.m4a");
+        fs::write(&overflow_path, &overflow_box).expect("write overflow");
+        let _ = parse_audio_file(&overflow_path).expect("parse overflow");
+
+        // 4. Deeply nested container boxes (> 32) must terminate safely.
+        let mut nested = mp4_box(b"mvhd", &mvhd_v0);
+        for _ in 0..48 {
+            nested = mp4_box(b"trak", &nested);
+        }
+        let mut deep_bytes = ftyp;
+        deep_bytes.extend_from_slice(&mp4_box(b"moov", &nested));
+        let deep_path = root.join("deep.m4a");
+        fs::write(&deep_path, &deep_bytes).expect("write deep");
+        let parsed_deep = parse_audio_file(&deep_path).expect("parse deep");
+        assert_eq!(parsed_deep.duration_secs, None);
 
         let _ = fs::remove_dir_all(&root);
     }

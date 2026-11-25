@@ -1,3 +1,8 @@
+//! TUI navigation sidebar rendering source tabs, collections, and server health indicators.
+//!
+//! 1. **Navigation Entries**: Draws search, queue, downloads, listening stats, local albums/folders, and personal/remote playlists.
+//! 2. **Source & Health Badges**: Shows provider icons and live reachability status for configured self-hosted servers.
+
 use crate::app::{App, FocusPane, SidebarEntry, TuiLibrarySource};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};

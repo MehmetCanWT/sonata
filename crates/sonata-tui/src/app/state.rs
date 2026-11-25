@@ -586,6 +586,7 @@ pub enum AppEvent {
     },
     CollectionDownloadFinished {
         title: String,
+        track_ids: Vec<String>,
         saved: usize,
         errors: usize,
     },
@@ -594,10 +595,11 @@ pub enum AppEvent {
         result: Result<String, String>,
     },
     ServerSaved {
-        profiles: Vec<sonata_core::providers::servers::ServerProfile>,
+        profile: sonata_core::providers::servers::ServerProfile,
         message: String,
     },
     ServerBrowseLoaded {
+        req_id: u64,
         server_id: String,
         folder_path: Option<String>,
         libraries: Vec<sonata_core::providers::servers::ServerLibrary>,
@@ -616,7 +618,10 @@ pub enum AppEvent {
         server_id: String,
         report: ServerSpeedTestReport,
     },
-    LocalMusicScanned(LocalScanResult),
+    LocalMusicScanned {
+        req_id: u64,
+        scan: LocalScanResult,
+    },
     StatsDbOpened(Option<StatsDb>),
     StatsLoaded {
         window: StatsWindow,
@@ -949,6 +954,7 @@ impl App {
         if self.config.local_music_enabled {
             self.scan_local_music();
         } else {
+            self.local_scan_req_id = self.local_scan_req_id.wrapping_add(1);
             self.local_scanning = false;
             self.local_scan = LocalScanResult::default();
             self.status_line = "Local Music disabled".to_string();

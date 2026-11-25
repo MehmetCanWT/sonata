@@ -30,6 +30,7 @@ use sha1::{Digest, Sha1};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::Write as _;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8" ?>
 <D:propfind xmlns:D="DAV:">
@@ -151,6 +152,13 @@ fn apply_profile_headers(
     Ok(header_map)
 }
 
+fn is_same_origin(base: &Url, target: &Url) -> bool {
+    base.scheme().eq_ignore_ascii_case(target.scheme())
+        && base.host().is_some()
+        && base.host() == target.host()
+        && base.port_or_known_default() == target.port_or_known_default()
+}
+
 fn resolve_target_url(
     profile: &ServerProfile,
     folder_or_path: Option<&str>,
@@ -169,14 +177,16 @@ fn resolve_target_url(
     let Some(target) = folder_or_path.map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(base_url);
     };
-    if target.starts_with("http://") || target.starts_with("https://") {
-        return Url::parse(target).map_err(|err| {
-            CoreError::invalid_response("webdav", format!("invalid WebDAV target URL: {err}"))
-        });
+    let resolved = base_url.join(target).map_err(|err| {
+        CoreError::invalid_response("webdav", format!("invalid WebDAV target URL: {err}"))
+    })?;
+    if !is_same_origin(&base_url, &resolved) {
+        return Err(CoreError::invalid_response(
+            "webdav",
+            "cross-origin WebDAV URL rejected",
+        ));
     }
-    base_url.join(target).map_err(|err| {
-        CoreError::invalid_response("webdav", format!("invalid WebDAV relative path: {err}"))
-    })
+    Ok(resolved)
 }
 
 async fn send_propfind(
@@ -219,6 +229,7 @@ async fn fetch_url_bytes_bounded(
     range_end_inclusive: Option<usize>,
     max_bytes: usize,
 ) -> Result<Vec<u8>, CoreError> {
+    let validated_url = resolve_target_url(profile, Some(url))?;
     let extra_headers = range_end_inclusive.map(|end| format!("bytes=0-{end}"));
     let extra = extra_headers
         .as_deref()
@@ -226,7 +237,7 @@ async fn fetch_url_bytes_bounded(
         .unwrap_or_default();
     let header_map = apply_profile_headers(profile, &extra)?;
     let mut resp = http
-        .get(url)
+        .get(validated_url)
         .timeout(default_http_timeout())
         .headers(header_map)
         .send()
@@ -295,15 +306,23 @@ async fn cache_authenticated_artwork(
         return image_url.to_string();
     }
 
+    static COVER_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
     let target_clone = target.clone();
     let written = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
         ensure_private_dir(&art_dir)?;
-        let tmp = art_dir.join(format!("{digest}.{ext}.tmp"));
+        let seq = COVER_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp = art_dir.join(format!("{digest}.{ext}.{}.{seq}.tmp", std::process::id()));
         let mut f = create_private_file(&tmp)?;
-        f.write_all(&bytes)?;
-        f.sync_all()?;
+        if let Err(err) = f.write_all(&bytes).and_then(|()| f.sync_all()) {
+            drop(f);
+            let _ = std::fs::remove_file(&tmp);
+            return Err(err);
+        }
         drop(f);
-        std::fs::rename(&tmp, &target_clone)?;
+        if let Err(err) = std::fs::rename(&tmp, &target_clone) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(err);
+        }
         Ok(())
     })
     .await;
@@ -1043,6 +1062,9 @@ pub fn parse_propfind_xml(xml: &str, request_url: &str) -> Result<Vec<WebDavEntr
         let Ok(resolved_url) = base_url.join(href_raw.trim()) else {
             continue;
         };
+        if !is_same_origin(&base_url, &resolved_url) {
+            continue;
+        }
         let entry_path = resolved_url.path().to_string();
         if normalize_path_key(&entry_path) == root_path_key {
             continue;
@@ -1899,5 +1921,46 @@ mod tests {
         ];
         let chosen = choose_lyric_entry(&entries, "track", "track", 1).expect("ttml chosen");
         assert_eq!(chosen.name, "track.ttml");
+    }
+
+    #[test]
+    fn rejects_cross_origin_targets_and_propfind_hrefs() {
+        let profile = test_profile();
+        assert!(resolve_target_url(&profile, Some("https://evil.example/a.flac")).is_err());
+        assert!(resolve_target_url(&profile, Some("//attacker.example/a.flac")).is_err());
+        assert!(resolve_target_url(&profile, Some("http://dav.example.com/a.flac")).is_err());
+        assert!(resolve_target_url(&profile, Some("https://dav.example.com:8443/a.flac")).is_err());
+        let ok = resolve_target_url(
+            &profile,
+            Some("https://dav.example.com/remote.php/dav/files/alice/Music/a.flac"),
+        )
+        .expect("same-origin url allowed");
+        assert_eq!(
+            ok.as_str(),
+            "https://dav.example.com/remote.php/dav/files/alice/Music/a.flac"
+        );
+
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<d:multistatus xmlns:d="DAV:">
+  <d:response>
+    <d:href>https://evil.example/steal-creds.flac</d:href>
+    <d:propstat><d:prop><d:displayname>evil</d:displayname></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+  </d:response>
+  <d:response>
+    <d:href>//attacker.example/proto-rel.flac</d:href>
+    <d:propstat><d:prop><d:displayname>proto</d:displayname></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+  </d:response>
+  <d:response>
+    <d:href>/remote.php/dav/files/alice/Music/good.flac</d:href>
+    <d:propstat><d:prop><d:displayname>good.flac</d:displayname></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+  </d:response>
+</d:multistatus>"#;
+        let entries = parse_propfind_xml(
+            xml,
+            "https://dav.example.com/remote.php/dav/files/alice/Music/",
+        )
+        .expect("propfind parses");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "good.flac");
     }
 }

@@ -160,43 +160,135 @@ async fn download_and_cache_motion_mp4(
     transcode_hls_via_ffmpeg(&variant_url, cache_path).await
 }
 
+fn build_ffmpeg_hls_remux_attempts(hls_url: &str, out_path: &Path) -> Vec<Vec<String>> {
+    let out = out_path.to_string_lossy().into_owned();
+    let vf = "scale=480:480:force_original_aspect_ratio=increase:flags=lanczos,crop=480:480";
+    vec![
+        vec![
+            "-y".to_string(),
+            "-v".to_string(),
+            "error".to_string(),
+            "-i".to_string(),
+            hls_url.to_string(),
+            "-t".to_string(),
+            "5.0".to_string(),
+            "-an".to_string(),
+            "-c:v".to_string(),
+            "libx264".to_string(),
+            "-preset".to_string(),
+            "ultrafast".to_string(),
+            "-crf".to_string(),
+            "23".to_string(),
+            "-vf".to_string(),
+            vf.to_string(),
+            "-movflags".to_string(),
+            "+faststart".to_string(),
+            "-f".to_string(),
+            "mp4".to_string(),
+            out.clone(),
+        ],
+        vec![
+            "-y".to_string(),
+            "-v".to_string(),
+            "error".to_string(),
+            "-i".to_string(),
+            hls_url.to_string(),
+            "-t".to_string(),
+            "5.0".to_string(),
+            "-an".to_string(),
+            "-c:v".to_string(),
+            "libopenh264".to_string(),
+            "-vf".to_string(),
+            vf.to_string(),
+            "-movflags".to_string(),
+            "+faststart".to_string(),
+            "-f".to_string(),
+            "mp4".to_string(),
+            out.clone(),
+        ],
+        vec![
+            "-y".to_string(),
+            "-v".to_string(),
+            "error".to_string(),
+            "-i".to_string(),
+            hls_url.to_string(),
+            "-t".to_string(),
+            "5.0".to_string(),
+            "-an".to_string(),
+            "-c:v".to_string(),
+            "mpeg4".to_string(),
+            "-q:v".to_string(),
+            "5".to_string(),
+            "-vf".to_string(),
+            vf.to_string(),
+            "-movflags".to_string(),
+            "+faststart".to_string(),
+            "-f".to_string(),
+            "mp4".to_string(),
+            out.clone(),
+        ],
+        vec![
+            "-y".to_string(),
+            "-v".to_string(),
+            "error".to_string(),
+            "-i".to_string(),
+            hls_url.to_string(),
+            "-t".to_string(),
+            "5.0".to_string(),
+            "-an".to_string(),
+            "-c:v".to_string(),
+            "copy".to_string(),
+            "-movflags".to_string(),
+            "+faststart".to_string(),
+            "-f".to_string(),
+            "mp4".to_string(),
+            out,
+        ],
+    ]
+}
+
+fn is_ffmpeg_encoder_failure(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    lower.contains("unknown encoder")
+        || lower.contains("encoder")
+        || lower.contains("codec")
+        || lower.contains("libx264")
+        || lower.contains("libopenh264")
+}
+
 async fn transcode_hls_via_ffmpeg(hls_url: &str, cache_path: &Path) -> Option<()> {
     if let Some(parent) = cache_path.parent() {
         let _ = tokio::fs::create_dir_all(parent).await;
     }
     let tmp = cache_path.with_extension("mp4.tmp");
     let ffmpeg_bin = resolve_distro_binary("ffmpeg");
-    let mut cmd = tokio::process::Command::new(&ffmpeg_bin);
-    cmd.args([
-        "-y",
-        "-v",
-        "error",
-        "-i",
-        hls_url,
-        "-t",
-        "5.0",
-        "-an",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "ultrafast",
-        "-crf",
-        "23",
-        "-vf",
-        "scale=480:480:force_original_aspect_ratio=increase:flags=lanczos,crop=480:480",
-        &tmp.to_string_lossy(),
-    ])
-    .stdin(Stdio::null())
-    .stdout(Stdio::null())
-    .stderr(Stdio::null())
-    .kill_on_drop(true);
+    let attempts = build_ffmpeg_hls_remux_attempts(hls_url, &tmp);
 
-    let ok = tokio::time::timeout(Duration::from_secs(12), cmd.status())
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .is_some_and(|s| s.success());
-    if !ok {
+    let mut succeeded = false;
+    for args in attempts {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        let mut cmd = tokio::process::Command::new(&ffmpeg_bin);
+        cmd.args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+
+        let Ok(Ok(output)) = tokio::time::timeout(Duration::from_secs(12), cmd.output()).await
+        else {
+            break;
+        };
+        if output.status.success() {
+            succeeded = true;
+            break;
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !is_ffmpeg_encoder_failure(&stderr) {
+            break;
+        }
+    }
+
+    if !succeeded {
         let _ = tokio::fs::remove_file(&tmp).await;
         return None;
     }
@@ -284,4 +376,30 @@ async fn decode_mp4_via_ffmpeg_pipe(
         fps,
         frames_rgba,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ffmpeg_hls_attempts_pass_mp4_format_before_tmp_path_and_include_fallbacks() {
+        let out = Path::new("/tmp/motion_abc.mp4.tmp");
+        let attempts = build_ffmpeg_hls_remux_attempts("https://example.com/loop.m3u8", out);
+        assert_eq!(attempts.len(), 4);
+
+        for attempt in &attempts {
+            let len = attempt.len();
+            assert!(len >= 3);
+            assert_eq!(attempt[len - 3], "-f");
+            assert_eq!(attempt[len - 2], "mp4");
+            assert_eq!(attempt[len - 1], out.to_string_lossy());
+        }
+
+        assert!(attempts[0].windows(2).any(|w| w == ["-c:v", "libx264"]));
+        assert!(attempts[1].windows(2).any(|w| w == ["-c:v", "libopenh264"]));
+        assert!(attempts[2].windows(2).any(|w| w == ["-c:v", "mpeg4"]));
+        assert!(attempts[3].windows(2).any(|w| w == ["-c:v", "copy"]));
+        assert!(!attempts[3].iter().any(|arg| arg == "-vf"));
+    }
 }

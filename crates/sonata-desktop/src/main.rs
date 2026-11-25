@@ -274,6 +274,7 @@ fn open_main_window(
     let backend_close = backend.clone();
     let backend_view = backend.clone();
     let slot_close = window_slot.clone();
+    let slot_view = window_slot.clone();
     let scheme_override = launch.scheme_override;
     let decorated = launch.decorated;
 
@@ -286,7 +287,16 @@ fn open_main_window(
             backend_close.send(BackendCmd::SetWindowVisible(false));
             true
         });
-        cx.new(|cx| SonataDesktopView::new(backend_view, decorated, scheme_override, window, cx))
+        cx.new(|cx| {
+            SonataDesktopView::new(
+                backend_view,
+                decorated,
+                scheme_override,
+                slot_view,
+                window,
+                cx,
+            )
+        })
     }) {
         Ok((handle, _view)) => {
             *window_slot.borrow_mut() = Some(handle);
@@ -348,9 +358,22 @@ fn main() -> anyhow::Result<()> {
                         UiWindowCmd::ShowWindow => {
                             let existing = *slot_loop.borrow();
                             if let Some(handle) = existing {
-                                let _ = handle.update(cx, |_, window, _| {
-                                    window.activate_window();
-                                });
+                                if handle
+                                    .update(cx, |_, window, _| {
+                                        window.activate_window();
+                                    })
+                                    .is_err()
+                                {
+                                    *slot_loop.borrow_mut() = None;
+                                    backend_loop.send(BackendCmd::SetWindowAddress(None));
+                                    backend_loop.send(BackendCmd::SetWindowVisible(false));
+                                    open_main_window(
+                                        backend_loop.clone(),
+                                        launch_loop.clone(),
+                                        slot_loop.clone(),
+                                        cx,
+                                    );
+                                }
                             } else {
                                 open_main_window(
                                     backend_loop.clone(),
@@ -371,14 +394,24 @@ fn main() -> anyhow::Result<()> {
                             }
                         }
                         UiWindowCmd::ToggleWindow => {
-                            let existing = *slot_loop.borrow();
+                            let existing = slot_loop.borrow_mut().take();
                             if let Some(handle) = existing {
-                                slot_loop.borrow_mut().take();
-                                let _ = handle.update(cx, |_, window, _| {
-                                    window.remove_window();
-                                });
-                                backend_loop.send(BackendCmd::SetWindowAddress(None));
-                                backend_loop.send(BackendCmd::SetWindowVisible(false));
+                                if handle
+                                    .update(cx, |_, window, _| {
+                                        window.remove_window();
+                                    })
+                                    .is_ok()
+                                {
+                                    backend_loop.send(BackendCmd::SetWindowAddress(None));
+                                    backend_loop.send(BackendCmd::SetWindowVisible(false));
+                                } else {
+                                    open_main_window(
+                                        backend_loop.clone(),
+                                        launch_loop.clone(),
+                                        slot_loop.clone(),
+                                        cx,
+                                    );
+                                }
                             } else {
                                 open_main_window(
                                     backend_loop.clone(),

@@ -1,3 +1,8 @@
+//! Cancellation-scoped async task management for playback resolution and precaching.
+//!
+//! 1. **PlaybackTask**: Detached result handle supporting non-blocking `try_take` and explicit `abort` across restarts.
+//! 2. **PlaybackTaskSet**: `CancellationToken`-scoped `JoinSet` providing atomic `restart` and bounded `shutdown`.
+
 use std::future::Future;
 use std::time::Duration;
 use tokio::sync::oneshot;

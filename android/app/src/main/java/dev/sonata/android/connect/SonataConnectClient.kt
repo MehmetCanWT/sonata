@@ -395,9 +395,16 @@ object SonataConnectCrypto {
  *   `/connect/command`) via OkHttp with HMAC-SHA1 request signing.
  */
 class SonataConnectClient(
-    private val localDeviceId: String,
+    private val localDeviceIdProvider: () -> String,
     private val httpClient: OkHttpClient = defaultHttpClient(),
 ) {
+    constructor(
+        localDeviceId: String,
+        httpClient: OkHttpClient = defaultHttpClient(),
+    ) : this(
+        localDeviceIdProvider = { localDeviceId },
+        httpClient = httpClient,
+    )
     private val beaconsLock = Any()
     private val beaconsById = LinkedHashMap<String, ConnectBeacon>()
     private val _discoveredDevices = MutableStateFlow<List<ConnectBeacon>>(emptyList())
@@ -448,7 +455,7 @@ class SonataConnectClient(
         nowMs: Long = System.currentTimeMillis(),
     ): ConnectBeacon? {
         val beacon = ConnectBeacon.fromJson(rawJson, senderHost, nowMs) ?: return null
-        if (beacon.deviceId == localDeviceId) return null
+        if (beacon.deviceId == localDeviceIdProvider()) return null
         synchronized(beaconsLock) {
             beaconsById[beacon.deviceId] = beacon
             pruneStaleBeaconsLocked(nowMs)
@@ -501,7 +508,7 @@ class SonataConnectClient(
             val cleanPin = pin.trim()
             require(SonataConnectCrypto.isValidPin(cleanPin)) { "Pairing PIN must be 6 digits" }
             val payload = PairRequest(
-                clientDeviceId = localDeviceId,
+                clientDeviceId = localDeviceIdProvider(),
                 clientDeviceName = clientDeviceName.trim().ifEmpty { DEFAULT_DEVICE_NAME },
                 pin = cleanPin,
             ).toJson()
@@ -528,7 +535,7 @@ class SonataConnectClient(
             val url = "${normalizeBaseUrl(baseUrl)}/connect/state"
             val builder = Request.Builder()
                 .url(url)
-                .header(HEADER_DEVICE_ID, localDeviceId)
+                .header(HEADER_DEVICE_ID, localDeviceIdProvider())
                 .get()
             if (!sharedSecret.isNullOrBlank()) {
                 val timestamp = System.currentTimeMillis().toString()
@@ -557,7 +564,7 @@ class SonataConnectClient(
             val timestamp = System.currentTimeMillis().toString()
             val request = Request.Builder()
                 .url("${normalizeBaseUrl(baseUrl)}/connect/command")
-                .header(HEADER_DEVICE_ID, localDeviceId)
+                .header(HEADER_DEVICE_ID, localDeviceIdProvider())
                 .header(HEADER_TIMESTAMP, timestamp)
                 .header(HEADER_SIGNATURE, signature)
                 .post(bodyJson.toRequestBody(JSON_MEDIA_TYPE))

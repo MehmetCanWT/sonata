@@ -1,7 +1,9 @@
 package dev.sonata.android.data
 
+import androidx.annotation.OptIn
 import androidx.compose.runtime.Immutable
 import androidx.media3.common.C
+import androidx.media3.common.util.UnstableApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -123,6 +125,7 @@ fun stripServerLabelsFromBadge(badge: String): String {
  * Maps a Media3 [C.PcmEncoding] constant to integer bit depth (`8`, `16`, `24`, `32`),
  * or `0` when unknown/unset.
  */
+@OptIn(UnstableApi::class)
 fun pcmEncodingToBitDepth(pcmEncoding: Int): Int = when (pcmEncoding) {
     C.ENCODING_PCM_8BIT -> 8
     C.ENCODING_PCM_16BIT, C.ENCODING_PCM_16BIT_BIG_ENDIAN -> 16

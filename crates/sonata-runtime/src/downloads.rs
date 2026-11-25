@@ -130,8 +130,15 @@ pub fn copy_atomic_file(source_path: &Path, target_path: &Path) -> Result<u64> {
     Ok(copied)
 }
 
-/// Removes leftover `.tmp` files inside `audio/` and `artwork/` subdirectories.
+const STALE_TMP_MAX_AGE: Duration = Duration::from_secs(10 * 60);
+
+/// Removes leftover `.tmp` files inside `audio/` and `artwork/` subdirectories older than 10 minutes.
 pub fn cleanup_stale_tmp_files(root: &Path) -> usize {
+    cleanup_stale_tmp_files_older_than(root, STALE_TMP_MAX_AGE)
+}
+
+fn cleanup_stale_tmp_files_older_than(root: &Path, max_age: Duration) -> usize {
+    let now = SystemTime::now();
     let mut removed = 0;
     for subdir in [AUDIO_SUBDIR, ARTWORK_SUBDIR] {
         let dir = root.join(subdir);
@@ -144,7 +151,17 @@ pub fn cleanup_stale_tmp_files(root: &Path) -> usize {
                 .extension()
                 .and_then(|ext| ext.to_str())
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp"));
-            if is_tmp && path.is_file() && fs::remove_file(&path).is_ok() {
+            if !is_tmp {
+                continue;
+            }
+            let is_stale = path
+                .metadata()
+                .ok()
+                .filter(|m| m.is_file())
+                .and_then(|m| m.modified().ok())
+                .and_then(|modified| now.duration_since(modified).ok())
+                .is_some_and(|age| age >= max_age);
+            if is_stale && fs::remove_file(&path).is_ok() {
                 removed += 1;
             }
         }
@@ -1344,8 +1361,20 @@ mod tests {
 
         let stale_audio_tmp = dir.path().join(AUDIO_SUBDIR).join("leftover.opus.1.tmp");
         let stale_art_tmp = dir.path().join(ARTWORK_SUBDIR).join("leftover.png.2.tmp");
+        let active_audio_tmp = dir.path().join(AUDIO_SUBDIR).join("active.opus.3.tmp");
         fs::write(&stale_audio_tmp, b"partial").expect("write stale audio tmp");
         fs::write(&stale_art_tmp, b"partial").expect("write stale art tmp");
+        fs::write(&active_audio_tmp, b"active-partial").expect("write active audio tmp");
+
+        let stale_time = SystemTime::now() - Duration::from_secs(15 * 60);
+        for stale in [&stale_audio_tmp, &stale_art_tmp] {
+            OpenOptions::new()
+                .write(true)
+                .open(stale)
+                .expect("open stale tmp")
+                .set_modified(stale_time)
+                .expect("backdate stale tmp mtime");
+        }
 
         let target = dir.path().join(AUDIO_SUBDIR).join("atomic_track.m4a");
         write_atomic_file(&target, b"first-version").expect("atomic write 1");
@@ -1356,6 +1385,7 @@ mod tests {
         assert_eq!(removed, 2);
         assert!(!stale_audio_tmp.exists());
         assert!(!stale_art_tmp.exists());
+        assert!(active_audio_tmp.exists());
 
         // Also test replacing track container removes obsolete audio file cleanly.
         let input_m4a = DownloadTrackInput {

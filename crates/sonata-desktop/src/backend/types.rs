@@ -775,8 +775,7 @@ pub(super) enum InternalEvent {
         result: Result<String, String>,
     },
     ServerSaved {
-        profiles: Vec<ServerProfile>,
-        active_id: String,
+        profile: ServerProfile,
         message: String,
     },
     ServerBrowseLoaded {
@@ -798,7 +797,10 @@ pub(super) enum InternalEvent {
         server_id: String,
         report: ServerSpeedTestReport,
     },
-    LocalMusicScanned(LocalScanResult),
+    LocalMusicScanned {
+        req_id: u64,
+        scan: LocalScanResult,
+    },
     PersonalPlaylistsLoaded(Vec<PersonalPlaylist>),
     StatsDbOpened(Option<sonata_core::stats::StatsDb>),
     StatsLoaded {

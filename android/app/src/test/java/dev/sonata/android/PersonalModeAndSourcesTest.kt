@@ -4,15 +4,38 @@ import android.Manifest
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.SharedPreferences
+import dev.sonata.android.connect.ConnectController
+import dev.sonata.android.connect.ConnectSecretStore
+import dev.sonata.android.connect.SonataConnectClient
 import dev.sonata.android.data.AppLanguage
 import dev.sonata.android.data.AudioQualityTier
 import dev.sonata.android.data.LocalAudioTrack
 import dev.sonata.android.data.LocalMusicScanner
+import dev.sonata.android.data.SonataDownloadManager
 import dev.sonata.android.data.SonataPreferences
 import dev.sonata.android.data.SonataSettingsState
+import dev.sonata.android.data.isLocalTrackId
 import dev.sonata.android.data.isPersonalTrackId
 import dev.sonata.android.data.resolveLocalBitrateKbps
+import dev.sonata.android.data.resolveYtmFallbackCoverUrl
 import dev.sonata.android.ui.components.filterEditablePlaylistsForTargets
+import dev.sonata.android.viewmodel.shouldCreatePersonalPlaylist
+import dev.sonata.android.viewmodel.shouldSyncLikeToYtm
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
+import java.io.BufferedReader
+import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.io.InputStreamReader
+import java.net.ServerSocket
+import java.nio.charset.StandardCharsets
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.concurrent.thread
 import dev.sonata.android.ui.i18n.EnglishSourcesStrings
 import dev.sonata.android.ui.i18n.RussianSourcesStrings
 import dev.sonata.android.ui.i18n.TurkishSourcesStrings
@@ -648,5 +671,180 @@ class PersonalModeAndSourcesTest {
         )
         assertEquals("matched_local:123", matchId)
         assertEquals(listOf("local:123"), gateway.ytmAttributionLog.map { it.id })
+    }
+
+    @Test
+    fun `private local, server, and personal IDs never leak to YTM cover URLs or like sync`() {
+        val privateBlockedIds = listOf(
+            "",
+            "   ",
+            "local:42",
+            "LOCAL:99",
+            "local:album:500",
+            "jellyfin:srv1:item1",
+            "subsonic:srv2:item2",
+            "smb:nas:/Music/track.flac",
+            "webdav:cloud:/Audio/song.opus",
+            "personal:p1",
+        )
+        privateBlockedIds.forEach { id ->
+            assertNull("Expected null fallback cover for '$id'", resolveYtmFallbackCoverUrl(id, personalOnlyMode = false))
+            assertFalse("Expected YTM like sync blocked for '$id'", shouldSyncLikeToYtm(id, personalOnlyMode = false))
+        }
+        // JioSaavn IDs must never build i.ytimg.com/<raw-id> cover URLs, and must block YTM sync under Personal Only Mode.
+        assertNull(resolveYtmFallbackCoverUrl("jiosaavn:xyz123", personalOnlyMode = false))
+        assertTrue(shouldSyncLikeToYtm("jiosaavn:xyz123", personalOnlyMode = false))
+        assertFalse(shouldSyncLikeToYtm("jiosaavn:xyz123", personalOnlyMode = true))
+
+        // Valid YTM video ID works online, but is blocked under Personal Only Mode
+        assertEquals(
+            "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+            resolveYtmFallbackCoverUrl("dQw4w9WgXcQ", personalOnlyMode = false),
+        )
+        assertNull(resolveYtmFallbackCoverUrl("dQw4w9WgXcQ", personalOnlyMode = true))
+        assertTrue(shouldSyncLikeToYtm("dQw4w9WgXcQ", personalOnlyMode = false))
+        assertFalse(shouldSyncLikeToYtm("dQw4w9WgXcQ", personalOnlyMode = true))
+
+        assertTrue(isLocalTrackId("local:42"))
+        assertTrue(isLocalTrackId("LOCAL:album:12"))
+        assertFalse(isLocalTrackId("smb:nas:/a.flac"))
+        assertFalse(isLocalTrackId("dQw4w9WgXcQ"))
+
+        val dm = SonataDownloadManager(FakePreferencesContext())
+        assertNull(dm.resolveCoverUrl("smb:nas:/Music/a.flac", null))
+        assertNull(dm.resolveCoverUrl("jellyfin:srv:1", ""))
+        assertNull(dm.resolveCoverUrl("local:12", null))
+        assertEquals("https://example.com/art.jpg", dm.resolveCoverUrl("smb:nas:/a.flac", "https://example.com/art.jpg"))
+        assertEquals("https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg", dm.resolveCoverUrl("dQw4w9WgXcQ", null))
+    }
+
+    @Test
+    fun `createPersonalPlaylist forces personal playlist creation even when signed in`() {
+        assertTrue(shouldCreatePersonalPlaylist(forcePersonal = true, hasPersonalTrack = false, signedIn = true))
+        assertTrue(shouldCreatePersonalPlaylist(forcePersonal = false, hasPersonalTrack = true, signedIn = true))
+        assertTrue(shouldCreatePersonalPlaylist(forcePersonal = false, hasPersonalTrack = false, signedIn = false))
+        assertFalse(shouldCreatePersonalPlaylist(forcePersonal = false, hasPersonalTrack = false, signedIn = true))
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun `ConnectController defers secret store reads off caller thread during construction`() = runTest {
+        var pairedIdsReadCount = 0
+        val countingStore = object : ConnectSecretStore {
+            override fun getSecret(deviceId: String): String? = null
+            override fun saveSecret(deviceId: String, secret: String) = Unit
+            override fun removeSecret(deviceId: String) = Unit
+            override fun pairedDeviceIds(): Set<String> {
+                pairedIdsReadCount++
+                return setOf("desktop-1")
+            }
+        }
+        val testDispatcher = StandardTestDispatcher(testScheduler)
+        val controllerScope = CoroutineScope(SupervisorJob() + testDispatcher)
+        try {
+            val controller = ConnectController(
+                client = SonataConnectClient(localDeviceIdProvider = { "android-1" }),
+                secretStore = countingStore,
+                scope = controllerScope,
+                deviceNameProvider = { "Pixel 9" },
+                ioDispatcher = testDispatcher,
+            )
+            // Constructor must not synchronously read SharedPreferences on caller thread
+            assertEquals(0, pairedIdsReadCount)
+            assertTrue(controller.state.value.pairedDeviceIds.isEmpty())
+
+            advanceUntilIdle()
+            assertEquals(1, pairedIdsReadCount)
+            assertEquals(setOf("desktop-1"), controller.state.value.pairedDeviceIds)
+            controller.close()
+        } finally {
+            controllerScope.cancel()
+        }
+    }
+
+    @Test
+    fun `chunked download forwards extra headers and fails on 0-byte 2xx EOF instead of looping`() = runTest {
+        val seenCustomHeader = AtomicReference<String?>(null)
+        val returnEmptyBody = AtomicBoolean(false)
+        val payload = "HelloChunkedAudio".toByteArray(StandardCharsets.UTF_8)
+
+        val server = ServerSocket(0)
+        val serverThread = thread(isDaemon = true) {
+            while (!server.isClosed) {
+                val socket = runCatching { server.accept() }.getOrNull() ?: break
+                socket.use { s ->
+                    val reader = BufferedReader(InputStreamReader(s.getInputStream(), StandardCharsets.US_ASCII))
+                    reader.readLine() // request line
+                    while (true) {
+                        val line = reader.readLine() ?: break
+                        if (line.isEmpty()) break
+                        val colon = line.indexOf(':')
+                        if (colon > 0 && line.substring(0, colon).trim().equals("X-Test-Header", ignoreCase = true)) {
+                            seenCustomHeader.set(line.substring(colon + 1).trim())
+                        }
+                    }
+                    val out = s.getOutputStream()
+                    if (returnEmptyBody.get()) {
+                        out.write(
+                            (
+                                "HTTP/1.1 200 OK\r\n" +
+                                    "Content-Length: 0\r\n" +
+                                    "Connection: close\r\n\r\n"
+                                ).toByteArray(StandardCharsets.US_ASCII),
+                        )
+                        out.flush()
+                    } else {
+                        out.write(
+                            (
+                                "HTTP/1.1 206 Partial Content\r\n" +
+                                    "Content-Length: ${payload.size}\r\n" +
+                                    "Connection: close\r\n\r\n"
+                                ).toByteArray(StandardCharsets.US_ASCII),
+                        )
+                        out.write(payload)
+                        out.flush()
+                    }
+                }
+            }
+        }
+        try {
+            val dm = SonataDownloadManager(FakePreferencesContext())
+            val url = "http://127.0.0.1:${server.localPort}/audio"
+            val out = ByteArrayOutputStream()
+            val written = dm.streamChunkedHttpRanges(
+                streamUrl = url,
+                parsedUri = null,
+                knownTotal = payload.size.toLong(),
+                chunkSize = 1024L,
+                output = out,
+                headers = mapOf("X-Test-Header" to "sonata-header-ok"),
+                cancelFlag = AtomicBoolean(false),
+                onProgress = { _, _ -> },
+            )
+            assertEquals(payload.size.toLong(), written)
+            assertEquals("HelloChunkedAudio", out.toString("UTF-8"))
+            assertEquals("sonata-header-ok", seenCustomHeader.get())
+
+            returnEmptyBody.set(true)
+            var threw = false
+            try {
+                dm.streamChunkedHttpRanges(
+                    streamUrl = url,
+                    parsedUri = null,
+                    knownTotal = 100L,
+                    chunkSize = 50L,
+                    output = ByteArrayOutputStream(),
+                    headers = emptyMap(),
+                    cancelFlag = AtomicBoolean(false),
+                    onProgress = { _, _ -> },
+                )
+            } catch (e: IOException) {
+                threw = e.message?.contains("0-byte EOF") == true
+            }
+            assertTrue("Expected IOException on 0-byte 2xx EOF", threw)
+        } finally {
+            runCatching { server.close() }
+            serverThread.join(2_000L)
+        }
     }
 }

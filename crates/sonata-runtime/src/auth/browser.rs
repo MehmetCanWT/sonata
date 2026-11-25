@@ -404,6 +404,44 @@ fn is_valid_ytdlp_browser(browser: &str) -> bool {
             .any(|spec| !spec.is_gecko && spec.ytdlp_name == browser)
 }
 
+struct TempFileGuard(PathBuf);
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn format_ytdlp_cookie_arg(
+    browser: &str,
+    profile_dir: Option<&Path>,
+    home_dir: Option<&Path>,
+) -> String {
+    match profile_dir {
+        Some(dir) if !home_dir.is_some_and(|home| dir.starts_with(home.join(".config"))) => {
+            format!("{browser}:{}", dir.to_string_lossy())
+        }
+        _ => browser.to_string(),
+    }
+}
+
+fn filter_chromium_cookie_dump(
+    browser: &str,
+    content: &str,
+    jar_path: &Path,
+) -> Option<ExtractedCookies> {
+    let rows = parse_netscape_cookies(content);
+    if rows.is_empty() {
+        return None;
+    }
+    let out = build_from_rows(browser, &rows, Some(jar_path));
+    if out.has_ytm_auth() || out.has_spotify_auth() {
+        Some(out)
+    } else {
+        None
+    }
+}
+
 fn try_chromium_via_ytdlp(browser: &str, profile_dir: Option<&Path>) -> Option<ExtractedCookies> {
     if !is_valid_ytdlp_browser(browser) {
         tracing::warn!(
@@ -416,14 +454,12 @@ fn try_chromium_via_ytdlp(browser: &str, profile_dir: Option<&Path>) -> Option<E
     let cache_dir = AppConfig::cache_dir();
     ensure_private_dir(&cache_dir).ok()?;
     let cache_file = cache_dir.join(format!("cookies_{browser}.txt"));
+    let _ = fs::remove_file(&cache_file);
     let _ = create_private_file(&cache_file).ok()?;
+    let _tmp_guard = TempFileGuard(cache_file.clone());
 
-    let cookie_arg = match profile_dir {
-        Some(dir) if !dir.to_string_lossy().contains("/.config/") => {
-            format!("{browser}:{}", dir.to_string_lossy())
-        }
-        _ => browser.to_string(),
-    };
+    let home = dirs::home_dir();
+    let cookie_arg = format_ytdlp_cookie_arg(browser, profile_dir, home.as_deref());
 
     let ytdlp_bin = resolve_distro_binary("yt-dlp");
     let mut child = Command::new(&ytdlp_bin)
@@ -463,20 +499,18 @@ fn try_chromium_via_ytdlp(browser: &str, profile_dir: Option<&Path>) -> Option<E
         }
     }?;
 
-    if !status.success() && !cache_file.exists() {
+    if !status.success() {
         return None;
     }
 
     #[cfg(unix)]
     let _ = fs::set_permissions(&cache_file, fs::Permissions::from_mode(0o600));
     let content = fs::read_to_string(&cache_file).ok()?;
-    let rows = parse_netscape_cookies(&content);
-    let jar_path = cache_dir.join("yt_cookies.txt");
-    let mut out = build_from_rows(browser, &rows, Some(&jar_path));
-    if out.has_ytm_auth() {
-        out.netscape_file = Some(cache_file);
+    if content.trim().is_empty() {
+        return None;
     }
-    Some(out)
+    let jar_path = cache_dir.join("yt_cookies.txt");
+    filter_chromium_cookie_dump(browser, &content, &jar_path)
 }
 
 #[cfg(test)]
@@ -515,5 +549,61 @@ mod tests {
             }
         }
         assert!(!dir.exists());
+    }
+
+    #[test]
+    fn snap_brave_path_is_not_stripped_by_dot_config_check() {
+        let home = Path::new("/home/alice");
+        let snap_brave =
+            Path::new("/home/alice/snap/brave/current/.config/BraveSoftware/Brave-Browser");
+        assert_eq!(
+            format_ytdlp_cookie_arg("brave", Some(snap_brave), Some(home)),
+            format!("brave:{}", snap_brave.display())
+        );
+
+        let flatpak_brave =
+            Path::new("/home/alice/.var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser");
+        assert_eq!(
+            format_ytdlp_cookie_arg("brave", Some(flatpak_brave), Some(home)),
+            format!("brave:{}", flatpak_brave.display())
+        );
+
+        let standard_brave = Path::new("/home/alice/.config/BraveSoftware/Brave-Browser");
+        assert_eq!(
+            format_ytdlp_cookie_arg("brave", Some(standard_brave), Some(home)),
+            "brave"
+        );
+    }
+
+    #[test]
+    fn filter_chromium_cookie_dump_rejects_empty_and_points_to_filtered_jar() {
+        let seq = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "sonata_chromium_filter_{}_{}",
+            std::process::id(),
+            seq
+        ));
+        let guard = TempDirGuard::new(dir.clone()).expect("create temp dir");
+        let jar_path = guard.path().join("yt_cookies.txt");
+
+        assert!(filter_chromium_cookie_dump("brave", "", &jar_path).is_none());
+        assert!(filter_chromium_cookie_dump(
+            "brave",
+            ".unrelated.org\tTRUE\t/\tTRUE\t1900000000\tSID\tabc\n",
+            &jar_path
+        )
+        .is_none());
+
+        let mixed_dump = concat!(
+            ".unrelated.org\tTRUE\t/\tTRUE\t1900000000\tSECRET\tshould_not_leak\n",
+            ".youtube.com\tTRUE\t/\tTRUE\t1900000000\tSAPISID\tsapi_val\n",
+            ".youtube.com\tTRUE\t/\tTRUE\t1900000000\tSID\tsid_val\n",
+        );
+        let out =
+            filter_chromium_cookie_dump("brave", mixed_dump, &jar_path).expect("valid ytm auth");
+        assert_eq!(out.netscape_file.as_deref(), Some(jar_path.as_path()));
+        let filtered_text = fs::read_to_string(&jar_path).expect("read filtered jar");
+        assert!(filtered_text.contains("SAPISID"));
+        assert!(!filtered_text.contains("should_not_leak"));
     }
 }

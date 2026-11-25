@@ -37,10 +37,13 @@ use std::io::Write as _;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::process::Command;
 use tokio::sync::Semaphore;
+
+static JS_RUNTIMES_UNSUPPORTED: AtomicBool = AtomicBool::new(false);
 
 const FAST_START_TIMEOUT: Duration = Duration::from_millis(2400);
 const MAX_CONCURRENT_PREFETCHES: usize = 4;
@@ -186,6 +189,11 @@ impl LinuxStreamResolver {
 
     pub fn needs_hifi_upgrade(badge: &str, url: &str) -> bool {
         StreamResolver::needs_hifi_upgrade(badge, url)
+    }
+
+    /// Returns whether lookahead precaching is permitted for `profile` and `allow_hifi`.
+    pub const fn precache_policy_allows(profile: &ResolverProfile, allow_hifi: bool) -> bool {
+        profile.cache_enabled() && (allow_hifi || profile.jiosaavn_enabled)
     }
 
     pub async fn warm(&self) {
@@ -505,7 +513,7 @@ impl LinuxStreamResolver {
         }
 
         let profile = self.profile();
-        if !profile.cache_enabled() || !allow_hifi {
+        if !Self::precache_policy_allows(&profile, allow_hifi) {
             return None;
         }
         if let Some(local) = self.core.cached_audio_stream_for(&track.id).await {
@@ -535,7 +543,7 @@ impl LinuxStreamResolver {
         };
         let result = async {
             let fast = self.resolve_fast(track).await.ok()?;
-            if let Some(upgraded) = self.resolve_hifi_upgrade(track, &fast, true).await {
+            if let Some(upgraded) = self.resolve_hifi_upgrade(track, &fast, allow_hifi).await {
                 Some(upgraded)
             } else {
                 self.core.cached_audio_stream_for(&track.id).await
@@ -785,23 +793,14 @@ impl LinuxStreamResolver {
         );
 
         let ytdlp_bin = resolve_distro_binary("yt-dlp");
-        let mut command = Command::new(&ytdlp_bin);
-        command.kill_on_drop(true);
-        command.args([
-            "--no-playlist",
-            "--no-warnings",
-            "--quiet",
-            "--socket-timeout",
-            "5",
-        ]);
-        if let Some(runtime) = tokio::task::spawn_blocking(detect_js_runtime)
-            .await
-            .ok()
-            .flatten()
-        {
-            command.arg("--js-runtimes").arg(runtime);
-            tracing::debug!("[sonata:resolver] yt-dlp js-runtime={runtime}");
-        }
+        let js_runtime = if JS_RUNTIMES_UNSUPPORTED.load(Ordering::Relaxed) {
+            None
+        } else {
+            tokio::task::spawn_blocking(detect_js_runtime_arg)
+                .await
+                .ok()
+                .flatten()
+        };
         let format_selector = match (track.source, prefer_fast_start) {
             (ProviderSource::YouTubeMusic, true) => "140/251/141/774",
             (ProviderSource::YouTubeMusic, false) => "774/141/251/140",
@@ -815,25 +814,52 @@ impl LinuxStreamResolver {
             }
             ProviderSource::Spotify => "%(acodec)s|%(abr)s|%(audio_ext)s|%(format_id)s|%(url)s",
         };
-        command.args(["-f", format_selector, "--print", output_template]);
         let mut cookie_guard = None;
-        if use_cookies {
+        let cookie_path = if use_cookies {
             if let Some(cookie_file) = self.core.cookies().netscape_file.clone() {
                 if let Some(run_copy) = copy_cookie_file_private(cookie_file).await {
-                    command.arg("--cookies").arg(&run_copy);
-                    cookie_guard = Some(TempFileGuard(run_copy));
+                    cookie_guard = Some(TempFileGuard(run_copy.clone()));
+                    Some(run_copy)
+                } else {
+                    None
                 }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let mut output = run_ytdlp_invocation(
+            &ytdlp_bin,
+            js_runtime,
+            format_selector,
+            output_template,
+            cookie_path.as_deref(),
+            &target_url,
+            use_cookies,
+        )
+        .await?;
+
+        if !output.status.success() && js_runtime.is_some() {
+            let stderr_raw = String::from_utf8_lossy(&output.stderr);
+            if is_js_runtimes_unsupported_stderr(&stderr_raw) {
+                JS_RUNTIMES_UNSUPPORTED.store(true, Ordering::Relaxed);
+                tracing::info!(
+                    "[sonata:resolver] yt-dlp does not support --js-runtimes; caching and retrying without it"
+                );
+                output = run_ytdlp_invocation(
+                    &ytdlp_bin,
+                    None,
+                    format_selector,
+                    output_template,
+                    cookie_path.as_deref(),
+                    &target_url,
+                    use_cookies,
+                )
+                .await?;
             }
         }
-        command.arg("--").arg(&target_url);
-
-        tracing::debug!(
-            "[sonata:resolver] method=yt-dlp attempt=1/1 cookies={}",
-            if use_cookies { "present" } else { "none" }
-        );
-        let output = tokio::time::timeout(Duration::from_secs(8), command.output())
-            .await
-            .map_err(|_| anyhow!("yt-dlp timed out while resolving stream"))??;
         drop(cookie_guard);
         if !output.status.success() {
             let error = String::from_utf8_lossy(&output.stderr);
@@ -905,22 +931,103 @@ async fn copy_cookie_file_private(cookie_file: PathBuf) -> Option<PathBuf> {
     .flatten()
 }
 
+async fn run_ytdlp_invocation(
+    ytdlp_bin: &str,
+    js_runtime: Option<&str>,
+    format_selector: &str,
+    output_template: &str,
+    cookie_file: Option<&Path>,
+    target_url: &str,
+    use_cookies: bool,
+) -> Result<std::process::Output> {
+    let mut command = Command::new(ytdlp_bin);
+    command.kill_on_drop(true);
+    command.args([
+        "--no-playlist",
+        "--no-warnings",
+        "--quiet",
+        "--socket-timeout",
+        "5",
+    ]);
+    if let Some(runtime) = js_runtime {
+        command.arg("--js-runtimes").arg(runtime);
+        tracing::debug!("[sonata:resolver] yt-dlp js-runtime={runtime}");
+    }
+    command.args(["-f", format_selector, "--print", output_template]);
+    if let Some(path) = cookie_file {
+        command.arg("--cookies").arg(path);
+    }
+    command.arg("--").arg(target_url);
+
+    tracing::debug!(
+        "[sonata:resolver] method=yt-dlp attempt=1/1 cookies={}",
+        if use_cookies { "present" } else { "none" }
+    );
+    tokio::time::timeout(Duration::from_secs(8), command.output())
+        .await
+        .map_err(|_| anyhow!("yt-dlp timed out while resolving stream"))?
+        .map_err(Into::into)
+}
+
+fn is_js_runtimes_unsupported_stderr(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    lower.contains("no such option: --js-runtimes")
+        || (lower.contains("no such option") && lower.contains("--js-runtimes"))
+}
+
+fn format_js_runtime_arg(
+    candidate: &str,
+    resolved_bin: &str,
+    path_env: Option<&std::ffi::OsStr>,
+) -> String {
+    let resolved_path = Path::new(resolved_bin);
+    let in_path = path_env.is_some_and(|env_val| {
+        std::env::split_paths(env_val).any(|dir| {
+            resolved_path.parent() == Some(dir.as_path()) && dir.join(candidate).is_file()
+        })
+    });
+    if !in_path && resolved_bin != candidate && resolved_path.is_absolute() {
+        format!("{candidate}:{resolved_bin}")
+    } else {
+        candidate.to_string()
+    }
+}
+
+fn detect_js_runtime_entry() -> Option<(&'static str, String)> {
+    static ENTRY: OnceLock<Option<(&'static str, String)>> = OnceLock::new();
+    ENTRY
+        .get_or_init(|| {
+            let path_env = std::env::var_os("PATH");
+            ["deno", "node", "bun", "quickjs"]
+                .into_iter()
+                .find_map(|candidate| {
+                    let bin = resolve_distro_binary(candidate);
+                    let ok = std::process::Command::new(&bin)
+                        .arg("--version")
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status()
+                        .is_ok_and(|status| status.success());
+                    if ok {
+                        let arg = format_js_runtime_arg(candidate, &bin, path_env.as_deref());
+                        Some((candidate, arg))
+                    } else {
+                        None
+                    }
+                })
+        })
+        .clone()
+}
+
 /// Detects the first installed JS runtime supported by `yt-dlp --js-runtimes`.
 pub fn detect_js_runtime() -> Option<&'static str> {
-    static RUNTIME: OnceLock<Option<&'static str>> = OnceLock::new();
-    *RUNTIME.get_or_init(|| {
-        ["deno", "node", "bun", "quickjs"]
-            .into_iter()
-            .find(|&candidate| {
-                let bin = resolve_distro_binary(candidate);
-                std::process::Command::new(&bin)
-                    .arg("--version")
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status()
-                    .is_ok_and(|status| status.success())
-            })
-    })
+    detect_js_runtime_entry().map(|(name, _)| name)
+}
+
+fn detect_js_runtime_arg() -> Option<&'static str> {
+    static ARG: OnceLock<Option<String>> = OnceLock::new();
+    ARG.get_or_init(|| detect_js_runtime_entry().map(|(_, arg)| arg))
+        .as_deref()
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1556,5 +1663,120 @@ mod tests {
             .await
             .expect_err("disabled SMB server must fail");
         assert!(err.to_string().contains("disabled"));
+    }
+
+    #[test]
+    fn js_runtime_arg_includes_colon_path_for_out_of_path_binaries() {
+        use std::ffi::OsStr;
+
+        assert_eq!(
+            format_js_runtime_arg(
+                "node",
+                "/run/current-system/sw/bin/node",
+                Some(OsStr::new("/nonexistent/bin"))
+            ),
+            "node:/run/current-system/sw/bin/node"
+        );
+        assert_eq!(
+            format_js_runtime_arg("node", "/usr/bin/node", None),
+            "node:/usr/bin/node"
+        );
+        assert_eq!(format_js_runtime_arg("node", "node", None), "node");
+
+        let dir = crate::downloads::test_support::TempTestDir::new("js_rt_in_path");
+        let bin_path = dir.path().join("node");
+        std::fs::write(&bin_path, b"").expect("create dummy node in path");
+        assert_eq!(
+            format_js_runtime_arg(
+                "node",
+                &bin_path.to_string_lossy(),
+                Some(dir.path().as_os_str())
+            ),
+            "node"
+        );
+
+        assert!(is_js_runtimes_unsupported_stderr(
+            "Usage: yt-dlp [OPTIONS] URL...\n\nyt-dlp: error: no such option: --js-runtimes"
+        ));
+        assert!(!is_js_runtimes_unsupported_stderr("HTTP Error 403"));
+    }
+
+    #[tokio::test]
+    async fn jiosaavn_only_precache_runs_when_hifi_substitution_is_false() {
+        use crate::downloads::test_support::TempTestDir;
+        use crate::downloads::{DownloadStore, DownloadTrackInput};
+        use sonata_core::providers::profile::{FastStartMode, StreamFallbackMode, UpgradeDelivery};
+
+        let core_dir = TempTestDir::new("ytdlp_jio_precache_core");
+        let downloads_dir = TempTestDir::new("ytdlp_jio_precache_dl");
+        let store = DownloadStore::open(downloads_dir.path()).expect("open download store");
+
+        let track = Track {
+            id: "ytm_jio_1".to_string(),
+            title: "Jio Only Precache".to_string(),
+            artist: "Artist".to_string(),
+            album: "Album".to_string(),
+            duration_secs: Some(180),
+            thumbnail_url: None,
+            source: ProviderSource::YouTubeMusic,
+            audio_badge: None,
+            set_video_id: None,
+            liked: false,
+            album_id: None,
+            is_explicit: false,
+        };
+        let saved = store
+            .save_track_bytes(
+                &DownloadTrackInput {
+                    track: track.clone(),
+                    audio_badge: "AAC 320kbps · JioSaavn".to_string(),
+                    bitrate_kbps: Some(320),
+                    container: "m4a".to_string(),
+                    artwork_url: None,
+                    collection: None,
+                },
+                b"ftypM4A_jiosaavn_payload",
+                None,
+            )
+            .expect("save offline track");
+
+        // Also seed a cached opus stream to test non-offline precache gate when allow_hifi=false.
+        let http = sonata_core::providers::build_http_client();
+        let cookies = ExtractedCookies::default();
+        let ytm = YtMusicClient::new(http.clone(), cookies.clone());
+        let paths = CorePaths::for_app_roots(core_dir.path(), core_dir.path());
+        let profile = ResolverProfile {
+            fast_start: FastStartMode::BoundedRange,
+            upgrade_delivery: UpgradeDelivery::CacheBeforeReturn,
+            fallback: StreamFallbackMode::InnerTubeOnly,
+            bootstrap_timeout: Duration::from_millis(500),
+            jiosaavn_enabled: true,
+            cache_limit_bytes: 1024 * 1024,
+        };
+        assert!(LinuxStreamResolver::precache_policy_allows(&profile, false));
+        let disabled_both = ResolverProfile {
+            jiosaavn_enabled: false,
+            ..profile.clone()
+        };
+        assert!(!LinuxStreamResolver::precache_policy_allows(
+            &disabled_both,
+            false
+        ));
+        let no_cache = ResolverProfile {
+            cache_limit_bytes: 0,
+            ..profile.clone()
+        };
+        assert!(!LinuxStreamResolver::precache_policy_allows(
+            &no_cache, false
+        ));
+
+        let resolver = LinuxStreamResolver::with_profile(http, ytm, cookies, None, paths, profile)
+            .with_downloads_dir(downloads_dir.path());
+
+        let hit = resolver
+            .precache_hifi_audio(&track, false)
+            .await
+            .expect("jiosaavn-only precache should proceed when allow_hifi is false");
+        assert_eq!(hit.url, saved.audio_path.to_string_lossy());
     }
 }

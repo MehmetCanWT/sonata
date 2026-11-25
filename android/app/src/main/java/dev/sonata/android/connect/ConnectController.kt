@@ -115,7 +115,6 @@ class ConnectController(
     private val _state = MutableStateFlow(
         ConnectUiState(
             deviceName = deviceNameProvider(),
-            pairedDeviceIds = secretStore.pairedDeviceIds(),
         ),
     )
     val state: StateFlow<ConnectUiState> = _state.asStateFlow()
@@ -124,6 +123,10 @@ class ConnectController(
     private var statePollJob: Job? = null
 
     init {
+        scope.launch(ioDispatcher) {
+            val paired = secretStore.pairedDeviceIds()
+            _state.update { it.copy(pairedDeviceIds = paired) }
+        }
         discoveryObserverJob = scope.launch {
             client.discoveredDevices.collect { devices ->
                 _state.update { it.copy(discoveredDevices = devices) }
@@ -138,9 +141,12 @@ class ConnectController(
                     enabled = true,
                     scanning = true,
                     deviceName = deviceNameProvider(),
-                    pairedDeviceIds = secretStore.pairedDeviceIds(),
                     pairingError = null,
                 )
+            }
+            scope.launch(ioDispatcher) {
+                val paired = secretStore.pairedDeviceIds()
+                _state.update { it.copy(pairedDeviceIds = paired) }
             }
             client.startDiscovery(scope, discoveryPort)
         } else {
@@ -171,8 +177,11 @@ class ConnectController(
         _state.update {
             it.copy(
                 scanning = true,
-                pairedDeviceIds = secretStore.pairedDeviceIds(),
             )
+        }
+        scope.launch(ioDispatcher) {
+            val paired = secretStore.pairedDeviceIds()
+            _state.update { it.copy(pairedDeviceIds = paired) }
         }
     }
 

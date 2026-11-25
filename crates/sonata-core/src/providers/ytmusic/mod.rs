@@ -817,10 +817,7 @@ impl YtMusicClient {
             return Ok(());
         }
         let clean_vid = video_id.trim();
-        if clean_vid.is_empty()
-            || clean_vid.starts_with("local:")
-            || clean_vid.starts_with("jiosaavn:")
-        {
+        if !is_valid_ytm_video_id(clean_vid) {
             return Ok(());
         }
 
@@ -1465,10 +1462,11 @@ impl YtMusicClient {
         track: &Track,
     ) -> Option<MusicVideoCandidate> {
         let base_id = if track.source == ProviderSource::YouTubeMusic
-            && !track.id.trim().is_empty()
+            && !track.is_jiosaavn()
+            && !track.is_local()
+            && !track.is_self_hosted()
+            && is_valid_ytm_video_id(&track.id)
             && !track.id.contains(' ')
-            && !track.id.starts_with("jiosaavn:")
-            && !track.id.starts_with("local:")
         {
             track.id.trim().to_string()
         } else {
@@ -2449,7 +2447,10 @@ fn build_videostats_url(
 
 fn is_valid_ytm_video_id(raw: &str) -> bool {
     let clean = raw.trim();
-    !clean.is_empty() && !clean.starts_with("local:") && !clean.starts_with("jiosaavn:")
+    !clean.is_empty()
+        && !clean.starts_with("local:")
+        && !clean.starts_with("jiosaavn:")
+        && crate::providers::servers::parse_server_item_id(clean).is_none()
 }
 
 fn normalize_endless_playlist_id(raw: &str) -> Option<String> {
@@ -2636,10 +2637,10 @@ pub(crate) fn rank_and_diversify_recommendations(
 mod tests {
     use super::{
         accept_language_header, build_videostats_url, generate_cpn, is_manual_user_playlist_id,
-        is_mix_playlist_id, normalize_endless_playlist_id, normalize_playback_playlist_id,
-        prefer_explicit_order, primary_artist_query, rank_and_diversify_recommendations,
-        select_best_ytm_attribution_match, ArtistPage, Client, ExtractedCookies, Instant,
-        YtMusicClient,
+        is_mix_playlist_id, is_valid_ytm_video_id, normalize_endless_playlist_id,
+        normalize_playback_playlist_id, prefer_explicit_order, primary_artist_query,
+        rank_and_diversify_recommendations, select_best_ytm_attribution_match, ArtistPage, Client,
+        ExtractedCookies, Instant, YtMusicClient,
     };
     use crate::providers::{ProviderSource, Track};
 
@@ -2905,5 +2906,28 @@ mod tests {
             .await
             .expect("unauthenticated attribution returns Ok(None)");
         assert!(res.is_none());
+    }
+
+    #[tokio::test]
+    async fn excludes_local_and_self_hosted_ids_from_ytm_video_helpers() {
+        assert!(is_valid_ytm_video_id("dQw4w9WgXcQ"));
+        assert!(!is_valid_ytm_video_id(""));
+        assert!(!is_valid_ytm_video_id("local:%2Fmusic%2Fsong.flac"));
+        assert!(!is_valid_ytm_video_id("jiosaavn:abc"));
+        assert!(!is_valid_ytm_video_id("webdav:dav-1:/Music/song.flac"));
+        assert!(!is_valid_ytm_video_id("smb:nas-1:Artist/song.flac"));
+        assert!(!is_valid_ytm_video_id("jellyfin:jf-1:item-42"));
+        assert!(!is_valid_ytm_video_id("subsonic:sub-1:tr-9"));
+
+        let cookies = ExtractedCookies::from_ytm_cookie_header("SAPISID=fake_secret");
+        let client = YtMusicClient::new(crate::providers::build_http_client(), cookies);
+        client
+            .report_playback("webdav:dav-1:/Music/song.flac", None, Some(180))
+            .await
+            .expect("self-hosted id short-circuits report_playback");
+        client
+            .report_playback("local:%2Fmusic%2Fsong.flac", None, Some(180))
+            .await
+            .expect("local id short-circuits report_playback");
     }
 }

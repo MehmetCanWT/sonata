@@ -252,7 +252,8 @@ pub fn build_mpv_spawn_args_with_gapless(
     let mut args = vec![
         "--no-config".to_string(),
         "--idle=yes".to_string(),
-        "--really-quiet".to_string(),
+        "--no-terminal".to_string(),
+        "--msg-level=all=error".to_string(),
         format!("--gapless-audio={gapless_flag}"),
         "--ao=pipewire,pulse,alsa".to_string(),
         "--audio-client-name=Sonata".to_string(),
@@ -297,6 +298,81 @@ pub enum MpvEvent {
     FileSize(Option<u64>),
 }
 
+/// Parses `mpv --version` output into `(major, minor)`.
+pub fn parse_mpv_version(output: &str) -> Option<(u32, u32)> {
+    let line = output.lines().next()?.trim();
+    let rest = line.strip_prefix("mpv")?.trim_start();
+    let version_token = rest.split_whitespace().next()?.trim_start_matches('v');
+    let mut parts = version_token.split('.');
+    let major: u32 = parts.next()?.parse().ok()?;
+    let minor_digits: String = parts
+        .next()?
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    if minor_digits.is_empty() {
+        return None;
+    }
+    let minor: u32 = minor_digits.parse().ok()?;
+    Some((major, minor))
+}
+
+/// Returns `true` when `mpv` supports the 5-argument `loadfile <url> replace <index> <options>` form (`>= 0.38`).
+pub fn mpv_supports_loadfile_insert_index_for_version(version: (u32, u32)) -> bool {
+    version >= (0, 38)
+}
+
+fn mpv_supports_loadfile_insert_index() -> bool {
+    static SUPPORTS_INDEX: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SUPPORTS_INDEX.get_or_init(|| {
+        let mpv_bin = crate::config::resolve_distro_binary("mpv");
+        let Ok(output) = Command::new(&mpv_bin).arg("--version").output() else {
+            return false;
+        };
+        if !output.status.success() {
+            return false;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        parse_mpv_version(&stdout).is_some_and(mpv_supports_loadfile_insert_index_for_version)
+    })
+}
+
+/// Formats HTTP headers for `mpv`'s `http-header-fields` option (`Name: Value` comma-separated with `\` and `,` escaped).
+pub fn format_mpv_http_header_fields(headers: &[(String, String)]) -> String {
+    let escape = |text: &str| text.replace('\\', "\\\\").replace(',', "\\,");
+    headers
+        .iter()
+        .map(|(name, value)| format!("{}: {}", escape(name), escape(value)))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Builds an `mpv` JSON IPC `loadfile` command compatible with both `< 0.38` (4-arg) and `>= 0.38` (5-arg with `-1`).
+pub fn build_mpv_loadfile_command(
+    url: &str,
+    headers: &[(String, String)],
+    start_secs: f64,
+    use_insert_index: bool,
+) -> Value {
+    let mut options = serde_json::Map::new();
+    if start_secs >= 0.05 {
+        options.insert("start".to_string(), json!(format!("{start_secs:.2}")));
+    }
+    if !headers.is_empty() {
+        options.insert(
+            "http-header-fields".to_string(),
+            json!(format_mpv_http_header_fields(headers)),
+        );
+    }
+    if options.is_empty() {
+        json!(["loadfile", url, "replace"])
+    } else if use_insert_index {
+        json!(["loadfile", url, "replace", -1, Value::Object(options)])
+    } else {
+        json!(["loadfile", url, "replace", Value::Object(options)])
+    }
+}
+
 #[derive(Debug, Clone)]
 struct MpvRuntimeState {
     volume: u8,
@@ -304,22 +380,18 @@ struct MpvRuntimeState {
     skip_silence: bool,
     gapless_enabled: bool,
     video_mode: bool,
+    alive: bool,
     last_url: Option<String>,
     last_headers: Vec<(String, String)>,
     ipc_generation: u64,
 }
 
 pub struct MpvController {
-    child: Mutex<Option<Child>>,
+    child: Arc<Mutex<Option<Child>>>,
     cmd_tx: std::sync::Mutex<mpsc::UnboundedSender<Value>>,
     sock_path: PathBuf,
     event_tx: mpsc::Sender<MpvEvent>,
     runtime: Arc<std::sync::Mutex<MpvRuntimeState>>,
-}
-
-struct SpawnedMpvProcess {
-    child: Child,
-    cmd_tx: mpsc::UnboundedSender<Value>,
 }
 
 impl MpvController {
@@ -342,28 +414,43 @@ impl MpvController {
             skip_silence: false,
             gapless_enabled: true,
             video_mode: false,
+            alive: true,
             last_url: None,
             last_headers: Vec::new(),
             ipc_generation: 1,
         }));
+        let child_slot = Arc::new(Mutex::new(None));
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Value>();
 
-        let spawned = Self::spawn_process(&sock_path, &runtime, event_tx.clone(), 1).await?;
+        let spawned_child = Self::spawn_process_with_channel(
+            &sock_path,
+            &runtime,
+            &child_slot,
+            event_tx.clone(),
+            1,
+            cmd_rx,
+        )
+        .await?;
+        *child_slot.lock().await = Some(spawned_child);
 
         Ok(Self {
-            child: Mutex::new(Some(spawned.child)),
-            cmd_tx: std::sync::Mutex::new(spawned.cmd_tx),
+            child: child_slot,
+            cmd_tx: std::sync::Mutex::new(cmd_tx),
             sock_path,
             event_tx,
             runtime,
         })
     }
 
-    async fn spawn_process(
+    async fn spawn_process_with_channel(
         sock_path: &Path,
         runtime: &Arc<std::sync::Mutex<MpvRuntimeState>>,
+        child_slot: &Arc<Mutex<Option<Child>>>,
         event_tx: mpsc::Sender<MpvEvent>,
         ipc_generation: u64,
-    ) -> Result<SpawnedMpvProcess> {
+        mut cmd_rx: mpsc::UnboundedReceiver<Value>,
+    ) -> Result<Child> {
+        let _ = tokio::task::spawn_blocking(mpv_supports_loadfile_insert_index).await;
         let _ = std::fs::remove_file(sock_path);
         let (volume, speed, skip_silence, gapless_enabled, video_mode) = {
             let guard = runtime.lock().expect("mpv runtime lock");
@@ -433,16 +520,37 @@ impl MpvController {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         let Some(stream) = stream_opt else {
-            let _ = child.kill();
-            let _ = child.wait();
+            let _ = tokio::task::spawn_blocking(move || {
+                let _ = child.kill();
+                let _ = child.wait();
+            })
+            .await;
             let _ = std::fs::remove_file(sock_path);
             return Err(anyhow!("Timed out waiting for mpv IPC socket"));
         };
         let (read_half, mut write_half) = stream.into_split();
 
-        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<Value>();
+        // Observe playback and audio quality properties before draining queued commands.
+        let mut req_id: u64 = 1;
+        for (id, prop) in [
+            (1, "time-pos"),
+            (2, "duration"),
+            (3, "pause"),
+            (4, "audio-bitrate"),
+            (5, "audio-codec-name"),
+            (6, "audio-params"),
+            (7, "file-size"),
+        ] {
+            let cmd = json!(["observe_property", id, prop]);
+            let payload = format!("{}\n", json!({ "command": cmd, "request_id": req_id }));
+            req_id = req_id.wrapping_add(1);
+            if write_half.write_all(payload.as_bytes()).await.is_err() {
+                break;
+            }
+        }
+        let _ = write_half.flush().await;
+
         tokio::spawn(async move {
-            let mut req_id: u64 = 1;
             while let Some(command) = cmd_rx.recv().await {
                 let id = req_id;
                 req_id = req_id.wrapping_add(1);
@@ -470,154 +578,20 @@ impl MpvController {
             }
         });
 
-        // Observe playback and audio quality properties so we never have to poll.
-        for (id, prop) in [
-            (1, "time-pos"),
-            (2, "duration"),
-            (3, "pause"),
-            (4, "audio-bitrate"),
-            (5, "audio-codec-name"),
-            (6, "audio-params"),
-            (7, "file-size"),
-        ] {
-            let _ = cmd_tx.send(json!(["observe_property", id, prop]));
-        }
-
         let runtime_reader = Arc::clone(runtime);
+        let child_reader = Arc::clone(child_slot);
         tokio::spawn(async move {
-            let mut lines = BufReader::new(read_half).lines();
-            let mut last_bitrate_kbps: Option<Option<u32>> = None;
-            let mut last_codec: Option<Option<String>> = None;
-            let mut last_params: Option<Option<MpvAudioParams>> = None;
-            let mut last_file_size: Option<Option<u64>> = None;
-            while let Ok(Some(line)) = lines.next_line().await {
-                if runtime_reader
-                    .lock()
-                    .is_ok_and(|g| g.ipc_generation != ipc_generation)
-                {
-                    break;
-                }
-                let Ok(val) = serde_json::from_str::<Value>(&line) else {
-                    continue;
-                };
-                match val.get("event").and_then(|e| e.as_str()) {
-                    Some("end-file") => {
-                        tracing::debug!(
-                            event = "mpv_end_file",
-                            payload = %sanitize_payload(&val),
-                            "mpv ended media"
-                        );
-                    }
-                    Some("property-change") => {}
-                    Some(event) => {
-                        tracing::debug!(event = "mpv_event", mpv_event = event, "mpv event");
-                    }
-                    None => {}
-                }
-                match val.get("event").and_then(|e| e.as_str()) {
-                    Some("property-change") => {
-                        let name = val.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                        let data = val.get("data");
-                        match name {
-                            "time-pos" => {
-                                if let Some(pos) = data.and_then(|d| d.as_f64()) {
-                                    let _ = event_tx.try_send(MpvEvent::Position(pos));
-                                }
-                            }
-                            "duration" => {
-                                if let Some(dur) = data.and_then(|d| d.as_f64()) {
-                                    let _ = event_tx.send(MpvEvent::Duration(dur)).await;
-                                }
-                            }
-                            "pause" => {
-                                if let Some(p) = data.and_then(|d| d.as_bool()) {
-                                    let _ = event_tx.send(MpvEvent::Paused(p)).await;
-                                }
-                            }
-                            "audio-bitrate" => {
-                                let bps = data
-                                    .and_then(|d| {
-                                        d.as_u64().or_else(|| {
-                                            d.as_f64()
-                                                .filter(|f| f.is_finite() && *f >= 0.0)
-                                                .map(|f| f.round() as u64)
-                                        })
-                                    })
-                                    .filter(|&v| v > 0);
-                                let kbps = bps
-                                    .map(|v| ((v as f64) / 1000.0).round() as u32)
-                                    .filter(|&k| k > 0);
-                                if last_bitrate_kbps != Some(kbps) {
-                                    last_bitrate_kbps = Some(kbps);
-                                    let _ = event_tx.send(MpvEvent::AudioBitrate(bps)).await;
-                                }
-                            }
-                            "audio-codec-name" => {
-                                let codec = data
-                                    .and_then(|d| d.as_str())
-                                    .map(str::trim)
-                                    .filter(|s| !s.is_empty())
-                                    .map(str::to_string);
-                                if last_codec.as_ref() != Some(&codec) {
-                                    last_codec = Some(codec.clone());
-                                    let _ = event_tx.send(MpvEvent::AudioCodec(codec)).await;
-                                }
-                            }
-                            "audio-params" => {
-                                let params = parse_mpv_audio_params(data);
-                                if last_params.as_ref() != Some(&params) {
-                                    last_params = Some(params.clone());
-                                    let _ = event_tx.send(MpvEvent::AudioParams(params)).await;
-                                }
-                            }
-                            "file-size" => {
-                                let bytes = data
-                                    .and_then(|d| {
-                                        d.as_u64().or_else(|| {
-                                            d.as_f64()
-                                                .filter(|f| f.is_finite() && *f > 0.0)
-                                                .map(|f| f.round() as u64)
-                                        })
-                                    })
-                                    .filter(|&v| v > 0);
-                                if last_file_size != Some(bytes) {
-                                    last_file_size = Some(bytes);
-                                    let _ = event_tx.send(MpvEvent::FileSize(bytes)).await;
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    Some("end-file") => match val.get("reason").and_then(|r| r.as_str()) {
-                        Some("eof") => {
-                            let _ = event_tx.send(MpvEvent::TrackEnded).await;
-                        }
-                        Some("error") => {
-                            let msg = val
-                                .get("file_error")
-                                .and_then(|e| e.as_str())
-                                .unwrap_or("mpv playback error")
-                                .to_string();
-                            let file = val
-                                .pointer("/playlist_entry/filename")
-                                .and_then(|v| v.as_str())
-                                .or_else(|| val.get("file").and_then(|v| v.as_str()))
-                                .map(str::to_string);
-                            let _ = event_tx
-                                .send(MpvEvent::PlaybackError { error: msg, file })
-                                .await;
-                        }
-                        _ => {}
-                    },
-                    Some("playback-restart") => {
-                        let _ = event_tx.send(MpvEvent::PlaybackStarted).await;
-                    }
-                    _ => {}
-                }
-            }
+            run_ipc_reader(
+                read_half,
+                runtime_reader,
+                child_reader,
+                event_tx,
+                ipc_generation,
+            )
+            .await;
         });
 
-        Ok(SpawnedMpvProcess { child, cmd_tx })
+        Ok(child)
     }
 
     fn send(&self, command: Value) {
@@ -643,42 +617,87 @@ impl MpvController {
     }
 
     fn load_media_at(&self, url: &str, headers: &[(String, String)], start_secs: f64) {
-        if let Ok(mut guard) = self.runtime.lock() {
+        let respawn_setup = {
+            let mut guard = self.runtime.lock().expect("mpv runtime lock");
             guard.last_url = Some(url.to_string());
             guard.last_headers = headers.to_vec();
+            let tx_closed = self.cmd_tx.lock().is_ok_and(|tx| tx.is_closed());
+            if !guard.alive || tx_closed {
+                guard.ipc_generation = guard.ipc_generation.wrapping_add(1);
+                guard.alive = true;
+                let (new_tx, new_rx) = mpsc::unbounded_channel();
+                if let Ok(mut tx_guard) = self.cmd_tx.lock() {
+                    *tx_guard = new_tx;
+                }
+                Some((guard.ipc_generation, new_rx))
+            } else {
+                None
+            }
+        };
+
+        if let Some((next_gen, new_rx)) = respawn_setup {
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                let sock_path = self.sock_path.clone();
+                let runtime = Arc::clone(&self.runtime);
+                let child_slot = Arc::clone(&self.child);
+                let event_tx = self.event_tx.clone();
+                handle.spawn(async move {
+                    let mut child_guard = child_slot.lock().await;
+                    if runtime.lock().is_ok_and(|g| g.ipc_generation != next_gen) {
+                        return;
+                    }
+                    if let Some(old_child) = child_guard.take() {
+                        let _ = tokio::task::spawn_blocking(move || reap_child_process(old_child))
+                            .await;
+                    }
+                    match Self::spawn_process_with_channel(
+                        &sock_path,
+                        &runtime,
+                        &child_slot,
+                        event_tx.clone(),
+                        next_gen,
+                        new_rx,
+                    )
+                    .await
+                    {
+                        Ok(new_child) => {
+                            *child_guard = Some(new_child);
+                        }
+                        Err(err) => {
+                            let last_url = {
+                                let mut g = runtime.lock().expect("mpv runtime lock");
+                                if g.ipc_generation == next_gen {
+                                    g.alive = false;
+                                }
+                                g.last_url.clone()
+                            };
+                            let _ = event_tx
+                                .send(MpvEvent::PlaybackError {
+                                    error: format!("Failed to respawn mpv: {err}"),
+                                    file: last_url,
+                                })
+                                .await;
+                        }
+                    }
+                });
+            } else if let Ok(mut guard) = self.runtime.lock() {
+                guard.alive = false;
+            }
         }
+
         tracing::debug!(
             event = "mpv_load_media",
             start_secs,
             media = %redact_mpv_url(url),
             "loading media into mpv"
         );
-        let mut options = serde_json::Map::new();
-        if start_secs >= 0.05 {
-            options.insert("start".to_string(), json!(format!("{start_secs:.2}")));
-        }
-        if !headers.is_empty() {
-            let fields = headers
-                .iter()
-                .map(|(name, value)| {
-                    let escape = |text: &str| text.replace('\\', "\\\\").replace(',', "\\,");
-                    format!("{}={}", escape(name), escape(value))
-                })
-                .collect::<Vec<_>>()
-                .join(",");
-            options.insert("http-header-fields".to_string(), json!(fields));
-        }
-        if !options.is_empty() {
-            self.send(json!([
-                "loadfile",
-                url,
-                "replace",
-                -1,
-                Value::Object(options)
-            ]));
-        } else {
-            self.send(json!(["loadfile", url, "replace"]));
-        }
+        let cmd = build_mpv_loadfile_command(
+            url,
+            headers,
+            start_secs,
+            mpv_supports_loadfile_insert_index(),
+        );
+        self.send(cmd);
         self.send(json!(["set_property", "mute", false]));
         self.send(json!(["set_property", "pause", false]));
     }
@@ -755,6 +774,7 @@ impl MpvController {
             let mut state = self.runtime.lock().expect("mpv runtime lock");
             state.ipc_generation = state.ipc_generation.wrapping_add(1);
             state.video_mode = enabled;
+            state.alive = true;
             let resolved_media = match url {
                 Some(u) if !u.is_empty() => {
                     state.last_url = Some(u.clone());
@@ -776,26 +796,36 @@ impl MpvController {
 
         self.send(json!(["quit"]));
         tokio::time::sleep(Duration::from_millis(40)).await;
-        if let Some(mut old_child) = child_guard.take() {
-            if old_child.try_wait().ok().flatten().is_none() {
-                let _ = old_child.kill();
-                let _ = old_child.wait();
-            }
+        if let Some(old_child) = child_guard.take() {
+            let _ = tokio::task::spawn_blocking(move || reap_child_process(old_child)).await;
         }
         let _ = std::fs::remove_file(&self.sock_path);
 
-        let spawned = Self::spawn_process(
+        let (new_tx, new_rx) = mpsc::unbounded_channel();
+        let spawned_child = match Self::spawn_process_with_channel(
             &self.sock_path,
             &self.runtime,
+            &self.child,
             self.event_tx.clone(),
             next_gen,
+            new_rx,
         )
         .await
-        .map_err(|err| anyhow!("Failed to reload mpv for video mode: {err}"))?;
+        {
+            Ok(child) => child,
+            Err(err) => {
+                if let Ok(mut state) = self.runtime.lock() {
+                    if state.ipc_generation == next_gen {
+                        state.alive = false;
+                    }
+                }
+                return Err(anyhow!("Failed to reload mpv for video mode: {err}"));
+            }
+        };
 
-        *child_guard = Some(spawned.child);
+        *child_guard = Some(spawned_child);
         if let Ok(mut tx_guard) = self.cmd_tx.lock() {
-            *tx_guard = spawned.cmd_tx;
+            *tx_guard = new_tx;
         }
         drop(child_guard);
 
@@ -808,6 +838,7 @@ impl MpvController {
     pub async fn shutdown(&self) {
         if let Ok(mut guard) = self.runtime.lock() {
             guard.ipc_generation = guard.ipc_generation.wrapping_add(1);
+            guard.alive = false;
         }
         self.send(json!(["quit"]));
         tokio::time::sleep(Duration::from_millis(40)).await;
@@ -819,6 +850,194 @@ impl MpvController {
             }
         }
         let _ = std::fs::remove_file(&self.sock_path);
+    }
+}
+
+fn reap_child_process(mut child: Child) {
+    if let Ok(Some(_)) = child.try_wait() {
+        return;
+    }
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(20));
+        if let Ok(Some(_)) = child.try_wait() {
+            return;
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+async fn run_ipc_reader<R: tokio::io::AsyncRead + Unpin>(
+    read_half: R,
+    runtime_reader: Arc<std::sync::Mutex<MpvRuntimeState>>,
+    child_reader: Arc<Mutex<Option<Child>>>,
+    event_tx: mpsc::Sender<MpvEvent>,
+    ipc_generation: u64,
+) {
+    let mut lines = BufReader::new(read_half).lines();
+    let mut last_bitrate_kbps: Option<Option<u32>> = None;
+    let mut last_codec: Option<Option<String>> = None;
+    let mut last_params: Option<Option<MpvAudioParams>> = None;
+    let mut last_file_size: Option<Option<u64>> = None;
+    while let Ok(Some(line)) = lines.next_line().await {
+        if runtime_reader
+            .lock()
+            .is_ok_and(|g| g.ipc_generation != ipc_generation)
+        {
+            break;
+        }
+        let Ok(val) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        match val.get("event").and_then(|e| e.as_str()) {
+            Some("end-file") => {
+                tracing::debug!(
+                    event = "mpv_end_file",
+                    payload = %sanitize_payload(&val),
+                    "mpv ended media"
+                );
+            }
+            Some("property-change") => {}
+            Some(event) => {
+                tracing::debug!(event = "mpv_event", mpv_event = event, "mpv event");
+            }
+            None => {}
+        }
+        match val.get("event").and_then(|e| e.as_str()) {
+            Some("property-change") => {
+                let name = val.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                let data = val.get("data");
+                match name {
+                    "time-pos" => {
+                        if let Some(pos) = data.and_then(|d| d.as_f64()) {
+                            let _ = event_tx.try_send(MpvEvent::Position(pos));
+                        }
+                    }
+                    "duration" => {
+                        if let Some(dur) = data.and_then(|d| d.as_f64()) {
+                            let _ = event_tx.send(MpvEvent::Duration(dur)).await;
+                        }
+                    }
+                    "pause" => {
+                        if let Some(p) = data.and_then(|d| d.as_bool()) {
+                            let _ = event_tx.send(MpvEvent::Paused(p)).await;
+                        }
+                    }
+                    "audio-bitrate" => {
+                        let bps = data
+                            .and_then(|d| {
+                                d.as_u64().or_else(|| {
+                                    d.as_f64()
+                                        .filter(|f| f.is_finite() && *f >= 0.0)
+                                        .map(|f| f.round() as u64)
+                                })
+                            })
+                            .filter(|&v| v > 0);
+                        let kbps = bps
+                            .map(|v| ((v as f64) / 1000.0).round() as u32)
+                            .filter(|&k| k > 0);
+                        if last_bitrate_kbps != Some(kbps) {
+                            last_bitrate_kbps = Some(kbps);
+                            let _ = event_tx.send(MpvEvent::AudioBitrate(bps)).await;
+                        }
+                    }
+                    "audio-codec-name" => {
+                        let codec = data
+                            .and_then(|d| d.as_str())
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string);
+                        if last_codec.as_ref() != Some(&codec) {
+                            last_codec = Some(codec.clone());
+                            let _ = event_tx.send(MpvEvent::AudioCodec(codec)).await;
+                        }
+                    }
+                    "audio-params" => {
+                        let params = parse_mpv_audio_params(data);
+                        if last_params.as_ref() != Some(&params) {
+                            last_params = Some(params.clone());
+                            let _ = event_tx.send(MpvEvent::AudioParams(params)).await;
+                        }
+                    }
+                    "file-size" => {
+                        let bytes = data
+                            .and_then(|d| {
+                                d.as_u64().or_else(|| {
+                                    d.as_f64()
+                                        .filter(|f| f.is_finite() && *f > 0.0)
+                                        .map(|f| f.round() as u64)
+                                })
+                            })
+                            .filter(|&v| v > 0);
+                        if last_file_size != Some(bytes) {
+                            last_file_size = Some(bytes);
+                            let _ = event_tx.send(MpvEvent::FileSize(bytes)).await;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Some("end-file") => match val.get("reason").and_then(|r| r.as_str()) {
+                Some("eof") => {
+                    let _ = event_tx.send(MpvEvent::TrackEnded).await;
+                }
+                Some("error") => {
+                    let msg = val
+                        .get("file_error")
+                        .and_then(|e| e.as_str())
+                        .unwrap_or("mpv playback error")
+                        .to_string();
+                    let file = val
+                        .pointer("/playlist_entry/filename")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| val.get("file").and_then(|v| v.as_str()))
+                        .map(str::to_string);
+                    let _ = event_tx
+                        .send(MpvEvent::PlaybackError { error: msg, file })
+                        .await;
+                }
+                _ => {}
+            },
+            Some("playback-restart") => {
+                let _ = event_tx.send(MpvEvent::PlaybackStarted).await;
+            }
+            _ => {}
+        }
+    }
+
+    let unexpected_exit = {
+        let mut guard = runtime_reader.lock().expect("mpv runtime lock");
+        if guard.ipc_generation == ipc_generation {
+            guard.alive = false;
+            Some(guard.last_url.clone())
+        } else {
+            None
+        }
+    };
+    if let Some(last_url) = unexpected_exit {
+        let mut child_guard = child_reader.lock().await;
+        let still_current = runtime_reader
+            .lock()
+            .is_ok_and(|g| g.ipc_generation == ipc_generation);
+        if still_current {
+            if let Some(old_child) = child_guard.take() {
+                let _ = tokio::task::spawn_blocking(move || reap_child_process(old_child)).await;
+            }
+        }
+        drop(child_guard);
+        if still_current {
+            tracing::warn!(
+                event = "mpv_ipc_eof",
+                ipc_generation,
+                "mpv IPC closed unexpectedly; marked controller dead and reaped child"
+            );
+            let _ = event_tx
+                .send(MpvEvent::PlaybackError {
+                    error: "mpv process exited unexpectedly".to_string(),
+                    file: last_url,
+                })
+                .await;
+        }
     }
 }
 
@@ -960,6 +1179,9 @@ mod tests {
         assert_eq!(skip_silence_af_filter(true, true), "");
 
         let audio_args = build_mpv_spawn_args(85, 1.5, true, false, Path::new("/tmp/test.sock"));
+        assert!(!audio_args.contains(&"--really-quiet".to_string()));
+        assert!(audio_args.contains(&"--no-terminal".to_string()));
+        assert!(audio_args.contains(&"--msg-level=all=error".to_string()));
         assert!(audio_args.contains(&"--no-video".to_string()));
         assert!(audio_args.contains(&"--audio-display=no".to_string()));
         assert!(audio_args.contains(&"--speed=1.50".to_string()));
@@ -980,5 +1202,126 @@ mod tests {
             Path::new("/tmp/test.sock"),
         );
         assert!(no_gapless_args.contains(&"--gapless-audio=no".to_string()));
+    }
+
+    #[test]
+    fn formats_http_header_fields_and_loadfile_version_compatibility() {
+        use super::{
+            build_mpv_loadfile_command, format_mpv_http_header_fields,
+            mpv_supports_loadfile_insert_index_for_version, parse_mpv_version,
+        };
+
+        let headers = vec![
+            ("User-Agent".to_string(), "Sonata/1.0, Linux".to_string()),
+            ("X-Custom".to_string(), r"a\b".to_string()),
+        ];
+        assert_eq!(
+            format_mpv_http_header_fields(&headers),
+            r"User-Agent: Sonata/1.0\, Linux,X-Custom: a\\b"
+        );
+
+        assert_eq!(
+            parse_mpv_version("mpv 0.38.0 Copyright © 2000-2024"),
+            Some((0, 38))
+        );
+        assert_eq!(parse_mpv_version("mpv v0.37.0-git"), Some((0, 37)));
+        assert_eq!(parse_mpv_version("mpv 0.34.1"), Some((0, 34)));
+        assert_eq!(parse_mpv_version("mpv 1.0.0"), Some((1, 0)));
+        assert!(!mpv_supports_loadfile_insert_index_for_version((0, 37)));
+        assert!(mpv_supports_loadfile_insert_index_for_version((0, 38)));
+
+        let cmd_old = build_mpv_loadfile_command(
+            "https://example.com/a.m4a",
+            &[(
+                "Referer".to_string(),
+                "https://music.youtube.com/".to_string(),
+            )],
+            12.5,
+            false,
+        );
+        assert_eq!(
+            cmd_old,
+            json!([
+                "loadfile",
+                "https://example.com/a.m4a",
+                "replace",
+                {
+                    "start": "12.50",
+                    "http-header-fields": "Referer: https://music.youtube.com/"
+                }
+            ])
+        );
+
+        let cmd_new = build_mpv_loadfile_command(
+            "https://example.com/a.m4a",
+            &[(
+                "Referer".to_string(),
+                "https://music.youtube.com/".to_string(),
+            )],
+            12.5,
+            true,
+        );
+        assert_eq!(
+            cmd_new,
+            json!([
+                "loadfile",
+                "https://example.com/a.m4a",
+                "replace",
+                -1,
+                {
+                    "start": "12.50",
+                    "http-header-fields": "Referer: https://music.youtube.com/"
+                }
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn unexpected_ipc_eof_marks_dead_reaps_child_and_emits_playback_error() {
+        use super::{run_ipc_reader, MpvEvent, MpvRuntimeState};
+        use std::process::{Command, Stdio};
+        use std::sync::{Arc, Mutex as StdMutex};
+        use tokio::net::UnixStream;
+        use tokio::sync::{mpsc, Mutex};
+
+        let (read_half, write_half) = UnixStream::pair().expect("unix stream pair");
+        let child = Command::new("true")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn dummy child");
+        let child_slot = Arc::new(Mutex::new(Some(child)));
+        let runtime = Arc::new(StdMutex::new(MpvRuntimeState {
+            volume: 80,
+            speed: 1.0,
+            skip_silence: false,
+            gapless_enabled: true,
+            video_mode: false,
+            alive: true,
+            last_url: Some("https://example.com/video.mp4".to_string()),
+            last_headers: Vec::new(),
+            ipc_generation: 7,
+        }));
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+
+        let reader_handle = tokio::spawn(run_ipc_reader(
+            read_half,
+            Arc::clone(&runtime),
+            Arc::clone(&child_slot),
+            event_tx,
+            7,
+        ));
+
+        drop(write_half);
+        reader_handle.await.expect("reader task");
+
+        assert!(!runtime.lock().expect("runtime lock").alive);
+        assert!(child_slot.lock().await.is_none());
+        let ev = event_rx.recv().await.expect("playback error event");
+        assert!(matches!(
+            ev,
+            MpvEvent::PlaybackError { file: Some(f), .. } if f == "https://example.com/video.mp4"
+        ));
     }
 }

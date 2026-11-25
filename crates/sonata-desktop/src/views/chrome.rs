@@ -239,9 +239,9 @@ impl SonataDesktopView {
             .pr(px(10.0))
             .border_b_0()
             .bg(gpui_kit::transparent_black())
-            .on_close_window(|_, window, _| {
-                window.remove_window();
-            })
+            .on_close_window(cx.listener(|this, _, window, _| {
+                this.close_window_to_tray(window);
+            }))
             .child(bar_body)
             .into_any_element()
     }

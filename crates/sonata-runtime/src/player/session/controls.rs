@@ -138,6 +138,9 @@ impl SessionActor {
 
         let duration = self.playback.duration_secs;
         if duration <= 1.0 || self.playback.peek_next_index().is_none() {
+            if self.crossfade_exit_active {
+                self.cancel_crossfade(true);
+            }
             return;
         }
         let active_fade = (fade_secs as f64).min(duration * 0.4);
@@ -153,6 +156,8 @@ impl SessionActor {
                 self.crossfade_last_exit_vol = Some(vol);
                 self.driver.set_volume(vol);
             }
+        } else if self.crossfade_exit_active {
+            self.cancel_crossfade(true);
         }
     }
 
@@ -302,24 +307,58 @@ impl SessionActor {
         seek_secs: Option<f64>,
     ) {
         self.video_mode = enabled;
+        self.playback_tasks.restart();
+        self.upgrading_quality = false;
         if enabled {
             self.cancel_crossfade(true);
+            if self.pre_video_audio_stream.is_none() {
+                self.pre_video_audio_stream = self.playback.active_stream.clone();
+            }
         }
         self.driver.set_skip_silence(self.effective_skip_silence());
 
         let (target_url, target_headers) = match url {
-            Some(u) if !u.is_empty() => (Some(u), headers),
-            _ => match self.playback.active_stream.as_ref() {
-                Some(active) => {
-                    let hdrs = if headers.is_empty() {
-                        active.headers.clone()
-                    } else {
-                        headers
-                    };
-                    (Some(active.url.clone()), hdrs)
+            Some(u) if !u.is_empty() => {
+                let hdrs = if headers.is_empty() {
+                    self.playback
+                        .active_stream
+                        .as_ref()
+                        .map(|s| s.headers.clone())
+                        .unwrap_or_default()
+                } else {
+                    headers
+                };
+                if !enabled {
+                    self.pre_video_audio_stream = None;
                 }
-                None => (None, headers),
-            },
+                self.playback.active_stream = Some(sonata_core::providers::hifi::ResolvedStream {
+                    url: u.clone(),
+                    badge: self.playback.stream_badge.clone(),
+                    headers: hdrs.clone(),
+                });
+                (Some(u), hdrs)
+            }
+            _ => {
+                let restored = if !enabled {
+                    self.pre_video_audio_stream.take().inspect(|audio| {
+                        self.playback.active_stream = Some(audio.clone());
+                    })
+                } else {
+                    None
+                };
+                let active = restored.as_ref().or(self.playback.active_stream.as_ref());
+                match active {
+                    Some(active) => {
+                        let hdrs = if headers.is_empty() {
+                            active.headers.clone()
+                        } else {
+                            headers
+                        };
+                        (Some(active.url.clone()), hdrs)
+                    }
+                    None => (None, headers),
+                }
+            }
         };
         let effective_seek = seek_secs.or_else(|| {
             self.playback
@@ -327,12 +366,14 @@ impl SessionActor {
                 .map(|_| self.interpolated_position())
         });
 
+        let was_paused = self.playback.paused;
         if target_url.is_some() {
             if let Some(pos) = effective_seek {
                 self.playback.position_secs = pos.max(0.0);
             }
             self.pos_anchor = None;
-            self.awaiting_playback_start = true;
+            self.awaiting_playback_start = !was_paused;
+            self.preserve_paused_on_restart = was_paused;
             self.stream_loaded_at = Some(Instant::now());
         }
 
@@ -342,6 +383,7 @@ impl SessionActor {
             .await
         {
             self.awaiting_playback_start = false;
+            self.preserve_paused_on_restart = false;
             tracing::warn!(
                 event = "video_mode_switch_failed",
                 client = self.config.client_name,
@@ -356,7 +398,7 @@ impl SessionActor {
                 badge: self.playback.stream_badge.clone(),
             })
             .await;
-        } else if target_url.is_some() && self.playback.paused {
+        } else if target_url.is_some() && was_paused {
             self.driver.set_paused(true);
         }
         self.publish_progress();
@@ -367,6 +409,7 @@ impl SessionActor {
         if paused == self.playback.paused {
             return;
         }
+        self.preserve_paused_on_restart = false;
         if paused {
             self.playback.position_secs = self.interpolated_position();
             self.pos_anchor = None;
@@ -394,6 +437,19 @@ impl SessionActor {
             self.pos_anchor = Some((clamped, Instant::now()));
         } else {
             self.pos_anchor = None;
+        }
+        if self.crossfade_exit_active {
+            let fade_secs = self.effective_crossfade_secs();
+            let duration = self.playback.duration_secs;
+            let active_fade = (fade_secs as f64).min(duration * 0.4);
+            let remaining = (duration - clamped).max(0.0);
+            if fade_secs == 0
+                || duration <= 1.0
+                || self.playback.peek_next_index().is_none()
+                || remaining > active_fade
+            {
+                self.cancel_crossfade(true);
+            }
         }
         self.driver.seek_absolute(clamped);
         self.publish_progress();

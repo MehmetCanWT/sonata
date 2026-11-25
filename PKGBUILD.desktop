@@ -1,6 +1,6 @@
 # Maintainer: MehmetCanWT
 pkgname=sonata-desktop
-pkgver=1.0.8
+pkgver=1.0.9
 pkgrel=1
 pkgdesc="Native Wayland desktop music player for YouTube Music and Spotify"
 arch=('x86_64' 'aarch64')

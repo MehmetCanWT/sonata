@@ -16,6 +16,8 @@ import dev.sonata.android.data.CanvasResolver
 import dev.sonata.android.data.DownloadQualityTier
 import dev.sonata.android.data.DownloadedTrackInput
 import dev.sonata.android.data.DownloadedTrackRecord
+import dev.sonata.android.data.SmbClient
+import dev.sonata.android.data.SmbProfileRegistry
 import dev.sonata.android.data.SonataDownloadManager
 import dev.sonata.android.data.SonataEngineGateway
 import dev.sonata.android.data.VideoQualityPreference
@@ -56,6 +58,14 @@ internal suspend fun SonataViewModel.resolveBestDownloadStreamImpl(
                 headers = emptyList(),
             )
         } ?: return null
+    } else if (track.id.startsWith("smb:")) {
+        val (srvId, relPath) = SmbClient.parseTrackId(track.id) ?: return null
+        _uiState.value.servers.firstOrNull { it.id == srvId }?.let { SmbProfileRegistry.put(it) }
+        AndroidResolvedStream(
+            url = SmbClient.buildStreamUri(srvId, relPath),
+            badge = SmbClient.initialBadgeForTrack(srvId, relPath),
+            headers = emptyList(),
+        )
     } else {
         getCachedStream(track.id) ?: runSuspendCatching { engine.resolveStream(track) }
             .onSuccess { putCachedStream(track.id, it) }

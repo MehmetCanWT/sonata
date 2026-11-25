@@ -237,7 +237,8 @@ class SonataDownloadManager(private val context: Context) {
         headers: Map<String, String> = emptyMap(),
     ): Result<DownloadedTrackRecord> = withContext(Dispatchers.IO) {
         ensureLoaded()
-        val isLocalFile = !streamUrl.startsWith("http", ignoreCase = true)
+        val isSmbStream = streamUrl.startsWith("${SmbClient.STREAM_SCHEME}://", ignoreCase = true)
+        val isLocalFile = !isSmbStream && !streamUrl.startsWith("http", ignoreCase = true)
         if (wifiOnly && !isLocalFile && isOnMeteredNetwork()) {
             return@withContext Result.failure(WifiOnlyNetworkException())
         }
@@ -284,10 +285,10 @@ class SonataDownloadManager(private val context: Context) {
             val parsedUri = Uri.parse(streamUrl)
             val mimeType = inferMimeType(parsedUri, effectiveTrack.codec)
             val extension = extensionForMime(mimeType)
-            val totalLength = if (isLocalFile) {
-                File(streamUrl.removePrefix("file://")).takeIf { it.isFile }?.length()
-            } else {
-                parsedUri.getQueryParameter("clen")?.toLongOrNull()
+            val totalLength = when {
+                isLocalFile -> File(streamUrl.removePrefix("file://")).takeIf { it.isFile }?.length()
+                isSmbStream -> null
+                else -> parsedUri.getQueryParameter("clen")?.toLongOrNull()
                     ?: probeContentLength(streamUrl, parsedUri, headers)
             }
 
@@ -649,8 +650,33 @@ class SonataDownloadManager(private val context: Context) {
         cancelFlag: AtomicBoolean,
         onProgress: (Float, String) -> Unit,
     ): Long {
-        val isLocalFile = !streamUrl.startsWith("http", ignoreCase = true)
+        val isSmbStream = streamUrl.startsWith("${SmbClient.STREAM_SCHEME}://", ignoreCase = true)
+        val isLocalFile = !isSmbStream && !streamUrl.startsWith("http", ignoreCase = true)
         val buffer = ByteArray(IO_BUFFER_BYTES)
+        if (isSmbStream) {
+            val (serverId, relPath) = SmbClient.parseStreamUri(parsedUri)
+                ?: throw IOException("Invalid SMB stream URI: $streamUrl")
+            val profile = SmbProfileRegistry.get(serverId)
+                ?: throw IOException("SMB server '$serverId' is not configured")
+            var written = 0L
+            SmbClient.openReadSession(profile, relPath).use { handle ->
+                val total = handle.length.takeIf { it > 0L }
+                while (total == null || written < total) {
+                    checkCancelled(cancelFlag)
+                    val read = handle.file.read(buffer, written, 0, buffer.size)
+                    if (read <= 0) break
+                    output.write(buffer, 0, read)
+                    written += read
+                    val fraction = if (total != null) written.toFloat() / total.toFloat() else 0f
+                    onProgress(fraction, "Downloading")
+                }
+                if (total != null && written < total) {
+                    throw IOException("Incomplete SMB read: $written of $total bytes")
+                }
+            }
+            output.flush()
+            return written
+        }
         if (isLocalFile) {
             val sourceFile = File(streamUrl.removePrefix("file://"))
             if (!sourceFile.isFile) throw IOException("Cached audio source missing")
@@ -679,43 +705,17 @@ class SonataDownloadManager(private val context: Context) {
             } else {
                 CHUNK_BYTES
             }
-            var position = 0L
-            while (position < knownTotal) {
-                checkCancelled(cancelFlag)
-                val endInclusive = minOf(knownTotal - 1L, position + chunkSize - 1L)
-                var attempt = 0
-                while (true) {
-                    checkCancelled(cancelFlag)
-                    val conn = openConnection(streamUrl, parsedUri, rangeHeader = "bytes=$position-$endInclusive")
-                    try {
-                        val code = conn.responseCode
-                        if (code !in 200..299) {
-                            throw IOException("HTTP $code while fetching range $position-$endInclusive")
-                        }
-                        conn.inputStream.use { input ->
-                            while (true) {
-                                checkCancelled(cancelFlag)
-                                val read = input.read(buffer)
-                                if (read <= 0) break
-                                output.write(buffer, 0, read)
-                                position += read
-                                onProgress(position.toFloat() / knownTotal.toFloat(), "Downloading")
-                            }
-                        }
-                        break
-                    } catch (ce: CancellationException) {
-                        throw ce
-                    } catch (e: IOException) {
-                        if (attempt >= 2) throw e
-                        attempt++
-                        kotlinx.coroutines.delay(attempt * 250L)
-                    } finally {
-                        conn.disconnect()
-                    }
-                }
-            }
-            output.flush()
-            return position
+            return streamChunkedHttpRanges(
+                streamUrl = streamUrl,
+                parsedUri = parsedUri,
+                knownTotal = knownTotal,
+                chunkSize = chunkSize,
+                output = output,
+                headers = headers,
+                buffer = buffer,
+                cancelFlag = cancelFlag,
+                onProgress = onProgress,
+            )
         }
 
         // Direct single-request stream for non-googlevideo or unknown-length URLs.
@@ -747,6 +747,66 @@ class SonataDownloadManager(private val context: Context) {
         } finally {
             conn.disconnect()
         }
+    }
+
+    internal suspend fun streamChunkedHttpRanges(
+        streamUrl: String,
+        parsedUri: Uri?,
+        knownTotal: Long,
+        chunkSize: Long,
+        output: OutputStream,
+        headers: Map<String, String>,
+        buffer: ByteArray = ByteArray(IO_BUFFER_BYTES),
+        cancelFlag: AtomicBoolean,
+        onProgress: (Float, String) -> Unit,
+    ): Long {
+        var position = 0L
+        while (position < knownTotal) {
+            checkCancelled(cancelFlag)
+            val endInclusive = minOf(knownTotal - 1L, position + chunkSize - 1L)
+            var attempt = 0
+            while (true) {
+                checkCancelled(cancelFlag)
+                val conn = openConnection(
+                    streamUrl = streamUrl,
+                    parsedUri = parsedUri,
+                    rangeHeader = "bytes=$position-$endInclusive",
+                    extraHeaders = headers,
+                )
+                try {
+                    val code = conn.responseCode
+                    if (code !in 200..299) {
+                        throw IOException("HTTP $code while fetching range $position-$endInclusive")
+                    }
+                    var bytesInChunk = 0L
+                    conn.inputStream.use { input ->
+                        while (true) {
+                            checkCancelled(cancelFlag)
+                            val read = input.read(buffer)
+                            if (read <= 0) break
+                            output.write(buffer, 0, read)
+                            bytesInChunk += read
+                            position += read
+                            onProgress(position.toFloat() / knownTotal.toFloat(), "Downloading")
+                        }
+                    }
+                    if (bytesInChunk <= 0L) {
+                        throw IOException("Unexpected 0-byte EOF while fetching range $position-$endInclusive")
+                    }
+                    break
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (e: IOException) {
+                    if (attempt >= 2) throw e
+                    attempt++
+                    kotlinx.coroutines.delay(attempt * 250L)
+                } finally {
+                    conn.disconnect()
+                }
+            }
+        }
+        output.flush()
+        return position
     }
 
     private suspend fun checkCancelled(cancelFlag: AtomicBoolean) {
@@ -781,7 +841,7 @@ class SonataDownloadManager(private val context: Context) {
 
     private fun openConnection(
         streamUrl: String,
-        parsedUri: Uri,
+        parsedUri: Uri?,
         rangeHeader: String?,
         extraHeaders: Map<String, String> = emptyMap(),
     ): HttpURLConnection {
@@ -791,7 +851,7 @@ class SonataDownloadManager(private val context: Context) {
             instanceFollowRedirects = true
             requestMethod = "GET"
         }
-        val headers = headersForUri(parsedUri)
+        val headers = parsedUri?.let(::headersForUri) ?: mapOf("User-Agent" to DEFAULT_MOBILE_UA)
         headers.forEach { (key, value) -> conn.setRequestProperty(key, value) }
         extraHeaders.forEach { (key, value) ->
             if (key.isNotBlank() && value.isNotBlank()) {
@@ -1080,13 +1140,9 @@ class SonataDownloadManager(private val context: Context) {
         )
     }
 
-    private fun resolveCoverUrl(videoId: String, coverUrl: String?): String? =
+    internal fun resolveCoverUrl(videoId: String, coverUrl: String?): String? =
         coverUrl?.takeIf { it.isNotBlank() }
-            ?: if (!videoId.startsWith("jiosaavn:") && !videoId.startsWith("local:")) {
-                "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
-            } else {
-                null
-            }
+            ?: resolveYtmFallbackCoverUrl(videoId)
 
     private fun sanitizeId(id: String): String =
         id.replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank { "track" }

@@ -695,6 +695,8 @@ struct SessionActor {
     crossfade_last_exit_vol: Option<u8>,
     crossfade_entry: Option<CrossfadeEntryState>,
     video_mode: bool,
+    preserve_paused_on_restart: bool,
+    pre_video_audio_stream: Option<ResolvedStream>,
     sleep_timer: Option<SleepTimerState>,
     audio_quality: AudioQualityTracker,
     generation: PlaybackGeneration,
@@ -727,6 +729,10 @@ impl SessionActor {
         let muted = config.initial_muted;
         let gapless_enabled = config.initial_gapless;
         let crossfade_secs = clamp_crossfade_secs(config.initial_crossfade_secs);
+        driver.set_gapless(gapless_enabled);
+        if muted {
+            driver.set_volume(0);
+        }
         let (internal_tx, internal_rx) = mpsc::channel(INTERNAL_RESULT_CAPACITY);
 
         Self {
@@ -748,6 +754,8 @@ impl SessionActor {
             crossfade_last_exit_vol: None,
             crossfade_entry: None,
             video_mode: false,
+            preserve_paused_on_restart: false,
+            pre_video_audio_stream: None,
             sleep_timer: None,
             audio_quality: AudioQualityTracker::default(),
             generation: PlaybackGeneration::default(),
@@ -928,6 +936,9 @@ impl SessionActor {
                         }
                     }
                     self.playback.clear_upcoming();
+                    if self.crossfade_exit_active && self.playback.peek_next_index().is_none() {
+                        self.cancel_crossfade(true);
+                    }
                     self.emit(SessionEvent::QueueChanged {
                         queue: self.playback.queue.clone(),
                         current_index: self.playback.current_index,
@@ -948,6 +959,9 @@ impl SessionActor {
                             self.playback.queue.iter().position(|t| t.id == cid);
                     }
                     self.playback.clear_upcoming();
+                    if self.crossfade_exit_active && self.playback.peek_next_index().is_none() {
+                        self.cancel_crossfade(true);
+                    }
                     self.emit(SessionEvent::QueueChanged {
                         queue: self.playback.queue.clone(),
                         current_index: self.playback.current_index,
@@ -970,6 +984,9 @@ impl SessionActor {
                     self.playback.queue.clear();
                 }
                 self.playback.clear_upcoming();
+                if self.crossfade_exit_active && self.playback.peek_next_index().is_none() {
+                    self.cancel_crossfade(true);
+                }
                 self.emit(SessionEvent::QueueChanged {
                     queue: self.playback.queue.clone(),
                     current_index: self.playback.current_index,
@@ -1089,12 +1106,18 @@ impl SessionActor {
             SessionCommand::SetRepeat(mode) => {
                 self.playback.repeat = mode;
                 self.playback.clear_upcoming();
+                if self.crossfade_exit_active && self.playback.peek_next_index().is_none() {
+                    self.cancel_crossfade(true);
+                }
                 self.emit_mode_changed().await;
                 self.maybe_precache_next().await;
             }
             SessionCommand::CycleRepeat => {
                 self.playback.repeat = self.playback.repeat.next();
                 self.playback.clear_upcoming();
+                if self.crossfade_exit_active && self.playback.peek_next_index().is_none() {
+                    self.cancel_crossfade(true);
+                }
                 self.emit_mode_changed().await;
                 self.maybe_precache_next().await;
             }
@@ -1158,6 +1181,8 @@ impl SessionActor {
         self.next_precache.take();
         self.pending_auto_advance = None;
         self.awaiting_playback_start = false;
+        self.preserve_paused_on_restart = false;
+        self.pre_video_audio_stream = None;
         self.stream_loaded_at = None;
         self.upgrade_started_generation = None;
         self.upgrading_quality = false;
@@ -1228,6 +1253,8 @@ impl SessionActor {
         self.upgrade_started_generation = None;
         self.upgrading_quality = false;
         self.awaiting_playback_start = false;
+        self.preserve_paused_on_restart = false;
+        self.pre_video_audio_stream = None;
         self.pending_auto_advance = None;
         self.audio_quality = AudioQualityTracker::default();
         if !self.crossfade_pending_entry {
@@ -1332,6 +1359,7 @@ impl SessionActor {
         self.upgrading_quality = false;
         self.playback.paused = true;
         self.awaiting_playback_start = true;
+        self.preserve_paused_on_restart = false;
         let resume_at = if is_retry {
             self.playback.position_secs
         } else {
@@ -1420,6 +1448,9 @@ impl SessionActor {
                     return;
                 }
                 self.upgrading_quality = false;
+                if self.video_mode {
+                    return;
+                }
                 if !self
                     .playback
                     .current_track()
@@ -1434,6 +1465,10 @@ impl SessionActor {
                 let was_paused = self.playback.paused;
                 self.playback.position_secs = resume_at;
                 self.stream_loaded_at = Some(Instant::now());
+                if was_paused {
+                    self.awaiting_playback_start = false;
+                }
+                self.preserve_paused_on_restart = was_paused;
                 if !was_paused {
                     self.pos_anchor = Some((resume_at, Instant::now()));
                 } else {
@@ -1608,6 +1643,9 @@ impl SessionActor {
                     }
                     return;
                 }
+                if !paused && self.preserve_paused_on_restart && self.playback.paused {
+                    return;
+                }
                 if self.playback.loading_track {
                     return;
                 }
@@ -1629,6 +1667,15 @@ impl SessionActor {
             MpvEvent::PlaybackStarted => {
                 let was_initial_start = self.awaiting_playback_start;
                 self.awaiting_playback_start = false;
+                if self.preserve_paused_on_restart {
+                    self.preserve_paused_on_restart = false;
+                    if self.playback.paused {
+                        self.pos_anchor = None;
+                        self.driver.set_paused(true);
+                        self.publish_progress();
+                        return;
+                    }
+                }
                 self.playback.paused = false;
                 self.pos_anchor = Some((self.playback.position_secs, Instant::now()));
                 if was_initial_start {
@@ -1695,8 +1742,33 @@ impl SessionActor {
                         .active_stream
                         .as_ref()
                         .is_some_and(|s| s.url.starts_with("http"));
+                    if is_remote && self.playback.duration_secs > 0.0 {
+                        tracing::warn!(
+                            event = "premature_track_end",
+                            client = self.config.client_name,
+                            track_id = self
+                                .playback
+                                .current_track()
+                                .map(|t| t.id.as_str())
+                                .unwrap_or("-"),
+                            play_seq = self.generation.value(),
+                            position_secs = pos,
+                            duration_secs = self.playback.duration_secs,
+                            remote = is_remote,
+                            "mpv reported premature EOF before track end; recovering at current position"
+                        );
+                        self.playback.position_secs = pos;
+                        let active_url =
+                            self.playback.active_stream.as_ref().map(|s| s.url.clone());
+                        self.handle_playback_error(
+                            "stream interrupted while seeking".to_string(),
+                            active_url,
+                        )
+                        .await;
+                        return;
+                    }
                     tracing::warn!(
-                        event = "premature_track_end",
+                        event = "non_recoverable_eof",
                         client = self.config.client_name,
                         track_id = self
                             .playback
@@ -1707,19 +1779,8 @@ impl SessionActor {
                         position_secs = pos,
                         duration_secs = self.playback.duration_secs,
                         remote = is_remote,
-                        "mpv reported premature EOF before track end; recovering at current position"
+                        "mpv reported EOF without recoverable duration; advancing or finishing cleanly"
                     );
-                    if is_remote && self.playback.duration_secs > 0.0 {
-                        self.playback.position_secs = pos;
-                        let active_url =
-                            self.playback.active_stream.as_ref().map(|s| s.url.clone());
-                        self.handle_playback_error(
-                            "stream interrupted while seeking".to_string(),
-                            active_url,
-                        )
-                        .await;
-                    }
-                    return;
                 }
 
                 let track_id = self
@@ -1846,41 +1907,43 @@ impl SessionActor {
             );
             return;
         }
-        if let Some(stream) = self.playback.restore_base_stream() {
-            let resume_at = self.interpolated_position();
-            let track_id = self
-                .playback
-                .current_track()
-                .map(|track| track.id.clone())
-                .unwrap_or_default();
-            tracing::warn!(
-                event = "upgrade_fallback",
-                client = self.config.client_name,
-                track_id = %track_id,
-                play_seq = self.generation.value(),
-                error = %err,
-                fallback_quality = %stream.badge,
-                resume_secs = resume_at,
-                "quality upgrade failed; restoring original stream"
-            );
-            self.playback.position_secs = resume_at;
-            self.playback.paused = true;
-            self.awaiting_playback_start = true;
-            self.pos_anchor = None;
-            self.playback.stream_badge = stream.badge.clone();
-            self.stream_loaded_at = Some(Instant::now());
-            self.begin_audio_quality_tracking(self.generation, &track_id, &stream);
-            self.driver.load_stream_at(&stream, resume_at);
-            self.publish_progress();
-            self.emit(SessionEvent::UpgradeFallback {
-                generation: self.generation,
-                track_id,
-                stream,
-                resume_at,
-                error: err,
-            })
-            .await;
-            return;
+        if !self.video_mode {
+            if let Some(stream) = self.playback.restore_base_stream() {
+                let resume_at = self.interpolated_position();
+                let track_id = self
+                    .playback
+                    .current_track()
+                    .map(|track| track.id.clone())
+                    .unwrap_or_default();
+                tracing::warn!(
+                    event = "upgrade_fallback",
+                    client = self.config.client_name,
+                    track_id = %track_id,
+                    play_seq = self.generation.value(),
+                    error = %err,
+                    fallback_quality = %stream.badge,
+                    resume_secs = resume_at,
+                    "quality upgrade failed; restoring original stream"
+                );
+                self.playback.position_secs = resume_at;
+                self.playback.paused = true;
+                self.awaiting_playback_start = true;
+                self.pos_anchor = None;
+                self.playback.stream_badge = stream.badge.clone();
+                self.stream_loaded_at = Some(Instant::now());
+                self.begin_audio_quality_tracking(self.generation, &track_id, &stream);
+                self.driver.load_stream_at(&stream, resume_at);
+                self.publish_progress();
+                self.emit(SessionEvent::UpgradeFallback {
+                    generation: self.generation,
+                    track_id,
+                    stream,
+                    resume_at,
+                    error: err,
+                })
+                .await;
+                return;
+            }
         }
         if let Some(track) = self.playback.current_track().cloned() {
             if PlaybackSession::should_attempt_recovery(self.retried_generation, self.generation) {

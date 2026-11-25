@@ -389,7 +389,7 @@ class DiscordRpcClient(
             val key = AssetCacheKey(activeConfig.appId, targetUrl)
             scope.launch {
                 try {
-                    val resolved = fetchExternalAsset(
+                    val result = fetchExternalAsset(
                         token = activeToken,
                         appId = activeConfig.appId,
                         artworkUrl = targetUrl,
@@ -397,12 +397,7 @@ class DiscordRpcClient(
                     val shouldRefreshPresence: Boolean
                     synchronized(stateLock) {
                         inFlightAssetKeys.remove(key)
-                        if (resolved != null) {
-                            assetCache[key] = resolved
-                            assetCooldownUntilMs.remove(key)
-                        } else {
-                            assetCooldownUntilMs[key] = nowProviderMs() + ASSET_FAILURE_COOLDOWN_MS
-                        }
+                        val resolved = applyExternalAssetResultLocked(key, result, nowProviderMs())
                         shouldRefreshPresence = resolved != null &&
                             !disposed &&
                             isReady &&
@@ -428,11 +423,52 @@ class DiscordRpcClient(
         }
     }
 
-    private fun fetchExternalAsset(
+    internal sealed interface ExternalAssetResult {
+        data class Found(val assetPath: String) : ExternalAssetResult
+        data class RateLimited(val cooldownMs: Long) : ExternalAssetResult
+        data object Failed : ExternalAssetResult
+    }
+
+    private fun applyExternalAssetResultLocked(
+        key: AssetCacheKey,
+        result: ExternalAssetResult,
+        nowMs: Long,
+    ): String? = when (result) {
+        is ExternalAssetResult.Found -> {
+            assetCache[key] = result.assetPath
+            assetCooldownUntilMs.remove(key)
+            result.assetPath
+        }
+        is ExternalAssetResult.RateLimited -> {
+            assetCooldownUntilMs[key] = nowMs + result.cooldownMs
+            null
+        }
+        ExternalAssetResult.Failed -> {
+            assetCooldownUntilMs[key] = nowMs + ASSET_FAILURE_COOLDOWN_MS
+            null
+        }
+    }
+
+    internal fun fetchAndRecordExternalAssetForTest(
         token: String,
         appId: String,
         artworkUrl: String,
     ): String? {
+        val result = fetchExternalAsset(token, appId, artworkUrl)
+        val key = AssetCacheKey(appId, artworkUrl)
+        return synchronized(stateLock) {
+            applyExternalAssetResultLocked(key, result, nowProviderMs())
+        }
+    }
+
+    internal fun assetCooldownUntilMsForTest(appId: String, artworkUrl: String): Long? =
+        synchronized(stateLock) { assetCooldownUntilMs[AssetCacheKey(appId, artworkUrl)] }
+
+    private fun fetchExternalAsset(
+        token: String,
+        appId: String,
+        artworkUrl: String,
+    ): ExternalAssetResult {
         val bodyJson = JSONObject().apply {
             put("urls", JSONArray().put(artworkUrl))
         }.toString()
@@ -446,26 +482,26 @@ class DiscordRpcClient(
         httpClient.newCall(request).execute().use { response ->
             if (response.code == 429) {
                 val retryAfterSec = response.header("Retry-After")?.toDoubleOrNull()?.coerceAtLeast(1.0)
-                if (retryAfterSec != null) {
-                    synchronized(stateLock) {
-                        assetCooldownUntilMs[AssetCacheKey(appId, artworkUrl)] =
-                            nowProviderMs() + (retryAfterSec * 1000.0).toLong()
-                    }
-                }
-                return null
+                val cooldownMs = retryAfterSec?.let { (it * 1000.0).toLong() } ?: ASSET_FAILURE_COOLDOWN_MS
+                return ExternalAssetResult.RateLimited(cooldownMs)
             }
             if (!response.isSuccessful) {
                 Log.w(TAG, "Discord external-assets HTTP ${response.code}")
-                return null
+                return ExternalAssetResult.Failed
             }
             val rawBody = response.body?.string().orEmpty()
-            if (rawBody.isBlank()) return null
-            val array = runCatching { JSONArray(rawBody) }.getOrNull() ?: return null
-            if (array.length() == 0) return null
-            val first = array.optJSONObject(0) ?: return null
+            if (rawBody.isBlank()) return ExternalAssetResult.Failed
+            val array = runCatching { JSONArray(rawBody) }.getOrNull() ?: return ExternalAssetResult.Failed
+            if (array.length() == 0) return ExternalAssetResult.Failed
+            val first = array.optJSONObject(0) ?: return ExternalAssetResult.Failed
             val externalPath = first.optString("external_asset_path", "").trim()
-            if (externalPath.isEmpty()) return null
-            return DiscordApplication.normalizeExternalAssetImage(externalPath)
+            if (externalPath.isEmpty()) return ExternalAssetResult.Failed
+            val normalized = DiscordApplication.normalizeExternalAssetImage(externalPath)
+            return if (normalized.isNotEmpty()) {
+                ExternalAssetResult.Found(normalized)
+            } else {
+                ExternalAssetResult.Failed
+            }
         }
     }
 

@@ -1,4 +1,5 @@
 import java.util.Properties
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     id("com.android.application")
@@ -11,8 +12,8 @@ android {
     compileSdk = 35
     ndkVersion = "27.2.12479018"
 
-    val appVersionName = (project.findProperty("sonataVersion") as String?)?.trim().takeIf { !it.isNullOrEmpty() } ?: "1.0.8"
-    val appVersionCode = (project.findProperty("sonataVersionCode") as String?)?.toIntOrNull() ?: 10008
+    val appVersionName = (project.findProperty("sonataVersion") as String?)?.trim().takeIf { !it.isNullOrEmpty() } ?: "1.0.9"
+    val appVersionCode = (project.findProperty("sonataVersionCode") as String?)?.toIntOrNull() ?: 10009
 
     defaultConfig {
         applicationId = "dev.sonata.android"
@@ -79,10 +80,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_21
     }
 
-    kotlinOptions {
-        jvmTarget = "21"
-    }
-
     buildFeatures {
         compose = true
     }
@@ -109,6 +106,12 @@ android {
 
     testOptions {
         unitTests.isReturnDefaultValues = true
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_21)
     }
 }
 

@@ -80,6 +80,53 @@ pub(super) fn linux_resolver_profile(config: &AppConfig) -> ResolverProfile {
     }
 }
 
+pub(crate) fn filter_playable_tracks_for_mode(
+    tracks: Vec<Track>,
+    start_index: usize,
+    personal_only_mode: bool,
+    downloaded_track_ids: &HashSet<String>,
+) -> Result<(Vec<Track>, usize), &'static str> {
+    if tracks.is_empty() {
+        return Err("No tracks to play");
+    }
+    if !personal_only_mode {
+        return Ok((tracks.clone(), start_index.min(tracks.len() - 1)));
+    }
+    if let Some(clicked) = tracks.get(start_index) {
+        if !can_play_track_in_mode(clicked, true, downloaded_track_ids.contains(&clicked.id)) {
+            return Err("Personal Only Mode is active — streaming playback is disabled");
+        }
+    }
+    let target_id = tracks.get(start_index).map(|t| t.id.clone());
+    let indexed: Vec<(usize, Track)> = tracks
+        .into_iter()
+        .enumerate()
+        .filter(|(_, t)| can_play_track_in_mode(t, true, downloaded_track_ids.contains(&t.id)))
+        .collect();
+    if indexed.is_empty() {
+        return Err("Personal Only Mode is active — no playable local or server tracks");
+    }
+    let remapped = indexed
+        .iter()
+        .position(|(orig_idx, _)| *orig_idx == start_index)
+        .or_else(|| {
+            target_id
+                .as_deref()
+                .and_then(|id| indexed.iter().position(|(_, t)| t.id == id))
+        })
+        .unwrap_or(0);
+    let filtered = indexed.into_iter().map(|(_, t)| t).collect();
+    Ok((filtered, remapped))
+}
+
+pub(crate) fn upsert_server_profile(profiles: &mut Vec<ServerProfile>, profile: ServerProfile) {
+    if let Some(existing) = profiles.iter_mut().find(|p| p.id == profile.id) {
+        *existing = profile;
+    } else {
+        profiles.push(profile);
+    }
+}
+
 pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Result<BackendHandle> {
     let config = AppConfig::load();
     let paths = linux_core_paths();
@@ -1091,39 +1138,17 @@ impl BackendEngine {
                 if tracks.is_empty() {
                     return;
                 }
-                let tracks = if self.config.personal_only_mode {
-                    let target = tracks.get(start_index).cloned();
-                    if let Some(ref clicked) = target {
-                        if !can_play_track_in_mode(
-                            clicked,
-                            true,
-                            self.downloaded_track_ids.contains(&clicked.id),
-                        ) {
-                            self.status_line =
-                                "Personal Only Mode is active — streaming playback is disabled"
-                                    .to_string();
-                            return;
-                        }
-                    }
-                    let filtered: Vec<Track> = tracks
-                        .into_iter()
-                        .filter(|t| {
-                            can_play_track_in_mode(
-                                t,
-                                true,
-                                self.downloaded_track_ids.contains(&t.id),
-                            )
-                        })
-                        .collect();
-                    if filtered.is_empty() {
-                        self.status_line =
-                            "Personal Only Mode is active — no playable local or server tracks"
-                                .to_string();
+                let (tracks, remapped_start) = match filter_playable_tracks_for_mode(
+                    tracks,
+                    start_index,
+                    self.config.personal_only_mode,
+                    &self.downloaded_track_ids,
+                ) {
+                    Ok(res) => res,
+                    Err(msg) => {
+                        self.status_line = msg.to_string();
                         return;
                     }
-                    filtered
-                } else {
-                    tracks
                 };
                 self.active_queue_playlist_id = match self.active_nav {
                     NavTarget::Playlist(ref pid) => Some(pid.clone()),
@@ -1141,7 +1166,7 @@ impl BackendEngine {
                         .unwrap_or(0);
                     nanos % tracks.len()
                 } else {
-                    start_index.min(tracks.len() - 1)
+                    remapped_start.min(tracks.len() - 1)
                 };
                 let _ = self
                     .session
@@ -1410,6 +1435,7 @@ impl BackendEngine {
                 if self.config.local_music_enabled {
                     self.scan_local_music();
                 } else {
+                    self.local_scan_req_id = self.local_scan_req_id.wrapping_add(1);
                     self.local_scanning = false;
                     self.local_scan = LocalScanResult::default();
                     self.status_line = "Local Music disabled".to_string();
@@ -2781,12 +2807,30 @@ impl BackendEngine {
                 }
                 self.server_test_result = Some(result);
             }
-            InternalEvent::ServerSaved {
-                profiles,
-                active_id,
-                message,
-            } => {
-                self.server_profiles = profiles;
+            InternalEvent::ServerSaved { profile, message } => {
+                let active_id = profile.id.clone();
+                upsert_server_profile(&mut self.server_profiles, profile);
+                let save_paths = self.paths.clone();
+                let save_list = self.server_profiles.clone();
+                let int_tx = self.int_tx.clone();
+                tokio::spawn(async move {
+                    let save_res = tokio::task::spawn_blocking(move || {
+                        sonata_core::providers::servers::save_server_profiles(
+                            &save_paths,
+                            &save_list,
+                        )
+                    })
+                    .await
+                    .unwrap_or_else(|e| {
+                        Err(sonata_core::error::CoreError::internal(e.to_string()))
+                    });
+                    if let Err(err) = save_res {
+                        let _ = int_tx.send(InternalEvent::ServerTested {
+                            server_id: None,
+                            result: Err(format!("Failed to save server: {err}")),
+                        });
+                    }
+                });
                 self.active_server_id = Some(active_id.clone());
                 self.server_test_result = Some(Ok(message.clone()));
                 self.status_line = message;
@@ -2806,15 +2850,16 @@ impl BackendEngine {
                 self.status_line = format!("Speed test: {badge}");
                 self.server_speed_tests.insert(server_id, report);
             }
-            InternalEvent::LocalMusicScanned(scan) => {
+            InternalEvent::LocalMusicScanned { req_id, scan } => {
+                if req_id != self.local_scan_req_id || !self.config.local_music_enabled {
+                    return;
+                }
                 self.local_scanning = false;
                 let track_count = scan.tracks.len();
                 let album_count = scan.albums.len();
                 self.local_scan = scan;
-                if self.config.local_music_enabled {
-                    self.status_line =
-                        format!("Local Music: {track_count} tracks across {album_count} albums");
-                }
+                self.status_line =
+                    format!("Local Music: {track_count} tracks across {album_count} albums");
             }
             InternalEvent::PersonalPlaylistsLoaded(playlists) => {
                 self.personal_playlists = playlists;
@@ -3438,5 +3483,87 @@ mod tests {
         });
         handle.shutdown_sync();
         responder.join().expect("responder joined");
+    }
+
+    fn sample_track(id: &str) -> Track {
+        Track {
+            id: id.to_string(),
+            title: format!("Track {id}"),
+            artist: "Artist".to_string(),
+            album: "Album".to_string(),
+            album_id: None,
+            duration_secs: Some(180),
+            thumbnail_url: None,
+            liked: false,
+            set_video_id: None,
+            audio_badge: None,
+            is_explicit: false,
+            source: sonata_core::providers::ProviderSource::YouTubeMusic,
+        }
+    }
+
+    #[test]
+    fn personal_only_play_tracks_remaps_start_index_after_filtering() {
+        let t1 = sample_track("ytm_1");
+        let t2 = sample_track("ytm_2");
+        let t3 = sample_track("local:song_a");
+        let t4 = sample_track("ytm_dl");
+        let mut downloaded = HashSet::new();
+        downloaded.insert("ytm_dl".to_string());
+
+        let (filtered, idx) =
+            filter_playable_tracks_for_mode(vec![t1, t2, t3, t4], 3, true, &downloaded)
+                .expect("downloaded track should remain playable");
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(idx, 1);
+        assert_eq!(filtered[idx].id, "ytm_dl");
+    }
+
+    #[test]
+    fn personal_only_play_tracks_rejects_clicked_streaming_track() {
+        let t1 = sample_track("ytm_1");
+        let t2 = sample_track("local:song_a");
+        let err = filter_playable_tracks_for_mode(vec![t1, t2], 0, true, &HashSet::new())
+            .expect_err("streaming click should be rejected");
+        assert!(err.contains("Personal Only Mode"));
+    }
+
+    fn sample_server_profile(id: &str, name: &str, enabled: bool) -> ServerProfile {
+        ServerProfile {
+            id: id.to_string(),
+            name: name.to_string(),
+            kind: sonata_core::providers::servers::ServerKind::Jellyfin,
+            base_url: "https://music.example.com".to_string(),
+            enabled,
+            username: None,
+            password: None,
+            api_key: None,
+            access_token: None,
+            user_id: None,
+            bearer_token: None,
+            library_ids: Vec::new(),
+            share: None,
+            domain: None,
+            local_mount_path: None,
+        }
+    }
+
+    #[test]
+    fn upsert_server_profile_preserves_concurrent_changes() {
+        let mut profiles = vec![
+            sample_server_profile("s1", "Server 1", true),
+            sample_server_profile("s2", "Server 2", false),
+        ];
+        // Concurrent toggle disabled s2; saving s1 must keep s2 disabled.
+        upsert_server_profile(
+            &mut profiles,
+            sample_server_profile("s1", "Server 1 Renamed", true),
+        );
+        assert_eq!(profiles.len(), 2);
+        assert_eq!(profiles[0].name, "Server 1 Renamed");
+        assert!(!profiles[1].enabled);
+
+        upsert_server_profile(&mut profiles, sample_server_profile("s3", "Server 3", true));
+        assert_eq!(profiles.len(), 3);
     }
 }

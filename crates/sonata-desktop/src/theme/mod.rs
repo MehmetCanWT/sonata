@@ -14,10 +14,10 @@ use gpui_kit::component::{Theme as GpuiTheme, ThemeMode as GpuiThemeMode};
 use gpui_kit::{px, App, Hsla};
 use ramp::{hsla_from_rgb, Rgb, ThemeTokens};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use system::{
-    detect_system_is_dark, has_gtk_palette, has_qt_palette, load_gtk_palette, load_qt_palette,
-    THEME_GTK, THEME_QT,
+    detect_system_is_dark_with_qt, has_gtk_palette, load_gtk_palettes, load_qt_palette, THEME_GTK,
+    THEME_QT,
 };
 
 #[derive(Debug, Clone)]
@@ -118,6 +118,17 @@ impl DesktopPalette {
 }
 
 #[derive(Debug, Clone)]
+pub struct ThemeCatalogSnapshot {
+    pub themes: Vec<ThemeTokens>,
+    pub errors: Vec<String>,
+    pub warnings_by_name: HashMap<String, Vec<String>>,
+    pub system_is_dark: bool,
+    pub gtk_dark: ThemeTokens,
+    pub gtk_light: ThemeTokens,
+    pub qt_palette: Option<ThemeTokens>,
+}
+
+#[derive(Debug, Clone)]
 pub struct ThemeCatalog {
     pub themes_dir: PathBuf,
     pub themes: Vec<ThemeTokens>,
@@ -126,30 +137,63 @@ pub struct ThemeCatalog {
     pub fallback_notice: Option<String>,
     pub scheme_override: Option<String>,
     pub system_is_dark: bool,
+    pub gtk_dark: ThemeTokens,
+    pub gtk_light: ThemeTokens,
+    pub qt_palette: Option<ThemeTokens>,
 }
 
 impl ThemeCatalog {
-    pub fn load(scheme_override: Option<String>) -> Self {
-        let dir = DesktopSettings::themes_dir();
-        let loaded = load_themes_dir(&dir);
-        let system_is_dark = detect_system_is_dark();
-        Self {
-            themes_dir: dir,
+    pub fn load_snapshot(dir: &Path) -> ThemeCatalogSnapshot {
+        let loaded = load_themes_dir(dir);
+        let qt_palette = load_qt_palette();
+        let system_is_dark = detect_system_is_dark_with_qt(qt_palette.as_ref());
+        let (gtk_dark, gtk_light) = load_gtk_palettes();
+        ThemeCatalogSnapshot {
             themes: loaded.themes,
             errors: loaded.errors,
             warnings_by_name: loaded.warnings_by_name,
-            fallback_notice: None,
-            scheme_override,
             system_is_dark,
+            gtk_dark,
+            gtk_light,
+            qt_palette,
         }
     }
 
-    pub fn reload(&mut self) {
-        let loaded = load_themes_dir(&self.themes_dir);
-        self.themes = loaded.themes;
-        self.errors = loaded.errors;
-        self.warnings_by_name = loaded.warnings_by_name;
-        self.system_is_dark = detect_system_is_dark();
+    pub fn load(scheme_override: Option<String>) -> Self {
+        let dir = DesktopSettings::themes_dir();
+        let snap = Self::load_snapshot(&dir);
+        Self {
+            themes_dir: dir,
+            themes: snap.themes,
+            errors: snap.errors,
+            warnings_by_name: snap.warnings_by_name,
+            fallback_notice: None,
+            scheme_override,
+            system_is_dark: snap.system_is_dark,
+            gtk_dark: snap.gtk_dark,
+            gtk_light: snap.gtk_light,
+            qt_palette: snap.qt_palette,
+        }
+    }
+
+    pub fn apply_snapshot(&mut self, snap: ThemeCatalogSnapshot) -> bool {
+        let changed = self.themes != snap.themes
+            || self.errors != snap.errors
+            || self.warnings_by_name != snap.warnings_by_name
+            || self.system_is_dark != snap.system_is_dark
+            || self.gtk_dark != snap.gtk_dark
+            || self.gtk_light != snap.gtk_light
+            || self.qt_palette != snap.qt_palette;
+        if changed {
+            self.themes = snap.themes;
+            self.errors = snap.errors;
+            self.warnings_by_name = snap.warnings_by_name;
+            self.system_is_dark = snap.system_is_dark;
+            self.gtk_dark = snap.gtk_dark;
+            self.gtk_light = snap.gtk_light;
+            self.qt_palette = snap.qt_palette;
+        }
+        changed
     }
 
     pub fn resolved_is_dark(&self, settings: &DesktopSettings) -> bool {
@@ -177,7 +221,7 @@ impl ThemeCatalog {
         if has_gtk_palette() {
             names.push(THEME_GTK.to_string());
         }
-        if has_qt_palette() {
+        if self.qt_palette.is_some() {
             names.push(THEME_QT.to_string());
         }
         for t in &self.themes {
@@ -212,12 +256,16 @@ impl ThemeCatalog {
         self.fallback_notice = None;
 
         if desired.eq_ignore_ascii_case(THEME_GTK) && has_gtk_palette() {
-            let gtk = load_gtk_palette(is_dark);
-            return DesktopPalette::from_tokens(&gtk, settings);
+            let gtk = if is_dark {
+                &self.gtk_dark
+            } else {
+                &self.gtk_light
+            };
+            return DesktopPalette::from_tokens(gtk, settings);
         }
-        if desired.eq_ignore_ascii_case(THEME_QT) && has_qt_palette() {
-            if let Some(qt) = load_qt_palette() {
-                return DesktopPalette::from_tokens(&qt, settings);
+        if desired.eq_ignore_ascii_case(THEME_QT) {
+            if let Some(ref qt) = self.qt_palette {
+                return DesktopPalette::from_tokens(qt, settings);
             }
         }
 
@@ -355,4 +403,74 @@ pub fn sync_gpui_theme(cx: &mut App, palette: &DesktopPalette) {
         c.scrollbar_thumb = palette.text.opacity(0.18);
         c.scrollbar_thumb_hover = palette.text.opacity(0.34);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ramp::Rgb;
+
+    fn sample_tokens(name: &str, is_dark: bool, accent: Rgb) -> ThemeTokens {
+        let mut vars = HashMap::new();
+        vars.insert(
+            "--base".to_string(),
+            if is_dark {
+                Rgb::from_u8(20, 20, 24)
+            } else {
+                Rgb::from_u8(250, 250, 252)
+            },
+        );
+        vars.insert(
+            "--text".to_string(),
+            if is_dark {
+                Rgb::from_u8(245, 245, 247)
+            } else {
+                Rgb::from_u8(30, 30, 35)
+            },
+        );
+        vars.insert("--accent".to_string(), accent);
+        ramp::derive_theme_tokens(name.to_string(), Some(is_dark), &vars).unwrap()
+    }
+
+    #[test]
+    fn resolve_palette_uses_cached_gtk_tokens_for_opacity_adjustments() {
+        let custom_accent = Rgb::from_u8(12, 199, 111);
+        let gtk_dark = sample_tokens(THEME_GTK, true, custom_accent);
+        let gtk_light = sample_tokens(THEME_GTK, false, Rgb::from_u8(53, 132, 228));
+        let mut catalog = ThemeCatalog {
+            themes_dir: PathBuf::from("/nonexistent"),
+            themes: Vec::new(),
+            errors: Vec::new(),
+            warnings_by_name: HashMap::new(),
+            fallback_notice: None,
+            scheme_override: None,
+            system_is_dark: true,
+            gtk_dark: gtk_dark.clone(),
+            gtk_light: gtk_light.clone(),
+            qt_palette: None,
+        };
+        let mut settings = DesktopSettings {
+            theme_mode: ThemeModePref::Dark,
+            dark_theme: THEME_GTK.to_string(),
+            opacity: 0.72,
+            ..DesktopSettings::default()
+        };
+        let p1 = catalog.resolve_palette(&settings);
+        settings.opacity = 0.90;
+        let p2 = catalog.resolve_palette(&settings);
+        assert_eq!(p1.theme_name, THEME_GTK);
+        assert_eq!(p1.accent, p2.accent);
+        assert!(p2.solved.card_alpha < p1.solved.card_alpha);
+
+        let same = ThemeCatalogSnapshot {
+            themes: Vec::new(),
+            errors: Vec::new(),
+            warnings_by_name: HashMap::new(),
+            system_is_dark: true,
+            gtk_dark,
+            gtk_light,
+            qt_palette: None,
+        };
+        assert!(!catalog.apply_snapshot(same));
+    }
 }

@@ -9,12 +9,18 @@ import dev.sonata.android.discord.DiscordPresenceConfig
 import dev.sonata.android.discord.DiscordPresenceTrack
 import dev.sonata.android.discord.DiscordRpcClient
 import dev.sonata.android.discord.DiscordRpcStatus
+import dev.sonata.android.discord.extractCookieNames
 import dev.sonata.android.discord.extractTokenFromJsAlert
 import dev.sonata.android.discord.isDiscordAuthenticatedUrl
 import dev.sonata.android.discord.sanitizeDiscordUserAgent
 import dev.sonata.android.ui.i18n.EnglishSonataStrings
 import dev.sonata.android.ui.i18n.RussianSonataStrings
 import dev.sonata.android.ui.i18n.TurkishSonataStrings
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -312,5 +318,49 @@ class DiscordRpcTest {
             assertTrue(strings.discordAppIdInvalid.isNotBlank())
             assertNotNull(strings.discordStatusConnectedAs("tester"))
         }
+    }
+
+    @Test
+    fun extractCookieNamesParsesOnlyCookieNamesSafely() {
+        assertEquals(emptyList<String>(), extractCookieNames(null))
+        assertEquals(emptyList<String>(), extractCookieNames("   "))
+        assertEquals(
+            listOf("__dcfduid", "__sdcfduid", "locale"),
+            extractCookieNames("__dcfduid=abc123; __sdcfduid=xyz=99; locale=en-US; __dcfduid=dup"),
+        )
+    }
+
+    @Test
+    fun externalAsset429PreservesRetryAfterCooldownInsteadOfOverwritingWithDefault() {
+        var nowMs = 1_000_000L
+        var retryAfterHeader = "180"
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(429)
+                    .message("Too Many Requests")
+                    .header("Retry-After", retryAfterHeader)
+                    .body("{}".toResponseBody("application/json".toMediaType()))
+                    .build()
+            }
+            .build()
+
+        val rpc = DiscordRpcClient(
+            httpClient = client,
+            nowProviderMs = { nowMs },
+        )
+        val appId = "1520387624861438002"
+        val artLong = "https://example.com/cover-long.jpg"
+        assertNull(rpc.fetchAndRecordExternalAssetForTest("tok", appId, artLong))
+        assertEquals(nowMs + 180_000L, rpc.assetCooldownUntilMsForTest(appId, artLong))
+
+        // Shorter explicit Retry-After (15s) must also be honored instead of clamped to 60s.
+        retryAfterHeader = "15"
+        val artShort = "https://example.com/cover-short.jpg"
+        assertNull(rpc.fetchAndRecordExternalAssetForTest("tok", appId, artShort))
+        assertEquals(nowMs + 15_000L, rpc.assetCooldownUntilMsForTest(appId, artShort))
+        rpc.disconnect()
     }
 }

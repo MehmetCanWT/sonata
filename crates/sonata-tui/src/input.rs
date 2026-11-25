@@ -1,3 +1,8 @@
+//! Keyboard and mouse event dispatcher for the Ratatui terminal interface.
+//!
+//! 1. **Modal Routing**: Handles key bindings across confirmation, theme picker, settings, server, and playlist modals.
+//! 2. **Pane & Playback Controls**: Dispatches focus switching, list navigation, search input, and playback shortcuts.
+
 use crate::app::{ActiveModal, App, FocusPane, SplitTarget};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;

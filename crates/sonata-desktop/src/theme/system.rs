@@ -17,16 +17,12 @@ fn kdeglobals_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("kdeglobals"))
 }
 
-pub fn has_qt_palette() -> bool {
-    kdeglobals_path().is_some_and(|p| p.exists())
-}
-
 pub fn has_gtk_palette() -> bool {
     cfg!(target_os = "linux")
 }
 
-/// Detects whether the desktop prefers dark appearance. Defaults to `true` on Linux when undetermined.
-pub fn detect_system_is_dark() -> bool {
+/// Detects whether the desktop prefers dark appearance using an already-loaded Qt palette to avoid re-reading `kdeglobals`.
+pub fn detect_system_is_dark_with_qt(qt_palette: Option<&ThemeTokens>) -> bool {
     if cfg!(target_os = "linux") {
         // 1. Check gsettings color-scheme (`prefer-dark` / `prefer-light`).
         if let Ok(out) = Command::new("gsettings")
@@ -57,7 +53,7 @@ pub fn detect_system_is_dark() -> bool {
             }
         }
         // 3. Check KDE kdeglobals BackgroundNormal luminance.
-        if let Some(qt) = load_qt_palette() {
+        if let Some(qt) = qt_palette {
             return qt.is_dark;
         }
     }
@@ -129,9 +125,16 @@ pub fn load_qt_palette() -> Option<ThemeTokens> {
     derive_theme_tokens(THEME_QT.to_string(), Some(base.is_dark()), &vars).ok()
 }
 
-/// Resolves GTK 3 active theme & dark-mode preference into Adwaita-inspired desktop tokens.
-pub fn load_gtk_palette(fallback_dark: bool) -> ThemeTokens {
-    let mut is_dark = fallback_dark;
+struct GtkPaletteInputs {
+    prefer_dark: Option<bool>,
+    custom_bg: Option<Rgb>,
+    custom_fg: Option<Rgb>,
+    custom_accent: Option<Rgb>,
+    custom_win: Option<Rgb>,
+}
+
+fn read_gtk_palette_inputs() -> GtkPaletteInputs {
+    let mut prefer_dark: Option<bool> = None;
     let mut theme_name = String::new();
 
     if let Some(cfg) = dirs::config_dir() {
@@ -140,12 +143,12 @@ pub fn load_gtk_palette(fallback_dark: bool) -> ThemeTokens {
             for line in raw.lines() {
                 let lower = line.to_ascii_lowercase();
                 if lower.starts_with("gtk-application-prefer-dark-theme") {
-                    is_dark = lower.contains("=1") || lower.contains("true");
+                    prefer_dark = Some(lower.contains("=1") || lower.contains("true"));
                 } else if let Some((_, v)) = line.split_once('=') {
                     if lower.starts_with("gtk-theme-name") {
                         theme_name = v.trim().to_string();
                         if theme_name.to_ascii_lowercase().contains("dark") {
-                            is_dark = true;
+                            prefer_dark = Some(true);
                         }
                     }
                 }
@@ -161,7 +164,7 @@ pub fn load_gtk_palette(fallback_dark: bool) -> ThemeTokens {
         if !cleaned.is_empty() {
             theme_name = cleaned.to_string();
             if cleaned.to_ascii_lowercase().contains("dark") {
-                is_dark = true;
+                prefer_dark = Some(true);
             }
         }
     }
@@ -197,45 +200,77 @@ pub fn load_gtk_palette(fallback_dark: bool) -> ThemeTokens {
     }
 
     let _ = theme_name;
+    GtkPaletteInputs {
+        prefer_dark,
+        custom_bg,
+        custom_fg,
+        custom_accent,
+        custom_win,
+    }
+}
+
+fn derive_gtk_tokens(fallback_dark: bool, inputs: &GtkPaletteInputs) -> ThemeTokens {
+    let is_dark = inputs.prefer_dark.unwrap_or(fallback_dark);
     let mut vars = HashMap::new();
     if is_dark {
         vars.insert(
             "--base".to_string(),
-            custom_bg.unwrap_or_else(|| Rgb::from_u8(30, 30, 34)),
+            inputs.custom_bg.unwrap_or_else(|| Rgb::from_u8(30, 30, 34)),
         );
         vars.insert(
             "--text".to_string(),
-            custom_fg.unwrap_or_else(|| Rgb::from_u8(245, 245, 247)),
+            inputs
+                .custom_fg
+                .unwrap_or_else(|| Rgb::from_u8(245, 245, 247)),
         );
         vars.insert(
             "--accent".to_string(),
-            custom_accent.unwrap_or_else(|| Rgb::from_u8(53, 132, 228)),
+            inputs
+                .custom_accent
+                .unwrap_or_else(|| Rgb::from_u8(53, 132, 228)),
         );
         vars.insert(
             "--gutter".to_string(),
-            custom_win.unwrap_or_else(|| Rgb::from_u8(20, 20, 24)),
+            inputs
+                .custom_win
+                .unwrap_or_else(|| Rgb::from_u8(20, 20, 24)),
         );
     } else {
         vars.insert(
             "--base".to_string(),
-            custom_bg.unwrap_or_else(|| Rgb::from_u8(255, 255, 255)),
+            inputs
+                .custom_bg
+                .unwrap_or_else(|| Rgb::from_u8(255, 255, 255)),
         );
         vars.insert(
             "--text".to_string(),
-            custom_fg.unwrap_or_else(|| Rgb::from_u8(36, 31, 49)),
+            inputs.custom_fg.unwrap_or_else(|| Rgb::from_u8(36, 31, 49)),
         );
         vars.insert(
             "--accent".to_string(),
-            custom_accent.unwrap_or_else(|| Rgb::from_u8(53, 132, 228)),
+            inputs
+                .custom_accent
+                .unwrap_or_else(|| Rgb::from_u8(53, 132, 228)),
         );
         vars.insert(
             "--gutter".to_string(),
-            custom_win.unwrap_or_else(|| Rgb::from_u8(246, 245, 244)),
+            inputs
+                .custom_win
+                .unwrap_or_else(|| Rgb::from_u8(246, 245, 244)),
         );
     }
 
     derive_theme_tokens(THEME_GTK.to_string(), Some(is_dark), &vars)
         .expect("gtk fallback tokens valid")
+}
+
+/// Resolves both dark and light GTK 3 palettes with a single `gsettings` and disk read pass.
+pub fn load_gtk_palettes() -> (ThemeTokens, ThemeTokens) {
+    let inputs = read_gtk_palette_inputs();
+    (
+        derive_gtk_tokens(true, &inputs),
+        derive_gtk_tokens(false, &inputs),
+    )
 }
 
 fn parse_kde_rgb(raw: &str) -> Option<Rgb> {

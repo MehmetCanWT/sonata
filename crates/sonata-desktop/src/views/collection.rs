@@ -833,6 +833,3 @@ impl SonataDesktopView {
             .into_any_element()
     }
 }
-
-#[allow(dead_code)]
-fn _keep_modal(_: DesktopModal) {}

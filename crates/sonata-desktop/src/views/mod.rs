@@ -36,14 +36,15 @@ use gpui_kit::component::select::{SearchableVec, SelectEvent, SelectState};
 use gpui_kit::component::slider::{SliderEvent, SliderState, SliderValue};
 use gpui_kit::component::{Icon, Sizable as _, TitleBar, WindowBorder};
 use gpui_kit::{
-    div, prelude::FluentBuilder as _, px, AnyElement, App, AppContext, Bounds, Context, Entity,
-    FocusHandle, Focusable, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
-    MouseButton, MouseMoveEvent, ParentElement as _, Pixels, Point, Render, RenderImage,
-    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
+    div, prelude::FluentBuilder as _, px, AnyElement, AnyWindowHandle, App, AppContext, Bounds,
+    Context, Entity, FocusHandle, Focusable, FontWeight, InteractiveElement as _, IntoElement,
+    KeyDownEvent, MouseButton, MouseMoveEvent, ParentElement as _, Pixels, Point, Render,
+    RenderImage, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Window,
 };
 use sonata_core::providers::servers::ServerKind;
 use sonata_core::providers::Track;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -143,6 +144,7 @@ pub struct ContextMenuState {
 
 pub struct SonataDesktopView {
     pub backend: BackendHandle,
+    pub window_slot: Rc<RefCell<Option<AnyWindowHandle>>>,
     pub snapshot: Arc<DesktopSnapshot>,
     pub live_position_secs: f64,
     pub live_position_at: Instant,
@@ -152,6 +154,8 @@ pub struct SonataDesktopView {
     pub mini_mode: bool,
     pub settings: DesktopSettings,
     pub theme_catalog: ThemeCatalog,
+    pub theme_reload_in_flight: bool,
+    pub last_theme_reload: Instant,
     pub palette: DesktopPalette,
     pub media: MediaCache,
     pub focus_handle: FocusHandle,
@@ -266,6 +270,7 @@ impl SonataDesktopView {
         backend: BackendHandle,
         decorated: bool,
         scheme_override: Option<String>,
+        window_slot: Rc<RefCell<Option<AnyWindowHandle>>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -316,9 +321,16 @@ impl SonataDesktopView {
         let server_url_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("https://music.example.com"));
         let server_user_input = cx.new(|cx| InputState::new(window, cx).placeholder("Username"));
-        let server_pass_input = cx.new(|cx| InputState::new(window, cx).placeholder("Password"));
-        let server_token_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("API Key / Bearer Token"));
+        let server_pass_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Password")
+                .masked(true)
+        });
+        let server_token_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("API Key / Bearer Token")
+                .masked(true)
+        });
         let server_share_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Music (optional)"));
         let server_domain_input =
@@ -433,10 +445,10 @@ impl SonataDesktopView {
 
         let mut subscriptions = Vec::new();
 
-        // Reload CSS themes & OS palettes automatically when the window regains focus.
+        // Reload CSS themes & OS palettes automatically (off-thread, throttled) when the window regains focus.
         subscriptions.push(cx.observe_window_activation(window, |this, window, cx| {
             if window.is_window_active() && this.window_visible {
-                this.reload_themes_and_sync(window, cx);
+                this.schedule_theme_reload(false, window, cx);
             }
         }));
 
@@ -495,9 +507,15 @@ impl SonataDesktopView {
             window,
             |this, state, event: &InputEvent, _window, cx| {
                 if matches!(event, InputEvent::PressEnter { .. }) {
-                    let name = state.read(cx).value().trim().to_string();
-                    if !name.is_empty() {
-                        this.backend.send(BackendCmd::CreateYtmPlaylist(name));
+                    let name = state.read(cx).value().to_string();
+                    if let Some(cmd) = playlist_modal_submit_cmd(
+                        &this.modal,
+                        &name,
+                        this.create_playlist_personal,
+                        this.snapshot.config.personal_only_mode,
+                        this.snapshot.is_signed_in(),
+                    ) {
+                        this.backend.send(cmd);
                         this.modal = DesktopModal::None;
                         cx.notify();
                     }
@@ -635,6 +653,7 @@ impl SonataDesktopView {
         let init_signed_in = snapshot.is_signed_in();
         Self {
             backend,
+            window_slot,
             snapshot,
             live_position_secs: init_pos,
             live_position_at: Instant::now(),
@@ -644,6 +663,8 @@ impl SonataDesktopView {
             mini_mode: init_mini,
             settings,
             theme_catalog,
+            theme_reload_in_flight: false,
+            last_theme_reload: Instant::now(),
             palette,
             media: MediaCache::default(),
             focus_handle,
@@ -808,7 +829,7 @@ impl SonataDesktopView {
         } else {
             self.sync_sliders_from_state(window, cx);
             if window.is_window_active() {
-                self.reload_themes_and_sync(window, cx);
+                self.schedule_theme_reload(false, window, cx);
             }
             cx.notify();
         }
@@ -1004,9 +1025,41 @@ impl SonataDesktopView {
         }
     }
 
+    pub fn close_window_to_tray(&self, window: &mut Window) {
+        *self.window_slot.borrow_mut() = None;
+        self.backend.send(BackendCmd::SetWindowAddress(None));
+        self.backend.send(BackendCmd::SetWindowVisible(false));
+        window.remove_window();
+    }
+
     pub fn reload_themes_and_sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.theme_catalog.reload();
-        self.apply_appearance(window, cx);
+        self.schedule_theme_reload(true, window, cx);
+    }
+
+    fn schedule_theme_reload(&mut self, force: bool, window: &mut Window, cx: &mut Context<Self>) {
+        const ACTIVATION_RELOAD_DEBOUNCE: Duration = Duration::from_secs(3);
+        if self.theme_reload_in_flight {
+            return;
+        }
+        if !force && self.last_theme_reload.elapsed() < ACTIVATION_RELOAD_DEBOUNCE {
+            return;
+        }
+        self.theme_reload_in_flight = true;
+        let themes_dir = self.theme_catalog.themes_dir.clone();
+        cx.spawn_in(window, async move |weak, cx| {
+            let snap = cx
+                .background_executor()
+                .spawn(async move { ThemeCatalog::load_snapshot(&themes_dir) })
+                .await;
+            let _ = weak.update_in(cx, |this, window, cx| {
+                this.theme_reload_in_flight = false;
+                this.last_theme_reload = Instant::now();
+                if this.theme_catalog.apply_snapshot(snap) {
+                    this.apply_appearance(window, cx);
+                }
+            });
+        })
+        .detach();
     }
 
     pub fn apply_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1727,9 +1780,9 @@ impl SonataDesktopView {
                     .px(px(10.0))
                     .border_b_0()
                     .bg(gpui_kit::transparent_black())
-                    .on_close_window(|_, window, _| {
-                        window.remove_window();
-                    })
+                    .on_close_window(cx.listener(|this, _, window, _| {
+                        this.close_window_to_tray(window);
+                    }))
                     .child(
                         div()
                             .text_size(px(11.0))
@@ -2010,6 +2063,45 @@ fn view_weak_notify(
     })
 }
 
+pub(crate) fn playlist_modal_submit_cmd(
+    modal: &DesktopModal,
+    raw_name: &str,
+    create_playlist_personal: bool,
+    personal_only_mode: bool,
+    signed_in: bool,
+) -> Option<BackendCmd> {
+    let name = raw_name.trim().to_string();
+    match modal {
+        DesktopModal::EditPlaylist {
+            playlist_id,
+            cover_path,
+        } => {
+            if name.is_empty() && cover_path.is_none() {
+                return None;
+            }
+            let title = if name.is_empty() { None } else { Some(name) };
+            Some(BackendCmd::EditPlaylist {
+                playlist_id: playlist_id.clone(),
+                title,
+                cover_path: cover_path.clone(),
+            })
+        }
+        DesktopModal::CreatePlaylist => {
+            if name.is_empty() {
+                return None;
+            }
+            let can_ytm = !personal_only_mode && signed_in;
+            let is_personal = create_playlist_personal || !can_ytm;
+            if is_personal {
+                Some(BackendCmd::CreatePersonalPlaylist(name))
+            } else {
+                Some(BackendCmd::CreateYtmPlaylist(name))
+            }
+        }
+        _ => None,
+    }
+}
+
 pub fn apply_window_appearance(
     window: &mut Window,
     settings: &DesktopSettings,
@@ -2017,4 +2109,60 @@ pub fn apply_window_appearance(
 ) {
     window.set_background_appearance(background_appearance_for(settings));
     window.set_client_corner_radii(gpui_kit::Corners::all(px(palette.window_radius)));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{playlist_modal_submit_cmd, DesktopModal};
+    use crate::backend::BackendCmd;
+    use std::path::PathBuf;
+
+    #[test]
+    fn playlist_modal_submit_dispatches_edit_and_create_variants() {
+        let edit_personal = DesktopModal::EditPlaylist {
+            playlist_id: "personal:abc".to_string(),
+            cover_path: None,
+        };
+        assert!(matches!(
+            playlist_modal_submit_cmd(&edit_personal, "  My Mix ", false, false, true),
+            Some(BackendCmd::EditPlaylist {
+                playlist_id,
+                title: Some(title),
+                cover_path: None,
+            }) if playlist_id == "personal:abc" && title == "My Mix"
+        ));
+
+        let edit_cover_only = DesktopModal::EditPlaylist {
+            playlist_id: "VL123".to_string(),
+            cover_path: Some(PathBuf::from("/tmp/cover.png")),
+        };
+        assert!(matches!(
+            playlist_modal_submit_cmd(&edit_cover_only, "   ", false, false, true),
+            Some(BackendCmd::EditPlaylist {
+                playlist_id,
+                title: None,
+                cover_path: Some(_),
+            }) if playlist_id == "VL123"
+        ));
+
+        assert!(matches!(
+            playlist_modal_submit_cmd(&DesktopModal::CreatePlaylist, "Local Favs", true, false, true),
+            Some(BackendCmd::CreatePersonalPlaylist(name)) if name == "Local Favs"
+        ));
+        assert!(matches!(
+            playlist_modal_submit_cmd(&DesktopModal::CreatePlaylist, "Offline Mix", false, true, true),
+            Some(BackendCmd::CreatePersonalPlaylist(name)) if name == "Offline Mix"
+        ));
+        assert!(matches!(
+            playlist_modal_submit_cmd(&DesktopModal::CreatePlaylist, "Signed Out Mix", false, false, false),
+            Some(BackendCmd::CreatePersonalPlaylist(name)) if name == "Signed Out Mix"
+        ));
+        assert!(matches!(
+            playlist_modal_submit_cmd(&DesktopModal::CreatePlaylist, "Cloud Mix", false, false, true),
+            Some(BackendCmd::CreateYtmPlaylist(name)) if name == "Cloud Mix"
+        ));
+        assert!(
+            playlist_modal_submit_cmd(&DesktopModal::None, "Ignored", false, false, true).is_none()
+        );
+    }
 }

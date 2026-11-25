@@ -642,18 +642,21 @@ impl SonataDesktopView {
                                         sonata_runtime::i18n::AppLanguage::En => "Save",
                                     })
                                     .on_click(cx.listener(move |this, _, _, cx| {
-                                        let name = this
-                                            .playlist_name_input
-                                            .read(cx)
-                                            .value()
-                                            .trim()
-                                            .to_string();
-                                        let title = if name.is_empty() { None } else { Some(name) };
-                                        this.backend.send(BackendCmd::EditPlaylist {
+                                        let name =
+                                            this.playlist_name_input.read(cx).value().to_string();
+                                        let modal = DesktopModal::EditPlaylist {
                                             playlist_id: pid_save.clone(),
-                                            title,
                                             cover_path: cover_save.clone(),
-                                        });
+                                        };
+                                        if let Some(cmd) = super::playlist_modal_submit_cmd(
+                                            &modal,
+                                            &name,
+                                            this.create_playlist_personal,
+                                            this.snapshot.config.personal_only_mode,
+                                            this.snapshot.is_signed_in(),
+                                        ) {
+                                            this.backend.send(cmd);
+                                        }
                                         this.modal = DesktopModal::None;
                                         cx.notify();
                                     })),
@@ -737,20 +740,16 @@ impl SonataDesktopView {
                                     .primary()
                                     .label(s.create)
                                     .on_click(cx.listener(move |this, _, _, cx| {
-                                        let name = this
-                                            .playlist_name_input
-                                            .read(cx)
-                                            .value()
-                                            .trim()
-                                            .to_string();
-                                        if !name.is_empty() {
-                                            if is_personal {
-                                                this.backend
-                                                    .send(BackendCmd::CreatePersonalPlaylist(name));
-                                            } else {
-                                                this.backend
-                                                    .send(BackendCmd::CreateYtmPlaylist(name));
-                                            }
+                                        let name =
+                                            this.playlist_name_input.read(cx).value().to_string();
+                                        if let Some(cmd) = super::playlist_modal_submit_cmd(
+                                            &DesktopModal::CreatePlaylist,
+                                            &name,
+                                            this.create_playlist_personal,
+                                            this.snapshot.config.personal_only_mode,
+                                            this.snapshot.is_signed_in(),
+                                        ) {
+                                            this.backend.send(cmd);
                                         }
                                         this.modal = DesktopModal::None;
                                         cx.notify();

@@ -798,8 +798,11 @@ impl App {
     pub fn scan_local_music(&mut self) {
         if !self.config.local_music_enabled {
             self.local_scanning = false;
+            self.local_scan = Default::default();
             return;
         }
+        self.local_scan_req_id = self.local_scan_req_id.wrapping_add(1);
+        let req_id = self.local_scan_req_id;
         let dirs = self.config.effective_local_music_dirs();
         self.local_scanning = true;
         self.status_line = "Scanning local music folders...".to_string();
@@ -810,7 +813,7 @@ impl App {
             })
             .await
             .unwrap_or_default();
-            let _ = tx.send(AppEvent::LocalMusicScanned(scan));
+            let _ = tx.send(AppEvent::LocalMusicScanned { req_id, scan });
         });
     }
 
@@ -1026,8 +1029,9 @@ impl App {
             .map(|t| t.source)
             .unwrap_or(ProviderSource::YouTubeMusic);
         let artwork_url = tracks.first().and_then(|t| t.thumbnail_url.clone());
-        for t in &tracks {
-            self.downloading_track_ids.insert(t.id.clone());
+        let track_ids: Vec<String> = tracks.iter().map(|t| t.id.clone()).collect();
+        for id in &track_ids {
+            self.downloading_track_ids.insert(id.clone());
         }
         self.status_line = format!("Downloading {} tracks from \"{title}\"...", tracks.len());
         let resolver = self.resolver.clone();
@@ -1065,6 +1069,7 @@ impl App {
             }
             let _ = tx.send(AppEvent::CollectionDownloadFinished {
                 title,
+                track_ids,
                 saved,
                 errors,
             });
@@ -1197,39 +1202,16 @@ impl App {
             self.status_line = "Server URL cannot be empty".to_string();
             return;
         }
-        let mut profiles = self.server_profiles.clone();
-        let paths = self.paths.clone();
         let http = self.http.clone();
         let tx = self.tx.clone();
         self.status_line = format!("Saving {}...", profile.name);
         tokio::spawn(async move {
             let ping_res = prepare_and_ping_tui_server(&http, &mut profile).await;
-            if let Some(existing) = profiles.iter_mut().find(|p| p.id == profile.id) {
-                *existing = profile.clone();
-            } else {
-                profiles.push(profile.clone());
-            }
-            let save_paths = paths.clone();
-            let save_list = profiles.clone();
-            let save_res = tokio::task::spawn_blocking(move || {
-                sonata_core::providers::servers::save_server_profiles(&save_paths, &save_list)
-            })
-            .await
-            .unwrap_or_else(|e| Err(sonata_core::error::CoreError::internal(e.to_string())));
-            match save_res {
-                Ok(()) => {
-                    let message = match ping_res {
-                        Ok(msg) => format!("Saved {} ({msg})", profile.name),
-                        Err(err) => format!("Saved {} (warning: {err})", profile.name),
-                    };
-                    let _ = tx.send(AppEvent::ServerSaved { profiles, message });
-                }
-                Err(err) => {
-                    let _ = tx.send(AppEvent::StatusMessage(format!(
-                        "Failed to save server: {err}"
-                    )));
-                }
-            }
+            let message = match ping_res {
+                Ok(msg) => format!("Saved {} ({msg})", profile.name),
+                Err(err) => format!("Saved {} (warning: {err})", profile.name),
+            };
+            let _ = tx.send(AppEvent::ServerSaved { profile, message });
         });
     }
 
@@ -1314,6 +1296,8 @@ impl App {
         else {
             return;
         };
+        self.server_browse_req_id = self.server_browse_req_id.wrapping_add(1);
+        let req_id = self.server_browse_req_id;
         self.server_loading = true;
         self.server_error = None;
         let client = self.server_client.clone();
@@ -1349,6 +1333,7 @@ impl App {
                             .collect();
                         let folders = listing.folders.into_iter().map(|f| f.path).collect();
                         let _ = tx.send(AppEvent::ServerBrowseLoaded {
+                            req_id,
                             server_id,
                             folder_path: raw_folder,
                             libraries: libs,
@@ -1362,6 +1347,7 @@ impl App {
                     }
                     Err(err) => {
                         let _ = tx.send(AppEvent::ServerBrowseLoaded {
+                            req_id,
                             server_id,
                             folder_path: raw_folder,
                             libraries: Vec::new(),
@@ -1413,6 +1399,7 @@ impl App {
                 Vec::new()
             };
             let _ = tx.send(AppEvent::ServerBrowseLoaded {
+                req_id,
                 server_id,
                 folder_path: None,
                 libraries: libs.unwrap_or_default(),
@@ -1696,12 +1683,14 @@ async fn download_tui_track_into_store(
     };
     let artwork_bytes = if let Some(ref art_url) = artwork_url {
         let mut req = http.get(art_url);
-        for (k, v) in &resolved.headers {
-            if let (Ok(name), Ok(val)) = (
-                reqwest::header::HeaderName::from_bytes(k.as_bytes()),
-                reqwest::header::HeaderValue::from_str(v),
-            ) {
-                req = req.header(name, val);
+        if urls_same_origin(art_url, &resolved.url) {
+            for (k, v) in &resolved.headers {
+                if let (Ok(name), Ok(val)) = (
+                    reqwest::header::HeaderName::from_bytes(k.as_bytes()),
+                    reqwest::header::HeaderValue::from_str(v),
+                ) {
+                    req = req.header(name, val);
+                }
             }
         }
         match req.send().await {
@@ -1819,5 +1808,90 @@ fn infer_tui_container(url: &str, content_type: Option<&str>, badge: &str) -> St
         "mp3".to_string()
     } else {
         "m4a".to_string()
+    }
+}
+
+pub(crate) fn upsert_tui_server_profile(
+    profiles: &mut Vec<sonata_core::providers::servers::ServerProfile>,
+    profile: sonata_core::providers::servers::ServerProfile,
+) {
+    if let Some(existing) = profiles.iter_mut().find(|p| p.id == profile.id) {
+        *existing = profile;
+    } else {
+        profiles.push(profile);
+    }
+}
+
+pub(crate) fn urls_same_origin(a: &str, b: &str) -> bool {
+    let (Ok(ua), Ok(ub)) = (reqwest::Url::parse(a), reqwest::Url::parse(b)) else {
+        return false;
+    };
+    let (Some(ha), Some(hb)) = (ua.host_str(), ub.host_str()) else {
+        return false;
+    };
+    ua.scheme().eq_ignore_ascii_case(ub.scheme())
+        && ha.eq_ignore_ascii_case(hb)
+        && ua.port_or_known_default().is_some()
+        && ua.port_or_known_default() == ub.port_or_known_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{upsert_tui_server_profile, urls_same_origin};
+    use sonata_core::providers::servers::ServerProfile;
+
+    #[test]
+    fn tui_same_origin_blocks_foreign_artwork_cdns() {
+        assert!(urls_same_origin(
+            "https://music.example.com/Items/1/Images/Primary",
+            "https://music.example.com/Audio/1/universal"
+        ));
+        assert!(!urls_same_origin(
+            "https://is1-ssl.mzstatic.com/image/thumb/cover.jpg",
+            "https://music.example.com/Audio/1/universal"
+        ));
+        assert!(!urls_same_origin(
+            "https://music.example.com:8443/cover.jpg",
+            "https://music.example.com/Audio/1/universal"
+        ));
+        assert!(!urls_same_origin(
+            "http://music.example.com/cover.jpg",
+            "https://music.example.com/Audio/1/universal"
+        ));
+        assert!(!urls_same_origin(
+            "https://music.example.com/cover.jpg",
+            "/tmp/local.flac"
+        ));
+    }
+
+    fn sample_profile(id: &str, name: &str, enabled: bool) -> ServerProfile {
+        ServerProfile {
+            id: id.to_string(),
+            name: name.to_string(),
+            kind: sonata_core::providers::servers::ServerKind::Jellyfin,
+            base_url: "https://music.example.com".to_string(),
+            enabled,
+            username: None,
+            password: None,
+            api_key: None,
+            access_token: None,
+            user_id: None,
+            bearer_token: None,
+            library_ids: Vec::new(),
+            share: None,
+            domain: None,
+            local_mount_path: None,
+        }
+    }
+
+    #[test]
+    fn tui_upsert_server_profile_preserves_other_profiles() {
+        let mut profiles = vec![
+            sample_profile("s1", "One", true),
+            sample_profile("s2", "Two", false),
+        ];
+        upsert_tui_server_profile(&mut profiles, sample_profile("s1", "One Updated", true));
+        assert_eq!(profiles[0].name, "One Updated");
+        assert!(!profiles[1].enabled);
     }
 }

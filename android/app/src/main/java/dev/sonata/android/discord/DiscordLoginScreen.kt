@@ -7,7 +7,6 @@ import android.webkit.JsResult
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
-import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.background
@@ -64,6 +63,42 @@ internal const val DISCORD_LOGIN_URL = "https://discord.com/login"
 internal const val DISCORD_TOKEN_ALERT_PREFIX = "SONATA_DISCORD_TOKEN:"
 internal const val DISCORD_TOKEN_POLL_ATTEMPTS = 12
 internal const val DISCORD_TOKEN_POLL_INTERVAL_MS = 500L
+
+internal val DISCORD_COOKIE_ORIGINS = listOf(
+    "https://discord.com",
+    "https://ptb.discord.com",
+    "https://canary.discord.com",
+    "https://discordapp.com",
+)
+
+internal fun extractCookieNames(cookieHeader: String?): List<String> {
+    if (cookieHeader.isNullOrBlank()) return emptyList()
+    return cookieHeader.split(';')
+        .mapNotNull { part ->
+            val name = part.substringBefore('=', "").trim()
+            name.takeIf { it.isNotEmpty() }
+        }
+        .distinct()
+}
+
+private fun clearDiscordCookies(cm: CookieManager) {
+    DISCORD_COOKIE_ORIGINS.forEach { origin ->
+        val host = runCatching { URI(origin).host }.getOrNull().orEmpty()
+        val domainAttr = if (host.endsWith("discord.com")) {
+            ".discord.com"
+        } else if (host.endsWith("discordapp.com")) {
+            ".discordapp.com"
+        } else {
+            host
+        }
+        extractCookieNames(cm.getCookie(origin)).forEach { name ->
+            cm.setCookie(origin, "$name=; Max-Age=0; Path=/")
+            if (domainAttr.isNotBlank()) {
+                cm.setCookie(origin, "$name=; Max-Age=0; Path=/; Domain=$domainAttr")
+            }
+        }
+    }
+}
 
 private val WEBVIEW_MARKER_REGEX = Regex(""";\s*wv\b""")
 private val WEBVIEW_VERSION_REGEX = Regex("""\s*Version/\d+(?:\.\d+)*""")
@@ -386,13 +421,11 @@ fun DiscordLoginScreen(
                                     clearCache(true)
                                     clearHistory()
                                     clearFormData()
-                                    WebStorage.getInstance().deleteAllData()
-                                    cm.removeAllCookies {
-                                        coroutineScope.launch(Dispatchers.IO) {
-                                            runCatching { cm.flush() }
-                                        }
-                                        post { loadUrl(DISCORD_LOGIN_URL) }
+                                    clearDiscordCookies(cm)
+                                    coroutineScope.launch(Dispatchers.IO) {
+                                        runCatching { cm.flush() }
                                     }
+                                    post { loadUrl(DISCORD_LOGIN_URL) }
                                 } else {
                                     loadUrl(DISCORD_LOGIN_URL)
                                 }

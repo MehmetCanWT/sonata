@@ -33,7 +33,7 @@
         packages = {
           sonata = pkgs.rustPlatform.buildRustPackage {
             pname = "sonata";
-            version = "1.0.8";
+            version = "1.0.9";
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
             cargoBuildFlags = [ "-p" "sonata-tui" ];
@@ -49,7 +49,7 @@
 
           sonata-desktop = pkgs.rustPlatform.buildRustPackage {
             pname = "sonata-desktop";
-            version = "1.0.8";
+            version = "1.0.9";
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
             cargoBuildFlags = [ "-p" "sonata-desktop" ];

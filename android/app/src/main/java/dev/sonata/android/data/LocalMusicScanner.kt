@@ -32,6 +32,35 @@ fun isPersonalTrackId(id: String): Boolean {
 }
 
 /**
+ * Returns `true` when [id] identifies a local MediaStore track or album (`local:*`).
+ */
+fun isLocalTrackId(id: String?): Boolean {
+    val normalized = id?.trim()?.lowercase(Locale.ROOT) ?: return false
+    return normalized.startsWith("local:")
+}
+
+/**
+ * Returns a fallback `i.ytimg.com` thumbnail URL only for non-personal YouTube Music track IDs
+ * when [personalOnlyMode] is disabled.
+ */
+internal fun resolveYtmFallbackCoverUrl(
+    trackId: String?,
+    personalOnlyMode: Boolean = false,
+): String? {
+    if (personalOnlyMode) return null
+    val raw = trackId?.trim().orEmpty()
+    if (raw.isEmpty()) return null
+    val lower = raw.lowercase(Locale.ROOT)
+    if (isPersonalTrackId(raw) ||
+        lower.startsWith("jiosaavn:") ||
+        lower.startsWith("personal:")
+    ) {
+        return null
+    }
+    return "https://i.ytimg.com/vi/$raw/hqdefault.jpg"
+}
+
+/**
  * Resolves track bitrate in kbps using MediaStore's reported bitrate (in bits/sec) when positive,
  * falling back to `(fileSizeBytes * 8) / durationMs` when MediaStore omits bitrate (common for FLAC/WAV/VBR).
  */

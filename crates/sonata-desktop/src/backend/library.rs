@@ -2120,8 +2120,7 @@ impl BackendEngine {
             let scan = tokio::task::spawn_blocking(move || scan_directories(&dirs))
                 .await
                 .unwrap_or_default();
-            let _ = req_id;
-            let _ = int_tx.send(InternalEvent::LocalMusicScanned(scan));
+            let _ = int_tx.send(InternalEvent::LocalMusicScanned { req_id, scan });
         });
     }
 
@@ -2374,8 +2373,6 @@ impl BackendEngine {
         domain: Option<String>,
         local_mount_path: Option<PathBuf>,
     ) {
-        let mut profiles = self.server_profiles.clone();
-        let paths = self.paths.clone();
         let http = self.http.clone();
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
@@ -2393,39 +2390,11 @@ impl BackendEngine {
                 local_mount_path,
             );
             let ping_res = prepare_and_ping_server(&http, &mut profile).await;
-            let active_id = profile.id.clone();
-            if let Some(existing) = profiles.iter_mut().find(|p| p.id == profile.id) {
-                *existing = profile.clone();
-            } else {
-                profiles.push(profile.clone());
-            }
-            let save_paths = paths.clone();
-            let save_list = profiles.clone();
-            let save_res =
-                tokio::task::spawn_blocking(move || save_server_profiles(&save_paths, &save_list))
-                    .await
-                    .unwrap_or_else(|e| {
-                        Err(sonata_core::error::CoreError::internal(e.to_string()))
-                    });
-            match save_res {
-                Ok(()) => {
-                    let message = match ping_res {
-                        Ok(msg) => format!("Saved {} ({msg})", profile.name),
-                        Err(err) => format!("Saved {} (warning: {err})", profile.name),
-                    };
-                    let _ = int_tx.send(InternalEvent::ServerSaved {
-                        profiles,
-                        active_id,
-                        message,
-                    });
-                }
-                Err(err) => {
-                    let _ = int_tx.send(InternalEvent::ServerTested {
-                        server_id: None,
-                        result: Err(format!("Failed to save server: {err}")),
-                    });
-                }
-            }
+            let message = match ping_res {
+                Ok(msg) => format!("Saved {} ({msg})", profile.name),
+                Err(err) => format!("Saved {} (warning: {err})", profile.name),
+            };
+            let _ = int_tx.send(InternalEvent::ServerSaved { profile, message });
         });
     }
 
@@ -2763,12 +2732,14 @@ async fn download_one_track_into_store(
 
     let artwork_bytes = if let Some(ref art_url) = artwork_url {
         let mut req = http.get(art_url);
-        for (k, v) in &resolved.headers {
-            if let (Ok(name), Ok(val)) = (
-                HeaderName::from_bytes(k.as_bytes()),
-                HeaderValue::from_str(v),
-            ) {
-                req = req.header(name, val);
+        if urls_same_origin(art_url, &resolved.url) {
+            for (k, v) in &resolved.headers {
+                if let (Ok(name), Ok(val)) = (
+                    HeaderName::from_bytes(k.as_bytes()),
+                    HeaderValue::from_str(v),
+                ) {
+                    req = req.header(name, val);
+                }
             }
         }
         match req.send().await {
@@ -2846,4 +2817,50 @@ async fn download_one_track_into_store(
         let _ = store.prune_to_limit_async(limit).await;
     }
     Ok(())
+}
+
+pub(crate) fn urls_same_origin(a: &str, b: &str) -> bool {
+    let (Ok(ua), Ok(ub)) = (reqwest::Url::parse(a), reqwest::Url::parse(b)) else {
+        return false;
+    };
+    let (Some(ha), Some(hb)) = (ua.host_str(), ub.host_str()) else {
+        return false;
+    };
+    ua.scheme().eq_ignore_ascii_case(ub.scheme())
+        && ha.eq_ignore_ascii_case(hb)
+        && ua.port_or_known_default().is_some()
+        && ua.port_or_known_default() == ub.port_or_known_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::urls_same_origin;
+
+    #[test]
+    fn same_origin_matches_exact_scheme_host_and_effective_port() {
+        assert!(urls_same_origin(
+            "https://music.example.com/Items/1/Images/Primary",
+            "https://music.example.com:443/Audio/1/universal"
+        ));
+        assert!(urls_same_origin(
+            "http://NAS.local:8080/art.jpg",
+            "http://nas.local:8080/track.flac"
+        ));
+        assert!(!urls_same_origin(
+            "https://cdn-images.dzcdn.net/images/cover/abc/500x500.jpg",
+            "https://music.example.com/Audio/1/universal"
+        ));
+        assert!(!urls_same_origin(
+            "https://music.example.com/cover.jpg",
+            "https://music.example.com:8920/Audio/1/universal"
+        ));
+        assert!(!urls_same_origin(
+            "http://music.example.com/cover.jpg",
+            "https://music.example.com/Audio/1/universal"
+        ));
+        assert!(!urls_same_origin(
+            "https://music.example.com/cover.jpg",
+            "/home/user/Music/song.flac"
+        ));
+    }
 }

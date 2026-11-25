@@ -1,3 +1,8 @@
+//! TUI main content pane rendering the localized search bar and track table.
+//!
+//! 1. **Search Bar**: Displays focus-aware cursor state and width-adaptive localized search/import hints.
+//! 2. **Track Table**: Renders responsive columns, active track markers, and selection highlighting.
+
 use crate::app::{App, FocusPane};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};

@@ -73,6 +73,18 @@
   </screenshots>
 
   <releases>
+    <release version="1.0.9" date="2026-11-25">
+      <description>
+        <p>
+          Hardened mpv HTTP header formatting and unexpected-exit auto-recovery,
+          Fedora ffmpeg-free motion-cover and RPM dependency compatibility,
+          yt-dlp JS runtime fallbacks, #HttpOnly_ Netscape cookie support,
+          same-origin WebDAV/cover download isolation, SMB traversal protection,
+          Desktop tray reopen and off-thread theme reloads, and Android Personal Only Mode
+          and Lint fixes.
+        </p>
+      </description>
+    </release>
     <release version="1.0.8" date="2026-11-24">
       <description>
         <p>

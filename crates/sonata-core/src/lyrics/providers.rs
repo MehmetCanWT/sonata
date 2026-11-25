@@ -363,19 +363,23 @@ fn merge_lyricsplus_syllables(syllables: &[LyricsPlusSyllable]) -> Vec<LyricWord
     let mut current_end = 0.0f64;
     let mut has_active = false;
 
-    let flush =
-        |words: &mut Vec<LyricWord>, text: &mut String, start: f64, end: f64, active: &mut bool| {
-            let trimmed = text.trim();
-            if *active && !trimmed.is_empty() {
-                words.push(LyricWord {
-                    start_secs: start,
-                    end_secs: Some(end.max(start + 0.04)),
-                    text: trimmed.to_string(),
-                });
-            }
-            text.clear();
-            *active = false;
-        };
+    let flush = |words: &mut Vec<LyricWord>,
+                 text: &mut String,
+                 start: f64,
+                 end: &mut f64,
+                 active: &mut bool| {
+        let trimmed = text.trim();
+        if *active && !trimmed.is_empty() {
+            words.push(LyricWord {
+                start_secs: start,
+                end_secs: Some((*end).max(start + 0.04)),
+                text: trimmed.to_string(),
+            });
+        }
+        text.clear();
+        *end = 0.0;
+        *active = false;
+    };
 
     for syl in syllables {
         let Some(raw) = syl.text.as_deref() else {
@@ -385,13 +389,13 @@ fn merge_lyricsplus_syllables(syllables: &[LyricsPlusSyllable]) -> Vec<LyricWord
             continue;
         };
         let s_secs = t_ms as f64 / 1000.0;
-        let e_secs = (t_ms + syl.duration.unwrap_or(0)) as f64 / 1000.0;
+        let e_secs = t_ms.saturating_add(syl.duration.unwrap_or(0)) as f64 / 1000.0;
         if raw.trim().is_empty() {
             flush(
                 &mut words,
                 &mut current_text,
                 current_start,
-                current_end,
+                &mut current_end,
                 &mut has_active,
             );
             continue;
@@ -401,22 +405,24 @@ fn merge_lyricsplus_syllables(syllables: &[LyricsPlusSyllable]) -> Vec<LyricWord
                 &mut words,
                 &mut current_text,
                 current_start,
-                current_end,
+                &mut current_end,
                 &mut has_active,
             );
         }
         if !has_active {
             current_start = s_secs;
+            current_end = e_secs;
             has_active = true;
+        } else {
+            current_end = current_end.max(e_secs);
         }
         current_text.push_str(raw.trim());
-        current_end = current_end.max(e_secs);
         if raw.ends_with(char::is_whitespace) {
             flush(
                 &mut words,
                 &mut current_text,
                 current_start,
-                current_end,
+                &mut current_end,
                 &mut has_active,
             );
         }
@@ -425,7 +431,7 @@ fn merge_lyricsplus_syllables(syllables: &[LyricsPlusSyllable]) -> Vec<LyricWord
         &mut words,
         &mut current_text,
         current_start,
-        current_end,
+        &mut current_end,
         &mut has_active,
     );
     words
@@ -795,8 +801,9 @@ pub fn parse_krc(krc: &str) -> Vec<LyricLine> {
                 parts.next().and_then(|s| s.trim().parse::<u64>().ok()),
                 parts.next().and_then(|s| s.trim().parse::<u64>().ok()),
             ) {
-                let w_start = (line_start_ms + off) as f64 / 1000.0;
-                let w_end = (line_start_ms + off + dur) as f64 / 1000.0;
+                let start_ms = line_start_ms.saturating_add(off);
+                let w_start = start_ms as f64 / 1000.0;
+                let w_end = start_ms.saturating_add(dur) as f64 / 1000.0;
                 push_timed_token(&mut words, w_start, Some(w_end), token, &mut separated);
             }
         }
@@ -965,7 +972,13 @@ pub fn parse_netease_yrc(yrc: &str) -> Vec<LyricLine> {
             let prefix = &cursor[..open];
             if !prefix.is_empty() {
                 plain.push_str(prefix);
-                if prefix.ends_with(char::is_whitespace) {
+                if !words.is_empty() && !prefix.trim().is_empty() {
+                    let fallback_start = words
+                        .last()
+                        .and_then(|w| w.end_secs)
+                        .unwrap_or(line_start_secs);
+                    push_timed_token(&mut words, fallback_start, None, prefix, &mut separated);
+                } else if prefix.ends_with(char::is_whitespace) {
                     separated = true;
                 }
             }
@@ -992,27 +1005,34 @@ pub fn parse_netease_yrc(yrc: &str) -> Vec<LyricLine> {
                 cursor = &after_paren[token_end..];
                 plain.push_str(token);
                 let w_start = w_start_ms as f64 / 1000.0;
-                let w_end = (w_start_ms + w_dur_ms) as f64 / 1000.0;
+                let w_end = w_start_ms.saturating_add(w_dur_ms) as f64 / 1000.0;
                 push_timed_token(&mut words, w_start, Some(w_end), token, &mut separated);
             } else {
                 // Non-timestamp parenthetical text stays part of the lyrics.
-                plain.push_str(&cursor[open..open + shut + 2]);
+                let paren_text = &cursor[open..open + shut + 2];
+                plain.push_str(paren_text);
+                if !words.is_empty() {
+                    let fallback_start = words
+                        .last()
+                        .and_then(|w| w.end_secs)
+                        .unwrap_or(line_start_secs);
+                    push_timed_token(&mut words, fallback_start, None, paren_text, &mut separated);
+                }
                 cursor = after_paren;
             }
         }
         if !cursor.is_empty() {
             plain.push_str(cursor);
+            if !words.is_empty() && !cursor.trim().is_empty() {
+                let fallback_start = words
+                    .last()
+                    .and_then(|w| w.end_secs)
+                    .unwrap_or(line_start_secs);
+                push_timed_token(&mut words, fallback_start, None, cursor, &mut separated);
+            }
         }
 
-        let clean_text = if words.is_empty() {
-            plain.split_whitespace().collect::<Vec<_>>().join(" ")
-        } else {
-            words
-                .iter()
-                .map(|w| w.text.as_str())
-                .collect::<Vec<_>>()
-                .join(" ")
-        };
+        let clean_text = plain.split_whitespace().collect::<Vec<_>>().join(" ");
         if clean_text.is_empty() {
             continue;
         }
@@ -1515,5 +1535,56 @@ mod tests {
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].text, "First QQ line");
         assert!((parsed[1].time_secs - 10.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn preserves_non_timestamp_parentheticals_and_saturates_yrc_and_krc_timestamps() {
+        let yrc = "[1000,3000](1000,500,0)Hello (yeah) (1500,500,0)world\n\
+                   [4000,2000](Ad-lib) (4000,500,0)Start\n\
+                   [5000,1000](18446744073709551610,100,0)Max\n";
+        let yrc_lines = parse_netease_yrc(yrc);
+        assert_eq!(yrc_lines.len(), 3);
+        assert_eq!(yrc_lines[0].text, "Hello (yeah) world");
+        assert_eq!(
+            yrc_lines[0]
+                .words
+                .iter()
+                .map(|w| w.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Hello", "(yeah)", "world"]
+        );
+        assert_eq!(yrc_lines[1].text, "(Ad-lib) Start");
+        assert_eq!(yrc_lines[2].text, "Max");
+
+        let krc = "[18446744073709551610,100]<10,20,0>Safe\n";
+        let krc_lines = parse_krc(krc);
+        assert_eq!(krc_lines.len(), 1);
+        assert_eq!(krc_lines[0].text, "Safe");
+    }
+
+    #[test]
+    fn resets_current_end_in_merge_lyricsplus_syllables_and_saturates_duration() {
+        let syllables = vec![
+            LyricsPlusSyllable {
+                time: Some(4000),
+                duration: Some(1000),
+                text: Some("First ".to_string()),
+            },
+            LyricsPlusSyllable {
+                time: Some(2000),
+                duration: Some(500),
+                text: Some("Second ".to_string()),
+            },
+            LyricsPlusSyllable {
+                time: Some(u64::MAX - 10),
+                duration: Some(500),
+                text: Some("Max".to_string()),
+            },
+        ];
+        let words = merge_lyricsplus_syllables(&syllables);
+        assert_eq!(words.len(), 3);
+        assert!((words[0].end_secs.unwrap() - 5.0).abs() < 0.001);
+        assert!((words[1].end_secs.unwrap() - 2.5).abs() < 0.001);
+        assert_eq!(words[2].text, "Max");
     }
 }

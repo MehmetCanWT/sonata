@@ -104,13 +104,13 @@
 
 #### Android (Mobile &amp; Tablet, `arm64-v8a`)
 - **Obtainium (Auto-Updates):** Add `https://github.com/MehmetCanWT/sonata` with APK filter `Sonata-.*-arm64\.apk$`.
-- **Direct APK:** Grab the latest signed **`Sonata-v1.0.8-arm64.apk`** from [GitHub Releases](https://github.com/MehmetCanWT/sonata/releases/latest).
+- **Direct APK:** Grab the latest signed **`Sonata-v1.0.9-arm64.apk`** from [GitHub Releases](https://github.com/MehmetCanWT/sonata/releases/latest).
 
     </td>
     <td width="50%" valign="top">
 
 #### Linux Desktop &amp; Terminal (`x86_64`)
-- **Packages &amp; AppImage:** Download **`.deb`**, **`.rpm`**, **`.tar.gz`**, or **`Sonata-v1.0.8-x86_64.AppImage`** from [GitHub Releases](https://github.com/MehmetCanWT/sonata/releases/latest) (`--tui` launches the terminal client).
+- **Packages &amp; AppImage:** Download **`.deb`**, **`.rpm`**, **`.tar.gz`**, or **`Sonata-v1.0.9-x86_64.AppImage`** from [GitHub Releases](https://github.com/MehmetCanWT/sonata/releases/latest) (`--tui` launches the terminal client).
 - **One-Line Installer:**
   ```sh
   # Terminal client (sonata)

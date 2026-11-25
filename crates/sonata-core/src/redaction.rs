@@ -66,7 +66,7 @@ pub fn sensitive_text(text: &str) -> String {
 
 fn basic_auth_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r#"(?i)\b(Basic|Token)\s+([^\s"';,]+)"#).unwrap())
+    RE.get_or_init(|| Regex::new(r#"(?i)\b(Basic|Bearer|Token)\s+([^\s"';,]+)"#).unwrap())
 }
 
 fn named_secret_param_regex() -> &'static Regex {
@@ -103,6 +103,8 @@ fn contains_sensitive_marker(text: &str) -> bool {
     FULL_LINE_MARKERS
         .iter()
         .any(|marker| lower.contains(marker))
+        || lower.contains("http://")
+        || lower.contains("https://")
         || basic_auth_regex().is_match(text)
         || named_secret_param_regex().is_match(text)
         || subsonic_param_regex().is_match(text)
@@ -123,7 +125,11 @@ fn redact_line(line: &str) -> String {
         if index > 0 {
             output.push(' ');
         }
-        if let Some(position) = part.find("https://").or_else(|| part.find("http://")) {
+        let lower_part = part.to_ascii_lowercase();
+        if let Some(position) = lower_part
+            .find("https://")
+            .or_else(|| lower_part.find("http://"))
+        {
             let prefix = redact_inline_tokens(&part[..position]);
             output.push_str(&prefix);
             output.push_str(&stream_url(&part[position..]));
@@ -350,5 +356,28 @@ mod tests {
         assert!(rendered.contains("alice"));
         // Normal words ending with `sk=` in prose must not wipe unrelated prefixes via FULL_LINE_MARKERS.
         assert!(!sensitive_text("disk=nvme0n1").contains(REDACTED_SECRET));
+    }
+
+    #[test]
+    fn redacts_embedded_urls_and_bearer_tokens_in_json_and_text() {
+        let payload = json_payload(&json!({
+            "error": "request failed for https://alice:dav-secret@dav.example.com/track.flac?sig=url-secret",
+            "auth": "rejected Bearer jwt-bearer-secret in upstream response",
+            "safe": "normal status message"
+        }));
+        let rendered = payload.to_string();
+        for secret in ["dav-secret", "url-secret", "jwt-bearer-secret"] {
+            assert!(
+                !rendered.contains(secret),
+                "json_payload leaked `{secret}` in `{rendered}`"
+            );
+        }
+        assert!(rendered.contains(REDACTED_STREAM));
+        assert!(rendered.contains(REDACTED_SECRET));
+        assert!(rendered.contains("normal status message"));
+
+        let line = sensitive_text("header Bearer inline-jwt-secret rejected");
+        assert!(!line.contains("inline-jwt-secret"));
+        assert!(line.contains("Bearer [redacted-sensitive-value]"));
     }
 }

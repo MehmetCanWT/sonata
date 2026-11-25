@@ -159,10 +159,13 @@ pub struct App {
     pub server_folders: Vec<String>,
     pub server_loading: bool,
     pub server_error: Option<String>,
+    pub server_browse_req_id: u64,
     pub active_source: TuiLibrarySource,
     pub personal_playlists: Vec<sonata_core::playlists::PersonalPlaylist>,
     pub local_scan: sonata_core::providers::local::LocalScanResult,
     pub local_scanning: bool,
+    pub local_scan_req_id: u64,
+    pub media_cache_maintenance_started: bool,
     pub server_health:
         std::collections::HashMap<String, sonata_core::providers::servers::ServerHealthReport>,
     pub server_speed_tests:
@@ -411,10 +414,13 @@ impl App {
             server_folders: Vec::new(),
             server_loading: false,
             server_error: None,
+            server_browse_req_id: 0,
             active_source,
             personal_playlists,
             local_scan: sonata_core::providers::local::LocalScanResult::default(),
             local_scanning: false,
+            local_scan_req_id: 0,
+            media_cache_maintenance_started: false,
             server_health: std::collections::HashMap::new(),
             server_speed_tests: std::collections::HashMap::new(),
             server_speed_testing: std::collections::HashSet::new(),
@@ -478,8 +484,11 @@ impl App {
         }
     }
 
-    pub fn start_background_init(&self) {
-        start_media_cache_maintenance(self.paths.clone(), Arc::clone(&self.cache_limit_bytes));
+    pub fn start_background_init(&mut self) {
+        if !self.media_cache_maintenance_started {
+            self.media_cache_maintenance_started = true;
+            start_media_cache_maintenance(self.paths.clone(), Arc::clone(&self.cache_limit_bytes));
+        }
         let init_paths = self.paths.clone();
         let init_limit = self.config.cache_limit_bytes();
         tokio::spawn(async move {
@@ -882,10 +891,13 @@ impl App {
             }
             AppEvent::CollectionDownloadFinished {
                 title,
+                track_ids,
                 saved,
                 errors,
             } => {
-                self.downloading_track_ids.clear();
+                for id in track_ids {
+                    self.downloading_track_ids.remove(&id);
+                }
                 self.status_line = if errors == 0 {
                     format!("Downloaded {saved} tracks from \"{title}\"")
                 } else {
@@ -909,8 +921,28 @@ impl App {
                     form.status = Some(self.status_line.clone());
                 }
             }
-            AppEvent::ServerSaved { profiles, message } => {
-                self.server_profiles = profiles;
+            AppEvent::ServerSaved { profile, message } => {
+                library::upsert_tui_server_profile(&mut self.server_profiles, profile);
+                let save_paths = self.paths.clone();
+                let save_list = self.server_profiles.clone();
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let save_res = tokio::task::spawn_blocking(move || {
+                        sonata_core::providers::servers::save_server_profiles(
+                            &save_paths,
+                            &save_list,
+                        )
+                    })
+                    .await
+                    .unwrap_or_else(|e| {
+                        Err(sonata_core::error::CoreError::internal(e.to_string()))
+                    });
+                    if let Err(err) = save_res {
+                        let _ = tx.send(AppEvent::StatusMessage(format!(
+                            "Failed to save server: {err}"
+                        )));
+                    }
+                });
                 self.rebuild_sidebar();
                 self.probe_all_server_health();
                 self.status_line = message;
@@ -926,7 +958,10 @@ impl App {
                 self.server_speed_tests.insert(server_id, report);
                 self.status_line = format!("Speed test: {badge}");
             }
-            AppEvent::LocalMusicScanned(scan) => {
+            AppEvent::LocalMusicScanned { req_id, scan } => {
+                if req_id != self.local_scan_req_id || !self.config.local_music_enabled {
+                    return;
+                }
                 self.local_scanning = false;
                 let count = scan.tracks.len();
                 let albums = scan.albums.len();
@@ -941,6 +976,7 @@ impl App {
                 self.status_line = format!("Local Music: {count} tracks across {albums} albums");
             }
             AppEvent::ServerBrowseLoaded {
+                req_id,
                 server_id,
                 folder_path,
                 libraries,
@@ -951,6 +987,9 @@ impl App {
                 folders,
                 error,
             } => {
+                if req_id != self.server_browse_req_id {
+                    return;
+                }
                 if let ActiveModal::ServerBrowser(ref mut st) = self.modal {
                     if st.server_id != server_id {
                         return;

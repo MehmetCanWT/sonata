@@ -127,7 +127,8 @@ impl SessionActor {
     }
 
     pub(super) async fn start_hifi_upgrade(&mut self) {
-        if self.playback.paused
+        if self.video_mode
+            || self.playback.paused
             || self.playback.loading_track
             || self.upgrade_started_generation == Some(self.generation)
         {

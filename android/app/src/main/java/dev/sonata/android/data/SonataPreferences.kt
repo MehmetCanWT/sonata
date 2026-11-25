@@ -347,6 +347,15 @@ class SonataPreferences(context: Context) {
         }
     }
 
+    /**
+     * Ensures persisted preferences have been loaded from [SharedPreferences] and returns the
+     * current snapshot. Call from a background thread (e.g. `Dispatchers.IO`).
+     */
+    fun ensureLoadedState(): SonataSettingsState {
+        ensureStateLoaded()
+        return _state.value
+    }
+
     private fun ensureStateLoadedLocked() {
         if (stateLoaded) return
         publishStateFlowsLocked(readState())

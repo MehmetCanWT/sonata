@@ -52,8 +52,10 @@ import dev.sonata.android.data.SonataPreferences
 import dev.sonata.android.data.SonataSettingsState
 import dev.sonata.android.data.VideoQualityPreference
 import dev.sonata.android.data.formatMeasuredAudioBadge
+import dev.sonata.android.data.isLocalTrackId
 import dev.sonata.android.data.isPersonalTrackId
 import dev.sonata.android.data.mergeStreamBadgeWithMeasurement
+import dev.sonata.android.data.resolveYtmFallbackCoverUrl
 import dev.sonata.android.data.stripServerLabelsFromBadge
 import dev.sonata.android.discord.DiscordPresenceConfig
 import dev.sonata.android.discord.DiscordPresenceTrack
@@ -607,7 +609,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
     val discordStatus: StateFlow<DiscordRpcStatus> = discordRpcClient.status
     val discordConnected: StateFlow<Boolean> = preferences.discordToken
         .map { !it.isNullOrBlank() }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, preferences.hasDiscordToken())
+        .stateIn(viewModelScope, SharingStarted.Eagerly, !preferences.discordToken.value.isNullOrBlank())
 
     private val scrobbleAndStatsTracker = ScrobbleAndStatsTracker()
     internal var statsLoadJob: Job? = null
@@ -619,7 +621,7 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
     }
     internal val connectController: ConnectController by lazy {
         ConnectController(
-            client = SonataConnectClient(localDeviceId = connectDeviceId),
+            client = SonataConnectClient(localDeviceIdProvider = { connectDeviceId }),
             secretStore = SharedPrefsConnectSecretStore(application),
             scope = viewModelScope,
             deviceNameProvider = { preferences.state.value.connectDeviceName },
@@ -747,9 +749,17 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
         engine: SonataEngineGateway,
         track: AndroidTrack,
     ): String? {
+        if (preferences.state.value.personalOnlyMode) return null
         val rawId = track.id.trim()
-        if (rawId.isBlank() || rawId.startsWith("local:")) return null
-        if (!rawId.startsWith("jiosaavn:")) return rawId
+        if (rawId.isBlank() ||
+            isLocalTrackId(rawId) ||
+            isSelfHostedId(rawId) ||
+            isPersonalTrackId(rawId) ||
+            rawId.startsWith("personal:", ignoreCase = true)
+        ) {
+            return null
+        }
+        if (!rawId.startsWith("jiosaavn:", ignoreCase = true)) return rawId
         jioToYtmIdCache[rawId]?.let { return it }
 
         val query = listOf(track.title.trim(), track.artist.trim())
@@ -761,8 +771,9 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
             .getOrNull()
             ?.firstOrNull { cand ->
                 cand.id.isNotBlank() &&
-                    !cand.id.startsWith("jiosaavn:") &&
-                    !cand.id.startsWith("local:")
+                    !cand.id.startsWith("jiosaavn:", ignoreCase = true) &&
+                    !cand.id.startsWith("personal:", ignoreCase = true) &&
+                    !isPersonalTrackId(cand.id)
             }
             ?.id
             ?.takeIf { it.isNotBlank() }
@@ -838,11 +849,10 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
 
     internal fun resolvedDownloadCoverUrl(track: AndroidTrack): String? =
         track.thumbnailUrl?.takeIf { it.isNotBlank() }
-            ?: if (!track.id.startsWith("jiosaavn:") && !track.id.startsWith("local:") && !isSelfHostedId(track.id)) {
-                "https://i.ytimg.com/vi/${track.id}/hqdefault.jpg"
-            } else {
-                null
-            }
+            ?: resolveYtmFallbackCoverUrl(
+                trackId = track.id,
+                personalOnlyMode = preferences.state.value.personalOnlyMode,
+            )
 
     internal suspend fun requireEngine(): SonataEngineGateway = engineDeferred.await()
 
@@ -919,7 +929,12 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
 
         applyAudioSettings(initialSettings)
         SmbClient.initCacheDir(application.cacheDir)
-        connectController.setEnabled(initialSettings.connectEnabled)
+        viewModelScope.launch(Dispatchers.IO) {
+            val loadedSettings = preferences.ensureLoadedState()
+            preferences.hasDiscordToken()
+            connectDeviceId
+            connectController.setEnabled(loadedSettings.connectEnabled)
+        }
         observePreferences(supports120Hz)
         observeAudioPipelineTelemetry()
         observeDiscordPresence()
@@ -1068,6 +1083,8 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
                     if (prefsState.localMusicEnabled) {
                         scanLocalMusic()
                     } else {
+                        localScanJob?.cancel()
+                        localScanJob = null
                         localContentUrisByTrackId.clear()
                         localTracksById.clear()
                         _uiState.update {
@@ -2296,7 +2313,11 @@ class SonataViewModel(application: Application) : AndroidViewModel(application) 
     ) = createPlaylistWithTracksImpl(title, tracks, onComplete)
 
     fun createPersonalPlaylist(name: String) {
-        createPlaylistWithTracks(title = name, tracks = emptyList())
+        createPlaylistWithTracksImpl(
+            title = name,
+            tracks = emptyList(),
+            forcePersonal = true,
+        )
     }
 
     fun deletePersonalPlaylist(playlistId: String) = deletePersonalPlaylistImpl(playlistId)
