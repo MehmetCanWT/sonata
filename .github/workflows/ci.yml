@@ -2,7 +2,11 @@ name: CI
 
 on:
   push:
+    branches-ignore:
+      - not-main
   pull_request:
+    branches-ignore:
+      - not-main
   schedule:
     - cron: "0 4 * * 1"
   workflow_dispatch:
@@ -16,6 +20,7 @@ permissions:
 
 jobs:
   quality:
+    if: github.ref_name != 'not-main' && github.head_ref != 'not-main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -57,6 +62,7 @@ jobs:
         run: cargo build --release --locked -p sonata-desktop
 
   android-unit-tests:
+    if: github.ref_name != 'not-main' && github.head_ref != 'not-main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -70,6 +76,7 @@ jobs:
         run: ./gradlew testDebugUnitTest --console=plain
 
   android-native-arm64:
+    if: github.ref_name != 'not-main' && github.head_ref != 'not-main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -94,7 +101,7 @@ jobs:
           stat -c 'arm64 libsonata_android.so bytes=%s (ADR-0001 baseline=7923992)' android/app/src/main/jniLibs/arm64-v8a/libsonata_android.so
 
   android-instrumented:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref_name != 'not-main'
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v7
