@@ -30,14 +30,10 @@ pub fn parse_ttml(xml: &str) -> Option<Vec<LyricLine>> {
         parse_paragraph(p, lead_agent, &person_agents, &mut lines);
     }
 
-    let has_timing = lines
-        .iter()
-        .any(|l| l.time_secs > 0.0 || !l.words.is_empty());
-    if lines.is_empty() || !has_timing {
+    lines.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
+    if !crate::lyrics::has_advancing_timestamps(&lines) {
         return None;
     }
-
-    lines.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
     Some(lines)
 }
 

@@ -116,28 +116,19 @@ pub async fn fetch_lyrics(
     let clean_title = sanitize_title(&track.title);
     let clean_artist = sanitize_artist(&track.artist);
     let artist = clean_artist.as_str();
-    let (lrc_path, txt_path, check_path) = cache_paths(paths, artist, &clean_title);
-    let cache_key = format!("{}::{}", artist.to_lowercase(), clean_title.to_lowercase());
+    let (lrc_path, txt_path, check_path) =
+        cache_paths(paths, artist, &clean_title, track.duration_secs);
+    let dur_bucket = track.duration_secs.filter(|&d| d > 0).map(|d| d / 4);
+    let cache_key = format!(
+        "{}::{}::{}",
+        artist.to_lowercase(),
+        clean_title.to_lowercase(),
+        dur_bucket.map_or_else(|| "any".to_string(), |b| b.to_string())
+    );
     let is_ytm = should_query_ytm_native_lyrics(track);
 
     let mut cached_synced_fallback: Option<Vec<LyricLine>> = None;
     let mut cached_plain_fallback: Option<Vec<String>> = None;
-
-    let is_truncated_for_duration = |lines: &[LyricLine]| -> bool {
-        let Some(dur) = track.duration_secs.filter(|&d| d >= 90) else {
-            return false;
-        };
-        let last_ts = lines
-            .iter()
-            .map(|l| {
-                l.words
-                    .iter()
-                    .map(|w| w.end_secs.unwrap_or(w.start_secs))
-                    .fold(l.time_secs, f64::max)
-            })
-            .fold(0.0_f64, f64::max);
-        lines.len() >= 4 && last_ts < (dur as f64) * 0.45
-    };
 
     let enrichment = if let Some(db) = cache_db.cloned() {
         let track_id = track.id.clone();
@@ -153,12 +144,10 @@ pub async fn fetch_lyrics(
         if metadata.lyrics_status == "FOUND" {
             if let Some(synced) = metadata.synced_lyrics.as_deref() {
                 if let Some(parsed) = usable_synced_lyrics(parse_lrc(synced), track) {
-                    if !is_truncated_for_duration(&parsed) {
-                        if has_rich_timing(&parsed) {
-                            return LyricsState::Synced(parsed);
-                        }
-                        cached_synced_fallback = Some(parsed);
+                    if has_rich_timing(&parsed) {
+                        return LyricsState::Synced(parsed);
                     }
+                    cached_synced_fallback = Some(parsed);
                 }
             }
             if cached_synced_fallback.is_none() {
@@ -185,14 +174,12 @@ pub async fn fetch_lyrics(
     if cache_limit_bytes > 0 {
         if let Ok(cached) = tokio::fs::read_to_string(&lrc_path).await {
             if let Some(parsed) = usable_synced_lyrics(parse_lrc(&cached), track) {
-                if !is_truncated_for_duration(&parsed) {
-                    if has_rich_timing(&parsed) {
-                        persist_lyrics(cache_db, track, Some(&parsed), None, "FOUND").await;
-                        return LyricsState::Synced(parsed);
-                    }
-                    if cached_synced_fallback.is_none() {
-                        cached_synced_fallback = Some(parsed);
-                    }
+                if has_rich_timing(&parsed) {
+                    persist_lyrics(cache_db, track, Some(&parsed), None, "FOUND").await;
+                    return LyricsState::Synced(parsed);
+                }
+                if cached_synced_fallback.is_none() {
+                    cached_synced_fallback = Some(parsed);
                 }
             }
         }
@@ -207,13 +194,16 @@ pub async fn fetch_lyrics(
         }
     }
 
-    // If we already have line-only synced lyrics and already tried upgrading once, return them.
+    // If we already have line-only synced or plain lyrics and already checked synced upgrade
+    // within the 7-day TTL, return the cached copy immediately.
     if let Some(ref lines) = cached_synced_fallback {
         if word_upgrade_checked(&cache_key, &check_path).await {
             return LyricsState::Synced(lines.clone());
         }
     } else if let Some(ref plain) = cached_plain_fallback {
-        return LyricsState::Plain(plain.clone());
+        if word_upgrade_checked(&cache_key, &check_path).await {
+            return LyricsState::Plain(plain.clone());
+        }
     }
 
     // Query all synced providers concurrently: Apple TTML sources first (lrc.red, BetterLyrics,
@@ -271,16 +261,12 @@ pub async fn fetch_lyrics(
     let netease_synced = netease_raw.and_then(|lines| usable_synced_lyrics(lines, track));
     let qq_synced = qq_raw.and_then(|lines| usable_synced_lyrics(lines, track));
 
-    // Strict priority win for Apple/Syllable word-timed providers so noisy fallback
-    // sources can never displace exact ISRC / Apple Music TTML timings.
-    for lines in [
-        lrcred_synced.as_ref(),
-        better_synced.as_ref(),
-        lyricsplus_synced.as_ref(),
-        ttml_synced.as_ref(),
-    ]
-    .into_iter()
-    .flatten()
+    // Strict priority win only for metadata+duration-verified Apple/TTML sources (`lrc.red` ISRC
+    // and binimum TTML); BetterLyrics and LyricsPlus compete via `score_synced_lyrics` so an
+    // unverified fuzzy match cannot override exact-duration LRCLIB/KuGou/NetEase timings.
+    for lines in [lrcred_synced.as_ref(), ttml_synced.as_ref()]
+        .into_iter()
+        .flatten()
     {
         if has_rich_timing(lines) {
             if track.duration_secs.is_some() || lines.len() >= 8 {
@@ -294,10 +280,10 @@ pub async fn fetch_lyrics(
     let mut candidates: Vec<(i64, Vec<LyricLine>)> = Vec::new();
     for (bonus, maybe_lines) in [
         (100i64, lrcred_synced),
-        (95i64, better_synced),
-        (90i64, lyricsplus_synced),
         (85i64, ttml_synced),
         (75i64, lrc_synced),
+        (68i64, lyricsplus_synced),
+        (55i64, better_synced),
         (30i64, kugou_synced),
         (28i64, netease_synced),
         (20i64, qq_synced),
@@ -335,6 +321,7 @@ pub async fn fetch_lyrics(
 
     // LRCLIB plain lyrics remain useful when no synchronized version exists.
     if let Some(plain) = lrc_plain {
+        mark_word_upgrade_checked(&cache_key, &check_path, cache_limit_bytes).await;
         save_text(&txt_path, &plain.join("\n"), paths, cache_limit_bytes).await;
         persist_lyrics(cache_db, track, None, Some(&plain), "FOUND").await;
         return LyricsState::Plain(plain);
@@ -346,17 +333,26 @@ pub async fn fetch_lyrics(
             if let Some(lines) =
                 usable_plain_lyrics(raw_text.lines().map(|line| line.trim().to_string()), track)
             {
+                mark_word_upgrade_checked(&cache_key, &check_path, cache_limit_bytes).await;
                 save_text(&txt_path, &lines.join("\n"), paths, cache_limit_bytes).await;
                 persist_lyrics(cache_db, track, None, Some(&lines), "FOUND").await;
                 return LyricsState::Plain(lines);
             }
         }
+        if let Some(plain) = cached_plain_fallback {
+            mark_word_upgrade_checked(&cache_key, &check_path, cache_limit_bytes).await;
+            return LyricsState::Plain(plain);
+        }
         persist_lyrics(cache_db, track, None, None, "NOT_FOUND").await;
     } else if let Some(lines) = providers::fetch_genius_lyrics(http, &clean_title, artist).await {
         if let Some(lines) = usable_plain_lyrics(lines, track) {
+            mark_word_upgrade_checked(&cache_key, &check_path, cache_limit_bytes).await;
             save_text(&txt_path, &lines.join("\n"), paths, cache_limit_bytes).await;
             return LyricsState::Plain(lines);
         }
+    } else if let Some(plain) = cached_plain_fallback {
+        mark_word_upgrade_checked(&cache_key, &check_path, cache_limit_bytes).await;
+        return LyricsState::Plain(plain);
     }
 
     LyricsState::NotFound
@@ -615,13 +611,33 @@ fn parse_lrclib_item(item: &Value) -> LrclibParsed {
     (synced, plain)
 }
 
+fn is_truncated_for_duration(lines: &[LyricLine], duration_secs: Option<u64>) -> bool {
+    let Some(dur) = duration_secs.filter(|&d| d >= 90) else {
+        return false;
+    };
+    let last_ts = lines
+        .iter()
+        .map(|l| {
+            l.words
+                .iter()
+                .map(|w| w.end_secs.unwrap_or(w.start_secs))
+                .fold(l.time_secs, f64::max)
+        })
+        .fold(0.0_f64, f64::max);
+    lines.len() >= 4 && last_ts < (dur as f64) * 0.45
+}
+
 fn usable_synced_lyrics(lines: Vec<LyricLine>, track: &Track) -> Option<Vec<LyricLine>> {
     let filtered: Vec<_> = lines
         .into_iter()
         .filter(|line| !is_metadata_line(&line.text, track))
         .collect();
     let split = crate::lyrics::split_inline_background_vocals(filtered);
-    (split.len() >= 2 && synced_lyrics_match_duration(&split, track.duration_secs)).then_some(split)
+    (split.len() >= 2
+        && crate::lyrics::has_advancing_timestamps(&split)
+        && synced_lyrics_match_duration(&split, track.duration_secs)
+        && !is_truncated_for_duration(&split, track.duration_secs))
+    .then_some(split)
 }
 
 fn usable_plain_lyrics(
@@ -711,9 +727,22 @@ async fn save_text(path: &Path, text: &str, paths: &CorePaths, cache_limit_bytes
     }
 }
 
-fn cache_paths(paths: &CorePaths, artist: &str, title: &str) -> (PathBuf, PathBuf, PathBuf) {
+fn cache_paths(
+    paths: &CorePaths,
+    artist: &str,
+    title: &str,
+    duration_secs: Option<u64>,
+) -> (PathBuf, PathBuf, PathBuf) {
     let mut hasher = Sha1::new();
-    hasher.update(format!("{artist}::{title}").to_lowercase().as_bytes());
+    let bucket = duration_secs
+        .filter(|&d| d > 0)
+        .map(|d| (d / 4).to_string())
+        .unwrap_or_else(|| "any".to_string());
+    hasher.update(
+        format!("{artist}::{title}::{bucket}")
+            .to_lowercase()
+            .as_bytes(),
+    );
     let hex: String = hasher
         .finalize()
         .iter()

@@ -65,6 +65,11 @@ const SUPPORTED_BROWSERS: &[BrowserSpec] = &[
     BrowserSpec {
         id: "zen",
         label: "Zen Browser",
+        #[cfg(target_os = "macos")]
+        rel_dirs: &["Library/Application Support/zen/Profiles"],
+        #[cfg(windows)]
+        rel_dirs: &["AppData/Roaming/zen/Profiles"],
+        #[cfg(not(any(target_os = "macos", windows)))]
         rel_dirs: &[
             ".zen",
             ".config/zen",
@@ -77,6 +82,11 @@ const SUPPORTED_BROWSERS: &[BrowserSpec] = &[
     BrowserSpec {
         id: "firefox",
         label: "Firefox",
+        #[cfg(target_os = "macos")]
+        rel_dirs: &["Library/Application Support/Firefox/Profiles"],
+        #[cfg(windows)]
+        rel_dirs: &["AppData/Roaming/Mozilla/Firefox/Profiles"],
+        #[cfg(not(any(target_os = "macos", windows)))]
         rel_dirs: &[
             ".mozilla/firefox",
             ".config/mozilla/firefox",
@@ -89,6 +99,11 @@ const SUPPORTED_BROWSERS: &[BrowserSpec] = &[
     BrowserSpec {
         id: "librewolf",
         label: "LibreWolf",
+        #[cfg(target_os = "macos")]
+        rel_dirs: &["Library/Application Support/LibreWolf/Profiles"],
+        #[cfg(windows)]
+        rel_dirs: &["AppData/Roaming/librewolf/Profiles"],
+        #[cfg(not(any(target_os = "macos", windows)))]
         rel_dirs: &[
             ".librewolf",
             ".config/librewolf",
@@ -100,6 +115,11 @@ const SUPPORTED_BROWSERS: &[BrowserSpec] = &[
     BrowserSpec {
         id: "floorp",
         label: "Floorp",
+        #[cfg(target_os = "macos")]
+        rel_dirs: &["Library/Application Support/Floorp/Profiles"],
+        #[cfg(windows)]
+        rel_dirs: &["AppData/Roaming/Floorp/Profiles"],
+        #[cfg(not(any(target_os = "macos", windows)))]
         rel_dirs: &[
             ".floorp",
             ".config/floorp",
@@ -111,6 +131,11 @@ const SUPPORTED_BROWSERS: &[BrowserSpec] = &[
     BrowserSpec {
         id: "chrome",
         label: "Google Chrome",
+        #[cfg(target_os = "macos")]
+        rel_dirs: &["Library/Application Support/Google/Chrome"],
+        #[cfg(windows)]
+        rel_dirs: &["AppData/Local/Google/Chrome/User Data"],
+        #[cfg(not(any(target_os = "macos", windows)))]
         rel_dirs: &[
             ".config/google-chrome",
             ".var/app/com.google.Chrome/config/google-chrome",
@@ -121,6 +146,11 @@ const SUPPORTED_BROWSERS: &[BrowserSpec] = &[
     BrowserSpec {
         id: "chromium",
         label: "Chromium",
+        #[cfg(target_os = "macos")]
+        rel_dirs: &["Library/Application Support/Chromium"],
+        #[cfg(windows)]
+        rel_dirs: &["AppData/Local/Chromium/User Data"],
+        #[cfg(not(any(target_os = "macos", windows)))]
         rel_dirs: &[
             ".config/chromium",
             ".var/app/org.chromium.Chromium/config/chromium",
@@ -132,6 +162,11 @@ const SUPPORTED_BROWSERS: &[BrowserSpec] = &[
     BrowserSpec {
         id: "brave",
         label: "Brave Browser",
+        #[cfg(target_os = "macos")]
+        rel_dirs: &["Library/Application Support/BraveSoftware/Brave-Browser"],
+        #[cfg(windows)]
+        rel_dirs: &["AppData/Local/BraveSoftware/Brave-Browser/User Data"],
+        #[cfg(not(any(target_os = "macos", windows)))]
         rel_dirs: &[
             ".config/BraveSoftware/Brave-Browser",
             ".var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser",
@@ -143,6 +178,11 @@ const SUPPORTED_BROWSERS: &[BrowserSpec] = &[
     BrowserSpec {
         id: "vivaldi",
         label: "Vivaldi",
+        #[cfg(target_os = "macos")]
+        rel_dirs: &["Library/Application Support/Vivaldi"],
+        #[cfg(windows)]
+        rel_dirs: &["AppData/Local/Vivaldi/User Data"],
+        #[cfg(not(any(target_os = "macos", windows)))]
         rel_dirs: &[
             ".config/vivaldi",
             ".var/app/com.vivaldi.Vivaldi/config/vivaldi",
@@ -153,6 +193,11 @@ const SUPPORTED_BROWSERS: &[BrowserSpec] = &[
     BrowserSpec {
         id: "edge",
         label: "Microsoft Edge",
+        #[cfg(target_os = "macos")]
+        rel_dirs: &["Library/Application Support/Microsoft Edge"],
+        #[cfg(windows)]
+        rel_dirs: &["AppData/Local/Microsoft/Edge/User Data"],
+        #[cfg(not(any(target_os = "macos", windows)))]
         rel_dirs: &[
             ".config/microsoft-edge",
             ".var/app/com.microsoft.Edge/config/microsoft-edge",
@@ -462,7 +507,9 @@ fn try_chromium_via_ytdlp(browser: &str, profile_dir: Option<&Path>) -> Option<E
     let cookie_arg = format_ytdlp_cookie_arg(browser, profile_dir, home.as_deref());
 
     let ytdlp_bin = resolve_distro_binary("yt-dlp");
-    let mut child = Command::new(&ytdlp_bin)
+    let mut cmd = Command::new(&ytdlp_bin);
+    crate::config::configure_background_std_command(&mut cmd);
+    let mut child = cmd
         .args([
             "--cookies-from-browser",
             &cookie_arg,

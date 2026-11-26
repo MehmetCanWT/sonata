@@ -1647,7 +1647,7 @@ object SmbClient {
                 }
             }
             plain += AndroidLyricLine(
-                timeSecs = 0.0,
+                timeSecs = -1.0,
                 text = line,
                 words = emptyList(),
                 isCounterVoice = false,
@@ -1997,6 +1997,11 @@ object SmbClient {
         val parts = (baseSubpath.split('/', '\\') + relPath.split('/', '\\'))
             .map { it.trim() }
             .filter { it.isNotEmpty() }
+        for (segment in parts) {
+            require(segment != "." && segment != ".." && !segment.contains(':') && !segment.contains('\u0000')) {
+                "Invalid SMB path segment: '$segment'"
+            }
+        }
         return parts.joinToString("\\")
     }
 

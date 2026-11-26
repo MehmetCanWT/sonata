@@ -308,19 +308,45 @@ fn require_mount_root(profile: &ServerProfile) -> Result<PathBuf, CoreError> {
 }
 
 fn resolve_smb_file_path(root: &Path, raw_id: &str) -> Result<PathBuf, CoreError> {
-    let plain = raw_id.strip_prefix("file://").unwrap_or(raw_id);
-    let p = Path::new(plain);
+    let trimmed = raw_id.trim();
+    if trimmed.is_empty() || trimmed.starts_with("file://") {
+        return Err(CoreError::invalid_response("smb", "invalid SMB file path"));
+    }
+    let p = Path::new(trimmed);
     if p.components().any(|c| matches!(c, Component::ParentDir)) {
         return Err(CoreError::invalid_response(
             "smb",
             "invalid SMB path traversal",
         ));
     }
-    if p.is_absolute() && p.starts_with(root) {
-        Ok(p.to_path_buf())
+    let canonical_root = fs::canonicalize(root).map_err(|err| {
+        CoreError::offline(format!(
+            "failed to canonicalize SMB mount root {}: {err}",
+            root.display()
+        ))
+    })?;
+    let candidate = if p.is_absolute() {
+        p.to_path_buf()
     } else {
-        join_safe_relative(root, plain)
+        join_safe_relative(&canonical_root, trimmed)?
+    };
+    let canonical_target = fs::canonicalize(&candidate).map_err(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            CoreError::not_found(format!(
+                "SMB file `{}` not found on mounted share",
+                candidate.display()
+            ))
+        } else {
+            CoreError::invalid_response("smb", format!("failed to resolve SMB file path: {err}"))
+        }
+    })?;
+    if !canonical_target.starts_with(&canonical_root) {
+        return Err(CoreError::invalid_response(
+            "smb",
+            "SMB path escapes mounted share root",
+        ));
     }
+    Ok(canonical_target)
 }
 
 fn join_safe_relative(root: &Path, rel: &str) -> Result<PathBuf, CoreError> {
@@ -1090,6 +1116,25 @@ mod tests {
         let resolved_rel = resolve_smb_file_path(&root, "Artist/song.flac").expect("valid rel");
         assert_eq!(resolved_rel, valid_file);
 
+        let outside_dir = unique_temp_dir("outside");
+        let outside_file = outside_dir.join("secret.flac");
+        fs::write(&outside_file, b"secret").expect("write outside");
+
+        assert!(resolve_smb_file_path(&root, &outside_file.to_string_lossy()).is_err());
+        assert!(
+            resolve_smb_file_path(&root, &format!("file://{}", outside_file.display())).is_err()
+        );
+        assert!(resolve_smb_file_path(&root, &format!("file://{}", valid_file.display())).is_err());
+
+        #[cfg(unix)]
+        {
+            let escape_link = valid_dir.join("escape.flac");
+            std::os::unix::fs::symlink(&outside_file, &escape_link).expect("create symlink");
+            assert!(resolve_smb_file_path(&root, "Artist/escape.flac").is_err());
+            assert!(resolve_smb_file_path(&root, &escape_link.to_string_lossy()).is_err());
+        }
+
+        let _ = fs::remove_dir_all(&outside_dir);
         let _ = fs::remove_dir_all(&root);
     }
 }

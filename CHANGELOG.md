@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.10] - 2026-11-27
+
+### Added
+
+- **Sonata Connect Interactive Approval, Trusted Devices & Now Playing Switcher (`sonata-core`, `sonata-runtime`, `sonata-desktop`, `sonata-tui`, `android`)**:
+  - Bound Sonata Connect to fixed default TCP port `45390` (with ephemeral fallback if busy) alongside UDP discovery port `45389`, aligned Android and Rust JSON wire schemas (`PairRequest`, `PairAck` token, `ConnectStateSnapshot`, `snake_case` commands), and preserved the active Connect PIN when saving settings or updating the device name.
+  - Added interactive Approve/Reject pairing request endpoints (`POST /connect/pair/request`, `GET /connect/pair/status`, `GET /connect/trust`) with pop-up approval modals on Desktop and TUI, plus persistent trusted device storage without auto-connecting until explicitly chosen by the user.
+  - Added a Now Playing Devices picker, clickable `"Playing on <DeviceName>"` indicator on both the full Now Playing screen and above the mini player bar, and full remote playback/queue/seek/volume routing (including `Play Next` / `Add to Queue` synchronization) until Disconnect.
+- **MPRIS2 Animated Covers & Typed Runtime Telemetry (`sonata-desktop`, `sonata-tui`, `sonata-runtime`, `docs`)**:
+  - Added `sonata:motionArtUrl` to MPRIS2 metadata across both Desktop and TUI (always active when motion covers are enabled, even in tray/mini mode) while keeping `mpris:artUrl` static.
+  - Upgraded `$XDG_RUNTIME_DIR/sonata/now_playing.json` and `lyrics.json` to typed schema v2 (`docs/integrations.md`).
+
+### Changed
+
+- **Cross-Platform Desktop Migration (`sonata-desktop`, `desktop-ui`, `sonata-runtime`)**:
+  - Migrated `sonata-desktop` from Linux-only GPUI to **Tauri v2** supporting Linux, macOS, and Windows with a React 19 + TypeScript + Tailwind CSS v4 + shadcn/ui matte obsidian interface (sidebar, rounded viewport, Album/Artist/Immersive Lyrics views, floating matte player dock, queue panel, Dark Obsidian & Light modes, `en`/`tr`/`ru` localization, zero Liquid Glass) and removed legacy GPUI code.
+  - Replaced `ksni` with Tauri's cross-platform `TrayIconBuilder` and added `souvlaki` OS media controls for macOS and Windows alongside Linux MPRIS2 (`mpris.rs`, `tray.rs`).
+  - Added cross-platform `mpv` Named Pipe / CoreAudio / WASAPI IPC, Discord Rich Presence Named Pipes, Windows `CREATE_NO_WINDOW` subprocess flags, sidecar/Homebrew binary discovery, OS-aware Connect metadata, and macOS/Windows browser cookie paths in `sonata-runtime`.
+  - Updated CI, Flatpak (`org.gnome.Platform` 47 / WebKitGTK 4.1), boundary checks, and cross-platform release packaging (`.AppImage`, `.deb`, `.rpm`, `.tar.gz`, Windows `.exe`/`-setup.exe`/`.msi`, macOS `.dmg`/`.app.tar.gz`, and `.apk`).
+- **Locked Official Discord Application ID & Full `en`/`tr`/`ru` Localization (`sonata-runtime`, `sonata-desktop`, `sonata-tui`, `desktop-ui`, `android`)**:
+  - Locked Discord Rich Presence to immutable official Application ID `1520387624861438002` across all clients and removed editable custom App ID controls.
+  - Audited and localized user-facing UI, dialog, tray, status, and error strings across English, Turkish, and Russian in Android, Desktop UI, TUI, and Rust backend/runtime layers.
+
+### Fixed
+
+- **Android Discord Sign-In & Rich Presence RPC (`android`)**:
+  - Fixed React SPA login detection (`doUpdateVisitedHistory`), passive `Authorization` header + JS hook + `evaluateJavascript` token extraction, `/api/v9/users/@me` verification, subframe schemes (`about:`, `blob:`, `data:`), dark WebView surface with load progress and localized error/retry UI, Gateway `User-Agent`, compact `IDENTIFY`, error status preservation, `401`/`403` `AuthFailed` reporting, and external-assets fallbacks.
+- **Desktop & Android Lyrics, Artwork & Build Tooling (`desktop-ui`, `sonata-desktop`, `android`)**:
+  - Fixed seamless looping of animated album covers (`yuv420p`, `start_time=0`), WebKitGTK NVDEC/VA-API green-frame glitches, desktop lyrics auto-follow stability during window moves, Library Artists detail layout/banner/downloads, and Android duet/parenthetical synced lyrics alignment.
+  - Upgraded Android build tooling to AGP `9.5.3` and Gradle `9.6.0` with zero SDK XML or Kotlin deprecation warnings.
+
 ## [1.0.9] - 2026-11-25
 
 ### Fixed

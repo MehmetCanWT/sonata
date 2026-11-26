@@ -44,9 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.sonata.android.data.AudioPipelineInfo
 import dev.sonata.android.ui.i18n.LocalSonataStrings
-import dev.sonata.android.ui.i18n.RussianSonataStrings
 import dev.sonata.android.ui.i18n.SonataStrings
-import dev.sonata.android.ui.i18n.TurkishSonataStrings
 import dev.sonata.android.ui.sonataThemeAccent
 import dev.sonata.android.ui.theme.LocalLunariaColors
 import java.util.Locale
@@ -158,7 +156,7 @@ fun AudioPipelineModal(
             PipelineStageCard(
                 step = "2",
                 title = strings.audioPipelineCodec,
-                primary = "${info.codec.ifBlank { "Auto" }} · $bitrateText",
+                primary = "${info.codec.ifBlank { strings.videoQualityAuto }} · $bitrateText",
                 secondary = "${info.sampleRateLabel} · ${info.channelLabel}",
                 badgeLabel = strings.audioPipelineBitrate,
                 badgeActive = true,
@@ -586,48 +584,18 @@ private fun ToggleRow(
     }
 }
 
-private fun localizePipelineSourceLabel(raw: String, strings: SonataStrings): String {
-    return when (raw) {
-        "Offline Download" -> when (strings) {
-            TurkishSonataStrings -> "Çevrimdışı İndirme"
-            RussianSonataStrings -> "Офлайн-загрузка"
-            else -> "Offline Download"
-        }
-        "YouTube Music" -> "YouTube Music"
-        "Audio Stream" -> when (strings) {
-            TurkishSonataStrings -> "Ses Akışı"
-            RussianSonataStrings -> "Аудиопоток"
-            else -> "Audio Stream"
-        }
-        "Idle" -> when (strings) {
-            TurkishSonataStrings -> "Boşta"
-            RussianSonataStrings -> "Ожидание"
-            else -> "Idle"
-        }
-        else -> raw
-    }
+private fun localizePipelineSourceLabel(raw: String, strings: SonataStrings): String = when (raw) {
+    "Offline Download" -> strings.pipelineSourceOfflineDownload
+    "YouTube Music" -> "YouTube Music"
+    "Audio Stream" -> strings.pipelineSourceAudioStream
+    "Idle" -> strings.pipelineSourceIdle
+    else -> raw
 }
 
-private fun localizedBypassedLabel(strings: SonataStrings): String = when (strings) {
-    TurkishSonataStrings -> "Doğrudan"
-    RussianSonataStrings -> "Обход DSP"
-    else -> "Bypassed"
-}
+private fun localizedBypassedLabel(strings: SonataStrings): String = strings.pipelineDspBypassed
 
-private fun localizedDspActiveLabel(strings: SonataStrings): String = when (strings) {
-    TurkishSonataStrings -> "DSP Etkin"
-    RussianSonataStrings -> "DSP активен"
-    else -> "DSP Active"
-}
+private fun localizedDspActiveLabel(strings: SonataStrings): String = strings.pipelineDspActive
 
-private fun localizedEqualizerLabel(strings: SonataStrings): String = when (strings) {
-    TurkishSonataStrings -> "Ekolayzer"
-    RussianSonataStrings -> "Эквалайзер"
-    else -> "Equalizer"
-}
+private fun localizedEqualizerLabel(strings: SonataStrings): String = strings.pipelineEqualizer
 
-private fun localizedLoudnessLabel(strings: SonataStrings): String = when (strings) {
-    TurkishSonataStrings -> "Ses Dengeleme"
-    RussianSonataStrings -> "Нормализация"
-    else -> "Loudness Norm"
-}
+private fun localizedLoudnessLabel(strings: SonataStrings): String = strings.pipelineLoudnessNorm

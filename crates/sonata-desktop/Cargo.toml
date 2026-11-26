@@ -4,29 +4,41 @@ version.workspace = true
 edition = "2021"
 license.workspace = true
 repository.workspace = true
-description = "Native Wayland/Hyprland GPUI music player for Sonata with compositor blur, CSS themes, MPRIS2, and system tray"
+description = "Cross-platform Tauri v2 desktop music player for Sonata (Linux, macOS, Windows)"
 
 [[bin]]
 name = "sonata-desktop"
 path = "src/main.rs"
 
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build.workspace = true
+
 [dependencies]
 anyhow.workspace = true
-cosmic-text.workspace = true
 dirs.workspace = true
-gpui-kit.workspace = true
 image.workspace = true
-ksni.workspace = true
-libc.workspace = true
-mpris-server.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sonata-core = { path = "../sonata-core" }
 sonata-runtime = { path = "../sonata-runtime" }
+tauri.workspace = true
+tauri-plugin-opener.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 urlencoding.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni.workspace = true
+mpris-server.workspace = true
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+souvlaki.workspace = true
+tauri = { workspace = true, features = ["tray-icon"] }
 
 [lints]
 workspace = true

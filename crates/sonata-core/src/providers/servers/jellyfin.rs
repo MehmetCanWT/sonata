@@ -8,8 +8,9 @@
 //!    `AlbumDetail`, `ServerLibrary`, and `ServerStream` with direct stream URLs and auth headers.
 
 use super::{
-    default_http_timeout, encode_server_item_id, format_audio_badge, map_http_status, ServerKind,
-    ServerLibrary, ServerProfile, ServerSearchResult, ServerStream,
+    default_http_timeout, encode_server_item_id, format_audio_badge, map_http_status,
+    no_redirect_http_client, ServerKind, ServerLibrary, ServerProfile, ServerSearchResult,
+    ServerStream,
 };
 use crate::error::CoreError;
 use crate::providers::ytmusic::{AlbumDetail, HomeCard, HomeCardKind};
@@ -93,11 +94,13 @@ fn apply_auth(req: RequestBuilder, profile: &ServerProfile) -> Result<RequestBui
 }
 
 async fn send_json_get(
-    http: &Client,
+    _http: &Client,
     url: &str,
     profile: &ServerProfile,
 ) -> Result<Value, CoreError> {
-    let req = http.get(url).timeout(default_http_timeout());
+    let req = no_redirect_http_client()
+        .get(url)
+        .timeout(default_http_timeout());
     let req = apply_auth(req, profile)?;
     let resp = req
         .send()
@@ -124,6 +127,7 @@ pub async fn authenticate_by_name(
     password: &str,
     device_id: &str,
 ) -> Result<JellyfinAuthResult, CoreError> {
+    let _ = http;
     let base = base_url.trim().trim_end_matches('/');
     if base.is_empty() {
         return Err(CoreError::invalid_response(
@@ -132,7 +136,7 @@ pub async fn authenticate_by_name(
         ));
     }
     let url = format!("{base}/Users/AuthenticateByName");
-    let resp = http
+    let resp = no_redirect_http_client()
         .post(&url)
         .timeout(default_http_timeout())
         .header("Authorization", build_mediabrowser_header(device_id, None))
@@ -383,6 +387,14 @@ pub fn stream_request(
         ));
     }
     let headers = auth_headers(profile)?;
+    for (name, value) in &headers {
+        reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|err| {
+            CoreError::internal(format!("invalid Jellyfin header name `{name}`: {err}"))
+        })?;
+        HeaderValue::from_str(value).map_err(|err| {
+            CoreError::auth_required(format!("invalid Jellyfin token header value: {err}"))
+        })?;
+    }
     let url = format!(
         "{base}/Audio/{}/stream?static=true",
         urlencoding::encode(item_id)
@@ -407,12 +419,15 @@ pub async fn fetch_lyrics(
     profile: &ServerProfile,
     item_id: &str,
 ) -> Result<Option<String>, CoreError> {
+    let _ = http;
     let base = profile.normalized_base_url();
     if base.is_empty() {
         return Ok(None);
     }
     let url = format!("{base}/Audio/{}/Lyrics", urlencoding::encode(item_id));
-    let req = http.get(&url).timeout(default_http_timeout());
+    let req = no_redirect_http_client()
+        .get(&url)
+        .timeout(default_http_timeout());
     let req = apply_auth(req, profile)?;
     let resp = req
         .send()
@@ -1070,5 +1085,86 @@ mod tests {
             parse_lyrics_json(&unsynced).as_deref(),
             Some("First line\nSecond line")
         );
+    }
+
+    #[test]
+    fn stream_request_rejects_invalid_header_values() {
+        let mut profile = test_profile();
+        profile.access_token = Some("bad-token\r\nX-Injected: evil".to_string());
+        let track = Track {
+            id: "jellyfin:jf-home:trk-1".to_string(),
+            title: "Song".to_string(),
+            artist: "Artist".to_string(),
+            album: "Album".to_string(),
+            duration_secs: Some(120),
+            thumbnail_url: None,
+            source: ProviderSource::YouTubeMusic,
+            audio_badge: None,
+            set_video_id: None,
+            liked: false,
+            album_id: None,
+            is_explicit: false,
+        };
+        let err = stream_request(&profile, "trk-1", &track)
+            .expect_err("header injection token must fail");
+        assert!(matches!(err, CoreError::AuthRequired { .. }));
+    }
+
+    #[tokio::test]
+    async fn authenticated_requests_do_not_follow_cross_origin_redirects() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let trap_listener = TcpListener::bind("127.0.0.1:0").await.expect("bind trap");
+        let trap_addr = trap_listener.local_addr().expect("trap addr");
+        let trap_hit = Arc::new(AtomicBool::new(false));
+        let trap_flag = Arc::clone(&trap_hit);
+        let trap_task = tokio::spawn(async move {
+            if let Ok((mut sock, _)) = trap_listener.accept().await {
+                trap_flag.store(true, Ordering::SeqCst);
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let _ = sock
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                    )
+                    .await;
+            }
+        });
+
+        let redirect_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind redirect");
+        let redirect_addr = redirect_listener.local_addr().expect("redirect addr");
+        let redirect_task = tokio::spawn(async move {
+            if let Ok((mut sock, _)) = redirect_listener.accept().await {
+                let mut buf = [0u8; 2048];
+                let _ = sock.read(&mut buf).await;
+                let resp = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: http://{trap_addr}/steal\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+            }
+        });
+
+        let mut profile = ServerProfile::new(
+            "jf-redir",
+            "Redirect JF",
+            ServerKind::Jellyfin,
+            format!("http://{redirect_addr}"),
+        );
+        profile.access_token = Some("secret-jf-token".to_string());
+
+        let http = crate::providers::build_http_client();
+        let err = ping(&http, &profile)
+            .await
+            .expect_err("302 redirect must not be followed");
+        assert!(err.to_string().contains("302"));
+        assert!(!trap_hit.load(Ordering::SeqCst));
+
+        redirect_task.abort();
+        trap_task.abort();
     }
 }

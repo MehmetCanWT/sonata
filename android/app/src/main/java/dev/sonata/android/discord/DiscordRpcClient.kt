@@ -70,7 +70,7 @@ sealed interface DiscordRpcStatus {
  * Discord User Gateway v10 Rich Presence client for Sonata built on OkHttp WebSockets.
  *
  * Connects to `wss://gateway.discord.gg/?v=10&encoding=json`, authenticates via `IDENTIFY`
- * (op 2) with Android client super-properties, maintains `HEARTBEAT` (op 1) with jitter,
+ * (op 2) with Android client properties, maintains `HEARTBEAT` (op 1) with jitter,
  * supports `RESUME` (op 6) and exponential backoff reconnects on drops, proxies external
  * track artwork through `/api/v9/applications/{id}/external-assets` with per-URL caching
  * and failure cooldowns, and sends `SET_PRESENCE` (op 3) updates for active playback.
@@ -96,6 +96,7 @@ class DiscordRpcClient(
     private var resumeGatewayUrl: String? = null
     private var lastSequence: Int? = null
     private var connectedUsername: String? = null
+    private var presenceStatus: String = DEFAULT_PRESENCE_STATUS
     private var heartbeatAcked: Boolean = true
     private var reconnectAttempts: Int = 0
     private var authRejected: Boolean = false
@@ -119,8 +120,8 @@ class DiscordRpcClient(
      * disconnecting the Gateway socket as needed.
      */
     fun updateAuthAndConfig(newToken: String?, newConfig: DiscordPresenceConfig) {
-        val normalizedToken = newToken?.trim()?.takeIf { it.isNotEmpty() }
-        val resolvedConfig = newConfig.copy(appId = DiscordApplication.resolveAppId(newConfig.appId))
+        val normalizedToken = DiscordApplication.sanitizeToken(newToken)
+        val resolvedConfig = newConfig.copy(appId = DiscordApplication.DEFAULT_APP_ID)
 
         var shouldConnect = false
         var shouldDisconnect = false
@@ -141,6 +142,7 @@ class DiscordRpcClient(
                 resumeGatewayUrl = null
                 lastSequence = null
                 connectedUsername = null
+                presenceStatus = DEFAULT_PRESENCE_STATUS
                 authRejected = false
                 reconnectAttempts = 0
             }
@@ -242,6 +244,7 @@ class DiscordRpcClient(
                 resumeGatewayUrl = null
                 lastSequence = null
                 connectedUsername = null
+                presenceStatus = DEFAULT_PRESENCE_STATUS
             }
             if (!authRejected || nextStatus == DiscordRpcStatus.AuthFailed || nextStatus == DiscordRpcStatus.Disconnected) {
                 _status.value = nextStatus
@@ -263,11 +266,14 @@ class DiscordRpcClient(
                     if (base.contains("v=")) base else "${base.trimEnd('/')}/?v=10&encoding=json"
                 }
                 ?: DiscordApplication.GATEWAY_URL
-            _status.value = if (sessionId != null) DiscordRpcStatus.Reconnecting else DiscordRpcStatus.Connecting
+            if (_status.value !is DiscordRpcStatus.Error) {
+                _status.value = if (sessionId != null) DiscordRpcStatus.Reconnecting else DiscordRpcStatus.Connecting
+            }
         }
 
         val request = Request.Builder()
             .url(gatewayUrl)
+            .header("User-Agent", DiscordApplication.GATEWAY_USER_AGENT)
             .build()
 
         val socket = httpClient.newWebSocket(request, GatewayListener(activeToken))
@@ -280,14 +286,19 @@ class DiscordRpcClient(
         }
     }
 
-    private fun scheduleReconnect(delayMs: Long? = null) {
+    private fun scheduleReconnect(
+        delayMs: Long? = null,
+        preserveErrorStatus: Boolean = false,
+    ) {
         synchronized(stateLock) {
             if (disposed || authRejected || !config.enabled || token.isNullOrBlank()) return
             if (reconnectJob?.isActive == true) return
             val attempt = reconnectAttempts.coerceAtMost(MAX_BACKOFF_SHIFT)
             reconnectAttempts += 1
             val waitMs = delayMs ?: (BASE_RECONNECT_DELAY_MS shl attempt).coerceAtMost(MAX_RECONNECT_DELAY_MS)
-            _status.value = DiscordRpcStatus.Reconnecting
+            if (!preserveErrorStatus) {
+                _status.value = DiscordRpcStatus.Reconnecting
+            }
             reconnectJob = scope.launch {
                 delay(waitMs)
                 synchronized(stateLock) {
@@ -318,10 +329,14 @@ class DiscordRpcClient(
                     }
                     if (!canContinue) {
                         Log.w(TAG, "Discord gateway heartbeat ACK missed; reconnecting")
-                        runCatching { socket.close(CLOSE_ZOMBIE, "Heartbeat timeout") }
+                        runCatching { socket.cancel() }
                         return@launch
                     }
-                    socket.send(buildHeartbeatPayload(seq).toString())
+                    val sent = runCatching { socket.send(buildHeartbeatPayload(seq).toString()) }.getOrDefault(false)
+                    if (!sent) {
+                        runCatching { socket.cancel() }
+                        return@launch
+                    }
                     delay(safeInterval)
                 }
             }
@@ -331,15 +346,18 @@ class DiscordRpcClient(
     private fun sendClearPresence() {
         val socket: WebSocket
         val activeConfig: DiscordPresenceConfig
+        val activeStatus: String
         synchronized(stateLock) {
             socket = webSocket ?: return
             activeConfig = config
+            activeStatus = presenceStatus
         }
         val payload = buildPresencePayload(
             track = null,
             config = activeConfig,
             largeImageAsset = null,
             nowMs = nowProviderMs(),
+            presenceStatus = activeStatus,
         )
         runCatching { socket.send(payload.toString()) }
     }
@@ -348,31 +366,41 @@ class DiscordRpcClient(
         val socket: WebSocket
         val activeToken: String
         val activeConfig: DiscordPresenceConfig
+        val activeStatus: String
         val trackSnapshot: DiscordPresenceTrack?
         val cachedImage: String?
         val shouldFetchAsset: Boolean
+        val targetArtworkUrl: String?
 
         synchronized(stateLock) {
             if (disposed || !isReady) return
             socket = webSocket ?: return
             activeToken = token ?: return
             activeConfig = config
+            activeStatus = presenceStatus
             trackSnapshot = currentTrack
-            val artworkUrl = trackSnapshot
+            val rawArtworkUrl = trackSnapshot
                 ?.takeIf { it.isPlaying && activeConfig.enabled && activeConfig.showArtwork }
                 ?.artworkUrl
                 ?.trim()
-                ?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+                ?.takeIf { it.isNotEmpty() }
 
-            if (artworkUrl != null) {
-                val key = AssetCacheKey(activeConfig.appId, artworkUrl)
+            val directAsset = rawArtworkUrl?.let { resolveDirectDiscordAsset(it) }
+            if (directAsset != null) {
+                cachedImage = directAsset
+                shouldFetchAsset = false
+                targetArtworkUrl = null
+            } else if (rawArtworkUrl != null && (rawArtworkUrl.startsWith("http://") || rawArtworkUrl.startsWith("https://"))) {
+                val key = AssetCacheKey(DiscordApplication.DEFAULT_APP_ID, rawArtworkUrl)
                 cachedImage = assetCache[key]
                 val now = nowProviderMs()
                 val cooledDown = (assetCooldownUntilMs[key] ?: 0L) > now
                 shouldFetchAsset = cachedImage == null && !cooledDown && inFlightAssetKeys.add(key)
+                targetArtworkUrl = rawArtworkUrl
             } else {
                 cachedImage = null
                 shouldFetchAsset = false
+                targetArtworkUrl = null
             }
         }
 
@@ -381,19 +409,29 @@ class DiscordRpcClient(
             config = activeConfig,
             largeImageAsset = cachedImage,
             nowMs = nowProviderMs(),
+            presenceStatus = activeStatus,
         )
         runCatching { socket.send(payload.toString()) }
 
-        val targetUrl = trackSnapshot?.artworkUrl?.trim()
-        if (shouldFetchAsset && !targetUrl.isNullOrBlank()) {
-            val key = AssetCacheKey(activeConfig.appId, targetUrl)
+        if (shouldFetchAsset && !targetArtworkUrl.isNullOrBlank() && trackSnapshot != null) {
+            val key = AssetCacheKey(DiscordApplication.DEFAULT_APP_ID, targetArtworkUrl)
             scope.launch {
                 try {
-                    val result = fetchExternalAsset(
+                    var result = fetchExternalAsset(
                         token = activeToken,
-                        appId = activeConfig.appId,
-                        artworkUrl = targetUrl,
+                        appId = DiscordApplication.DEFAULT_APP_ID,
+                        artworkUrl = targetArtworkUrl,
                     )
+                    if (result is ExternalAssetResult.Failed) {
+                        val fallbackUrl = buildYoutubeFallbackArtworkUrl(trackSnapshot.id)
+                        if (fallbackUrl != null && fallbackUrl != targetArtworkUrl) {
+                            result = fetchExternalAsset(
+                                token = activeToken,
+                                appId = DiscordApplication.DEFAULT_APP_ID,
+                                artworkUrl = fallbackUrl,
+                            )
+                        }
+                    }
                     val shouldRefreshPresence: Boolean
                     synchronized(stateLock) {
                         inFlightAssetKeys.remove(key)
@@ -404,7 +442,7 @@ class DiscordRpcClient(
                             config.enabled &&
                             currentTrack?.id == trackSnapshot.id &&
                             currentTrack?.isPlaying == true &&
-                            currentTrack?.artworkUrl?.trim() == targetUrl
+                            currentTrack?.artworkUrl?.trim() == targetArtworkUrl
                     }
                     if (shouldRefreshPresence) {
                         pushCurrentPresence()
@@ -454,15 +492,16 @@ class DiscordRpcClient(
         appId: String,
         artworkUrl: String,
     ): String? {
-        val result = fetchExternalAsset(token, appId, artworkUrl)
-        val key = AssetCacheKey(appId, artworkUrl)
+        val lockedAppId = DiscordApplication.resolveAppId(appId)
+        val result = fetchExternalAsset(token, lockedAppId, artworkUrl)
+        val key = AssetCacheKey(lockedAppId, artworkUrl)
         return synchronized(stateLock) {
             applyExternalAssetResultLocked(key, result, nowProviderMs())
         }
     }
 
     internal fun assetCooldownUntilMsForTest(appId: String, artworkUrl: String): Long? =
-        synchronized(stateLock) { assetCooldownUntilMs[AssetCacheKey(appId, artworkUrl)] }
+        synchronized(stateLock) { assetCooldownUntilMs[AssetCacheKey(DiscordApplication.resolveAppId(appId), artworkUrl)] }
 
     private fun fetchExternalAsset(
         token: String,
@@ -475,6 +514,8 @@ class DiscordRpcClient(
         val request = Request.Builder()
             .url(DiscordApplication.externalAssetsUrl(appId))
             .header("Authorization", token)
+            .header("User-Agent", DiscordApplication.GATEWAY_USER_AGENT)
+            .header("Accept", "application/json")
             .header("Content-Type", "application/json")
             .post(bodyJson.toRequestBody(JSON_MEDIA_TYPE))
             .build()
@@ -490,12 +531,7 @@ class DiscordRpcClient(
                 return ExternalAssetResult.Failed
             }
             val rawBody = response.body?.string().orEmpty()
-            if (rawBody.isBlank()) return ExternalAssetResult.Failed
-            val array = runCatching { JSONArray(rawBody) }.getOrNull() ?: return ExternalAssetResult.Failed
-            if (array.length() == 0) return ExternalAssetResult.Failed
-            val first = array.optJSONObject(0) ?: return ExternalAssetResult.Failed
-            val externalPath = first.optString("external_asset_path", "").trim()
-            if (externalPath.isEmpty()) return ExternalAssetResult.Failed
+            val externalPath = parseExternalAssetPath(rawBody) ?: return ExternalAssetResult.Failed
             val normalized = DiscordApplication.normalizeExternalAssetImage(externalPath)
             return if (normalized.isNotEmpty()) {
                 ExternalAssetResult.Found(normalized)
@@ -563,11 +599,13 @@ class DiscordRpcClient(
                                 ?: userObj?.optString("username", "")?.takeIf { it.isNotBlank() }
                             val sid = data?.optString("session_id", "")?.takeIf { it.isNotBlank() }
                             val resumeUrl = data?.optString("resume_gateway_url", "")?.takeIf { it.isNotBlank() }
+                            val resolvedStatus = extractVisiblePresenceStatus(data)
                             synchronized(stateLock) {
                                 if (this@DiscordRpcClient.webSocket !== webSocket) return
                                 sessionId = sid
                                 resumeGatewayUrl = resumeUrl
                                 connectedUsername = displayName
+                                presenceStatus = resolvedStatus
                                 isReady = true
                                 reconnectAttempts = 0
                                 _status.value = DiscordRpcStatus.Connected(displayName)
@@ -599,6 +637,7 @@ class DiscordRpcClient(
                     synchronized(stateLock) {
                         if (!resumable) {
                             sessionId = null
+                            resumeGatewayUrl = null
                             lastSequence = null
                         }
                         isReady = false
@@ -613,17 +652,27 @@ class DiscordRpcClient(
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-            handleSocketEnded(webSocket, code, reason)
+            handleSocketEnded(webSocket, code = code, httpCode = null, reason = reason)
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            val safeMsg = DiscordApplication.redactSensitiveText(t.message ?: "Connection failed", activeToken)
+            val httpCode = response?.code
+            val rawDetail = t.message?.trim().orEmpty().ifEmpty {
+                httpCode?.let { "HTTP $it" }.orEmpty()
+            }
+            val safeMsg = DiscordApplication.redactSensitiveText(rawDetail, activeToken)
             Log.w(TAG, "Discord gateway socket error: $safeMsg")
-            handleSocketEnded(webSocket, code = -1, reason = safeMsg)
+            handleSocketEnded(webSocket, code = -1, httpCode = httpCode, reason = safeMsg)
         }
 
-        private fun handleSocketEnded(socket: WebSocket, code: Int, reason: String) {
+        private fun handleSocketEnded(
+            socket: WebSocket,
+            code: Int,
+            httpCode: Int?,
+            reason: String,
+        ) {
             val shouldReconnect: Boolean
+            val preserveError: Boolean
             synchronized(stateLock) {
                 if (this@DiscordRpcClient.webSocket !== socket) return
                 this@DiscordRpcClient.webSocket = null
@@ -631,9 +680,10 @@ class DiscordRpcClient(
                 heartbeatJob = null
                 isReady = false
 
-                if (code in FATAL_AUTH_CLOSE_CODES) {
+                if (code in FATAL_AUTH_CLOSE_CODES || httpCode == 401 || httpCode == 403) {
                     authRejected = true
                     sessionId = null
+                    resumeGatewayUrl = null
                     lastSequence = null
                     connectedUsername = null
                     _status.value = DiscordRpcStatus.AuthFailed
@@ -647,21 +697,33 @@ class DiscordRpcClient(
                 }
                 if (code == 4007 || code == 4009) {
                     sessionId = null
+                    resumeGatewayUrl = null
                     lastSequence = null
                 }
-                if (reason.isNotBlank() && code < 0) {
-                    _status.value = DiscordRpcStatus.Error(reason)
+                val isUnexpectedCloseError = code >= 4000 && code != CLOSE_RECONNECT && code != CLOSE_ZOMBIE
+                if (code < 0 || isUnexpectedCloseError) {
+                    val sanitizedReason = DiscordApplication.redactSensitiveText(reason.trim(), activeToken)
+                    val detail = when {
+                        sanitizedReason.isNotBlank() -> sanitizedReason
+                        isUnexpectedCloseError -> "WS $code"
+                        else -> ""
+                    }
+                    _status.value = DiscordRpcStatus.Error(detail)
+                    preserveError = true
+                } else {
+                    preserveError = false
                 }
                 shouldReconnect = true
             }
             if (shouldReconnect) {
-                scheduleReconnect()
+                scheduleReconnect(preserveErrorStatus = preserveError)
             }
         }
     }
 
     companion object {
         private const val TAG = "SonataDiscordRpc"
+        private const val DEFAULT_PRESENCE_STATUS = "online"
 
         internal const val OP_DISPATCH = 0
         internal const val OP_HEARTBEAT = 1
@@ -688,6 +750,7 @@ class DiscordRpcClient(
 
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         private val YOUTUBE_ID_REGEX = Regex("""^[A-Za-z0-9_-]{6,32}$""")
+        private val VISIBLE_STATUSES = setOf("online", "idle", "dnd")
 
         fun defaultOkHttpClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
@@ -695,6 +758,57 @@ class DiscordRpcClient(
             .writeTimeout(15, TimeUnit.SECONDS)
             .pingInterval(0, TimeUnit.MILLISECONDS)
             .build()
+
+        internal fun resolveDirectDiscordAsset(rawUrl: String): String? {
+            val trimmed = rawUrl.trim()
+            return when {
+                trimmed.startsWith("mp:") -> trimmed
+                trimmed.startsWith("https://media.discordapp.net/") ||
+                    trimmed.startsWith("http://media.discordapp.net/") ->
+                    DiscordApplication.normalizeExternalAssetImage(trimmed)
+                else -> null
+            }
+        }
+
+        internal fun parseExternalAssetPath(rawBody: String): String? {
+            if (rawBody.isBlank()) return null
+            val array = runCatching { JSONArray(rawBody) }.getOrNull()
+            if (array != null && array.length() > 0) {
+                val first = array.optJSONObject(0) ?: return null
+                return first.optString("external_asset_path", "").trim().takeIf { it.isNotEmpty() }
+            }
+            val obj = runCatching { JSONObject(rawBody) }.getOrNull() ?: return null
+            return obj.optString("external_asset_path", "").trim().takeIf { it.isNotEmpty() }
+        }
+
+        internal fun extractVisiblePresenceStatus(readyData: JSONObject?): String {
+            val settingsStatus = readyData?.optJSONObject("user_settings")
+                ?.optString("status", "")
+                ?.trim()
+                ?.lowercase(Locale.ROOT)
+            if (settingsStatus != null && settingsStatus in VISIBLE_STATUSES) {
+                return settingsStatus
+            }
+            val sessions = readyData?.optJSONArray("sessions")
+            if (sessions != null) {
+                for (i in 0 until sessions.length()) {
+                    val st = sessions.optJSONObject(i)
+                        ?.optString("status", "")
+                        ?.trim()
+                        ?.lowercase(Locale.ROOT)
+                    if (st != null && st in VISIBLE_STATUSES) {
+                        return st
+                    }
+                }
+            }
+            return DEFAULT_PRESENCE_STATUS
+        }
+
+        internal fun buildYoutubeFallbackArtworkUrl(trackId: String): String? {
+            val trimmed = trackId.trim()
+            if (!YOUTUBE_ID_REGEX.matches(trimmed)) return null
+            return "https://i.ytimg.com/vi/$trimmed/hqdefault.jpg"
+        }
 
         internal fun buildHeartbeatPayload(sequence: Int?): JSONObject = JSONObject().apply {
             put("op", OP_HEARTBEAT)
@@ -717,7 +831,8 @@ class DiscordRpcClient(
                     "d",
                     JSONObject().apply {
                         put("token", token)
-                        put("capabilities", 16381)
+                        put("capabilities", 65)
+                        put("large_threshold", 50)
                         put(
                             "properties",
                             JSONObject().apply {
@@ -725,17 +840,15 @@ class DiscordRpcClient(
                                 put("browser", "Discord Android")
                                 put("device", deviceName)
                                 put("system_locale", locale.ifBlank { "en-US" })
-                                put("client_version", "240.0")
                                 put("os_version", osRelease)
                                 put("release_channel", "googleRelease")
-                                put("client_build_number", 240000)
                             },
                         )
                         put("compress", false)
                         put(
                             "presence",
                             JSONObject().apply {
-                                put("status", "online")
+                                put("status", DEFAULT_PRESENCE_STATUS)
                                 put("since", 0)
                                 put("activities", JSONArray())
                                 put("afk", false)
@@ -783,7 +896,7 @@ class DiscordRpcClient(
         }
 
         internal fun formatTrackDetails(title: String, playbackSpeed: Float): String {
-            val cleanTitle = title.trim().ifEmpty { "Unknown Track" }
+            val cleanTitle = title.trim().ifEmpty { DiscordApplication.DEFAULT_APP_NAME }
             val speed = if (playbackSpeed.isFinite()) playbackSpeed.coerceIn(0.5f, 2.0f) else 1.0f
             val withBadge = if (abs(speed - 1.0f) >= 0.05f) {
                 val formatted = String.format(Locale.US, "%.2fx", speed)
@@ -796,11 +909,21 @@ class DiscordRpcClient(
             return clampDiscordField(withBadge)
         }
 
+        /**
+         * Clamps text to Discord's 128-character Rich Presence limit and pads single-character
+         * strings to 2 characters so Discord Gateway never silently rejects the activity.
+         */
         internal fun clampDiscordField(raw: String, maxLength: Int = 128): String {
             val trimmed = raw.trim()
-            if (trimmed.length <= maxLength) return trimmed
-            if (maxLength <= 1) return trimmed.take(maxLength)
-            return trimmed.take(maxLength - 1) + "…"
+            if (trimmed.isEmpty()) return ""
+            val clamped = if (trimmed.length <= maxLength) {
+                trimmed
+            } else if (maxLength <= 1) {
+                trimmed.take(maxLength)
+            } else {
+                trimmed.take(maxLength - 1) + "…"
+            }
+            return if (clamped.length == 1 && maxLength >= 2) "$clamped " else clamped
         }
 
         internal fun buildListenUrl(trackId: String): String? {
@@ -814,13 +937,15 @@ class DiscordRpcClient(
             config: DiscordPresenceConfig,
             largeImageAsset: String?,
             nowMs: Long = System.currentTimeMillis(),
+            presenceStatus: String = DEFAULT_PRESENCE_STATUS,
         ): JSONObject {
             val activities = JSONArray()
             if (config.enabled && track != null && track.isPlaying && track.title.isNotBlank()) {
                 val activity = JSONObject().apply {
                     put("name", DiscordApplication.DEFAULT_APP_NAME)
                     put("type", config.activityType.gatewayType)
-                    put("application_id", DiscordApplication.resolveAppId(config.appId))
+                    put("application_id", DiscordApplication.DEFAULT_APP_ID)
+                    put("created_at", nowMs)
                     put("details", formatTrackDetails(track.title, track.playbackSpeed))
                     if (track.artist.isNotBlank()) {
                         put("state", clampDiscordField(track.artist))
@@ -853,7 +978,7 @@ class DiscordRpcClient(
                         )
                     }
                     if (config.showButtons) {
-                        val buttonUrl = buildListenUrl(track.id) ?: DiscordApplication.PROJECT_URL
+                        val buttonUrl = DiscordApplication.PROJECT_URL
                         put("buttons", JSONArray().put(DiscordApplication.DEFAULT_BUTTON_LABEL))
                         put(
                             "metadata",
@@ -866,14 +991,15 @@ class DiscordRpcClient(
                 activities.put(activity)
             }
 
+            val normalizedStatus = presenceStatus.takeIf { it in VISIBLE_STATUSES } ?: DEFAULT_PRESENCE_STATUS
             return JSONObject().apply {
                 put("op", OP_PRESENCE_UPDATE)
                 put(
                     "d",
                     JSONObject().apply {
-                        put("since", if (activities.length() > 0) nowMs else JSONObject.NULL)
+                        put("since", 0)
                         put("activities", activities)
-                        put("status", "online")
+                        put("status", normalizedStatus)
                         put("afk", false)
                     },
                 )

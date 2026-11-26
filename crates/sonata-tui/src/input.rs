@@ -23,7 +23,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                 KeyCode::Char('o') => app.modal = ActiveModal::None,
                 KeyCode::Char('d') => {
                     app.config.suppress_image_warning = true;
-                    let _ = app.config.save();
+                    app.save_config_async();
                     app.modal = ActiveModal::None;
                 }
                 KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
@@ -31,7 +31,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                     0 => app.modal = ActiveModal::None,
                     1 => {
                         app.config.suppress_image_warning = true;
-                        let _ = app.config.save();
+                        app.save_config_async();
                         app.modal = ActiveModal::None;
                     }
                     _ => app.should_quit = true,
@@ -54,9 +54,17 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                     app.apply_theme_by_index(next);
                 }
                 KeyCode::Enter => {
+                    let s = sonata_runtime::i18n::strings(app.config.language);
                     app.config.theme = app.theme.name.clone();
-                    let _ = app.config.save();
-                    app.status_line = format!("Theme saved: {}", app.theme.name);
+                    app.save_config_async();
+                    app.status_line = format!(
+                        "{}: {}",
+                        s.theme_saved,
+                        sonata_runtime::i18n::display_theme_name(
+                            app.config.language,
+                            &app.theme.name
+                        )
+                    );
                     app.modal = ActiveModal::None;
                 }
                 KeyCode::Esc | KeyCode::Char('q') => {
@@ -118,7 +126,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                                 .unwrap_or_default();
                             app.modal = ActiveModal::TextInput {
                                 title: s.downloads_dir.to_string(),
-                                prompt: "Path (leave empty for default folder):".to_string(),
+                                prompt: s.downloads_path_prompt.to_string(),
                                 buf,
                                 target: crate::app::TextInputTarget::DownloadsDir,
                             };
@@ -126,49 +134,39 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                         23 => app.clear_all_downloads(),
                         24 => app.toggle_discord_rpc(),
                         25 => {
-                            let s = sonata_runtime::i18n::strings(app.config.language);
-                            let buf = app.config.discord_app_id.clone().unwrap_or_default();
-                            app.modal = ActiveModal::TextInput {
-                                title: s.discord_app_id.to_string(),
-                                prompt: "Application ID (empty for Sonata default):".to_string(),
-                                buf,
-                                target: crate::app::TextInputTarget::DiscordAppId,
-                            };
-                        }
-                        26 => {
                             app.modal = ActiveModal::LastFmConfig(
                                 crate::app::LastFmFormState::from_config(&app.scrobble_config),
                             );
                         }
-                        27 => {
+                        26 => {
                             app.modal = ActiveModal::ListenBrainzConfig(
                                 crate::app::ListenBrainzFormState::from_config(
                                     &app.scrobble_config,
                                 ),
                             );
                         }
-                        28 => {
+                        27 => {
                             app.refresh_listening_stats(app.stats_window);
                             app.modal = ActiveModal::ListeningStats(crate::app::StatsModalState {
                                 tab: 0,
                                 selected: 0,
                             });
                         }
-                        29 => {
+                        28 => {
                             app.modal = ActiveModal::ConnectManager(0);
                         }
-                        30 => {
+                        29 => {
                             let s = sonata_runtime::i18n::strings(app.config.language);
                             let buf = app.config.effective_connect_device_name().to_string();
                             app.modal = ActiveModal::TextInput {
                                 title: s.connect_device_name.to_string(),
-                                prompt: "Device name advertised on local network:".to_string(),
+                                prompt: s.connect_name_prompt.to_string(),
                                 buf,
                                 target: crate::app::TextInputTarget::ConnectDeviceName,
                             };
                         }
-                        31 => app.refresh_account(),
-                        32 => app.check_for_updates(),
+                        30 => app.refresh_account(),
+                        31 => app.check_for_updates(),
                         _ => {}
                     }
                 }
@@ -195,9 +193,9 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                     20 => app.step_cache_limit(false),
                     21 => app.step_downloads_limit(false),
                     24 => app.toggle_discord_rpc(),
-                    26 => app.toggle_lastfm_enabled(),
-                    27 => app.toggle_listenbrainz_enabled(),
-                    29 => app.toggle_connect(),
+                    25 => app.toggle_lastfm_enabled(),
+                    26 => app.toggle_listenbrainz_enabled(),
+                    28 => app.toggle_connect(),
                     _ => {}
                 },
                 _ => {}
@@ -287,11 +285,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                 KeyCode::Esc => {
                     app.modal = match target {
                         crate::app::TextInputTarget::DownloadsDir => ActiveModal::Settings(22),
-                        crate::app::TextInputTarget::DiscordAppId => ActiveModal::Settings(25),
                         crate::app::TextInputTarget::LocalMusicDir => {
                             ActiveModal::LocalMusicManager(0)
                         }
-                        crate::app::TextInputTarget::ConnectDeviceName => ActiveModal::Settings(30),
+                        crate::app::TextInputTarget::ConnectDeviceName => ActiveModal::Settings(29),
                     };
                 }
                 KeyCode::Backspace => {
@@ -309,11 +306,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                             app.set_downloads_dir(dir);
                             ActiveModal::Settings(22)
                         }
-                        crate::app::TextInputTarget::DiscordAppId => {
-                            let id = if val.is_empty() { None } else { Some(val) };
-                            app.set_discord_app_id(id);
-                            ActiveModal::Settings(25)
-                        }
                         crate::app::TextInputTarget::LocalMusicDir => {
                             if !val.is_empty() {
                                 app.add_local_music_dir(std::path::PathBuf::from(val));
@@ -322,7 +314,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                         }
                         crate::app::TextInputTarget::ConnectDeviceName => {
                             app.set_connect_device_name(&val);
-                            ActiveModal::Settings(30)
+                            ActiveModal::Settings(29)
                         }
                     };
                 }
@@ -343,7 +335,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                     let s = sonata_runtime::i18n::strings(app.config.language);
                     app.modal = ActiveModal::TextInput {
                         title: s.folders.to_string(),
-                        prompt: "Local music folder path:".to_string(),
+                        prompt: s.local_folder_prompt.to_string(),
                         buf: String::new(),
                         target: crate::app::TextInputTarget::LocalMusicDir,
                     };
@@ -629,9 +621,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                                 },
                             );
                         } else {
-                            app.status_line =
-                                "Personal Only Mode active: streaming tracks are disabled"
-                                    .to_string();
+                            let s = sonata_runtime::i18n::strings(app.config.language);
+                            app.status_line = s.personal_only_streaming_disabled.to_string();
                         }
                     }
                 }
@@ -642,7 +633,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         ActiveModal::LastFmConfig(form) => {
             use crate::app::LastFmField;
             match key.code {
-                KeyCode::Esc => app.modal = ActiveModal::Settings(26),
+                KeyCode::Esc => app.modal = ActiveModal::Settings(25),
                 KeyCode::Tab | KeyCode::Down => form.focused = form.focused.next(),
                 KeyCode::BackTab | KeyCode::Up => form.focused = form.focused.prev(),
                 KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
@@ -652,7 +643,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                 }
                 KeyCode::Enter => {
                     let snapshot = form.clone();
-                    app.modal = ActiveModal::Settings(26);
+                    app.modal = ActiveModal::Settings(25);
                     app.save_lastfm_form(&snapshot);
                 }
                 KeyCode::Backspace => match form.focused {
@@ -684,7 +675,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         ActiveModal::ListenBrainzConfig(form) => {
             use crate::app::ListenBrainzField;
             match key.code {
-                KeyCode::Esc => app.modal = ActiveModal::Settings(27),
+                KeyCode::Esc => app.modal = ActiveModal::Settings(26),
                 KeyCode::Tab | KeyCode::Down => form.focused = form.focused.next(),
                 KeyCode::BackTab | KeyCode::Up => form.focused = form.focused.prev(),
                 KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
@@ -694,7 +685,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                 }
                 KeyCode::Enter => {
                     let snapshot = form.clone();
-                    app.modal = ActiveModal::Settings(27);
+                    app.modal = ActiveModal::Settings(26);
                     app.save_listenbrainz_form(&snapshot);
                 }
                 KeyCode::Backspace => match form.focused {
@@ -716,9 +707,22 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             return;
         }
         ActiveModal::ConnectManager(sel) => {
+            if app.connect_pending_pair.is_some() {
+                match key.code {
+                    KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                        app.approve_connect_pair();
+                        return;
+                    }
+                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                        app.reject_connect_pair();
+                        return;
+                    }
+                    _ => {}
+                }
+            }
             let count = app.connect_paired_devices.len();
             match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => app.modal = ActiveModal::Settings(29),
+                KeyCode::Esc | KeyCode::Char('q') => app.modal = ActiveModal::Settings(28),
                 KeyCode::Down | KeyCode::Char('j') if count > 0 => *sel = (*sel + 1) % count,
                 KeyCode::Up | KeyCode::Char('k') if count > 0 => *sel = (*sel + count - 1) % count,
                 KeyCode::Char('t') | KeyCode::Char(' ') => app.toggle_connect(),
@@ -728,7 +732,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                     let buf = app.config.effective_connect_device_name().to_string();
                     app.modal = ActiveModal::TextInput {
                         title: s.connect_device_name.to_string(),
-                        prompt: "Device name advertised on local network:".to_string(),
+                        prompt: s.connect_name_prompt.to_string(),
                         buf,
                         target: crate::app::TextInputTarget::ConnectDeviceName,
                     };
@@ -748,7 +752,21 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             }
             return;
         }
-        ActiveModal::None => {}
+        ActiveModal::None => {
+            if app.connect_pending_pair.is_some() && app.focus != FocusPane::SearchInput {
+                match key.code {
+                    KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                        app.approve_connect_pair();
+                        return;
+                    }
+                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                        app.reject_connect_pair();
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
 
     if app.focus == FocusPane::SearchInput {
@@ -938,7 +956,7 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) {
         }
         MouseEventKind::Up(MouseButton::Left) => {
             if app.dragging_split.take().is_some() {
-                let _ = app.config.save();
+                app.save_config_async();
             }
             app.flush_config();
         }

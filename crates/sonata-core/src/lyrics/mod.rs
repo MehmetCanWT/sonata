@@ -71,12 +71,9 @@ fn parse_timestamp(mins: &str, secs: &str, frac: Option<&str>) -> f64 {
     let m: f64 = mins.parse().unwrap_or(0.0);
     let s: f64 = secs.parse().unwrap_or(0.0);
     let f = frac.map_or(0.0, |raw| {
-        let val: f64 = raw.parse().unwrap_or(0.0);
-        match raw.len() {
-            1 => val / 10.0,
-            2 => val / 100.0,
-            _ => val / 1000.0,
-        }
+        let clamped = &raw[..raw.len().min(6)];
+        let val: f64 = clamped.parse().unwrap_or(0.0);
+        val / 10_f64.powi(clamped.len() as i32)
     });
     m * 60.0 + s + f
 }
@@ -399,6 +396,30 @@ pub fn split_inline_background_vocals(mut lines: Vec<LyricLine>) -> Vec<LyricLin
     out
 }
 
+/// Returns `true` when synced lines carry real advancing timestamps (rejecting all-zero static dumps).
+pub fn has_advancing_timestamps(lines: &[LyricLine]) -> bool {
+    if lines.is_empty() {
+        return false;
+    }
+    let mut max_ts = 0.0_f64;
+    let mut distinct = std::collections::HashSet::new();
+    for line in lines {
+        if line.time_secs.is_finite() && line.time_secs > 0.0 {
+            max_ts = max_ts.max(line.time_secs);
+        }
+        distinct.insert((line.time_secs.max(0.0) * 100.0).round() as u64);
+        for word in &line.words {
+            if word.start_secs.is_finite() && word.start_secs > 0.0 {
+                max_ts = max_ts.max(word.start_secs);
+            }
+            if let Some(end) = word.end_secs.filter(|e| e.is_finite() && *e > 0.0) {
+                max_ts = max_ts.max(end);
+            }
+        }
+    }
+    max_ts > 0.0 && (lines.len() < 2 || distinct.len() >= 2)
+}
+
 /// Parses TTML XML, standard/Enhanced LRC (including `[offset:ms]`), or plain text lyrics.
 pub fn parse_lyrics_auto(raw: &str) -> LyricsState {
     let cleaned = raw.trim().trim_start_matches('\u{FEFF}').trim();
@@ -407,12 +428,33 @@ pub fn parse_lyrics_auto(raw: &str) -> LyricsState {
     }
     if cleaned.starts_with('<') && cleaned.contains("<tt") {
         if let Some(lines) = ttml::parse_ttml(cleaned) {
-            return LyricsState::Synced(split_inline_background_vocals(lines));
+            let split = split_inline_background_vocals(lines);
+            if has_advancing_timestamps(&split) {
+                return LyricsState::Synced(split);
+            }
+            let plain: Vec<String> = split
+                .into_iter()
+                .map(|l| l.text.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect();
+            if !plain.is_empty() {
+                return LyricsState::Plain(plain);
+            }
         }
     }
     let synced = parse_lrc(cleaned);
     if !synced.is_empty() {
-        return LyricsState::Synced(synced);
+        if has_advancing_timestamps(&synced) {
+            return LyricsState::Synced(synced);
+        }
+        let plain: Vec<String> = synced
+            .into_iter()
+            .map(|l| l.text.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect();
+        if !plain.is_empty() {
+            return LyricsState::Plain(plain);
+        }
     }
     let plain: Vec<String> = cleaned
         .lines()
@@ -427,15 +469,15 @@ pub fn parse_lyrics_auto(raw: &str) -> LyricsState {
     }
 }
 
-/// Parses standard LRC `[mm:ss.xx]` and Enhanced A2 LRC `<mm:ss.xx>` content.
+/// Parses standard LRC `[mm:ss.xx]` / `[mm:ss:xx]` and Enhanced A2 LRC `<mm:ss.xx>` content.
 pub fn parse_lrc(raw: &str) -> Vec<LyricLine> {
     static RE_LINE: OnceLock<Regex> = OnceLock::new();
     static RE_WORD_TAG: OnceLock<Regex> = OnceLock::new();
     static RE_OFFSET: OnceLock<Regex> = OnceLock::new();
     let re_line =
-        RE_LINE.get_or_init(|| Regex::new(r"\[(\d{1,3}):(\d{2})(?:\.(\d{1,3}))?\]").unwrap());
+        RE_LINE.get_or_init(|| Regex::new(r"\[(\d{1,3}):(\d{2})(?:[.:](\d+))?\]").unwrap());
     let re_word =
-        RE_WORD_TAG.get_or_init(|| Regex::new(r"<(\d{1,3}):(\d{2})(?:\.(\d{1,3}))?>").unwrap());
+        RE_WORD_TAG.get_or_init(|| Regex::new(r"<(\d{1,3}):(\d{2})(?:[.:](\d+))?>").unwrap());
     let re_offset =
         RE_OFFSET.get_or_init(|| Regex::new(r"(?i)\[offset:\s*([+-]?\d+)\s*\]").unwrap());
 
@@ -463,6 +505,7 @@ pub fn parse_lrc(raw: &str) -> Vec<LyricLine> {
         let stripped = re_line.replace_all(raw_line, "");
         let (voice, body) = strip_voice_prefix(&stripped);
         let shift_secs = offset_ms / 1000.0;
+        let base_ts = timestamps[0];
         let words: Vec<LyricWord> = parse_enhanced_words(body, re_word)
             .into_iter()
             .map(|mut w| {
@@ -477,10 +520,27 @@ pub fn parse_lrc(raw: &str) -> Vec<LyricLine> {
             .collect::<Vec<_>>()
             .join(" ");
         for ts in timestamps {
+            let delta = ts - base_ts;
+            let shifted_words = if delta.abs() < 1e-6 {
+                words.clone()
+            } else {
+                words
+                    .iter()
+                    .map(|w| {
+                        let start = (w.start_secs + delta).max(0.0);
+                        let end = w.end_secs.map(|e| (e + delta).max(start));
+                        LyricWord {
+                            start_secs: start,
+                            end_secs: end,
+                            text: w.text.clone(),
+                        }
+                    })
+                    .collect()
+            };
             lines.push(LyricLine {
                 time_secs: (ts - shift_secs).max(0.0),
                 text: clean_text.clone(),
-                words: words.clone(),
+                words: shifted_words,
                 voice,
             });
         }
@@ -548,7 +608,7 @@ fn line_end_estimate(line: &LyricLine) -> f64 {
 /// Returns the index of the active lyric line for `position_secs`.
 pub fn active_line_index(lines: &[LyricLine], position_secs: f64) -> Option<usize> {
     const LOOKAHEAD_SECS: f64 = 0.05;
-    if lines.is_empty() {
+    if lines.is_empty() || lines.iter().all(|l| l.time_secs <= 0.0) {
         return None;
     }
     let lookahead = position_secs + LOOKAHEAD_SECS;
@@ -1135,5 +1195,35 @@ mod tests {
         assert_eq!(split[3].text, "Alright now");
         assert_eq!(split[3].words.len(), 2);
         assert!((split[3].time_secs - 25.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn demotes_all_zero_lrc_to_plain_and_guards_active_index() {
+        let raw = "[00:00.00]Line one\n[00:00.00]Line two\n[00:00.00]Line three\n";
+        match parse_lyrics_auto(raw) {
+            LyricsState::Plain(lines) => {
+                assert_eq!(lines, vec!["Line one", "Line two", "Line three"]);
+            }
+            other => panic!("expected Plain fallback for all-zero LRC, got {other:?}"),
+        }
+        let parsed = parse_lrc(raw);
+        assert!(!has_advancing_timestamps(&parsed));
+        assert_eq!(active_line_index(&parsed, 0.5), None);
+        assert_eq!(active_line_index(&parsed, 120.0), None);
+    }
+
+    #[test]
+    fn parses_colon_centiseconds_and_shifts_multi_timestamp_enhanced_words() {
+        let raw = "[00:10:50][01:10:50]<00:10:50>Hello <00:11:25>world\n";
+        let lines = parse_lrc(raw);
+        assert_eq!(lines.len(), 2);
+        assert!((lines[0].time_secs - 10.5).abs() < 0.01);
+        assert!((lines[1].time_secs - 70.5).abs() < 0.01);
+        assert_eq!(lines[0].words.len(), 2);
+        assert_eq!(lines[1].words.len(), 2);
+        assert!((lines[0].words[0].start_secs - 10.5).abs() < 0.01);
+        assert!((lines[0].words[1].start_secs - 11.25).abs() < 0.01);
+        assert!((lines[1].words[0].start_secs - 70.5).abs() < 0.01);
+        assert!((lines[1].words[1].start_secs - 71.25).abs() < 0.01);
     }
 }

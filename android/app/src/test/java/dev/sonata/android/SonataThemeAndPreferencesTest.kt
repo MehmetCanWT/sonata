@@ -11,19 +11,10 @@ import dev.sonata.android.data.SonataSettingsState
 import dev.sonata.android.data.ThemeMode
 import dev.sonata.android.ui.theme.BasicDarkTokens
 import dev.sonata.android.ui.theme.BasicLightTokens
-import dev.sonata.android.ui.theme.MoonflowerAmoledTokens
-import dev.sonata.android.ui.theme.MoonflowerDarkTokens
-import dev.sonata.android.ui.theme.MoonflowerDesignMetrics
-import dev.sonata.android.ui.theme.MoonflowerLightTokens
-import dev.sonata.android.ui.theme.VioletAmoledTokens
-import dev.sonata.android.ui.theme.VioletDarkTokens
-import dev.sonata.android.ui.theme.VioletDesignMetrics
-import dev.sonata.android.ui.theme.VioletLightTokens
 import dev.sonata.android.ui.theme.lunariaColorScheme
 import dev.sonata.android.ui.theme.lunariaTokens
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -44,35 +35,34 @@ class SonataThemeAndPreferencesTest {
     }
 
     @Test
-    fun explicitThemeModesOverrideSystemAppearanceAndDesignFamily() {
-        val violetLight = SonataSettingsState(designTheme = DesignTheme.MOONFLOWER, themeMode = ThemeMode.VIOLET_LIGHT)
-        assertEquals(DesignTheme.VIOLET, violetLight.resolvedDesignTheme())
-        assertFalse(violetLight.isDarkActive(systemDark = true))
+    fun explicitThemeModesControlLightAndDarkAppearanceInBasicTheme() {
+        val light = SonataSettingsState(themeMode = ThemeMode.LIGHT)
+        assertEquals(DesignTheme.BASIC, light.resolvedDesignTheme())
+        assertFalse(light.isDarkActive(systemDark = true))
 
-        val violetDark = SonataSettingsState(designTheme = DesignTheme.MOONFLOWER, themeMode = ThemeMode.VIOLET_DARK)
-        assertEquals(DesignTheme.VIOLET, violetDark.resolvedDesignTheme())
-        assertTrue(violetDark.isDarkActive(systemDark = false))
+        val dark = SonataSettingsState(themeMode = ThemeMode.DARK)
+        assertEquals(DesignTheme.BASIC, dark.resolvedDesignTheme())
+        assertTrue(dark.isDarkActive(systemDark = false))
 
-        val moonflowerLight = SonataSettingsState(designTheme = DesignTheme.VIOLET, themeMode = ThemeMode.MOONFLOWER_LIGHT)
-        assertEquals(DesignTheme.MOONFLOWER, moonflowerLight.resolvedDesignTheme())
-        assertFalse(moonflowerLight.isDarkActive(systemDark = true))
-
-        val moonflowerDark = SonataSettingsState(designTheme = DesignTheme.VIOLET, themeMode = ThemeMode.MOONFLOWER_DARK)
-        assertEquals(DesignTheme.MOONFLOWER, moonflowerDark.resolvedDesignTheme())
-        assertTrue(moonflowerDark.isDarkActive(systemDark = false))
-
-        val amoledMoonflower = SonataSettingsState(designTheme = DesignTheme.MOONFLOWER, themeMode = ThemeMode.AMOLED)
-        assertEquals(DesignTheme.MOONFLOWER, amoledMoonflower.resolvedDesignTheme())
-        assertTrue(amoledMoonflower.isDarkActive(systemDark = false))
+        val system = SonataSettingsState(themeMode = ThemeMode.SYSTEM)
+        assertEquals(DesignTheme.BASIC, system.resolvedDesignTheme())
+        assertTrue(system.isDarkActive(systemDark = true))
+        assertFalse(system.isDarkActive(systemDark = false))
     }
 
     @Test
-    fun legacyThemeModeStringsMigrateCleanly() {
-        assertEquals(ThemeMode.MOONFLOWER_DARK, SonataPreferences.parseThemeMode("DARK", ThemeMode.SYSTEM))
-        assertEquals(ThemeMode.MOONFLOWER_LIGHT, SonataPreferences.parseThemeMode(" light ", ThemeMode.SYSTEM))
-        assertEquals(ThemeMode.VIOLET_DARK, SonataPreferences.parseThemeMode("ELECTRIC_LAVENDER", ThemeMode.SYSTEM))
-        assertEquals(ThemeMode.VIOLET_LIGHT, SonataPreferences.parseThemeMode("IMPERIAL_VIOLET", ThemeMode.SYSTEM))
-        assertEquals(ThemeMode.AMOLED, SonataPreferences.parseThemeMode("AMOLED", ThemeMode.SYSTEM))
+    fun legacyThemeModeStringsMigrateCleanlyToBasicLightOrDark() {
+        assertEquals(ThemeMode.DARK, SonataPreferences.parseThemeMode("DARK", ThemeMode.SYSTEM))
+        assertEquals(ThemeMode.LIGHT, SonataPreferences.parseThemeMode(" light ", ThemeMode.SYSTEM))
+        assertEquals(ThemeMode.DARK, SonataPreferences.parseThemeMode("ELECTRIC_LAVENDER", ThemeMode.SYSTEM))
+        assertEquals(ThemeMode.LIGHT, SonataPreferences.parseThemeMode("IMPERIAL_VIOLET", ThemeMode.SYSTEM))
+        assertEquals(ThemeMode.DARK, SonataPreferences.parseThemeMode("VIOLET_DARK", ThemeMode.SYSTEM))
+        assertEquals(ThemeMode.LIGHT, SonataPreferences.parseThemeMode("VIOLET_LIGHT", ThemeMode.SYSTEM))
+        assertEquals(ThemeMode.DARK, SonataPreferences.parseThemeMode("MOONFLOWER_DARK", ThemeMode.SYSTEM))
+        assertEquals(ThemeMode.LIGHT, SonataPreferences.parseThemeMode("MOONFLOWER_LIGHT", ThemeMode.SYSTEM))
+        assertEquals(ThemeMode.DARK, SonataPreferences.parseThemeMode("BASIC_DARK", ThemeMode.SYSTEM))
+        assertEquals(ThemeMode.LIGHT, SonataPreferences.parseThemeMode("BASIC_LIGHT", ThemeMode.SYSTEM))
+        assertEquals(ThemeMode.DARK, SonataPreferences.parseThemeMode("AMOLED", ThemeMode.SYSTEM))
         assertEquals(ThemeMode.SYSTEM, SonataPreferences.parseThemeMode("unknown_value", ThemeMode.SYSTEM))
         assertEquals(ThemeMode.SYSTEM, SonataPreferences.parseThemeMode(null, ThemeMode.SYSTEM))
     }
@@ -141,40 +131,17 @@ class SonataThemeAndPreferencesTest {
     }
 
     @Test
-    fun violetAndMoonflowerThemesRemainStructurallyDistinctWithNeutralLiquidGlass() {
-        assertEquals(VioletLightTokens, lunariaTokens(darkTheme = false, amoled = false, designTheme = DesignTheme.VIOLET))
-        assertEquals(VioletDarkTokens, lunariaTokens(darkTheme = true, amoled = false, designTheme = DesignTheme.VIOLET))
-        assertEquals(VioletAmoledTokens, lunariaTokens(darkTheme = true, amoled = true, designTheme = DesignTheme.VIOLET))
+    fun basicThemeLightAndDarkUseMonochromeSurfacesAndNeutralLiquidGlass() {
+        assertEquals(BasicLightTokens, lunariaTokens(darkTheme = false, amoled = false, designTheme = DesignTheme.BASIC))
+        assertEquals(BasicDarkTokens, lunariaTokens(darkTheme = true, amoled = false, designTheme = DesignTheme.BASIC))
+        assertEquals(BasicDarkTokens, lunariaTokens(darkTheme = true, amoled = true, designTheme = DesignTheme.BASIC))
+        assertEquals(Color.Black, BasicDarkTokens.eclipseBase)
+        assertEquals(Color.White, BasicLightTokens.eclipseBase)
+        assertEquals(Color.Black, lunariaColorScheme(darkTheme = true, amoled = false, designTheme = DesignTheme.BASIC).background)
+        assertEquals(Color.White, lunariaColorScheme(darkTheme = false, amoled = false, designTheme = DesignTheme.BASIC).background)
 
-        assertEquals(MoonflowerLightTokens, lunariaTokens(darkTheme = false, amoled = false, designTheme = DesignTheme.MOONFLOWER))
-        assertEquals(MoonflowerDarkTokens, lunariaTokens(darkTheme = true, amoled = false, designTheme = DesignTheme.MOONFLOWER))
-        assertEquals(MoonflowerAmoledTokens, lunariaTokens(darkTheme = true, amoled = true, designTheme = DesignTheme.MOONFLOWER))
-
-        // Structural layout differences between Violet and Moonflower.
-        assertNotEquals(VioletLightTokens.eclipseBase, MoonflowerLightTokens.eclipseBase)
-        assertNotEquals(VioletLightTokens.petalLavender, MoonflowerLightTokens.petalLavender)
-        assertNotEquals(VioletDesignMetrics.cardCornerRadius, MoonflowerDesignMetrics.cardCornerRadius)
-        assertTrue(VioletLightTokens.heroFullBleed)
-        assertFalse(MoonflowerLightTokens.heroFullBleed)
-        assertFalse(VioletLightTokens.showTrackDividers)
-        assertTrue(MoonflowerLightTokens.showTrackDividers)
-
-        // AMOLED variants preserve true black base surfaces.
-        assertEquals(Color.Black, VioletAmoledTokens.eclipseBase)
-        assertEquals(Color.Black, MoonflowerAmoledTokens.eclipseBase)
-        assertEquals(Color.Black, lunariaColorScheme(darkTheme = true, amoled = true, designTheme = DesignTheme.VIOLET).background)
-        assertEquals(Color.Black, lunariaColorScheme(darkTheme = true, amoled = true, designTheme = DesignTheme.MOONFLOWER).background)
-
-        // Crystal-clear neutral Liquid Glass (zero pink/purple tint) across all themes & modes.
-        val allGlassTokens = listOf(
-            VioletLightTokens,
-            VioletDarkTokens,
-            MoonflowerLightTokens,
-            MoonflowerDarkTokens,
-            BasicLightTokens,
-            BasicDarkTokens,
-        )
-        for (token in allGlassTokens) {
+        // Crystal-clear neutral Liquid Glass (zero pink/purple tint) in both Light & Dark.
+        for (token in listOf(BasicLightTokens, BasicDarkTokens)) {
             assertEquals("Liquid Glass tint must be neutral (R == G)", token.glassTint.red, token.glassTint.green, 0.001f)
             assertEquals("Liquid Glass tint must be neutral (G == B)", token.glassTint.green, token.glassTint.blue, 0.001f)
             assertEquals("Glass pill indicator must be pure white", 1f, token.pillIndicatorColor.red, 0.001f)
@@ -220,11 +187,11 @@ class SonataThemeAndPreferencesTest {
         assertEquals(Color.Black, BasicDarkTokens.eclipseBase)
         assertEquals(Color.White, BasicLightTokens.eclipseBase)
 
-        val basicDark = SonataSettingsState(designTheme = DesignTheme.VIOLET, themeMode = ThemeMode.BASIC_DARK)
+        val basicDark = SonataSettingsState(themeMode = ThemeMode.DARK)
         assertEquals(DesignTheme.BASIC, basicDark.resolvedDesignTheme())
         assertTrue(basicDark.isDarkActive(systemDark = false))
 
-        val basicLight = SonataSettingsState(designTheme = DesignTheme.VIOLET, themeMode = ThemeMode.BASIC_LIGHT)
+        val basicLight = SonataSettingsState(themeMode = ThemeMode.LIGHT)
         assertEquals(DesignTheme.BASIC, basicLight.resolvedDesignTheme())
         assertFalse(basicLight.isDarkActive(systemDark = true))
 
@@ -385,5 +352,31 @@ class SonataThemeAndPreferencesTest {
         val dlBackup = SonataPreferences.formatBackupJson(withVideoDownloadPrefs, emptyMap(), 1_700_000_000_000L)
         assertTrue(dlBackup.contains("\"download_videos_if_available\": true"))
         assertTrue(dlBackup.contains("\"video_download_quality\": \"P1080\""))
+    }
+
+    @Test
+    fun dismissedHistorySuppressionMatchesByIdAndCanonicalKey() {
+        val removedTrack = uniffi.sonata_android.AndroidTrack(
+            id = "vid_removed",
+            title = "Midnight City (feat. Guest) [Remastered]",
+            artist = "M83",
+            album = "Hurry Up",
+            durationSecs = 243uL,
+            thumbnailUrl = null,
+            liked = false,
+            albumId = null,
+            isExplicit = false,
+        )
+        val sameKeyDifferentId = removedTrack.copy(id = "vid_other_upload", title = "Midnight City")
+        val keptTrack = removedTrack.copy(id = "vid_kept", title = "Wait", artist = "M83")
+
+        val key = SonataViewModel.canonicalTrackKey(removedTrack)
+        val pairs = setOf(removedTrack.id to key)
+        val ids = setOf(removedTrack.id)
+        val keys = setOf(key)
+
+        assertTrue(dev.sonata.android.viewmodel.isDismissedHistoryTrack(removedTrack, pairs, ids, keys))
+        assertTrue(dev.sonata.android.viewmodel.isDismissedHistoryTrack(sameKeyDifferentId, pairs, ids, keys))
+        assertFalse(dev.sonata.android.viewmodel.isDismissedHistoryTrack(keptTrack, pairs, ids, keys))
     }
 }

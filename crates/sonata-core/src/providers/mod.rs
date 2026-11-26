@@ -31,16 +31,25 @@ impl ProviderSource {
     }
 }
 
+fn default_provider_source() -> ProviderSource {
+    ProviderSource::YouTubeMusic
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Track {
     pub id: String,
     pub title: String,
     pub artist: String,
+    #[serde(default)]
     pub album: String,
+    #[serde(default)]
     pub duration_secs: Option<u64>,
+    #[serde(default)]
     pub thumbnail_url: Option<String>,
+    #[serde(default = "default_provider_source")]
     pub source: ProviderSource,
     /// Optional resolved audio quality label (for example, "OPUS 137kbps · HQ").
+    #[serde(default)]
     pub audio_badge: Option<String>,
     /// Playlist item identifier required by YouTube Music to remove a song from a playlist.
     #[serde(default)]

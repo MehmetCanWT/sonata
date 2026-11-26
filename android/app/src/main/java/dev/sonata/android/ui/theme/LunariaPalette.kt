@@ -1,9 +1,7 @@
 /*
- * Shared Theme Contract, Lunaria Color Constants, & App Typography for Sonata Android.
+ * Shared Theme Contract, Neutral Monochrome Color Constants, & App Typography for Sonata Android.
  *
- * Theme implementations live in dedicated files:
- * - VioletTheme.kt (Light, Dark, AMOLED tokens, color schemes & Layer-Blur canvas)
- * - MoonflowerTheme.kt (Light, Dark, AMOLED tokens, color schemes & silk petal canvas)
+ * Theme implementation lives in BasicTheme.kt (Light & Dark Basic monochrome tokens).
  */
 package dev.sonata.android.ui.theme
 
@@ -26,39 +24,38 @@ import androidx.compose.ui.unit.sp
 import dev.sonata.android.R
 import dev.sonata.android.data.DesignTheme
 
-/** Core shared botanical & moonlight color constants referenced across components. */
+/** Core monochrome color constants referenced across shared components. */
 object LunariaColors {
-    val MoonGlow = Color(0xFFEDE8F8)
-    val SilverPetal = Color(0xFFC9C2DE)
-    val PetalLavender = Color(0xFFB79CED)
-    val LunarMist = Color(0xFF8F96D9)
+    val MoonGlow = Color.White
+    val SilverPetal = BasicPalette.DarkOnSurfaceVariant
+    val PetalLavender = Color.White
+    val LunarMist = BasicPalette.DarkOnSurfaceVariant
 
-    val EclipseBase = Color(0xFF0A0910)
-    val EclipseSurface = Color(0xFF14121E)
-    val EclipseCard = Color(0xFF1D1A2B)
+    val EclipseBase = BasicPalette.DarkBackground
+    val EclipseSurface = BasicPalette.DarkSurface
+    val EclipseCard = BasicPalette.DarkSurfaceVariant
 
-    val AccountGradientTop = Color(0xFF1A162B)
-    val AccountGradientBottom = Color(0xFF0B0A12)
+    val AccountGradientTop = BasicPalette.DarkSurfaceVariant
+    val AccountGradientBottom = BasicPalette.DarkBackground
 
-    val SettingsBg = Color(0xFF000000)
-    val SettingsCard = Color(0xFF161618)
-    val SettingsDivider = Color(0xFF262629)
+    val SettingsBg = BasicPalette.DarkBackground
+    val SettingsCard = BasicPalette.DarkSurfaceVariant
+    val SettingsDivider = BasicPalette.DarkOutline
 
-    val PearlBase = Color(0xFFFFFFFF)
-    val PearlSurface = Color(0xFFF2F2F7)
-    val PearlCard = Color(0xFFEBEBF0)
-    val PearlInk = Color(0xFF1C1C1E)
-    val PearlMutedInk = Color(0xFF6C6C70)
-    val PetalVioletDeep = Color(0xFF6B4EC4)
+    val PearlBase = BasicPalette.LightBackground
+    val PearlSurface = BasicPalette.LightSurface
+    val PearlCard = BasicPalette.LightSurfaceVariant
+    val PearlInk = Color.Black
+    val PearlMutedInk = BasicPalette.LightOnSurfaceVariant
+    val PetalVioletDeep = BasicPalette.AccentRed
 
     val AccentGradient: Brush = Brush.linearGradient(
-        colors = listOf(PetalLavender, LunarMist),
+        colors = listOf(Color.White, Color(0xFFD1D1D6)),
     )
 }
 
 /**
- * Resolved palette & structural design tokens for the active theme variant
- * (Violet or Moonflower across Light, Dark, and AMOLED modes).
+ * Resolved palette & structural design tokens for Basic Light / Dark mode.
  */
 @Immutable
 data class LunariaThemeTokens(
@@ -95,76 +92,49 @@ data class LunariaThemeTokens(
     val glassShadowColor: Color = Color.Black.copy(alpha = if (isDark) 0.40f else 0.14f),
     val pillIndicatorColor: Color = Color.White.copy(alpha = if (isDark) 0.14f else 0.50f),
     val pillIndicatorRimColor: Color = Color.White.copy(alpha = if (isDark) 0.20f else 0.65f),
-    val heroCardScrimColor: Color = Color(0xFF4B356B),
-    val cardCornerRadius: Dp = 20.dp,
-    val miniPlayerHeight: Dp = 54.dp,
+    val heroCardScrimColor: Color = Color.Black,
+    val cardCornerRadius: Dp = 12.dp,
+    val miniPlayerHeight: Dp = 56.dp,
     val miniPlayerShape: RoundedCornerShape = RoundedCornerShape(percent = 50),
     val navBarShape: RoundedCornerShape = RoundedCornerShape(percent = 50),
     val tabPillShape: RoundedCornerShape = RoundedCornerShape(percent = 50),
-    val heroFullBleed: Boolean = false,
+    val heroFullBleed: Boolean = true,
     val openLatestReleaseStack: Boolean = false,
     val showTrackDividers: Boolean = true,
 ) {
-    val isViolet: Boolean get() = designTheme == DesignTheme.VIOLET
-    val isMoonflower: Boolean get() = designTheme == DesignTheme.MOONFLOWER
-    val isBasic: Boolean get() = designTheme == DesignTheme.BASIC
+    val isViolet: Boolean get() = false
+    val isMoonflower: Boolean get() = false
+    val isBasic: Boolean get() = true
     val cardShape: Shape get() = RoundedCornerShape(cardCornerRadius)
 }
 
 /** CompositionLocal supplying the active [LunariaThemeTokens]. */
 val LocalLunariaColors = staticCompositionLocalOf { BasicDarkTokens }
 
-/** Draws the active theme's atmospheric canvas backdrop (Violet orbs, Moonflower silk petals, or clean solid Basic). */
+/** Basic theme uses a clean solid canvas backdrop without colored atmospheric washes. */
+@Suppress("UNUSED_PARAMETER")
 fun DrawScope.drawThemeAtmosphericBackdrop(
     designTheme: DesignTheme,
     isDark: Boolean,
     accent: Color,
     mist: Color,
-) {
-    when (designTheme) {
-        DesignTheme.VIOLET -> drawVioletAtmosphericBackdrop(isDark = isDark, accent = accent, mist = mist)
-        DesignTheme.MOONFLOWER -> drawMoonflowerAtmosphericBackdrop(isDark = isDark, accent = accent, mist = mist)
-        DesignTheme.BASIC -> Unit
-    }
-}
+) = Unit
 
-/** Returns the Material 3 [ColorScheme] for the requested theme mode. */
+/** Returns the Material 3 [ColorScheme] for the requested Basic light/dark mode. */
+@Suppress("UNUSED_PARAMETER")
 fun lunariaColorScheme(
     darkTheme: Boolean,
     amoled: Boolean = false,
     designTheme: DesignTheme = DesignTheme.BASIC,
-): ColorScheme = when (designTheme) {
-    DesignTheme.VIOLET -> when {
-        amoled -> VioletAmoledColorScheme
-        darkTheme -> VioletDarkColorScheme
-        else -> VioletLightColorScheme
-    }
-    DesignTheme.MOONFLOWER -> when {
-        amoled -> MoonflowerAmoledColorScheme
-        darkTheme -> MoonflowerDarkColorScheme
-        else -> MoonflowerLightColorScheme
-    }
-    DesignTheme.BASIC -> if (darkTheme || amoled) BasicDarkColorScheme else BasicLightColorScheme
-}
+): ColorScheme = if (darkTheme || amoled) BasicDarkColorScheme else BasicLightColorScheme
 
-/** Returns the [LunariaThemeTokens] for the requested theme mode. */
+/** Returns the [LunariaThemeTokens] for the requested Basic light/dark mode. */
+@Suppress("UNUSED_PARAMETER")
 fun lunariaTokens(
     darkTheme: Boolean,
     amoled: Boolean = false,
     designTheme: DesignTheme = DesignTheme.BASIC,
-): LunariaThemeTokens = when (designTheme) {
-    DesignTheme.VIOLET -> when {
-        amoled -> VioletAmoledTokens
-        darkTheme -> VioletDarkTokens
-        else -> VioletLightTokens
-    }
-    DesignTheme.MOONFLOWER -> when {
-        amoled -> MoonflowerAmoledTokens
-        darkTheme -> MoonflowerDarkTokens
-        else -> MoonflowerLightTokens
-    }
-    DesignTheme.BASIC -> if (darkTheme || amoled) BasicDarkTokens else BasicLightTokens
-}
+): LunariaThemeTokens = if (darkTheme || amoled) BasicDarkTokens else BasicLightTokens
 
 // =============================================================================
 // App-Wide Open-Source Font Family (Plus Jakarta Sans, SIL OFL 1.1)

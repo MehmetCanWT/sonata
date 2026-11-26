@@ -339,6 +339,73 @@ async fn emits_measured_audio_quality_for_live_and_local_flac_streams() {
 }
 
 #[tokio::test]
+async fn stabilizes_vbr_audio_bitrate_without_badge_flicker() {
+    let driver = Arc::new(RecordingDriver::default());
+    let source = Arc::new(StaticSource {
+        stream: ResolvedStream {
+            url: "https://cdn.example.com/audio.m4a".to_string(),
+            badge: "AAC 320kbps · JioSaavn".to_string(),
+            headers: Vec::new(),
+        },
+    });
+    let (mpv_tx, mpv_rx) = mpsc::channel(32);
+    let mut session = PlaybackSession::spawn(
+        fast_test_config(),
+        Arc::clone(&driver) as Arc<dyn PlaybackAudioDriver>,
+        source,
+        mpv_rx,
+    );
+
+    session
+        .handle
+        .send(SessionCommand::PlayQueue {
+            tracks: vec![make_track("vbr-1", 180)],
+            start_index: 0,
+            push_history: false,
+        })
+        .await
+        .expect("play queue");
+
+    recv_event_matching(&mut session.events, |e| {
+        matches!(e, SessionEvent::StreamLoaded { .. })
+    })
+    .await;
+
+    mpv_tx.send(MpvEvent::PlaybackStarted).await.unwrap();
+    mpv_tx
+        .send(MpvEvent::AudioCodec(Some("aac".to_string())))
+        .await
+        .unwrap();
+
+    for bps in [321_000_u64, 314_000, 328_000, 309_000] {
+        mpv_tx
+            .send(MpvEvent::AudioBitrate(Some(bps)))
+            .await
+            .unwrap();
+    }
+
+    recv_event_matching(&mut session.events, |e| {
+        matches!(
+            e,
+            SessionEvent::AudioQualityUpdated { badge, bitrate_kbps: Some(320), .. }
+                if badge == "AAC · 320 kbps"
+        )
+    })
+    .await;
+
+    // Drain briefly to verify no 321/314/328/309 kbps jitter badges were emitted.
+    while let Ok(Some(ev)) =
+        tokio::time::timeout(Duration::from_millis(60), session.events.recv()).await
+    {
+        if let SessionEvent::AudioQualityUpdated { badge, .. } = ev {
+            assert_eq!(badge, "AAC · 320 kbps");
+        }
+    }
+
+    session.handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn handles_speed_skip_silence_and_video_mode_switch() {
     let driver = Arc::new(RecordingDriver::default());
     let source = Arc::new(StaticSource {
@@ -1146,4 +1213,48 @@ async fn crossfade_exit_restores_volume_on_backward_seek_and_next_track_removal(
     assert_eq!(vol_after_remove, Some(80));
 
     session.handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn full_event_channel_does_not_stall_session_actor() {
+    let driver = Arc::new(RecordingDriver::default());
+    let source = Arc::new(StaticSource {
+        stream: ResolvedStream {
+            url: "https://example.com/audio.webm".to_string(),
+            badge: "OPUS 256kbps".to_string(),
+            headers: Vec::new(),
+        },
+    });
+    let (mpv_tx, mpv_rx) = mpsc::channel(32);
+    let session = PlaybackSession::spawn(
+        fast_test_config(),
+        Arc::clone(&driver) as Arc<dyn PlaybackAudioDriver>,
+        source,
+        mpv_rx,
+    );
+
+    session
+        .handle
+        .send(SessionCommand::PlayQueue {
+            tracks: vec![make_track("stall-1", 300)],
+            start_index: 0,
+            push_history: false,
+        })
+        .await
+        .unwrap();
+    mpv_tx.send(MpvEvent::PlaybackStarted).await.unwrap();
+
+    // Intentionally never drain `session.events` while overflowing SESSION_EVENT_CAPACITY (128).
+    for i in 0..160u32 {
+        session
+            .handle
+            .send(SessionCommand::SeekAbsolute(f64::from(i)))
+            .await
+            .unwrap();
+    }
+
+    let report = tokio::time::timeout(Duration::from_secs(2), session.handle.shutdown())
+        .await
+        .expect("session actor must shut down without stalling on full event channel");
+    assert!(report.tasks_joined_cleanly);
 }

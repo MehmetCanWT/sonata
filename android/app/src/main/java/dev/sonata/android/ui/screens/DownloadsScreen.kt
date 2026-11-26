@@ -144,7 +144,7 @@ fun DownloadsManagerSheet(
                         ) {
                             val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
                             DownloadToggleChip(
-                                label = if (wifiOnly) "Wi-Fi: ${strings.done}" else "Wi-Fi: ${strings.off}",
+                                label = strings.wifiOnlyChip(wifiOnly),
                                 active = wifiOnly,
                                 onClick = onToggleWifiOnly,
                                 modifier = Modifier.weight(1f),
@@ -205,7 +205,7 @@ fun DownloadsManagerSheet(
             if (activeList.isNotEmpty()) {
                 item(key = "dl_active_header") {
                     Text(
-                        text = "ACTIVE DOWNLOADS (${activeList.size})",
+                        text = dev.sonata.android.ui.i18n.LocalSonataStrings.current.activeDownloadsHeader(activeList.size),
                         style = MaterialTheme.typography.labelSmall.copy(
                             letterSpacing = 0.8.sp,
                             fontWeight = FontWeight.Bold,
@@ -215,6 +215,14 @@ fun DownloadsManagerSheet(
                 }
 
                 items(activeList, key = { "active_${it.videoId}" }) { item ->
+                    val dlStrings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
+                    val localizedStage = when (item.status) {
+                        "Starting" -> dlStrings.downloadStageStarting
+                        "Downloading" -> dlStrings.downloadStageDownloading
+                        "Downloading video" -> dlStrings.downloadStageDownloadingVideo
+                        "Saving" -> dlStrings.downloadStageSaving
+                        else -> item.status
+                    }
                     SonataGlassCard(
                         modifier = Modifier.fillMaxWidth(),
                         shape = itemShape,
@@ -238,7 +246,7 @@ fun DownloadsManagerSheet(
                                         overflow = TextOverflow.Ellipsis,
                                     )
                                     Text(
-                                        text = "${item.artist} · ${item.status}",
+                                        text = "${item.artist} · $localizedStage",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = themeTokens.onSurfaceSecondary,
                                         maxLines = 1,
@@ -255,7 +263,7 @@ fun DownloadsManagerSheet(
                                 ) {
                                     Icon(
                                         imageVector = SonataIcons.Close,
-                                        contentDescription = "Cancel download",
+                                        contentDescription = dlStrings.cancelDownload,
                                         tint = themeTokens.onSurfacePrimary,
                                         modifier = Modifier.size(14.dp),
                                     )
@@ -394,7 +402,7 @@ fun DownloadsManagerSheet(
                         ) {
                             Icon(
                                 imageVector = SonataIcons.Close,
-                                contentDescription = "Delete download",
+                                contentDescription = dev.sonata.android.ui.i18n.LocalSonataStrings.current.deleteDownload,
                                 tint = themeTokens.onSurfacePrimary.copy(alpha = 0.72f),
                                 modifier = Modifier.size(14.dp),
                             )

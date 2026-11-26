@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -19,7 +19,8 @@ env:
   GH_TOKEN: ${{ github.token }}
   GH_REPO: ${{ github.repository }}
   NDK_VERSION: "27.2.12479018"
-  APPIMAGETOOL_VERSION: "continuous"
+  APPIMAGETOOL_VERSION: "1.9.1"
+  APPIMAGETOOL_SHA256: "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
 
 jobs:
   check:
@@ -34,7 +35,7 @@ jobs:
       any_build: ${{ steps.ver.outputs.any_build }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Compare source versions against GitHub Release assets
         id: ver
@@ -90,48 +91,69 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Cache and install apt packages
-        uses: awalsh128/cache-apt-pkgs-action@v1
+        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1
         with:
           packages: >-
             libasound2-dev
+            libayatana-appindicator3-dev
             libdbus-1-dev
             libegl1-mesa-dev
             libfontconfig1-dev
+            libgtk-3-dev
+            librsvg2-bin
+            librsvg2-dev
             libwayland-dev
+            libwebkit2gtk-4.1-dev
             libxcb1-dev
             libxkbcommon-dev
             libxkbcommon-x11-dev
-            librsvg2-bin
             pkg-config
             file
+            rpm
             zsync
-          version: 1.0
+          version: 1.2
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: desktop-ui/package-lock.json
+
+      - name: Build desktop-ui frontend
+        working-directory: desktop-ui
+        run: |
+          npm ci
+          npm run build
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
 
       - name: Rust cache (desktop)
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: "desktop-linux-x86_64"
 
       - name: Cache appimagetool
         id: cache-appimagetool
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.cache/appimagetool
-          key: appimagetool-x86_64-${{ env.APPIMAGETOOL_VERSION }}
+          key: appimagetool-x86_64-${{ env.APPIMAGETOOL_VERSION }}-${{ env.APPIMAGETOOL_SHA256 }}
 
-      - name: Download appimagetool on cache miss
-        if: steps.cache-appimagetool.outputs.cache-hit != 'true'
+      - name: Download and verify appimagetool
         run: |
-          mkdir -p ~/.cache/appimagetool
-          curl -fsSL -o ~/.cache/appimagetool/appimagetool-x86_64.AppImage \
-            "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
-          chmod +x ~/.cache/appimagetool/appimagetool-x86_64.AppImage
+          set -euo pipefail
+          TOOL="${HOME}/.cache/appimagetool/appimagetool-x86_64.AppImage"
+          mkdir -p "${HOME}/.cache/appimagetool"
+          if [[ ! -f "${TOOL}" ]] || ! echo "${APPIMAGETOOL_SHA256}  ${TOOL}" | sha256sum -c - >/dev/null 2>&1; then
+            curl -fsSL --proto '=https' --tlsv1.2 -o "${TOOL}" \
+              "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
+          fi
+          echo "${APPIMAGETOOL_SHA256}  ${TOOL}" | sha256sum -c -
+          chmod +x "${TOOL}"
 
       - name: Build release binaries
         run: cargo build --release --locked -p sonata-desktop -p sonata-tui
@@ -208,7 +230,8 @@ jobs:
           cp assets/sonata-logo.svg Sonata.AppDir/usr/share/icons/hicolor/scalable/apps/sonata.svg
 
           OUT="${APP_NAME}-v${DV}-x86_64.AppImage"
-          UPDATE_INFO="gh-releases-zsync|${GITHUB_REPOSITORY_OWNER}|sonata|latest|${APP_NAME}-*-x86_64.AppImage.zsync"
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+          UPDATE_INFO="gh-releases-zsync|${GITHUB_REPOSITORY_OWNER}|${REPO_NAME}|latest|${APP_NAME}-*-x86_64.AppImage.zsync"
           ARCH=x86_64 ~/.cache/appimagetool/appimagetool-x86_64.AppImage --appimage-extract-and-run \
             -u "${UPDATE_INFO}" Sonata.AppDir "dist/${OUT}"
           chmod +x "dist/${OUT}"
@@ -235,28 +258,27 @@ jobs:
           Priority: optional
           Architecture: amd64
           Maintainer: MehmetCanWT
-          Depends: mpv, ffmpeg, libwayland-client0, libvulkan1, libxkbcommon0, libxkbcommon-x11-0, libxcb1, libfontconfig1, libasound2t64 | libasound2, libdbus-1-3
+          Depends: mpv, ffmpeg, libwebkit2gtk-4.1-0, libgtk-3-0, libayatana-appindicator3-1 | libappindicator3-1, libasound2t64 | libasound2, libdbus-1-3
           Recommends: yt-dlp, nodejs, xdg-utils
-          Description: Native GPUI desktop & terminal music player for YouTube Music and Spotify
+          Description: Cross-platform Tauri desktop & terminal music player for YouTube Music and Spotify
           EOF
           dpkg-deb --build "${DEB_ROOT}" "dist/sonata-v${DV}-amd64.deb"
 
-          # Package Fedora/RHEL/openSUSE .rpm (when rpmbuild is available)
-          if command -v rpmbuild >/dev/null 2>&1 || sudo apt-get install -y rpm >/dev/null 2>&1; then
-            RPM_TOP="${PWD}/rpmbuild"
-            mkdir -p "${RPM_TOP}"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-            cat <<EOF > "${RPM_TOP}/SPECS/sonata.spec"
+          # Package Fedora/RHEL/openSUSE .rpm
+          RPM_TOP="${PWD}/rpmbuild"
+          mkdir -p "${RPM_TOP}"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          cat <<EOF > "${RPM_TOP}/SPECS/sonata.spec"
           Name:           sonata
           Version:        ${DV}
           Release:        1
-          Summary:        Native GPUI desktop & terminal music player for YouTube Music and Spotify
+          Summary:        Cross-platform Tauri desktop & terminal music player for YouTube Music and Spotify
           License:        MIT
           URL:            https://github.com/MehmetCanWT/sonata
-          Requires:       mpv, libwayland-client, vulkan-loader, libxkbcommon, libxkbcommon-x11, libxcb, fontconfig, alsa-lib, dbus-libs
+          Requires:       mpv, webkit2gtk4.1, gtk3, alsa-lib, dbus-libs
           Recommends:     ffmpeg-free, yt-dlp, nodejs, xdg-utils
 
           %description
-          Native Rust desktop and terminal music player for YouTube Music and Spotify.
+          Cross-platform Rust/Tauri desktop and terminal music player for YouTube Music and Spotify.
 
           %install
           install -Dm755 ${PWD}/target/release/sonata-desktop %{buildroot}/usr/bin/sonata-desktop
@@ -270,9 +292,8 @@ jobs:
           /usr/share/applications/sonata-desktop.desktop
           /usr/share/icons/hicolor/scalable/apps/sonata-desktop.svg
           EOF
-            rpmbuild --define "_topdir ${RPM_TOP}" -bb "${RPM_TOP}/SPECS/sonata.spec"
-            cp "${RPM_TOP}"/RPMS/x86_64/*.rpm "dist/sonata-v${DV}-1.x86_64.rpm"
-          fi
+          rpmbuild --define "_topdir ${RPM_TOP}" -bb "${RPM_TOP}/SPECS/sonata.spec"
+          cp "${RPM_TOP}"/RPMS/x86_64/*.rpm "dist/sonata-v${DV}-1.x86_64.rpm"
 
           # Package Arch / generic Linux tarball
           TAR_ROOT="sonata-v${DV}-linux-x86_64"
@@ -282,9 +303,84 @@ jobs:
           ls -lh dist/
 
       - name: Upload desktop artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dist-desktop
+          path: dist/
+          if-no-files-found: error
+
+  desktop-cross:
+    name: Build Tauri Desktop (${{ matrix.label }}, v${{ needs.check.outputs.dv }})
+    needs: check
+    if: needs.check.outputs.build_desktop == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            label: macOS arm64
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            label: Windows x64
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: "desktop-${{ matrix.target }}"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: desktop-ui/package-lock.json
+      - name: Install desktop-ui dependencies and build
+        working-directory: desktop-ui
+        run: |
+          npm ci
+          npm run build
+      - name: Build Tauri bundle
+        env:
+          DV: ${{ needs.check.outputs.dv }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          TAURI_CLI="${GITHUB_WORKSPACE}/desktop-ui/node_modules/.bin/tauri"
+          if [[ "${{ matrix.target }}" == "x86_64-pc-windows-msvc" ]]; then
+            (cd crates/sonata-desktop && "${TAURI_CLI}" build --bundles nsis,msi)
+            if [[ -s "target/release/sonata-desktop.exe" ]]; then
+              cp "target/release/sonata-desktop.exe" "dist/${APP_NAME}-v${DV}-windows-x64.exe"
+            fi
+            SETUP_EXE="$(find target/release/bundle/nsis -maxdepth 2 -type f -name '*.exe' | head -n 1 || true)"
+            if [[ -n "${SETUP_EXE}" && -s "${SETUP_EXE}" ]]; then
+              cp "${SETUP_EXE}" "dist/${APP_NAME}-v${DV}-windows-x64-setup.exe"
+            fi
+            MSI_PKG="$(find target/release/bundle/msi -maxdepth 2 -type f -name '*.msi' | head -n 1 || true)"
+            if [[ -n "${MSI_PKG}" && -s "${MSI_PKG}" ]]; then
+              cp "${MSI_PKG}" "dist/${APP_NAME}-v${DV}-windows-x64.msi"
+            fi
+            test -s "dist/${APP_NAME}-v${DV}-windows-x64.exe"
+            test -s "dist/${APP_NAME}-v${DV}-windows-x64-setup.exe"
+          else
+            (cd crates/sonata-desktop && "${TAURI_CLI}" build --bundles app)
+            APP_DIR="target/release/bundle/macos/Sonata.app"
+            test -d "${APP_DIR}"
+            tar -C target/release/bundle/macos -czf "dist/${APP_NAME}-v${DV}-macos-arm64.app.tar.gz" "Sonata.app"
+            DMG_STAGE="$(mktemp -d)"
+            cp -R "${APP_DIR}" "${DMG_STAGE}/Sonata.app"
+            ln -s /Applications "${DMG_STAGE}/Applications"
+            hdiutil create -volname "${APP_NAME} ${DV}" -srcfolder "${DMG_STAGE}" -ov -format UDZO "dist/${APP_NAME}-v${DV}-macos-arm64.dmg"
+            rm -rf "${DMG_STAGE}"
+            test -s "dist/${APP_NAME}-v${DV}-macos-arm64.app.tar.gz"
+            test -s "dist/${APP_NAME}-v${DV}-macos-arm64.dmg"
+          fi
+          ls -lh dist/
+      - name: Upload cross-platform desktop artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: dist-desktop-${{ matrix.target }}
           path: dist/
           if-no-files-found: error
 
@@ -295,20 +391,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v6
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6
         with:
           distribution: temurin
           java-version: "21"
 
       - name: Set up Gradle cache
-        uses: gradle/actions/setup-gradle@v6
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6
 
       - name: Cache Android NDK & SDK 35
         id: cache-android-sdk
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             /usr/local/lib/android/sdk/ndk/${{ env.NDK_VERSION }}
@@ -338,17 +434,17 @@ jobs:
           } >> "${GITHUB_ENV}"
 
       - name: Install Rust toolchain (aarch64-linux-android)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           targets: aarch64-linux-android
 
       - name: Rust cache (android)
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: "android-aarch64"
 
       - name: Install cargo-ndk
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@893d6ee8d714b6c7dfe2bcd94e5759e9a7958a7e # v2
         with:
           tool: cargo-ndk
 
@@ -365,10 +461,12 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          if [[ -n "${KEYSTORE_B64}" ]]; then
-            echo "${KEYSTORE_B64}" | base64 --decode > "${RUNNER_TEMP}/sonata-release.jks"
-            export ANDROID_KEYSTORE_PATH="${RUNNER_TEMP}/sonata-release.jks"
+          if [[ -z "${KEYSTORE_B64}" || -z "${ANDROID_KEYSTORE_PASSWORD}" || -z "${ANDROID_KEY_ALIAS}" || -z "${ANDROID_KEY_PASSWORD}" ]]; then
+            echo "Missing required Android signing secrets (ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD)." >&2
+            exit 1
           fi
+          echo "${KEYSTORE_B64}" | base64 --decode > "${RUNNER_TEMP}/sonata-release.jks"
+          export ANDROID_KEYSTORE_PATH="${RUNNER_TEMP}/sonata-release.jks"
           mkdir -p dist
           (
             cd android
@@ -386,7 +484,7 @@ jobs:
         run: rm -f "${RUNNER_TEMP}/sonata-release.jks"
 
       - name: Upload android artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dist-android
           path: dist/
@@ -394,18 +492,21 @@ jobs:
 
   publish:
     name: Publish GitHub Release
+    permissions:
+      contents: write
     needs:
       - check
       - desktop
+      - desktop-cross
       - android
     if: always() && !failure() && !cancelled() && needs.check.outputs.any_build == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download built artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: dist-*
           merge-multiple: true
@@ -432,7 +533,32 @@ jobs:
           for VER in "${VERSIONS[@]}"; do
             TAG="v${VER}"
             TITLE="${APP_NAME} ${TAG}"
-            FILES=(dist/${APP_NAME}-${TAG}-*)
+            if [[ "${BUILD_DESKTOP}" == "true" && "${VER}" == "${DV}" ]]; then
+              for expected in \
+                "dist/${APP_NAME}-${TAG}-x86_64.AppImage" \
+                "dist/${APP_NAME}-${TAG}-x86_64.AppImage.zsync" \
+                "dist/${APP_NAME}-${TAG}-windows-x64.exe" \
+                "dist/${APP_NAME}-${TAG}-windows-x64-setup.exe" \
+                "dist/${APP_NAME}-${TAG}-macos-arm64.dmg" \
+                "dist/${APP_NAME}-${TAG}-macos-arm64.app.tar.gz" \
+                "dist/sonata-${TAG}-amd64.deb" \
+                "dist/sonata-${TAG}-1.x86_64.rpm" \
+                "dist/sonata-${TAG}-linux-x86_64.tar.gz"; do
+                if [[ ! -s "${expected}" ]]; then
+                  echo "Expected desktop release artifact missing or empty: ${expected}" >&2
+                  exit 1
+                fi
+              done
+            fi
+            if [[ "${BUILD_ANDROID}" == "true" && "${VER}" == "${AV}" ]]; then
+              expected_apk="dist/${APP_NAME}-${TAG}-arm64.apk"
+              if [[ ! -s "${expected_apk}" ]]; then
+                echo "Expected Android release artifact missing or empty: ${expected_apk}" >&2
+                exit 1
+              fi
+            fi
+
+            FILES=(dist/${APP_NAME}-${TAG}-* dist/sonata-${TAG}-*)
             if [[ "${#FILES[@]}" -eq 0 ]]; then
               echo "No built files found for ${TAG}" >&2
               exit 1
@@ -466,10 +592,17 @@ jobs:
             mkdir -p "verify-${VER}"
             gh release download "${TAG}" \
               --pattern "${APP_NAME}-${TAG}-*" \
+              --pattern "sonata-${TAG}-*" \
               --dir "verify-${VER}"
             (
               cd "verify-${VER}"
-              sha256sum ${APP_NAME}-${TAG}-* > SHA256SUMS.txt
+              shopt -s nullglob
+              VERIFY_FILES=(${APP_NAME}-${TAG}-* sonata-${TAG}-*)
+              if [[ "${#VERIFY_FILES[@]}" -eq 0 ]]; then
+                echo "No release assets downloaded for ${TAG}" >&2
+                exit 1
+              fi
+              sha256sum "${VERIFY_FILES[@]}" > SHA256SUMS.txt
               cat SHA256SUMS.txt
               gh release upload "${TAG}" SHA256SUMS.txt --clobber
             )

@@ -164,7 +164,6 @@ fun SonataPersonalStationArt(
     val tokens = LocalLunariaColors.current
     val clockMs = rememberSharedArtClockMs()
     val seed = remember(title) { (title.hashCode() and 0x7FFF_FFFF) % 360 }
-    val isViolet = tokens.isViolet
     val isDark = tokens.isDark
 
     Box(
@@ -183,23 +182,12 @@ fun SonataPersonalStationArt(
                 val startX = cx - ribbonSpan * 0.5f
 
                 val bgColors = when {
-                    isViolet && !isDark -> listOf(Color(0xFF6B38B8), Color(0xFF9E63E8), Color(0xFF452182))
-                    isViolet && isDark -> listOf(Color(0xFF1F0F42), Color(0xFF462285), Color(0xFF120826))
-                    !isViolet && !isDark -> listOf(Color(0xFF7A4988), Color(0xFFB86FA3), Color(0xFF4D3872))
-                    else -> listOf(Color(0xFF1E1334), Color(0xFF3E2252), Color(0xFF11152B))
+                    !isDark -> listOf(Color(0xFF2C2C2E), Color(0xFF3A3A3C), Color(0xFF1C1C1E))
+                    else -> listOf(Color(0xFF141416), Color(0xFF262629), Color(0xFF0A0A0C))
                 }
-                val primaryGlow = when {
-                    isViolet -> Color(0xFFE3B8FF)
-                    else -> Color(0xFFFFC9E3)
-                }
-                val secondaryGlow = when {
-                    isViolet -> Color(0xFF9E6BFF)
-                    else -> Color(0xFFA7B0F2)
-                }
-                val tertiaryGlow = when {
-                    isViolet -> Color(0xFFFF7BD5)
-                    else -> Color(0xFFFFE0EC)
-                }
+                val primaryGlow = Color(0xFFE5E5EA)
+                val secondaryGlow = Color(0xFF8E8E93)
+                val tertiaryGlow = Color(0xFFFFFFFF)
 
                 val bgBrush = Brush.linearGradient(
                     colors = bgColors,
@@ -243,7 +231,7 @@ fun SonataPersonalStationArt(
                         Color.White.copy(alpha = 0.94f),
                         tertiaryGlow.copy(alpha = 0.70f),
                         secondaryGlow.copy(alpha = 0.42f),
-                        Color(0xFF1A0F33).copy(alpha = 0.55f),
+                        Color(0xFF161618).copy(alpha = 0.60f),
                     ),
                     center = Offset(-sphereR * 0.34f, -sphereR * 0.34f),
                     radius = sphereR * 1.45f,
@@ -356,7 +344,6 @@ fun SonataDiscoveryStationArt(
 ) {
     val tokens = LocalLunariaColors.current
     val clockMs = rememberSharedArtClockMs()
-    val isViolet = tokens.isViolet
     val isDark = tokens.isDark
 
     Box(
@@ -371,14 +358,12 @@ fun SonataDiscoveryStationArt(
                 val minDim = size.minDimension
 
                 val bgColors = when {
-                    isViolet && !isDark -> listOf(Color(0xFF47258C), Color(0xFF7948C7), Color(0xFF281352))
-                    isViolet && isDark -> listOf(Color(0xFF190C38), Color(0xFF2E175E), Color(0xFF0A051A))
-                    !isViolet && !isDark -> listOf(Color(0xFF3E356B), Color(0xFF7E5A94), Color(0xFF251A42))
-                    else -> listOf(Color(0xFF141838), Color(0xFF261E47), Color(0xFF090A18))
+                    !isDark -> listOf(Color(0xFF262629), Color(0xFF3A3A3C), Color(0xFF161618))
+                    else -> listOf(Color(0xFF111113), Color(0xFF222226), Color(0xFF09090B))
                 }
-                val trailPrimary = if (isViolet) Color(0xFF9F7BFF) else Color(0xFF7FA8FF)
-                val trailAccent = if (isViolet) Color(0xFFFF6EC7) else Color(0xFFF5B8DC)
-                val sunHighlight = if (isViolet) Color(0xFFF3E8FF) else Color(0xFFFFF4FA)
+                val trailPrimary = Color(0xFFD1D1D6)
+                val trailAccent = Color(0xFF8E8E93)
+                val sunHighlight = Color(0xFFFFFFFF)
 
                 val bgBrush = Brush.linearGradient(
                     colors = bgColors,
@@ -712,156 +697,82 @@ private data class MoodCoverPalette(
 
 private fun moodPaletteFor(
     theme: MoodTheme,
-    designTheme: DesignTheme,
+    @Suppress("UNUSED_PARAMETER") designTheme: DesignTheme,
     isDark: Boolean,
 ): MoodCoverPalette {
-    val violetBias = designTheme == DesignTheme.VIOLET
     val base = when (theme) {
-        MoodTheme.COMMUTE -> if (violetBias) {
-            MoodCoverPalette(
-                bg = listOf(Color(0xFF0A0D28), Color(0xFF21174E), Color(0xFF070A1A)),
-                primary = Color(0xFF6B8BFF),
-                secondary = Color(0xFFB57BFF),
-                highlight = Color(0xFFE7EEFF),
-            )
-        } else {
-            MoodCoverPalette(
-                bg = listOf(Color(0xFF081026), Color(0xFF142A54), Color(0xFF050814)),
-                primary = Color(0xFF4C8DFF),
-                secondary = Color(0xFF9FB8FF),
-                highlight = Color(0xFFFFFFFF),
-            )
-        }
-        MoodTheme.CHILL -> if (violetBias) {
-            MoodCoverPalette(
-                bg = listOf(Color(0xFF141132), Color(0xFF2B205E), Color(0xFF0A091B)),
-                primary = Color(0xFF9F8BFF),
-                secondary = Color(0xFF66C7F4),
-                highlight = Color(0xFFF0EBFF),
-            )
-        } else {
-            MoodCoverPalette(
-                bg = listOf(Color(0xFF0B1C2E), Color(0xFF183654), Color(0xFF07101C)),
-                primary = Color(0xFF7AD7F0),
-                secondary = Color(0xFFAE9EFF),
-                highlight = Color(0xFFEBFBFF),
-            )
-        }
-        MoodTheme.FOCUS -> if (violetBias) {
-            MoodCoverPalette(
-                bg = listOf(Color(0xFF120C29), Color(0xFF251A4D), Color(0xFF090617)),
-                primary = Color(0xFF9D7EFF),
-                secondary = Color(0xFF6D9BFF),
-                highlight = Color(0xFFF3EEFF),
-            )
-        } else {
-            MoodCoverPalette(
-                bg = listOf(Color(0xFF0B1024), Color(0xFF182246), Color(0xFF060813)),
-                primary = Color(0xFF7CA4FF),
-                secondary = Color(0xFFCBB6FF),
-                highlight = Color(0xFFFFFFFF),
-            )
-        }
-        MoodTheme.ENERGY, MoodTheme.PARTY -> if (violetBias) {
-            MoodCoverPalette(
-                bg = listOf(Color(0xFF280B36), Color(0xFF4D155E), Color(0xFF150620)),
-                primary = Color(0xFFFF46B8),
-                secondary = Color(0xFFB45CFF),
-                highlight = Color(0xFFFFC7EC),
-            )
-        } else {
-            MoodCoverPalette(
-                bg = listOf(Color(0xFF2A0D25), Color(0xFF561844), Color(0xFF160714)),
-                primary = Color(0xFFFF4DA6),
-                secondary = Color(0xFFF285C8),
-                highlight = Color(0xFFFFD6EC),
-            )
-        }
-        MoodTheme.ROMANCE, MoodTheme.FEEL_GOOD -> if (violetBias) {
-            MoodCoverPalette(
-                bg = listOf(Color(0xFF24113D), Color(0xFF4C226B), Color(0xFF180C2E)),
-                primary = Color(0xFFFF59BD),
-                secondary = Color(0xFFA988FF),
-                highlight = Color(0xFFFFE5F6),
-            )
-        } else {
-            MoodCoverPalette(
-                bg = listOf(Color(0xFF281230), Color(0xFF562356), Color(0xFF1B102B)),
-                primary = Color(0xFFFF72B6),
-                secondary = Color(0xFFB5A0FF),
-                highlight = Color(0xFFFFEDF7),
-            )
-        }
-        MoodTheme.HEARTBREAK -> if (violetBias) {
-            MoodCoverPalette(
-                bg = listOf(Color(0xFF2B0D22), Color(0xFF54173B), Color(0xFF180716)),
-                primary = Color(0xFFFF4F87),
-                secondary = Color(0xFFC77DFF),
-                highlight = Color(0xFFFFE3EE),
-            )
-        } else {
-            MoodCoverPalette(
-                bg = listOf(Color(0xFF2E1124), Color(0xFF5A1D42), Color(0xFF190A16)),
-                primary = Color(0xFFFF5C93),
-                secondary = Color(0xFFD69CF2),
-                highlight = Color(0xFFFFEBF2),
-            )
-        }
-        MoodTheme.SYNTH_WAVE, MoodTheme.URBAN_PRISM -> if (violetBias) {
-            MoodCoverPalette(
-                bg = listOf(Color(0xFF29132E), Color(0xFF52254B), Color(0xFF16091B)),
-                primary = Color(0xFFFF9248),
-                secondary = Color(0xFFC46CFF),
-                highlight = Color(0xFFFFDEB8),
-            )
-        } else {
-            MoodCoverPalette(
-                bg = listOf(Color(0xFF26140D), Color(0xFF4D2812), Color(0xFF140A06)),
-                primary = Color(0xFFFF9633),
-                secondary = Color(0xFFFFC370),
-                highlight = Color(0xFFFFECD1),
-            )
-        }
-        MoodTheme.SLEEP, MoodTheme.MELANCHOLY -> if (violetBias) {
-            MoodCoverPalette(
-                bg = listOf(Color(0xFF14112E), Color(0xFF282052), Color(0xFF0A0819)),
-                primary = Color(0xFFC2B2FF),
-                secondary = Color(0xFF8CA6FF),
-                highlight = Color(0xFFF6F2FF),
-            )
-        } else {
-            MoodCoverPalette(
-                bg = listOf(Color(0xFF101329), Color(0xFF22284E), Color(0xFF090B18)),
-                primary = Color(0xFFB8C4FF),
-                secondary = Color(0xFFE6C8F2),
-                highlight = Color(0xFFFFFFFF),
-            )
-        }
+        MoodTheme.COMMUTE -> MoodCoverPalette(
+            bg = listOf(Color(0xFF12161F), Color(0xFF222B3D), Color(0xFF0A0C12)),
+            primary = Color(0xFFA7B8D6),
+            secondary = Color(0xFF7D8FA8),
+            highlight = Color(0xFFFFFFFF),
+        )
+        MoodTheme.CHILL -> MoodCoverPalette(
+            bg = listOf(Color(0xFF111920), Color(0xFF1F2F3D), Color(0xFF090E12)),
+            primary = Color(0xFF9AC2D1),
+            secondary = Color(0xFF7B909E),
+            highlight = Color(0xFFFFFFFF),
+        )
+        MoodTheme.FOCUS -> MoodCoverPalette(
+            bg = listOf(Color(0xFF141418), Color(0xFF24242A), Color(0xFF09090B)),
+            primary = Color(0xFFD1D1D6),
+            secondary = Color(0xFF8E8E93),
+            highlight = Color(0xFFFFFFFF),
+        )
+        MoodTheme.ENERGY, MoodTheme.PARTY -> MoodCoverPalette(
+            bg = listOf(Color(0xFF1D1316), Color(0xFF382026), Color(0xFF100A0C)),
+            primary = Color(0xFFFA2D48),
+            secondary = Color(0xFFD1D1D6),
+            highlight = Color(0xFFFFFFFF),
+        )
+        MoodTheme.ROMANCE, MoodTheme.FEEL_GOOD -> MoodCoverPalette(
+            bg = listOf(Color(0xFF1C1816), Color(0xFF362D28), Color(0xFF100E0C)),
+            primary = Color(0xFFE5C4B3),
+            secondary = Color(0xFFB89E8E),
+            highlight = Color(0xFFFFFFFF),
+        )
+        MoodTheme.HEARTBREAK -> MoodCoverPalette(
+            bg = listOf(Color(0xFF181416), Color(0xFF2E2226), Color(0xFF0D0A0B)),
+            primary = Color(0xFFD98B96),
+            secondary = Color(0xFF9C7B80),
+            highlight = Color(0xFFFFFFFF),
+        )
+        MoodTheme.SYNTH_WAVE, MoodTheme.URBAN_PRISM -> MoodCoverPalette(
+            bg = listOf(Color(0xFF1C1612), Color(0xFF38291E), Color(0xFF0E0B09)),
+            primary = Color(0xFFE0A46C),
+            secondary = Color(0xFFB89B82),
+            highlight = Color(0xFFFFFFFF),
+        )
+        MoodTheme.SLEEP, MoodTheme.MELANCHOLY -> MoodCoverPalette(
+            bg = listOf(Color(0xFF11131A), Color(0xFF1E222E), Color(0xFF090A0E)),
+            primary = Color(0xFFB8C0D4),
+            secondary = Color(0xFF7D8599),
+            highlight = Color(0xFFFFFFFF),
+        )
         MoodTheme.FOLK_ACOUSTIC -> MoodCoverPalette(
-            bg = listOf(Color(0xFF221521), Color(0xFF3F2337), Color(0xFF140B14)),
-            primary = if (violetBias) Color(0xFFD99DFF) else Color(0xFFF2B694),
-            secondary = Color(0xFFB888E8),
-            highlight = Color(0xFFFFECE0),
+            bg = listOf(Color(0xFF1A1614), Color(0xFF302822), Color(0xFF0E0C0B)),
+            primary = Color(0xFFD6BCA8),
+            secondary = Color(0xFF9E8A7B),
+            highlight = Color(0xFFFFFFFF),
         )
         MoodTheme.BOTANICAL_INDIE -> MoodCoverPalette(
-            bg = listOf(Color(0xFF171832), Color(0xFF2B2D58), Color(0xFF0E0F20)),
-            primary = if (violetBias) Color(0xFFC7A8FF) else Color(0xFFF2CBE0),
-            secondary = Color(0xFF8CE2D0),
-            highlight = Color(0xFFF2FAFF),
+            bg = listOf(Color(0xFF121A18), Color(0xFF1F2E2A), Color(0xFF0A0F0E)),
+            primary = Color(0xFF9AC7BC),
+            secondary = Color(0xFF74968D),
+            highlight = Color(0xFFFFFFFF),
         )
         MoodTheme.HARMONIC_JAZZ -> MoodCoverPalette(
-            bg = listOf(Color(0xFF251226), Color(0xFF461D3D), Color(0xFF140916)),
-            primary = if (violetBias) Color(0xFFE08BFF) else Color(0xFFFFC08E),
-            secondary = Color(0xFFEC7AB0),
-            highlight = Color(0xFFFFECF4),
+            bg = listOf(Color(0xFF18161A), Color(0xFF2C2830), Color(0xFF0D0C0E)),
+            primary = Color(0xFFD4C5A9),
+            secondary = Color(0xFF948C7E),
+            highlight = Color(0xFFFFFFFF),
         )
     }
     return if (isDark) {
         base
     } else {
-        // Light mode lifts the deep shadow floor slightly while keeping rich luminous highlights.
         base.copy(
-            bg = base.bg.map { androidx.compose.ui.graphics.lerp(it, Color(0xFF3E2B68), 0.22f) },
+            bg = base.bg.map { androidx.compose.ui.graphics.lerp(it, Color(0xFF3A3A3C), 0.25f) },
         )
     }
 }

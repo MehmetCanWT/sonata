@@ -25,6 +25,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 const KRC_CIPHER: [u8; 16] = *b"@Gaw^2tGQ61-\xce\xd2ni";
+const MAX_KRC_BYTES: u64 = 2 * 1024 * 1024;
 const SONATA_LYRICS_UA: &str = "Sonata/0.1.0 (lyrics lookup)";
 const LRCRED_DURATION_TOLERANCE_SECS: f64 = 3.5;
 
@@ -181,6 +182,8 @@ pub async fn fetch_betterlyrics_synced(
 
 #[derive(Deserialize)]
 struct LyricsPlusResponse {
+    #[serde(rename = "type", default)]
+    kind: Option<String>,
     #[serde(default)]
     lyrics: Vec<LyricsPlusLine>,
     #[serde(default)]
@@ -189,6 +192,12 @@ struct LyricsPlusResponse {
 
 #[derive(Deserialize)]
 struct LyricsPlusMetadata {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    artist: Option<String>,
+    #[serde(default)]
+    duration: Option<Value>,
     #[serde(default)]
     agents: HashMap<String, LyricsPlusAgent>,
 }
@@ -275,12 +284,58 @@ async fn query_lyricsplus_mirror(
         return None;
     }
     let payload: LyricsPlusResponse = resp.json().await.ok()?;
-    parse_lyricsplus_response(payload)
+    parse_lyricsplus_response(payload, title, artist, duration_secs)
 }
 
-fn parse_lyricsplus_response(payload: LyricsPlusResponse) -> Option<Vec<LyricLine>> {
+fn parse_lyricsplus_duration_secs(raw: Option<&Value>) -> Option<u64> {
+    let val = raw?;
+    let num = val
+        .as_f64()
+        .or_else(|| val.as_str().and_then(|s| s.trim().parse::<f64>().ok()))?;
+    if !num.is_finite() || num <= 0.0 {
+        return None;
+    }
+    let secs = if num > 3600.0 { num / 1000.0 } else { num };
+    Some(secs.round() as u64)
+}
+
+fn parse_lyricsplus_response(
+    payload: LyricsPlusResponse,
+    wanted_title: &str,
+    wanted_artist: &str,
+    wanted_duration: Option<u64>,
+) -> Option<Vec<LyricLine>> {
+    if let Some(kind) = payload.kind.as_deref() {
+        let lower = kind.trim().to_ascii_lowercase();
+        if matches!(lower.as_str(), "static" | "unsynced" | "plain" | "none") {
+            return None;
+        }
+    }
     let mut person_aliases: HashMap<String, bool> = HashMap::new();
     if let Some(meta) = payload.metadata {
+        let cand_title = meta.title.as_deref().unwrap_or_default().trim();
+        let cand_artist = meta.artist.as_deref().unwrap_or_default().trim();
+        let cand_dur = parse_lyricsplus_duration_secs(meta.duration.as_ref());
+        if (!cand_title.is_empty() || !cand_artist.is_empty() || cand_dur.is_some())
+            && !lyrics_candidate_matches(
+                wanted_title,
+                wanted_artist,
+                wanted_duration,
+                if cand_title.is_empty() {
+                    wanted_title
+                } else {
+                    cand_title
+                },
+                if cand_artist.is_empty() {
+                    wanted_artist
+                } else {
+                    cand_artist
+                },
+                cand_dur,
+            )
+        {
+            return None;
+        }
         for (id, agent) in meta.agents {
             let is_person = agent.kind.as_deref() == Some("person");
             let key = agent.alias.unwrap_or(id);
@@ -293,6 +348,7 @@ fn parse_lyricsplus_response(payload: LyricsPlusResponse) -> Option<Vec<LyricLin
         let Some(time_ms) = line.time else {
             continue;
         };
+        let line_start_secs = time_ms as f64 / 1000.0;
         let singer = line
             .element
             .as_ref()
@@ -328,7 +384,17 @@ fn parse_lyricsplus_response(payload: LyricsPlusResponse) -> Option<Vec<LyricLin
             LyricVoice::Lead
         };
 
-        let words = merge_lyricsplus_syllables(&line.syllabus);
+        let mut words = merge_lyricsplus_syllables(&line.syllabus);
+        if time_ms > 0 {
+            for w in &mut words {
+                if w.start_secs <= 0.0 || w.start_secs + 1.0 < line_start_secs {
+                    w.start_secs = line_start_secs;
+                    if let Some(end) = w.end_secs {
+                        w.end_secs = Some(end.max(line_start_secs));
+                    }
+                }
+            }
+        }
         let text = if !words.is_empty() {
             words
                 .iter()
@@ -343,8 +409,9 @@ fn parse_lyricsplus_response(payload: LyricsPlusResponse) -> Option<Vec<LyricLin
         }
         let start_secs = words
             .first()
-            .map(|w| w.start_secs.min(time_ms as f64 / 1000.0))
-            .unwrap_or(time_ms as f64 / 1000.0);
+            .filter(|w| w.start_secs > 0.0 || time_ms == 0)
+            .map(|w| w.start_secs.min(line_start_secs))
+            .unwrap_or(line_start_secs);
         out.push(LyricLine {
             time_secs: start_secs,
             text,
@@ -353,7 +420,7 @@ fn parse_lyricsplus_response(payload: LyricsPlusResponse) -> Option<Vec<LyricLin
         });
     }
     out.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
-    (!out.is_empty()).then_some(out)
+    crate::lyrics::has_advancing_timestamps(&out).then_some(out)
 }
 
 fn merge_lyricsplus_syllables(syllables: &[LyricsPlusSyllable]) -> Vec<LyricWord> {
@@ -688,7 +755,8 @@ async fn download_kugou_krc(http: &Client, id: &str, accesskey: &str) -> Option<
     (!parsed.is_empty()).then_some(parsed)
 }
 
-/// Decodes base64-encoded KuGou KRC (`krc1` header + 16-byte XOR cipher + zlib stream).
+/// Decodes base64-encoded KuGou KRC (`krc1` header + 16-byte XOR cipher + zlib stream),
+/// rejecting decompressed payloads larger than [`MAX_KRC_BYTES`].
 pub fn decode_krc(content_b64: &str) -> Option<String> {
     let packed = base64::engine::general_purpose::STANDARD
         .decode(content_b64.trim())
@@ -699,11 +767,15 @@ pub fn decode_krc(content_b64: &str) -> Option<String> {
         .enumerate()
         .map(|(i, b)| b ^ KRC_CIPHER[i % KRC_CIPHER.len()])
         .collect();
-    let mut text = String::new();
+    let mut raw = Vec::new();
     ZlibDecoder::new(unmasked.as_slice())
-        .read_to_string(&mut text)
+        .take(MAX_KRC_BYTES + 1)
+        .read_to_end(&mut raw)
         .ok()?;
-    Some(text)
+    if raw.len() as u64 > MAX_KRC_BYTES {
+        return None;
+    }
+    String::from_utf8(raw).ok()
 }
 
 fn is_wide_token(s: &str) -> bool {
@@ -755,6 +827,7 @@ fn push_timed_token(
 
 /// Parses decrypted KuGou KRC (`[line_start_ms,line_dur_ms]<word_offset_ms,word_dur_ms,0>word`) text.
 pub fn parse_krc(krc: &str) -> Vec<LyricLine> {
+    let mut offset_ms = 0.0_f64;
     let mut lines = Vec::new();
     for raw in krc.lines() {
         let trimmed = raw.trim();
@@ -764,13 +837,22 @@ pub fn parse_krc(krc: &str) -> Vec<LyricLine> {
         let Some((header, body)) = rest.split_once(']') else {
             continue;
         };
+        if let Some((tag, val)) = header.split_once(':') {
+            if tag.trim().eq_ignore_ascii_case("offset") {
+                if let Ok(parsed) = val.trim().parse::<f64>() {
+                    offset_ms = parsed;
+                }
+                continue;
+            }
+        }
         let Some((start_str, _dur_str)) = header.split_once(',') else {
             continue;
         };
         let Ok(line_start_ms) = start_str.trim().parse::<u64>() else {
             continue;
         };
-        let line_start_secs = line_start_ms as f64 / 1000.0;
+        let shift_secs = offset_ms / 1000.0;
+        let line_start_secs = (line_start_ms as f64 / 1000.0 - shift_secs).max(0.0);
 
         let mut words: Vec<LyricWord> = Vec::new();
         let mut plain = String::new();
@@ -802,8 +884,9 @@ pub fn parse_krc(krc: &str) -> Vec<LyricLine> {
                 parts.next().and_then(|s| s.trim().parse::<u64>().ok()),
             ) {
                 let start_ms = line_start_ms.saturating_add(off);
-                let w_start = start_ms as f64 / 1000.0;
-                let w_end = start_ms.saturating_add(dur) as f64 / 1000.0;
+                let w_start = (start_ms as f64 / 1000.0 - shift_secs).max(0.0);
+                let w_end =
+                    (start_ms.saturating_add(dur) as f64 / 1000.0 - shift_secs).max(w_start);
                 push_timed_token(&mut words, w_start, Some(w_end), token, &mut separated);
             }
         }
@@ -1240,6 +1323,20 @@ fn pick_matching_kugou_candidate(
     best.map(|(_, id, key)| (id, key))
 }
 
+fn is_allowed_genius_url(raw: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(raw.trim()) else {
+        return false;
+    };
+    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let host_lower = host.trim_end_matches('.').to_ascii_lowercase();
+    host_lower == "genius.com" || host_lower.ends_with(".genius.com")
+}
+
 /// Scrape plain lyrics from Genius after validating title and artist matches.
 pub async fn fetch_genius_lyrics(http: &Client, title: &str, artist: &str) -> Option<Vec<String>> {
     let query = if artist.is_empty() || artist == "Unknown Artist" {
@@ -1278,7 +1375,11 @@ pub async fn fetch_genius_lyrics(http: &Client, title: &str, artist: &str) -> Op
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 if lyrics_candidate_matches(title, artist, None, hit_title, hit_artist, None) {
-                    song_url = res.get("url").and_then(|v| v.as_str()).map(str::to_string);
+                    song_url = res
+                        .get("url")
+                        .and_then(|v| v.as_str())
+                        .filter(|u| is_allowed_genius_url(u))
+                        .map(str::to_string);
                     if song_url.is_some() {
                         break;
                     }
@@ -1287,7 +1388,7 @@ pub async fn fetch_genius_lyrics(http: &Client, title: &str, artist: &str) -> Op
         }
     }
 
-    let url = song_url?;
+    let url = song_url.filter(|u| is_allowed_genius_url(u))?;
     let html = http
         .get(&url)
         .header("User-Agent", "Sonata/0.1 (lyrics lookup)")
@@ -1586,5 +1687,122 @@ mod tests {
         assert!((words[0].end_secs.unwrap() - 5.0).abs() < 0.001);
         assert!((words[1].end_secs.unwrap() - 2.5).abs() < 0.001);
         assert_eq!(words[2].text, "Max");
+    }
+
+    #[test]
+    fn rejects_oversized_krc_decompression_payload() {
+        use flate2::write::ZlibEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let oversized = vec![b'A'; (MAX_KRC_BYTES as usize) + 64];
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::best());
+        encoder.write_all(&oversized).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let mut payload = b"krc1".to_vec();
+        payload.extend(
+            compressed
+                .iter()
+                .enumerate()
+                .map(|(i, b)| b ^ KRC_CIPHER[i % KRC_CIPHER.len()]),
+        );
+        let encoded = base64::engine::general_purpose::STANDARD.encode(payload);
+        assert!(decode_krc(&encoded).is_none());
+    }
+
+    #[test]
+    fn validates_genius_lyrics_urls_strictly() {
+        assert!(is_allowed_genius_url(
+            "https://genius.com/Daft-punk-one-more-time-lyrics"
+        ));
+        assert!(is_allowed_genius_url(
+            "https://www.genius.com/Some-song-lyrics"
+        ));
+        assert!(!is_allowed_genius_url(
+            "http://genius.com/Daft-punk-one-more-time-lyrics"
+        ));
+        assert!(!is_allowed_genius_url("https://evilgenius.com/song-lyrics"));
+        assert!(!is_allowed_genius_url(
+            "https://genius.com.evil.example/song-lyrics"
+        ));
+        assert!(!is_allowed_genius_url("https://127.0.0.1/secret"));
+        assert!(!is_allowed_genius_url("file:///etc/passwd"));
+    }
+
+    #[test]
+    fn parse_krc_applies_offset_header_to_lines_and_words() {
+        let krc = "[offset:1500]\n[10000,3000]<0,1000,0>Hel<1000,2000,0>lo\n";
+        let lines = parse_krc(krc);
+        assert_eq!(lines.len(), 1);
+        assert!((lines[0].time_secs - 8.5).abs() < 0.01);
+        assert!((lines[0].words[0].start_secs - 8.5).abs() < 0.01);
+        assert!((lines[0].words[0].end_secs.unwrap() - 11.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn lyricsplus_rejects_static_type_and_guards_zero_syllable_start() {
+        let static_resp = LyricsPlusResponse {
+            kind: Some("Static".to_string()),
+            metadata: None,
+            lyrics: vec![
+                LyricsPlusLine {
+                    time: Some(0),
+                    text: Some("Unsynced line 1".to_string()),
+                    syllabus: Vec::new(),
+                    element: None,
+                },
+                LyricsPlusLine {
+                    time: Some(0),
+                    text: Some("Unsynced line 2".to_string()),
+                    syllabus: Vec::new(),
+                    element: None,
+                },
+            ],
+        };
+        assert!(parse_lyricsplus_response(static_resp, "Song", "Artist", Some(180)).is_none());
+
+        let zero_syllable_resp = LyricsPlusResponse {
+            kind: Some("Word".to_string()),
+            metadata: Some(LyricsPlusMetadata {
+                title: Some("Song".to_string()),
+                artist: Some("Artist".to_string()),
+                duration: Some(serde_json::json!(180_000)),
+                agents: HashMap::new(),
+            }),
+            lyrics: vec![
+                LyricsPlusLine {
+                    time: Some(10_000),
+                    text: Some("First line".to_string()),
+                    syllabus: Vec::new(),
+                    element: None,
+                },
+                LyricsPlusLine {
+                    time: Some(45_000),
+                    text: None,
+                    syllabus: vec![
+                        LyricsPlusSyllable {
+                            time: Some(0),
+                            duration: Some(0),
+                            text: Some("Broken ".to_string()),
+                        },
+                        LyricsPlusSyllable {
+                            time: Some(45_500),
+                            duration: Some(500),
+                            text: Some("word".to_string()),
+                        },
+                    ],
+                    element: None,
+                },
+            ],
+        };
+        let parsed = parse_lyricsplus_response(zero_syllable_resp, "Song", "Artist", Some(180))
+            .expect("should keep valid synced response");
+        assert_eq!(parsed.len(), 2);
+        assert!(
+            parsed[1].time_secs >= 45.0,
+            "zero-timestamp syllable must not pull line to 0.0, got {}",
+            parsed[1].time_secs
+        );
     }
 }

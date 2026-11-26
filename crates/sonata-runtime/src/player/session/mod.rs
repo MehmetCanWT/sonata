@@ -5,7 +5,8 @@
 //! 2. **Bounded Channels & Backpressure**:
 //!    - Transport commands (`SessionCommand`) travel over a bounded `mpsc` channel and never drop.
 //!    - Progress updates (`PlaybackProgress`) travel over a `watch` channel and coalesce to the latest position.
-//!    - Terminal, state, and error events (`SessionEvent`) travel over a bounded `mpsc` channel and never drop.
+//!    - Terminal, state, and error events (`SessionEvent`) travel over a bounded `mpsc` channel with
+//!      non-blocking drops for coalescable updates and bounded send timeouts so slow consumers never stall the actor.
 //! 3. **Generation Isolation**: Every play transition advances `PlaybackGeneration` and restarts a single
 //!    `PlaybackTaskSet` cancellation tree, rejecting any stale async stream, upgrade, or auto-advance result.
 //! 4. **Resilience & Precache**: Owns natural vs. premature track-end detection, per-generation recovery
@@ -40,10 +41,13 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 /// Bounded command queue depth; callers await capacity so transport commands never drop.
 pub const SESSION_COMMAND_CAPACITY: usize = 64;
-/// Bounded event queue depth; the session awaits capacity so terminal/error events never drop.
+/// Bounded event queue depth; coalescable updates drop on full queues and critical events time out
+/// after [`SESSION_EVENT_SEND_TIMEOUT`] so a stalled receiver cannot deadlock the actor.
 pub const SESSION_EVENT_CAPACITY: usize = 128;
 /// Bounded internal task completion queue depth inside the session actor.
 const INTERNAL_RESULT_CAPACITY: usize = 64;
+/// Upper bound spent waiting for a congested event receiver before dropping an event.
+const SESSION_EVENT_SEND_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// Error returned when sending a command to a stopped [`PlaybackSession`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +128,7 @@ pub struct PlaybackProgress {
     pub generation: PlaybackGeneration,
     pub position_secs: f64,
     pub duration_secs: f64,
+    pub playback_speed: f64,
     pub paused: bool,
     pub loading: bool,
     pub anchor_at: Option<Instant>,
@@ -135,6 +140,7 @@ impl Default for PlaybackProgress {
             generation: PlaybackGeneration::default(),
             position_secs: 0.0,
             duration_secs: 0.0,
+            playback_speed: 1.0,
             paused: true,
             loading: false,
             anchor_at: None,
@@ -145,9 +151,14 @@ impl Default for PlaybackProgress {
 impl PlaybackProgress {
     /// Computes smoothly interpolated playback position clamped to `[0.0, duration_secs]`.
     pub fn interpolated_position(&self) -> f64 {
+        let speed = if self.playback_speed.is_finite() && self.playback_speed > 0.0 {
+            self.playback_speed
+        } else {
+            1.0
+        };
         let raw = match self.anchor_at {
             Some(at) if !self.paused && !self.loading => {
-                self.position_secs + at.elapsed().as_secs_f64()
+                self.position_secs + at.elapsed().as_secs_f64() * speed
             }
             _ => self.position_secs,
         };
@@ -822,7 +833,37 @@ impl SessionActor {
     }
 
     async fn emit(&self, event: SessionEvent) {
-        let _ = self.event_tx.send(event).await;
+        match self.event_tx.try_send(event) {
+            Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => {}
+            Err(mpsc::error::TrySendError::Full(event)) => {
+                if matches!(
+                    event,
+                    SessionEvent::AudioQualityUpdated { .. }
+                        | SessionEvent::PrecacheUpdated { .. }
+                        | SessionEvent::DurationChanged { .. }
+                        | SessionEvent::Seeked { .. }
+                ) {
+                    tracing::debug!(
+                        event = "session_event_coalesced_drop",
+                        client = self.config.client_name,
+                        "dropped coalescable session event because receiver queue is full"
+                    );
+                    return;
+                }
+                match tokio::time::timeout(SESSION_EVENT_SEND_TIMEOUT, self.event_tx.send(event))
+                    .await
+                {
+                    Ok(Ok(())) | Ok(Err(_)) => {}
+                    Err(_) => {
+                        tracing::warn!(
+                            event = "session_event_dropped",
+                            client = self.config.client_name,
+                            "playback session event receiver stalled; dropped event after timeout"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     fn publish_progress(&self) {
@@ -836,6 +877,7 @@ impl SessionActor {
             generation: self.generation,
             position_secs,
             duration_secs: self.playback.duration_secs,
+            playback_speed: self.playback_speed,
             paused: self.playback.paused,
             loading: self.playback.loading_track,
             anchor_at,
@@ -1469,11 +1511,9 @@ impl SessionActor {
                     self.awaiting_playback_start = false;
                 }
                 self.preserve_paused_on_restart = was_paused;
-                if !was_paused {
-                    self.pos_anchor = Some((resume_at, Instant::now()));
-                } else {
-                    self.pos_anchor = None;
-                }
+                // Hold the interpolated clock at `resume_at` while mpv re-buffers the upgraded stream;
+                // the next mpv Position or PlaybackStarted event re-anchors smoothly without drifting ahead.
+                self.pos_anchor = None;
                 self.playback.stream_badge = stream.badge.clone();
                 self.begin_audio_quality_tracking(generation, &track_id, &stream);
                 tracing::info!(

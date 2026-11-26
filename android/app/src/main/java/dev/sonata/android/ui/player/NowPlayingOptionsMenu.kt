@@ -66,10 +66,12 @@ import dev.sonata.android.LocalLiquidGlassEnabled
 import dev.sonata.android.LocalReduceDynamicBlur
 import dev.sonata.android.backdrop.Backdrop
 import dev.sonata.android.data.ActiveDownload
+import dev.sonata.android.data.AppLanguage
 import dev.sonata.android.isGlassSupported
 import dev.sonata.android.liquidGlass
 import dev.sonata.android.ui.SonataAccent
 import dev.sonata.android.ui.SonataIcons
+import dev.sonata.android.ui.i18n.ecosystemStrings
 import dev.sonata.android.ui.theme.LocalLunariaColors
 import dev.sonata.android.ui.theme.SonataRadioWavesIcon
 import dev.sonata.android.ui.theme.sonataSpecularRim
@@ -94,8 +96,11 @@ fun NowPlayingOptionsMenu(
     romanizationEnabled: Boolean = false,
     translationEnabled: Boolean = false,
     pipelineSummary: String? = null,
+    connectDeviceName: String? = null,
+    appLanguage: AppLanguage = AppLanguage.SYSTEM,
     backdrop: Backdrop? = null,
     onDismiss: () -> Unit,
+    onOpenConnectDevices: () -> Unit = {},
     onToggleLike: () -> Unit,
     onAddToPlaylist: () -> Unit,
     onShareInApp: () -> Unit,
@@ -228,6 +233,19 @@ fun NowPlayingOptionsMenu(
 
                 Spacer(Modifier.height(10.dp))
                 HorizontalDivider(color = dividerColor, thickness = 0.5.dp)
+
+                val eco = remember(appLanguage) { ecosystemStrings(appLanguage) }
+                // Connect Devices
+                PopoverActionRow(
+                    icon = SonataIcons.Wifi,
+                    title = eco.connectDevicesTitle,
+                    subtitle = connectDeviceName?.let { eco.connectPlayingOn(it) } ?: eco.connectThisPhone,
+                    tint = if (connectDeviceName != null) Color(0xFF34C759) else themeTokens.onSurfacePrimary,
+                    onClick = {
+                        onDismiss()
+                        onOpenConnectDevices()
+                    },
+                )
 
                 // Audio Controls & Audio Pipeline
                 PopoverActionRow(

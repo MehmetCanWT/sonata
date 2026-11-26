@@ -1,13 +1,13 @@
 # Maintainer: MehmetCanWT
 pkgname=sonata
-pkgver=1.0.9
+pkgver=1.0.10
 pkgrel=1
 pkgdesc="Rust terminal music player for YouTube Music and Spotify"
 arch=('x86_64' 'aarch64')
 url="https://github.com/MehmetCanWT/sonata"
 license=('MIT')
 depends=('mpv' 'yt-dlp' 'ffmpeg' 'nodejs')
-makedepends=('cargo')
+makedepends=('cargo' 'pkgconf')
 optdepends=(
     'ghostty: full-color and animated album artwork in the terminal'
     'kitty: full-color and animated album artwork in the terminal'
@@ -18,20 +18,17 @@ sha256sums=('SKIP')
 
 prepare() {
     cd "$pkgname-$pkgver"
-    export RUSTUP_TOOLCHAIN=stable
     cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
 }
 
 build() {
     cd "$pkgname-$pkgver"
-    export RUSTUP_TOOLCHAIN=stable
     export CARGO_TARGET_DIR=target
     cargo build --frozen --release -p sonata-tui
 }
 
 check() {
     cd "$pkgname-$pkgver"
-    export RUSTUP_TOOLCHAIN=stable
     cargo test --frozen -p sonata-core -p sonata-tui
 }
 

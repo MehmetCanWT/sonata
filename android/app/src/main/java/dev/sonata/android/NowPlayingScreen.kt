@@ -314,8 +314,12 @@ internal data class NowPlayingExtras(
     val isTrackDownloaded: Boolean = false,
     val activeTrackDownload: ActiveDownload? = null,
     val sleepTimerRemaining: Int? = null,
-    val activeLyricsSource: String = "Synced",
+    val activeLyricsSource: String = "",
     val trackLyricOffsetMs: Long = 0L,
+    val connectDeviceName: String? = null,
+    val connectRemoteVolume: Float? = null,
+    val onOpenConnectDevices: () -> Unit = {},
+    val onSetConnectVolume: (Float) -> Unit = {},
     val onDownloadTrack: () -> Unit = {},
     val onOpenAudioControls: () -> Unit = {},
     val onOpenSleepTimer: () -> Unit = {},
@@ -345,6 +349,10 @@ internal fun NowPlayingScreen(
     activeLyricsSource: String,
     trackLyricOffsetMs: Long,
     clock: PlaybackClockState,
+    connectDeviceName: String? = null,
+    connectRemoteVolume: Float? = null,
+    onOpenConnectDevices: () -> Unit = {},
+    onSetConnectVolume: (Float) -> Unit = {},
     onToggleLyrics: () -> Unit,
     onToggleStar: () -> Unit,
     onTogglePlayPause: () -> Unit,
@@ -389,6 +397,8 @@ internal fun NowPlayingScreen(
         sleepTimerRemaining,
         activeLyricsSource,
         trackLyricOffsetMs,
+        connectDeviceName,
+        connectRemoteVolume,
     ) {
         NowPlayingExtras(
             trackId = track.id,
@@ -399,6 +409,10 @@ internal fun NowPlayingScreen(
             sleepTimerRemaining = sleepTimerRemaining,
             activeLyricsSource = activeLyricsSource,
             trackLyricOffsetMs = trackLyricOffsetMs,
+            connectDeviceName = connectDeviceName,
+            connectRemoteVolume = connectRemoteVolume,
+            onOpenConnectDevices = onOpenConnectDevices,
+            onSetConnectVolume = onSetConnectVolume,
             onDownloadTrack = onDownloadTrack,
             onOpenAudioControls = onOpenAudioControls,
             onOpenSleepTimer = onOpenSleepTimer,
@@ -440,6 +454,7 @@ internal fun NowPlayingScreen(
         isBuffering = state.isBuffering,
         fpsLimit = settings.fpsLimit,
         trackKey = track.id,
+        playbackSpeed = settings.playbackSpeed,
     )
     val effectiveLyricClockMs = remember(
         smoothClockMs,
@@ -731,6 +746,8 @@ internal fun NowPlayingScreen(
                 showModePill = state.musicVideoCandidate != null || state.videoModeEnabled,
                 videoModeEnabled = state.videoModeEnabled,
                 videoLoading = state.videoLoading,
+                connectDeviceName = connectDeviceName,
+                onOpenConnectDevices = onOpenConnectDevices,
                 onDismiss = onDismiss,
                 onSelectMusic = onDisableVideoMode,
                 onSelectVideo = {
@@ -853,11 +870,13 @@ internal fun NowPlayingScreen(
             sleepTimerRemaining = sleepTimerRemaining,
             trackLyricOffsetMs = trackLyricOffsetMs,
             audioPipelineSummary = audioPipelineSummary,
+            connectDeviceName = connectDeviceName,
             nowPlayingBackdrop = nowPlayingBackdrop,
             showPlayerOptions = showPlayerOptions,
             showVideoWarningDialog = showVideoWarningDialog,
             showVideoQualityDialog = showVideoQualityDialog,
             onDismissOptions = { showPlayerOptions = false },
+            onOpenConnectDevices = onOpenConnectDevices,
             onToggleStar = onToggleStar,
             onAddToPlaylist = onAddToPlaylist,
             onShareInApp = onShareInApp,
@@ -1140,7 +1159,7 @@ internal fun NowPlayingLandscapeLayout(
                             Spacer(Modifier.width(12.dp))
                             CircleGlyph(
                                 icon = if (isLiked) SonataIcons.StarFilled else SonataIcons.Star,
-                                contentDescription = "Favorite",
+                                contentDescription = LocalSonataStrings.current.favorite,
                                 active = isLiked,
                                 tint = if (isLiked) sonataThemeAccent() else Color.White,
                                 onClick = onToggleStar,
@@ -1148,7 +1167,7 @@ internal fun NowPlayingLandscapeLayout(
                             Spacer(Modifier.width(10.dp))
                             CircleGlyph(
                                 icon = SonataIcons.MoreHoriz,
-                                contentDescription = "Options",
+                                contentDescription = LocalSonataStrings.current.options,
                                 onClick = onOpenSettings,
                             )
                         }
@@ -1309,7 +1328,7 @@ internal fun NowPlayingPortraitLayout(
                             Spacer(Modifier.width(10.dp))
                             CircleGlyph(
                                 icon = if (isLiked) SonataIcons.StarFilled else SonataIcons.Star,
-                                contentDescription = "Favorite",
+                                contentDescription = LocalSonataStrings.current.favorite,
                                 active = isLiked,
                                 tint = if (isLiked) sonataThemeAccent() else Color.White,
                                 onClick = onToggleStar,
@@ -1317,7 +1336,7 @@ internal fun NowPlayingPortraitLayout(
                             Spacer(Modifier.width(8.dp))
                             CircleGlyph(
                                 icon = SonataIcons.MoreHoriz,
-                                contentDescription = "Options",
+                                contentDescription = LocalSonataStrings.current.options,
                                 onClick = onOpenSettings,
                             )
                         }
@@ -1456,7 +1475,7 @@ internal fun NowPlayingPortraitLayout(
                             Spacer(Modifier.width(12.dp))
                             CircleGlyph(
                                 icon = if (isLiked) SonataIcons.StarFilled else SonataIcons.Star,
-                                contentDescription = "Favorite",
+                                contentDescription = LocalSonataStrings.current.favorite,
                                 active = isLiked,
                                 tint = if (isLiked) sonataThemeAccent() else Color.White,
                                 onClick = onToggleStar,
@@ -1464,7 +1483,7 @@ internal fun NowPlayingPortraitLayout(
                             Spacer(Modifier.width(10.dp))
                             CircleGlyph(
                                 icon = SonataIcons.MoreHoriz,
-                                contentDescription = "Options",
+                                contentDescription = LocalSonataStrings.current.options,
                                 onClick = onOpenSettings,
                             )
                         }
@@ -1593,7 +1612,12 @@ internal fun formatDurationMs(ms: Long): String {
     return "$mins:${secs.toString().padStart(2, '0')}"
 }
 
-internal fun shareYouTubeMusicUrl(context: android.content.Context, url: String, title: String) {
+internal fun shareYouTubeMusicUrl(
+    context: android.content.Context,
+    url: String,
+    title: String,
+    chooserFallback: String = "",
+) {
     val cleanUrl = url.trim()
     if (cleanUrl.isBlank()) return
     val sendIntent = Intent(Intent.ACTION_SEND).apply {
@@ -1605,7 +1629,7 @@ internal fun shareYouTubeMusicUrl(context: android.content.Context, url: String,
         }
     }
     runCatching {
-        context.startActivity(Intent.createChooser(sendIntent, title.ifBlank { "Share Link" }))
+        context.startActivity(Intent.createChooser(sendIntent, title.ifBlank { chooserFallback.ifBlank { cleanUrl } }))
     }
 }
 

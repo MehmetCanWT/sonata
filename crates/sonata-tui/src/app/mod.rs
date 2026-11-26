@@ -36,7 +36,9 @@ use sonata_core::stats::{StatsDb, StatsSummary, StatsWindow};
 use sonata_core::updater::UpdateCheckResult;
 use sonata_runtime::auth::extract_browser_cookies;
 use sonata_runtime::config::{sanitize_crossfade_secs, AppConfig};
-use sonata_runtime::connect::{ConnectHandle, ConnectServerConfig, PairedDeviceInfo};
+use sonata_runtime::connect::{
+    ConnectHandle, ConnectServerConfig, PairedDeviceInfo, PendingPairRequest,
+};
 use sonata_runtime::hyprland;
 use sonata_runtime::player::{
     MpvEvent, PlaybackAudioDriver, PlaybackSession, PlaybackSessionConfig, PlaybackSessionHandle,
@@ -47,7 +49,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 fn linux_core_paths() -> CorePaths {
     AppConfig::default_core_paths()
@@ -74,6 +76,7 @@ pub struct App {
     pub album_art: Option<StatefulProtocol>,
     pub album_art_track_id: Option<String>,
     pub kitty_art_png: Option<Vec<u8>>,
+    pub motion_cover_path: Option<std::path::PathBuf>,
     pub anim_art_frames: Vec<(Option<StatefulProtocol>, Vec<u8>)>,
     pub anim_art_idx: usize,
     pub anim_fps: f32,
@@ -128,12 +131,14 @@ pub struct App {
     pub session: PlaybackSessionHandle,
     pub pending_session_cmds: VecDeque<SessionCommand>,
     pub tx: mpsc::UnboundedSender<AppEvent>,
+    pub mpris_tx: mpsc::UnboundedSender<crate::mpris::MprisUpdate>,
     pub tracks_req_id: u64,
     pub play_seq: u64,
     pub media_tasks: PlaybackTaskSet,
     pub cover_started_play_seq: Option<u64>,
     pub config_dirty: bool,
     pub last_exported_state: Option<ExportFingerprint>,
+    pub last_lyrics_export_key: Option<String>,
     pub fx: UiEffects,
     pub download_store: Option<sonata_runtime::downloads::DownloadStore>,
     pub downloaded_tracks: Vec<sonata_runtime::downloads::DownloadedTrack>,
@@ -182,10 +187,12 @@ pub struct App {
     pub stats_loading: bool,
     pub connect_handle: Option<ConnectHandle>,
     pub connect_cmd_rx: Option<mpsc::Receiver<ConnectCommand>>,
+    pub connect_pair_rx: Option<watch::Receiver<Vec<PendingPairRequest>>>,
     pub connect_sync_needed: bool,
     pub connect_pin: Option<String>,
     pub connect_http_port: Option<u16>,
     pub connect_paired_devices: Vec<PairedDeviceInfo>,
+    pub connect_pending_pair: Option<PendingPairRequest>,
     pub connect_error: Option<String>,
     pub pending_connect_seek: Option<(String, f64)>,
     pub last_connect_publish: Instant,
@@ -205,6 +212,15 @@ pub async fn recv_connect_cmd(
 ) -> Option<ConnectCommand> {
     match rx {
         Some(receiver) => receiver.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+pub async fn recv_connect_pair_change(
+    rx: &mut Option<watch::Receiver<Vec<PendingPairRequest>>>,
+) -> Result<(), watch::error::RecvError> {
+    match rx {
+        Some(receiver) => receiver.changed().await,
         None => std::future::pending().await,
     }
 }
@@ -242,6 +258,7 @@ impl App {
             sonata_runtime::downloads::DownloadStore::open(config.effective_downloads_dir()).ok();
         let discord_rpc =
             sonata_runtime::discord::DiscordRpcHandle::spawn(Self::discord_config_from(&config));
+        let mpris_tx = crate::mpris::spawn_mpris(tx.clone());
         let server_client = sonata_core::providers::servers::ServerClient::new(http.clone());
         let server_profiles =
             sonata_core::providers::servers::load_server_profiles(&paths).unwrap_or_default();
@@ -320,6 +337,10 @@ impl App {
         let scrobble_config = ScrobbleConfig::load_from_paths(&paths).unwrap_or_default();
         let scrobble_client = ScrobbleClient::new();
         let connect_sync_needed = config.connect_enabled;
+        let init_strings = sonata_runtime::i18n::strings(config.language);
+        let initial_heading = init_strings.tui_search_heading_prompt.to_string();
+        let initial_status = init_strings.scanning_browser_cookies.to_string();
+        let initial_browser_label = init_strings.scanning.to_string();
         let mut app = Self {
             config,
             themes,
@@ -330,6 +351,7 @@ impl App {
             album_art: None,
             album_art_track_id: None,
             kitty_art_png: None,
+            motion_cover_path: None,
             anim_art_frames: Vec::new(),
             anim_art_idx: 0,
             anim_fps: 16.0,
@@ -360,7 +382,7 @@ impl App {
             imported_playlists,
             visible_tracks: Vec::new(),
             current_playlist_id: None,
-            tracks_heading: "Search (press /)".to_string(),
+            tracks_heading: initial_heading,
             track_table_state,
             ui_rects: UiRects::default(),
             fx: UiEffects::new(),
@@ -369,8 +391,8 @@ impl App {
             last_art_click: None,
             mini_mode: false,
             search_query: String::new(),
-            status_line: "Scanning browser cookies...".to_string(),
-            browser_label: "Scanning...".to_string(),
+            status_line: initial_status,
+            browser_label: initial_browser_label,
             update_info: None,
             should_quit: false,
             http,
@@ -384,12 +406,14 @@ impl App {
             session,
             pending_session_cmds: VecDeque::new(),
             tx,
+            mpris_tx,
             tracks_req_id: 0,
             play_seq: 0,
             media_tasks: PlaybackTaskSet::default(),
             cover_started_play_seq: None,
             config_dirty: false,
             last_exported_state: None,
+            last_lyrics_export_key: None,
             download_store,
             downloaded_tracks: Vec::new(),
             downloaded_collections: Vec::new(),
@@ -435,10 +459,12 @@ impl App {
             stats_loading: true,
             connect_handle: None,
             connect_cmd_rx: None,
+            connect_pair_rx: None,
             connect_sync_needed,
             connect_pin: None,
             connect_http_port: None,
             connect_paired_devices: Vec::new(),
+            connect_pending_pair: None,
             connect_error: None,
             pending_connect_seek: None,
             last_connect_publish: Instant::now(),
@@ -516,8 +542,9 @@ impl App {
         Self::spawn_update_check(self.http.clone(), self.tx.clone());
 
         if self.config.personal_only_mode {
+            let s = sonata_runtime::i18n::strings(self.config.language);
             let _ = self.tx.send(AppEvent::StatusMessage(
-                "Personal Only Mode active (streaming paused)".to_string(),
+                s.personal_only_streaming_paused.to_string(),
             ));
             return;
         }
@@ -575,10 +602,11 @@ impl App {
                 spotify_playlists,
                 imported_playlists,
             } => {
+                let s = sonata_runtime::i18n::strings(self.config.language);
                 self.browser_label = cookies
                     .browser_name
                     .clone()
-                    .unwrap_or_else(|| "Guest (No Browser Login)".to_string());
+                    .unwrap_or_else(|| s.guest_no_browser_login.to_string());
                 self.cookies = cookies;
                 self.ytm = YtMusicClient::new(self.http.clone(), self.cookies.clone())
                     .with_language(self.config.language.code());
@@ -604,19 +632,27 @@ impl App {
                 )
                     as Arc<dyn PlaybackStreamSource>));
 
-                if let Some(db) = &self.cache_db {
-                    db.put_library("ytm", &ytm_playlists);
-                    db.put_library("spf", &spotify_playlists);
-                    db.put_library("imported", &imported_playlists);
+                if let Some(db) = self.cache_db.clone() {
+                    let ytm_cache = ytm_playlists.clone();
+                    let spf_cache = spotify_playlists.clone();
+                    let imp_cache = imported_playlists.clone();
+                    tokio::task::spawn_blocking(move || {
+                        db.put_library("ytm", &ytm_cache);
+                        db.put_library("spf", &spf_cache);
+                        db.put_library("imported", &imp_cache);
+                    });
                 }
                 self.ytm_playlists = ytm_playlists;
                 self.spotify_playlists = spotify_playlists;
                 self.imported_playlists = imported_playlists;
                 self.rebuild_sidebar();
+                let s = sonata_runtime::i18n::strings(self.config.language);
                 self.status_line = format!(
-                    "Ready ({}) — [Mode: {}]",
+                    "{} ({}) — [{}: {}]",
+                    s.tray_ready,
                     self.browser_label,
-                    self.config.provider_mode.label()
+                    s.mode_label,
+                    self.config.provider_mode.label_for(self.config.language)
                 );
             }
             AppEvent::TracksLoaded {
@@ -641,7 +677,10 @@ impl App {
                 } else {
                     self.track_table_state.select(Some(0));
                 }
-                self.status_line = format!("Loaded {} tracks", self.visible_tracks.len());
+                self.status_line = sonata_runtime::i18n::fmt_loaded_tracks(
+                    self.config.language,
+                    self.visible_tracks.len(),
+                );
             }
             AppEvent::TracksAppended {
                 req_id,
@@ -650,7 +689,10 @@ impl App {
             } => {
                 if req_id == self.tracks_req_id && self.tracks_heading == heading {
                     self.visible_tracks.extend(tracks);
-                    self.status_line = format!("Loaded {} tracks", self.visible_tracks.len());
+                    self.status_line = sonata_runtime::i18n::fmt_loaded_tracks(
+                        self.config.language,
+                        self.visible_tracks.len(),
+                    );
                 }
             }
             AppEvent::LyricsReady {
@@ -663,10 +705,15 @@ impl App {
                 }
                 if let Some(track) = self.playback.current_track().filter(|t| t.id == track_id) {
                     if let LyricsState::Synced(ref lines) = lyrics {
-                        if !sonata_core::lyrics::synced_lyrics_match_duration(
-                            lines,
-                            track.duration_secs,
-                        ) {
+                        if !sonata_core::lyrics::has_advancing_timestamps(lines)
+                            || !sonata_core::lyrics::synced_lyrics_match_duration(
+                                lines,
+                                track.duration_secs,
+                            )
+                        {
+                            if matches!(self.lyrics, LyricsState::Loading) {
+                                self.lyrics = LyricsState::NotFound;
+                            }
                             return;
                         }
                     }
@@ -773,6 +820,7 @@ impl App {
                 play_seq,
                 track_id,
                 fps,
+                motion_path,
                 frames,
             } => {
                 if play_seq != self.play_seq {
@@ -784,6 +832,7 @@ impl App {
                     .is_some_and(|track| track.id == track_id)
                     && !frames.is_empty()
                 {
+                    self.motion_cover_path = Some(motion_path);
                     self.anim_art_frames = frames;
                     self.anim_art_idx = 0;
                     self.anim_fps = fps.clamp(8.0, 24.0);
@@ -793,13 +842,36 @@ impl App {
                     self.kitty_motion_last_drawn = None;
                     self.kitty_motion_buf_slot = 0;
                     self.album_art_track_id = Some(track_id);
+                    self.export_now_playing();
+                }
+            }
+            AppEvent::MotionPathReady {
+                play_seq,
+                track_id,
+                motion_path,
+            } => {
+                if play_seq != self.play_seq {
+                    return;
+                }
+                if self
+                    .playback
+                    .current_track()
+                    .is_some_and(|track| track.id == track_id)
+                    && motion_path.is_file()
+                {
+                    self.motion_cover_path = Some(motion_path);
+                    self.export_now_playing();
                 }
             }
             AppEvent::PlaylistCreated(pl) => {
-                self.status_line = format!("Created YouTube Music playlist: {}", pl.name);
+                let s = sonata_runtime::i18n::strings(self.config.language);
+                self.status_line = format!("{}: {}", s.created_ytm_playlist, pl.name);
                 self.ytm_playlists.push(pl);
-                if let Some(db) = &self.cache_db {
-                    db.put_library("ytm", &self.ytm_playlists);
+                if let Some(db) = self.cache_db.clone() {
+                    let ytm_cache = self.ytm_playlists.clone();
+                    tokio::task::spawn_blocking(move || {
+                        db.put_library("ytm", &ytm_cache);
+                    });
                 }
                 self.rebuild_sidebar();
             }
@@ -807,11 +879,12 @@ impl App {
                 if play_seq != self.play_seq {
                     return;
                 }
+                let s = sonata_runtime::i18n::strings(self.config.language);
                 if tracks.is_empty() {
                     self.playback.paused = true;
                     self.playback.loading_track = false;
                     self.playback.position_secs = 0.0;
-                    self.playback.stream_badge = "Finished".to_string();
+                    self.playback.stream_badge = s.badge_finished.to_string();
                     return;
                 }
                 let mut combined = self.playback.queue.clone();
@@ -827,7 +900,7 @@ impl App {
                     self.playback.paused = true;
                     self.playback.loading_track = false;
                     self.playback.position_secs = 0.0;
-                    self.playback.stream_badge = "Finished".to_string();
+                    self.playback.stream_badge = s.badge_finished.to_string();
                     return;
                 }
                 self.enqueue_session_cmd(SessionCommand::PlayQueue {
@@ -835,16 +908,16 @@ impl App {
                     start_index,
                     push_history: false,
                 });
-                self.status_line = "Autoplay: playing similar tracks".to_string();
+                self.status_line = s.autoplay_playing_similar.to_string();
             }
             AppEvent::UpdateChecked(info) => {
+                let s = sonata_runtime::i18n::strings(self.config.language);
                 if info.update_available {
-                    if self.status_line == "Checking for updates..." {
-                        self.status_line =
-                            "Update available — see details in Settings (S)".to_string();
+                    if self.status_line == s.checking_updates {
+                        self.status_line = s.update_available_settings_hint.to_string();
                     }
-                } else if self.status_line == "Checking for updates..." {
-                    self.status_line = "Sonata is up to date".to_string();
+                } else if self.status_line == s.checking_updates {
+                    self.status_line = s.sonata_up_to_date.to_string();
                 }
                 self.update_info = Some(info);
             }
@@ -863,7 +936,7 @@ impl App {
                 if matches!(
                     self.sidebar_items.get(self.sidebar_idx),
                     Some(SidebarEntry::Downloads)
-                ) && self.tracks_heading.starts_with("Downloads")
+                ) && self.current_playlist_id.as_deref() == Some("SONATA:DOWNLOADS")
                 {
                     self.visible_tracks = self
                         .downloaded_tracks
@@ -879,13 +952,15 @@ impl App {
                 result,
             } => {
                 self.downloading_track_ids.remove(&track_id);
+                let lang = self.config.language;
                 match result {
                     Ok(()) => {
-                        self.status_line = format!("Downloaded \"{title}\" for offline playback");
+                        self.status_line = sonata_runtime::i18n::fmt_downloaded_track(lang, &title);
                         self.refresh_downloads();
                     }
                     Err(err) => {
-                        self.status_line = format!("Download failed for \"{title}\": {err}");
+                        self.status_line =
+                            sonata_runtime::i18n::fmt_download_failed(lang, &title, &err);
                     }
                 }
             }
@@ -898,23 +973,25 @@ impl App {
                 for id in track_ids {
                     self.downloading_track_ids.remove(&id);
                 }
-                self.status_line = if errors == 0 {
-                    format!("Downloaded {saved} tracks from \"{title}\"")
-                } else {
-                    format!("Downloaded {saved} tracks from \"{title}\" ({errors} failed)")
-                };
+                self.status_line = sonata_runtime::i18n::fmt_downloaded_collection(
+                    self.config.language,
+                    saved,
+                    &title,
+                    errors,
+                );
                 self.refresh_downloads();
             }
             AppEvent::ServerTested { server_id, result } => {
+                let s = sonata_runtime::i18n::strings(self.config.language);
                 match result {
                     Ok(summary) => {
                         self.server_statuses.insert(server_id, summary.clone());
-                        self.status_line = format!("Server connected: {summary}");
+                        self.status_line = format!("{}: {summary}", s.server_connected);
                     }
                     Err(err) => {
                         self.server_statuses
-                            .insert(server_id, format!("Error: {err}"));
-                        self.status_line = format!("Server connection failed: {err}");
+                            .insert(server_id, format!("{}: {err}", s.error_label));
+                        self.status_line = format!("{}: {err}", s.server_connection_failed);
                     }
                 }
                 if let ActiveModal::AddServer(ref mut form) = self.modal {
@@ -926,6 +1003,7 @@ impl App {
                 let save_paths = self.paths.clone();
                 let save_list = self.server_profiles.clone();
                 let tx = self.tx.clone();
+                let lang = self.config.language;
                 tokio::spawn(async move {
                     let save_res = tokio::task::spawn_blocking(move || {
                         sonata_core::providers::servers::save_server_profiles(
@@ -938,8 +1016,10 @@ impl App {
                         Err(sonata_core::error::CoreError::internal(e.to_string()))
                     });
                     if let Err(err) = save_res {
+                        let s = sonata_runtime::i18n::strings(lang);
                         let _ = tx.send(AppEvent::StatusMessage(format!(
-                            "Failed to save server: {err}"
+                            "{}: {err}",
+                            s.server_save_failed
                         )));
                     }
                 });
@@ -948,15 +1028,16 @@ impl App {
                 self.status_line = message;
             }
             AppEvent::ServerHealthProbed { server_id, report } => {
-                self.server_statuses
-                    .insert(server_id.clone(), format_tui_health_badge(&report));
+                let badge = format_tui_health_badge_for(self.config.language, &report);
+                self.server_statuses.insert(server_id.clone(), badge);
                 self.server_health.insert(server_id, report);
             }
             AppEvent::ServerSpeedTestFinished { server_id, report } => {
                 self.server_speed_testing.remove(&server_id);
-                let badge = format_tui_speed_badge(&report);
+                let badge = format_tui_speed_badge_for(self.config.language, &report);
                 self.server_speed_tests.insert(server_id, report);
-                self.status_line = format!("Speed test: {badge}");
+                let s = sonata_runtime::i18n::strings(self.config.language);
+                self.status_line = format!("{}: {badge}", s.speed_test);
             }
             AppEvent::LocalMusicScanned { req_id, scan } => {
                 if req_id != self.local_scan_req_id || !self.config.local_music_enabled {
@@ -973,7 +1054,27 @@ impl App {
                 ) {
                     self.visible_tracks = self.local_scan.tracks.clone();
                 }
-                self.status_line = format!("Local Music: {count} tracks across {albums} albums");
+                self.status_line = sonata_runtime::i18n::fmt_local_scan_summary(
+                    self.config.language,
+                    count,
+                    albums,
+                );
+            }
+            AppEvent::PersonalPlaylistsLoaded(playlists) => {
+                self.personal_playlists = playlists;
+                let s = sonata_runtime::i18n::strings(self.config.language);
+                if let Some(pid) = self.current_playlist_id.clone() {
+                    if pid.starts_with(sonata_core::playlists::PERSONAL_PLAYLIST_ID_PREFIX) {
+                        if let Some(pl) = self.personal_playlists.iter().find(|p| p.id == pid) {
+                            self.tracks_heading = format!("[{}] {}", s.personal_tag, pl.name);
+                            self.visible_tracks = pl.tracks.clone();
+                        } else {
+                            self.current_playlist_id = None;
+                            self.visible_tracks.clear();
+                        }
+                    }
+                }
+                self.rebuild_sidebar();
             }
             AppEvent::ServerBrowseLoaded {
                 req_id,
@@ -1006,7 +1107,8 @@ impl App {
                 self.server_tracks = tracks.clone();
                 self.server_folders = folders;
                 if let Some(err) = error {
-                    self.status_line = format!("Server error: {err}");
+                    let s = sonata_runtime::i18n::strings(self.config.language);
+                    self.status_line = format!("{}: {err}", s.server_error);
                 } else if !tracks.is_empty() {
                     self.visible_tracks = tracks;
                     self.track_table_state.select(Some(0));
@@ -1029,6 +1131,60 @@ impl App {
             AppEvent::ScrobbleError(err) => {
                 self.scrobble_last_error = err;
             }
+            AppEvent::Mpris(cmd) => match cmd {
+                MprisCmd::SetPaused(paused) => {
+                    self.enqueue_session_cmd(SessionCommand::SetPaused(paused));
+                }
+                MprisCmd::TogglePause => {
+                    self.enqueue_session_cmd(SessionCommand::TogglePause);
+                }
+                MprisCmd::Stop => {
+                    self.enqueue_session_cmd(SessionCommand::Stop);
+                }
+                MprisCmd::NextTrack => {
+                    self.enqueue_session_cmd(SessionCommand::Next);
+                }
+                MprisCmd::PrevTrack => {
+                    self.enqueue_session_cmd(SessionCommand::Previous {
+                        restart_if_after_secs: Some(4.0),
+                    });
+                }
+                MprisCmd::SeekRelative(secs) => {
+                    self.seek(secs);
+                }
+                MprisCmd::SeekAbsolute(secs) => {
+                    self.seek_to(secs);
+                }
+                MprisCmd::SetVolume(pct) => {
+                    self.set_volume(pct, true);
+                }
+                MprisCmd::SetShuffle(shuffle) => {
+                    let delta = self.playback.shuffle != shuffle;
+                    if delta {
+                        self.enqueue_session_cmd(SessionCommand::ToggleShuffle);
+                    }
+                }
+                MprisCmd::SetRepeat(target) => {
+                    self.playback.repeat = target;
+                    self.enqueue_session_cmd(SessionCommand::SetRepeat(target));
+                }
+                MprisCmd::Quit => {
+                    self.should_quit = true;
+                }
+            },
+        }
+    }
+
+    pub fn save_config_async(&self) {
+        let cfg = self.config.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn_blocking(move || {
+                if let Err(err) = cfg.save() {
+                    tracing::warn!(?err, "failed to save tui config");
+                }
+            });
+        } else {
+            let _ = cfg.save();
         }
     }
 
@@ -1038,22 +1194,31 @@ impl App {
             .as_ref()
             .is_some_and(|info| info.update_available)
         {
+            const DEFAULT_RELEASES_URL: &str = "https://github.com/MehmetCanWT/sonata/releases";
             let url = self
                 .update_info
                 .as_ref()
-                .map(|info| info.release_url.as_str())
-                .filter(|u| !u.is_empty())
-                .unwrap_or("https://github.com/MehmetCanWT/sonata/releases");
-            let _ = std::process::Command::new("xdg-open")
-                .arg(url)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
-            self.status_line = "Opened GitHub Releases in browser".to_string();
+                .and_then(|info| validated_https_url(&info.release_url))
+                .unwrap_or_else(|| DEFAULT_RELEASES_URL.to_string());
+            let _ = std::thread::Builder::new()
+                .name("sonata-xdg-open".into())
+                .spawn(move || {
+                    if let Ok(mut child) = std::process::Command::new("xdg-open")
+                        .arg(&url)
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()
+                    {
+                        let _ = child.wait();
+                    }
+                });
+            let s = sonata_runtime::i18n::strings(self.config.language);
+            self.status_line = s.opened_github_releases.to_string();
             return;
         }
-        self.status_line = "Checking for updates...".to_string();
+        let s = sonata_runtime::i18n::strings(self.config.language);
+        self.status_line = s.checking_updates.to_string();
         Self::spawn_update_check(self.http.clone(), self.tx.clone());
     }
 
@@ -1082,7 +1247,7 @@ impl App {
         } else {
             self.config.language.prev()
         };
-        let _ = self.config.save();
+        self.save_config_async();
         let ytm = self.ytm.clone();
         let lang_code = self.config.language.code();
         tokio::spawn(async move {
@@ -1172,14 +1337,16 @@ impl App {
         self.scrobble_config.lastfm.api_key = form.api_key.trim().to_string();
         self.scrobble_config.lastfm.api_secret = form.api_secret.trim().to_string();
         self.scrobble_config.lastfm.session_key = form.session_key.trim().to_string();
-        self.persist_scrobble_config("Last.fm settings saved");
+        let s = sonata_runtime::i18n::strings(self.config.language);
+        self.persist_scrobble_config(s.lastfm_saved);
     }
 
     pub fn save_listenbrainz_form(&mut self, form: &ListenBrainzFormState) {
         self.scrobble_config.listenbrainz.enabled = form.enabled;
         self.scrobble_config.listenbrainz.username = form.username.trim().to_string();
         self.scrobble_config.listenbrainz.token = form.token.trim().to_string();
-        self.persist_scrobble_config("ListenBrainz settings saved");
+        let s = sonata_runtime::i18n::strings(self.config.language);
+        self.persist_scrobble_config(s.listenbrainz_saved);
     }
 
     pub fn toggle_lastfm_enabled(&mut self) {
@@ -1213,22 +1380,42 @@ impl App {
     }
 
     fn persist_scrobble_config(&mut self, ok_msg: &str) {
-        match self.scrobble_config.save_to_paths(&self.paths) {
-            Ok(()) => {
-                self.scrobble_last_error = None;
-                self.status_line = ok_msg.to_string();
+        let cfg = self.scrobble_config.clone();
+        let paths = self.paths.clone();
+        let tx = self.tx.clone();
+        let ok_msg = ok_msg.to_string();
+        let lang = self.config.language;
+        tokio::spawn(async move {
+            let res = tokio::task::spawn_blocking(move || cfg.save_to_paths(&paths)).await;
+            let s = sonata_runtime::i18n::strings(lang);
+            match res {
+                Ok(Ok(())) => {
+                    let _ = tx.send(AppEvent::ScrobbleError(None));
+                    let _ = tx.send(AppEvent::StatusMessage(ok_msg));
+                }
+                Ok(Err(err)) => {
+                    let safe = sensitive_text(&err.to_string());
+                    let _ = tx.send(AppEvent::ScrobbleError(Some(safe.clone())));
+                    let _ = tx.send(AppEvent::StatusMessage(format!(
+                        "{}: {safe}",
+                        s.scrobble_save_failed
+                    )));
+                }
+                Err(err) => {
+                    let safe = sensitive_text(&err.to_string());
+                    let _ = tx.send(AppEvent::ScrobbleError(Some(safe.clone())));
+                    let _ = tx.send(AppEvent::StatusMessage(format!(
+                        "{}: {safe}",
+                        s.scrobble_save_failed
+                    )));
+                }
             }
-            Err(err) => {
-                let safe = sensitive_text(&err.to_string());
-                self.scrobble_last_error = Some(safe.clone());
-                self.status_line = format!("Failed to save scrobble config: {safe}");
-            }
-        }
+        });
     }
 
     pub fn toggle_connect(&mut self) {
         self.config.connect_enabled = !self.config.connect_enabled;
-        let _ = self.config.save();
+        self.save_config_async();
         self.connect_sync_needed = true;
         let s = sonata_runtime::i18n::strings(self.config.language);
         self.status_line = format!(
@@ -1249,12 +1436,17 @@ impl App {
         } else {
             trimmed.to_string()
         };
-        let _ = self.config.save();
-        if self.config.connect_enabled {
+        self.save_config_async();
+        if let Some(ref handle) = self.connect_handle {
+            handle.set_device_name(self.config.effective_connect_device_name().to_string());
+            self.publish_connect_snapshot();
+        } else if self.config.connect_enabled {
             self.connect_sync_needed = true;
         }
+        let s = sonata_runtime::i18n::strings(self.config.language);
         self.status_line = format!(
-            "Sonata Connect device: {}",
+            "{}: {}",
+            s.connect_device_updated,
             self.config.effective_connect_device_name()
         );
     }
@@ -1262,41 +1454,98 @@ impl App {
     pub fn regenerate_connect_pin(&mut self) {
         if let Some(ref handle) = self.connect_handle {
             self.connect_pin = Some(handle.regenerate_pin());
-            self.status_line = "Sonata Connect pairing PIN refreshed".to_string();
+            let s = sonata_runtime::i18n::strings(self.config.language);
+            self.status_line = s.connect_pin_refreshed.to_string();
         }
     }
 
     pub fn unpair_connect_device(&mut self, device_id: &str) {
         if let Some(ref handle) = self.connect_handle {
+            let s = sonata_runtime::i18n::strings(self.config.language);
             match handle.unpair_device(device_id) {
                 Ok(removed) => {
                     self.connect_paired_devices = handle.paired_devices();
                     if removed {
-                        self.status_line = "Paired device removed".to_string();
+                        self.status_line = s.connect_device_unpaired.to_string();
                     }
                 }
                 Err(err) => {
                     let safe = sensitive_text(&err.to_string());
                     self.connect_error = Some(safe.clone());
-                    self.status_line = format!("Unpair failed: {safe}");
+                    self.status_line = format!("{}: {safe}", s.connect_unpair_failed);
                 }
             }
         }
     }
 
+    pub fn approve_connect_pair(&mut self) {
+        let Some(pending) = self.connect_pending_pair.clone() else {
+            return;
+        };
+        if let Some(ref handle) = self.connect_handle {
+            let s = sonata_runtime::i18n::strings(self.config.language);
+            match handle.approve_pair_request(&pending.request_id) {
+                Ok(approved) => {
+                    self.connect_paired_devices = handle.paired_devices();
+                    self.connect_pending_pair = handle.pending_pair_requests().into_iter().next();
+                    if approved {
+                        self.status_line = s.connect_pair_approved.to_string();
+                    }
+                }
+                Err(err) => {
+                    let safe = sensitive_text(&err.to_string());
+                    self.connect_error = Some(safe.clone());
+                    self.status_line = format!("{}: {safe}", s.connect_pair_failed);
+                }
+            }
+        }
+    }
+
+    pub fn reject_connect_pair(&mut self) {
+        let Some(pending) = self.connect_pending_pair.clone() else {
+            return;
+        };
+        if let Some(ref handle) = self.connect_handle {
+            let s = sonata_runtime::i18n::strings(self.config.language);
+            if handle.reject_pair_request(&pending.request_id) {
+                self.status_line = s.connect_pair_rejected.to_string();
+            }
+            self.connect_pending_pair = handle.pending_pair_requests().into_iter().next();
+        }
+    }
+
+    pub fn refresh_connect_pair_state(&mut self) {
+        if let Some(ref mut rx) = self.connect_pair_rx {
+            let pending = rx.borrow_and_update().clone();
+            self.connect_pending_pair = pending.into_iter().next();
+        }
+        if let Some(ref handle) = self.connect_handle {
+            self.connect_paired_devices = handle.paired_devices();
+        }
+    }
+
     pub async fn sync_connect_server(&mut self) {
         self.connect_sync_needed = false;
-        if let Some(prev) = self.connect_handle.take() {
-            prev.shutdown();
-        }
-        self.connect_cmd_rx = None;
-        self.connect_pin = None;
-        self.connect_http_port = None;
-        self.connect_error = None;
-        if !self.config.connect_enabled {
+        if self.config.connect_enabled {
+            if let Some(ref handle) = self.connect_handle {
+                handle.set_device_name(self.config.effective_connect_device_name().to_string());
+                self.publish_connect_snapshot();
+                return;
+            }
+        } else {
+            if let Some(prev) = self.connect_handle.take() {
+                prev.shutdown();
+            }
+            self.connect_cmd_rx = None;
+            self.connect_pair_rx = None;
+            self.connect_pin = None;
+            self.connect_http_port = None;
             self.connect_paired_devices.clear();
+            self.connect_pending_pair = None;
+            self.connect_error = None;
             return;
         }
+        self.connect_error = None;
         let cfg = ConnectServerConfig {
             device_name: self.config.effective_connect_device_name().to_string(),
             paired_store_path: self.paths.connect_paired_path(),
@@ -1307,14 +1556,17 @@ impl App {
                 self.connect_pin = Some(handle.current_pin());
                 self.connect_http_port = Some(handle.http_port());
                 self.connect_paired_devices = handle.paired_devices();
+                self.connect_pair_rx = Some(handle.subscribe_pair_requests());
+                self.connect_pending_pair = handle.pending_pair_requests().into_iter().next();
                 self.connect_handle = Some(handle);
                 self.connect_cmd_rx = Some(cmd_rx);
                 self.publish_connect_snapshot();
             }
             Err(err) => {
+                let s = sonata_runtime::i18n::strings(self.config.language);
                 let safe = sensitive_text(&err.to_string());
                 tracing::warn!(client = "tui", error = %safe, "failed to start Sonata Connect");
-                self.connect_error = Some(safe);
+                self.connect_error = Some(format!("{}: {safe}", s.connect_start_failed));
             }
         }
     }
@@ -1326,6 +1578,7 @@ impl App {
         self.last_connect_publish = Instant::now();
         self.connect_paired_devices = handle.paired_devices();
         self.connect_pin = Some(handle.current_pin());
+        self.connect_pending_pair = handle.pending_pair_requests().into_iter().next();
         let snapshot =
             build_tui_connect_snapshot(self.config.effective_connect_device_name(), &self.playback);
         handle.update_state(snapshot);
@@ -1360,21 +1613,29 @@ impl App {
                 start_index,
                 position_secs,
             } => {
+                let local_roots = if self.config.local_music_enabled {
+                    self.config.effective_local_music_dirs()
+                } else {
+                    Vec::new()
+                };
                 let Some((filtered, idx)) = filter_tui_transfer_tracks(
                     tracks,
                     start_index,
                     self.config.personal_only_mode,
                     &self.downloaded_track_ids,
+                    &local_roots,
+                    &self.server_profiles,
                 ) else {
-                    self.status_line =
-                        "Connect handoff ignored: no playable tracks in current mode".to_string();
+                    let s = sonata_runtime::i18n::strings(self.config.language);
+                    self.status_line = s.connect_handoff_ignored.to_string();
                     return;
                 };
                 self.pending_connect_seek = filtered
                     .get(idx)
                     .filter(|_| position_secs.is_finite() && position_secs > 0.5)
                     .map(|t| (t.id.clone(), position_secs.max(0.0)));
-                self.status_line = "Adopted queue from Sonata Connect".to_string();
+                let s = sonata_runtime::i18n::strings(self.config.language);
+                self.status_line = s.connect_queue_adopted.to_string();
                 self.enqueue_session_cmd(SessionCommand::PlayQueue {
                     tracks: filtered,
                     start_index: idx,
@@ -1382,5 +1643,33 @@ impl App {
                 });
             }
         }
+    }
+}
+
+pub(crate) fn validated_https_url(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let parsed = reqwest::Url::parse(trimmed).ok()?;
+    if parsed.scheme() != "https" || parsed.host_str().is_none() {
+        return None;
+    }
+    Some(parsed.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validated_https_url;
+
+    #[test]
+    fn validated_https_url_allows_only_https_with_host() {
+        assert_eq!(
+            validated_https_url("https://github.com/MehmetCanWT/sonata/releases/tag/v1.0.9")
+                .as_deref(),
+            Some("https://github.com/MehmetCanWT/sonata/releases/tag/v1.0.9")
+        );
+        assert!(validated_https_url("http://github.com/MehmetCanWT/sonata").is_none());
+        assert!(validated_https_url("file:///etc/passwd").is_none());
+        assert!(validated_https_url("javascript:alert(1)").is_none());
+        assert!(validated_https_url("-flag").is_none());
+        assert!(validated_https_url("").is_none());
     }
 }

@@ -10,6 +10,7 @@
 
 mod app;
 mod input;
+mod mpris;
 mod theme;
 mod theme_tui;
 mod ui;
@@ -26,9 +27,97 @@ use ratatui::Terminal;
 use ratatui_image::picker::{Picker, ProtocolType};
 use sonata_runtime::config::AppConfig;
 use sonata_runtime::player::{MpvController, NoopAudioDriver, PlaybackAudioDriver};
-use std::io;
+use std::io::{self, Write as _};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
+
+fn restore_terminal_state(clear_kitty: bool) {
+    let mut stdout = io::stdout();
+    if clear_kitty {
+        let _ = stdout.write_all(b"\x1b_Ga=d,d=A,q=2\x1b\\");
+        let _ = stdout.flush();
+    }
+    let _ = disable_raw_mode();
+    let _ = execute!(
+        stdout,
+        LeaveAlternateScreen,
+        DisableMouseCapture,
+        crossterm::cursor::Show
+    );
+}
+
+struct TerminalGuard {
+    terminal: Terminal<CrosstermBackend<io::Stdout>>,
+    clear_kitty: bool,
+    restored: bool,
+}
+
+impl TerminalGuard {
+    fn enter(clear_kitty: bool) -> Result<Self> {
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        if let Err(err) = execute!(stdout, EnterAlternateScreen, EnableMouseCapture) {
+            restore_terminal_state(clear_kitty);
+            return Err(err.into());
+        }
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = match Terminal::new(backend) {
+            Ok(term) => term,
+            Err(err) => {
+                restore_terminal_state(clear_kitty);
+                return Err(err.into());
+            }
+        };
+        if let Err(err) = terminal.clear() {
+            restore_terminal_state(clear_kitty);
+            return Err(err.into());
+        }
+        Ok(Self {
+            terminal,
+            clear_kitty,
+            restored: false,
+        })
+    }
+
+    fn terminal_mut(&mut self) -> &mut Terminal<CrosstermBackend<io::Stdout>> {
+        &mut self.terminal
+    }
+
+    fn restore(&mut self) {
+        if self.restored {
+            return;
+        }
+        self.restored = true;
+        restore_terminal_state(self.clear_kitty);
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        self.restore();
+    }
+}
+
+struct InputThreadGuard {
+    shutdown: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl InputThreadGuard {
+    fn shutdown_and_join(&mut self) {
+        self.shutdown.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for InputThreadGuard {
+    fn drop(&mut self) {
+        self.shutdown_and_join();
+    }
+}
 
 #[cfg(unix)]
 fn redirect_tui_diagnostics() -> io::Result<()> {
@@ -121,25 +210,15 @@ async fn main() -> Result<()> {
     // Query terminal graphics protocol and font metrics before entering alternate screen
     let picker = detect_picker();
 
+    let is_kitty = picker.protocol_type() == ProtocolType::Kitty;
     let orig_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = disable_raw_mode();
-        let _ = execute!(
-            io::stdout(),
-            LeaveAlternateScreen,
-            DisableMouseCapture,
-            crossterm::cursor::Show
-        );
+        restore_terminal_state(is_kitty);
+        tracing::error!(%info, "sonata TUI panicked");
         orig_hook(info);
     }));
 
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-    terminal.clear()?;
+    let mut term_guard = TerminalGuard::enter(is_kitty)?;
 
     let (app_tx, mut app_rx) = mpsc::unbounded_channel::<AppEvent>();
     let (mpv_tx, mpv_rx) = mpsc::channel(64);
@@ -147,7 +226,13 @@ async fn main() -> Result<()> {
     let (driver, mpv_warning): (Arc<dyn PlaybackAudioDriver>, Option<String>) =
         match MpvController::spawn(config.volume, mpv_tx).await {
             Ok(ctrl) => (Arc::new(ctrl), None),
-            Err(e) => (Arc::new(NoopAudioDriver), Some(format!("Warning: {e}"))),
+            Err(e) => {
+                let s = sonata_runtime::i18n::strings(config.language);
+                (
+                    Arc::new(NoopAudioDriver),
+                    Some(format!("{}: {e}", s.warning_label)),
+                )
+            }
         };
 
     let (mut app, mut session_rx) =
@@ -162,14 +247,31 @@ async fn main() -> Result<()> {
         app.sync_connect_server().await;
     }
 
+    let input_shutdown = Arc::new(AtomicBool::new(false));
+    let input_shutdown_flag = Arc::clone(&input_shutdown);
     let (term_tx, mut term_rx) = mpsc::unbounded_channel::<Event>();
-    std::thread::spawn(move || {
-        while let Ok(ev) = event::read() {
-            if term_tx.send(ev).is_err() {
-                break;
+    let input_handle = std::thread::Builder::new()
+        .name("sonata-tui-input".into())
+        .spawn(move || {
+            while !input_shutdown_flag.load(Ordering::Relaxed) {
+                match event::poll(std::time::Duration::from_millis(100)) {
+                    Ok(true) => match event::read() {
+                        Ok(ev) => {
+                            if term_tx.send(ev).is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    },
+                    Ok(false) => {}
+                    Err(_) => break,
+                }
             }
-        }
-    });
+        })?;
+    let mut input_guard = InputThreadGuard {
+        shutdown: input_shutdown,
+        handle: Some(input_handle),
+    };
 
     let mut fast_tick = tokio::time::interval(std::time::Duration::from_millis(16));
     fast_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -182,7 +284,9 @@ async fn main() -> Result<()> {
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?,
     );
 
-    terminal.draw(|f| ui::render(f, &mut app))?;
+    term_guard
+        .terminal_mut()
+        .draw(|f| ui::render(f, &mut app))?;
 
     while !app.should_quit {
         #[cfg(unix)]
@@ -215,7 +319,7 @@ async fn main() -> Result<()> {
                 let prev_sec = app.playback.position_secs.floor() as i64;
                 let playback_dirty = if playing { app.tick_playback() } else { false };
                 if playback_dirty || app.fx.is_running() || app.is_lyrics_scrolling() {
-                    terminal.draw(|f| ui::render(f, &mut app))?;
+                    term_guard.terminal_mut().draw(|f| ui::render(f, &mut app))?;
                     app.sync_kitty_artwork();
                     if (app.playback.position_secs.floor() as i64) != prev_sec {
                         app.export_now_playing();
@@ -225,7 +329,7 @@ async fn main() -> Result<()> {
             _ = calm_tick.tick(), if (playing || app.sleep_timer_deadline.is_some()) && !needs_fast_tick => {
                 let tick_dirty = if playing { app.tick_playback() } else { false };
                 if tick_dirty || app.sleep_timer_deadline.is_some() {
-                    terminal.draw(|f| ui::render(f, &mut app))?;
+                    term_guard.terminal_mut().draw(|f| ui::render(f, &mut app))?;
                     app.sync_kitty_artwork();
                     app.export_now_playing();
                 }
@@ -234,9 +338,14 @@ async fn main() -> Result<()> {
                 app.handle_connect_command(ccmd);
                 app.flush_session_commands().await;
                 app.publish_connect_snapshot();
-                terminal.draw(|f| ui::render(f, &mut app))?;
+                term_guard.terminal_mut().draw(|f| ui::render(f, &mut app))?;
                 app.sync_kitty_artwork();
                 app.export_now_playing();
+            }
+            Ok(()) = app::recv_connect_pair_change(&mut app.connect_pair_rx) => {
+                app.refresh_connect_pair_state();
+                term_guard.terminal_mut().draw(|f| ui::render(f, &mut app))?;
+                app.sync_kitty_artwork();
             }
             Some(ev) = term_rx.recv() => {
                 match ev {
@@ -248,7 +357,7 @@ async fn main() -> Result<()> {
                     }
                     Event::Resize(_, _) => {
                         app.clear_kitty_images();
-                        let _ = terminal.clear();
+                        let _ = term_guard.terminal_mut().clear();
                         app.kitty_drawn_track = None;
                     }
                     _ => continue,
@@ -258,7 +367,7 @@ async fn main() -> Result<()> {
                     app.sync_connect_server().await;
                 }
                 app.publish_connect_snapshot();
-                terminal.draw(|f| ui::render(f, &mut app))?;
+                term_guard.terminal_mut().draw(|f| ui::render(f, &mut app))?;
                 app.sync_kitty_artwork();
                 app.export_now_playing();
             }
@@ -269,7 +378,7 @@ async fn main() -> Result<()> {
                 }
                 app.flush_session_commands().await;
                 app.publish_connect_snapshot();
-                terminal.draw(|f| ui::render(f, &mut app))?;
+                term_guard.terminal_mut().draw(|f| ui::render(f, &mut app))?;
                 app.sync_kitty_artwork();
                 app.export_now_playing();
             }
@@ -284,7 +393,7 @@ async fn main() -> Result<()> {
                     app.sync_connect_server().await;
                 }
                 app.publish_connect_snapshot();
-                terminal.draw(|f| ui::render(f, &mut app))?;
+                term_guard.terminal_mut().draw(|f| ui::render(f, &mut app))?;
                 app.sync_kitty_artwork();
                 app.export_now_playing();
             }
@@ -292,19 +401,14 @@ async fn main() -> Result<()> {
         }
     }
 
+    input_guard.shutdown_and_join();
     app.clear_kitty_images();
     app.clear_now_playing();
-    app.restore_hyprland_opacity();
-    let _ = app.config.save();
+    app.restore_hyprland_opacity().await;
+    let final_cfg = app.config.clone();
+    let _ = tokio::task::spawn_blocking(move || final_cfg.save()).await;
     app.shutdown_playback_tasks().await;
-
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
+    term_guard.restore();
 
     Ok(())
 }

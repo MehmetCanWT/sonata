@@ -555,6 +555,22 @@ internal fun SonataViewModel.startPersonalStationImpl() {
             }
             return@launch
         }
+        // Prefer YouTube Music's real personalized "My Supermix" when signed in.
+        val supermixCard = state.radioMixShelves
+            .flatMap { it.cards }
+            .firstOrNull { card ->
+                val t = card.title.lowercase()
+                card.id.contains("RDTMAK") && ("supermix" in t || "süper" in t || "супер" in t)
+            }
+            ?: state.radioMixShelves.flatMap { it.cards }.firstOrNull { it.id.contains("RDTMAK") }
+        if (supermixCard != null) {
+            val mixTracks = runSuspendCatching { engine.fetchCollectionTracks(supermixCard.id) }
+                .getOrDefault(emptyList())
+            if (mixTracks.isNotEmpty()) {
+                playTrack(mixTracks.first(), mixTracks)
+                return@launch
+            }
+        }
         val preferredArtists = buildPreferredArtists()
         val seedCandidates = (_lastPlayedTracks.value +
             state.shelves.flatMap { it.tracks }.filter { it.id in state.likedTrackIds })
@@ -579,13 +595,7 @@ internal fun SonataViewModel.startPersonalStationImpl() {
                 return@launch
             }
         }
-        val query = preferredArtists.firstOrNull()?.let { "$it radio mix" } ?: "my supermix"
-        val fallback = runSuspendCatching { engine.searchSongs(query) }.getOrDefault(emptyList())
-        if (fallback.isNotEmpty()) {
-            playTrack(fallback.first(), fallback)
-        } else {
-            startQuickRadio(state.activeTrack)
-        }
+        startQuickRadio(state.activeTrack)
     }
 }
 
@@ -606,9 +616,23 @@ internal fun SonataViewModel.startDiscoveryStationImpl() {
             }
             return@launch
         }
-        val preferredArtists = buildPreferredArtists()
+        // Prefer YouTube Music's real "Discover Mix" when signed in.
+        val discoverCard = state.radioMixShelves
+            .flatMap { it.cards }
+            .firstOrNull { card ->
+                val t = card.title.lowercase()
+                "discover" in t || "keşif" in t || "открыт" in t
+            }
+        if (discoverCard != null) {
+            val mixTracks = runSuspendCatching { engine.fetchCollectionTracks(discoverCard.id) }
+                .getOrDefault(emptyList())
+            if (mixTracks.isNotEmpty()) {
+                playTrack(mixTracks.first(), mixTracks)
+                return@launch
+            }
+        }
         val historyIds = _lastPlayedTracks.value.map { it.id }.toSet()
-        val freshCandidates = state.shelves.flatMap { it.tracks }
+        val freshCandidates = (state.shelves + state.exploreShelves).flatMap { it.tracks }
             .filter { it.id.isNotBlank() && !isPersonalTrackId(it.id) && it.id !in historyIds && it.id !in state.likedTrackIds }
             .distinctBy { it.id }
         val seeds = selectDistinctArtistIds(freshCandidates, maxCount = 3)
@@ -621,7 +645,7 @@ internal fun SonataViewModel.startDiscoveryStationImpl() {
                     seedVideoIds = seeds,
                     playlistId = null,
                     excludeVideoIds = excludeIds,
-                    preferredArtists = preferredArtists,
+                    preferredArtists = emptyList(),
                 )
             }.getOrDefault(emptyList()).ifEmpty {
                 runSuspendCatching { engine.fetchRadioQueue(seeds.first()) }
@@ -632,13 +656,7 @@ internal fun SonataViewModel.startDiscoveryStationImpl() {
                 return@launch
             }
         }
-        val fallback = runSuspendCatching { engine.searchSongs("new music discovery mix") }
-            .getOrDefault(emptyList())
-        if (fallback.isNotEmpty()) {
-            playTrack(fallback.first(), fallback)
-        } else {
-            startQuickRadio(state.activeTrack)
-        }
+        startQuickRadio(state.activeTrack)
     }
 }
 
@@ -877,6 +895,7 @@ internal fun SonataViewModel.enableVideoModeImpl() {
                     )
                     (listOf(syntheticOffline) + cachedQualities).sortedByDescending { it.height.toInt() }
                 }
+                val offlineLabel = uiStrings().offlineLabel
                 _uiState.update {
                     if (isGenerationActive(generation, track.id)) {
                         it.copy(
@@ -885,8 +904,8 @@ internal fun SonataViewModel.enableVideoModeImpl() {
                             availableVideoQualities = qualities,
                             activeVideoQualityLabel = offlineVideo.qualityLabel,
                             activeVideoQualityHeight = offlineHeight,
-                            streamBadge = "Offline · ${offlineVideo.qualityLabel}",
-                            status = "${uiStrings().videoMode} · Offline · ${offlineVideo.qualityLabel}",
+                            streamBadge = "$offlineLabel · ${offlineVideo.qualityLabel}",
+                            status = "${uiStrings().videoMode} · $offlineLabel · ${offlineVideo.qualityLabel}",
                         )
                     } else {
                         it
@@ -1007,7 +1026,7 @@ internal fun SonataViewModel.selectVideoQualityImpl(
         val offlineVideo = downloadManager.localVideoFor(track.id)
         val offlineMatches = offlineVideo != null &&
             (explicitHeight == null || (offlineVideo.qualityHeight > 0 && explicitHeight == offlineVideo.qualityHeight))
-        if (offlineMatches && offlineVideo != null) {
+        if (offlineMatches) {
             val activePosMs = withContext(Dispatchers.Main) {
                 controller?.currentPosition?.coerceAtLeast(0L) ?: playbackClock.positionMs
             }
@@ -1029,13 +1048,14 @@ internal fun SonataViewModel.selectVideoQualityImpl(
                 }
             }
             if (switchedOffline && isActive && isGenerationActive(generation, track.id)) {
+                val offlineLabel = uiStrings().offlineLabel
                 _uiState.update {
                     it.copy(
                         videoLoading = false,
                         activeVideoQualityLabel = offlineVideo.qualityLabel,
                         activeVideoQualityHeight = offlineVideo.qualityHeight,
-                        streamBadge = "Offline · ${offlineVideo.qualityLabel}",
-                        status = "${uiStrings().videoMode} · Offline · ${offlineVideo.qualityLabel}",
+                        streamBadge = "$offlineLabel · ${offlineVideo.qualityLabel}",
+                        status = "${uiStrings().videoMode} · $offlineLabel · ${offlineVideo.qualityLabel}",
                     )
                 }
                 return@launch
@@ -1130,7 +1150,8 @@ internal fun SonataViewModel.disableVideoModeImpl() {
         val offlineUri = downloadManager.localUriFor(track.id)
         if (offlineUri != null) {
             val offlineRecord = downloads.value.firstOrNull { it.videoId == track.id }
-            val offlineBadge = offlineRecord?.codec?.takeIf { it.isNotBlank() }?.let { "Offline · $it" } ?: "Offline"
+            val offlineLabel = uiStrings().offlineLabel
+            val offlineBadge = offlineRecord?.codec?.takeIf { it.isNotBlank() }?.let { "$offlineLabel · $it" } ?: offlineLabel
             baseStreamBadges[track.id] = offlineBadge
             val offlineItem = buildOfflineMediaItem(track, offlineUri)
             withContext(Dispatchers.Main) {
@@ -1161,7 +1182,7 @@ internal fun SonataViewModel.disableVideoModeImpl() {
         val stream = getCachedStream(track.id)
             ?: runSuspendCatching {
                 if (track.id.startsWith("jiosaavn:")) {
-                    val js = engine.resolveJiosaavnById(track.id) ?: error("JioSaavn stream unavailable")
+                    val js = engine.resolveJiosaavnById(track.id) ?: error(uiStrings().jioSaavnStreamUnavailable)
                     AndroidResolvedStream(url = js.url, badge = js.badge, headers = emptyList())
                 } else {
                     engine.resolveStream(track)

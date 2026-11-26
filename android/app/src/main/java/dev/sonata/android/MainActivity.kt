@@ -226,6 +226,9 @@ import dev.sonata.android.ui.SonataAccent
 import dev.sonata.android.ui.SonataIcons
 import dev.sonata.android.ui.SonataShimmerHost
 import dev.sonata.android.ui.SonataTheme
+import dev.sonata.android.ui.i18n.LocalSonataStrings
+import dev.sonata.android.ui.i18n.SonataStrings
+import dev.sonata.android.ui.i18n.ecosystemStrings
 import dev.sonata.android.ui.theme.LunariaColors
 import dev.sonata.android.ui.theme.LocalLunariaColors
 import dev.sonata.android.ui.theme.drawThemeAtmosphericBackdrop
@@ -423,8 +426,8 @@ fun SonataApp(vm: SonataViewModel = viewModel()) {
     }
     val systemDark = androidx.compose.foundation.isSystemInDarkTheme()
     val darkTheme = settings.isDarkActive(systemDark)
-    val amoled = settings.themeMode == ThemeMode.AMOLED
-    val resolvedDesign = settings.resolvedDesignTheme()
+    val amoled = darkTheme
+    val resolvedDesign = DesignTheme.BASIC
     SonataTheme(
         darkTheme = darkTheme,
         amoled = amoled,
@@ -484,6 +487,10 @@ private fun SonataAppContent(
     vm: SonataViewModel,
 ) {
     val context = LocalContext.current
+    val strings = LocalSonataStrings.current
+    val eco = remember(settings.appLanguage) { ecosystemStrings(settings.appLanguage) }
+    val connectState by vm.connectState.collectAsStateWithLifecycle()
+    val activeConnectPeer = connectState.activePeer
     var showNowPlaying by rememberSaveable { mutableStateOf(false) }
     var showAllMoods by remember { mutableStateOf(false) }
     var showListeningHistory by rememberSaveable { mutableStateOf(false) }
@@ -588,7 +595,9 @@ private fun SonataAppContent(
     // Fixed bottom inset keyed only on activeTrack presence so FloatingTabBar collapse/expand
     // never triggers full LazyColumn relayout mid-fling.
     val navBottomPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-    val bottomBarInset = navBottomPadding + if (state.activeTrack != null) 144.dp else 92.dp
+    val bottomBarInset = navBottomPadding +
+        (if (state.activeTrack != null) 144.dp else 92.dp) +
+        (if (activeConnectPeer != null) 42.dp else 0.dp)
 
     val scrolled by remember(
         state.activeTab,
@@ -942,6 +951,8 @@ private fun SonataAppContent(
                                     kindLabel = state.collectionKindLabel.orEmpty(),
                                     isAlbum = state.collectionKindLabel.equals("Album", ignoreCase = true) ||
                                         state.collectionKindLabel.equals("Single", ignoreCase = true) ||
+                                        state.collectionKindLabel.equals(strings.albumLabel, ignoreCase = true) ||
+                                        state.collectionKindLabel.equals(strings.singleLabel, ignoreCase = true) ||
                                         bid.startsWith("MPRE"),
                                 )
                             }
@@ -970,7 +981,8 @@ private fun SonataAppContent(
                                 title = state.collectionTitle.orEmpty(),
                                 subtitle = state.collectionSubtitle.orEmpty(),
                                 coverUrl = state.collectionCoverUrl,
-                                isAlbum = state.collectionKindLabel.equals("Album", ignoreCase = true),
+                                isAlbum = state.collectionKindLabel.equals("Album", ignoreCase = true) ||
+                                    state.collectionKindLabel.equals(strings.albumLabel, ignoreCase = true),
                                 eyebrow = state.collectionKindLabel,
                             )
                         },
@@ -1059,10 +1071,10 @@ private fun SonataAppContent(
                                     heldContextTarget = HeldContextTarget.AlbumOrPlaylistCard(
                                         browseId = playlist.id,
                                         title = playlist.name,
-                                        subtitle = "Playlist",
+                                        subtitle = strings.playlistLabel,
                                         coverUrl = playlist.thumbnailUrl,
                                         isAlbum = false,
-                                        eyebrow = "PLAYLIST",
+                                        eyebrow = strings.playlistLabel.uppercase(),
                                         isTopPickTall = false,
                                         anchorBounds = bounds,
                                     )
@@ -1117,7 +1129,7 @@ private fun SonataAppContent(
                                     contentPadding = contentPadding,
                                     onStartQuickRadio = { vm.startQuickRadio(state.activeTrack) },
                                     onCardClick = { card -> vm.openCard(card, emptyList()) },
-                                    onCardLongClick = { card, bounds -> openCardHeldMenu(card, "RADIO MIX", false, bounds) },
+                                    onCardLongClick = { card, bounds -> openCardHeldMenu(card, strings.radioMixEyebrow, false, bounds) },
                                     onMoodQueryClick = { title, query ->
                                         vm.openMood(title.ifBlank { query })
                                     },
@@ -1136,8 +1148,6 @@ private fun SonataAppContent(
 
                             AndroidTab.Library -> {
                                 val downloads by vm.downloads.collectAsStateWithLifecycle()
-                                val connectState by vm.connectState.collectAsStateWithLifecycle()
-                                val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
                                 val latestDownloadCoverUrl = remember(downloads) {
                                     downloads.maxByOrNull { it.downloadedAtMs }?.coverUrl?.takeIf { it.isNotBlank() }
                                         ?: downloads.firstOrNull { !it.coverUrl.isNullOrBlank() }?.coverUrl
@@ -1224,8 +1234,8 @@ private fun SonataAppContent(
         if (state.artistPage != null || state.artistLoading) {
             val downloads by vm.downloads.collectAsStateWithLifecycle()
             val downloadedIds = remember(downloads) { downloads.map { it.videoId }.toSet() }
-            val artistData = remember(state.artistPage, downloadedIds) {
-                state.artistPage?.toArtistScreenData(downloadedIds)
+            val artistData = remember(state.artistPage, downloadedIds, strings) {
+                state.artistPage?.toArtistScreenData(downloadedIds, strings)
             }
             BackHandler(
                 enabled = !showNowPlaying &&
@@ -1273,7 +1283,7 @@ private fun SonataAppContent(
                 onToggleSubscribe = { data ->
                     android.widget.Toast.makeText(
                         context,
-                        if (data.isSubscribed) "Removed ${data.name}" else "Subscribed to ${data.name}",
+                        if (data.isSubscribed) strings.removedArtistToast(data.name) else strings.addedArtistToast(data.name),
                         android.widget.Toast.LENGTH_SHORT,
                     ).show()
                 },
@@ -1307,7 +1317,9 @@ private fun SonataAppContent(
                         subtitle = release.subtitle,
                         coverUrl = release.thumbnailUrl,
                         isAlbum = release.kindLabel.equals("Album", ignoreCase = true) ||
-                            release.kindLabel.equals("Single", ignoreCase = true),
+                            release.kindLabel.equals("Single", ignoreCase = true) ||
+                            release.kindLabel.equals(strings.albumLabel, ignoreCase = true) ||
+                            release.kindLabel.equals(strings.singleLabel, ignoreCase = true),
                         eyebrow = release.kindLabel.uppercase(),
                         isTopPickTall = false,
                         anchorBounds = bounds,
@@ -1368,6 +1380,8 @@ private fun SonataAppContent(
                                 ?: state.collectionTracks.firstOrNull { !it.thumbnailUrl.isNullOrBlank() }?.thumbnailUrl,
                             isAlbum = state.collectionKindLabel.equals("Album", ignoreCase = true) ||
                                 state.collectionKindLabel.equals("Single", ignoreCase = true) ||
+                                state.collectionKindLabel.equals(strings.albumLabel, ignoreCase = true) ||
+                                state.collectionKindLabel.equals(strings.singleLabel, ignoreCase = true) ||
                                 browseId.startsWith("MPRE"),
                             trackCount = state.collectionTracks.size.takeIf { it > 0 },
                             year = state.collectionYear,
@@ -1393,14 +1407,53 @@ private fun SonataAppContent(
             modifier = Modifier.align(Alignment.BottomCenter),
         )
 
-        // Floating Liquid Glass Tab Bar + MiniPlayer + circular Search pill
+        // Floating Liquid Glass Tab Bar + MiniPlayer + circular Search pill + Connect Indicator
         CompositionLocalProvider(LocalAppBackdrop provides activeOverlayBackdrop) {
-            Box(
+            Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .widthIn(max = FLOATING_BAR_MAX_WIDTH)
                     .fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
+                if (activeConnectPeer != null) {
+                    val connectGreen = Color(0xFF34C759)
+                    Row(
+                        modifier = Modifier
+                            .padding(horizontal = BAR_GUTTER)
+                            .padding(bottom = 6.dp)
+                            .adaptiveLiquidGlass(
+                                shape = CapsulePillShape,
+                                surfaceTint = connectGreen.copy(alpha = 0.16f),
+                            )
+                            .clip(CapsulePillShape)
+                            .border(0.75.dp, connectGreen.copy(alpha = 0.55f), CapsulePillShape)
+                            .clickable(onClick = vm::openConnectSheet)
+                            .padding(horizontal = 14.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(7.dp)
+                                .clip(CircleShape)
+                                .background(connectGreen),
+                        )
+                        Icon(
+                            imageVector = SonataIcons.Wifi,
+                            contentDescription = eco.connectDevicesTitle,
+                            tint = connectGreen,
+                            modifier = Modifier.size(15.dp),
+                        )
+                        Text(
+                            text = eco.connectPlayingOn(activeConnectPeer.deviceName),
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                            color = glassContentColor(),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
                 SonataGlassNavBar(
                     selectedTab = state.activeTab,
                     onTabSelected = { tab ->
@@ -1537,7 +1590,7 @@ private fun SonataAppContent(
                             title = col.title,
                             coverUrl = col.coverUrl,
                             subtitle = col.subtitle,
-                            kindLabel = if (col.isAlbum) "Album" else "Playlist",
+                            kindLabel = if (col.isAlbum) strings.albumLabel else strings.playlistLabel,
                         )
                     }
                 },
@@ -1564,7 +1617,7 @@ private fun SonataAppContent(
                             title = col.title,
                             coverUrl = col.coverUrl,
                             subtitle = col.subtitle,
-                            kindLabel = if (col.isAlbum) "Album" else "Playlist",
+                            kindLabel = if (col.isAlbum) strings.albumLabel else strings.playlistLabel,
                         )
                     }
                 },
@@ -1589,7 +1642,7 @@ private fun SonataAppContent(
                             title = col.title,
                             coverUrl = col.coverUrl,
                             subtitle = col.subtitle,
-                            kindLabel = if (col.isAlbum) "Album" else "Playlist",
+                            kindLabel = if (col.isAlbum) strings.albumLabel else strings.playlistLabel,
                         )
                     }
                 },
@@ -1630,22 +1683,15 @@ private fun SonataAppContent(
             onToggleAnimatedArt = { vm.updateSettings { it.copy(animatedArtwork = !it.animatedArtwork) } },
             onCycleThemeMode = {
                 val modes = listOf(
-                    ThemeMode.VIOLET_LIGHT,
-                    ThemeMode.VIOLET_DARK,
-                    ThemeMode.MOONFLOWER_LIGHT,
-                    ThemeMode.MOONFLOWER_DARK,
-                    ThemeMode.BASIC_LIGHT,
-                    ThemeMode.BASIC_DARK,
+                    ThemeMode.SYSTEM,
+                    ThemeMode.LIGHT,
+                    ThemeMode.DARK,
                 )
                 val next = modes[(modes.indexOf(settings.themeMode).coerceAtLeast(-1) + 1) % modes.size]
                 vm.updateSettings {
                     it.copy(
                         themeMode = next,
-                        designTheme = when (next) {
-                            ThemeMode.VIOLET_LIGHT, ThemeMode.VIOLET_DARK -> DesignTheme.VIOLET
-                            ThemeMode.BASIC_LIGHT, ThemeMode.BASIC_DARK -> DesignTheme.BASIC
-                            else -> DesignTheme.MOONFLOWER
-                        },
+                        designTheme = DesignTheme.BASIC,
                     )
                 }
             },
@@ -1694,7 +1740,6 @@ private fun SonataAppContent(
             }
             val discordConnected by vm.discordConnected.collectAsStateWithLifecycle()
             val discordStatus by vm.discordStatus.collectAsStateWithLifecycle()
-            val connectState by vm.connectState.collectAsStateWithLifecycle()
             SonataSettingsScreen(
                 settings = settings,
                 signedIn = state.signedIn,
@@ -1791,7 +1836,6 @@ private fun SonataAppContent(
         }
 
         if (state.showConnectSheet) {
-            val connectState by vm.connectState.collectAsStateWithLifecycle()
             ConnectSheet(
                 connectState = connectState,
                 hasLocalQueue = state.queue.isNotEmpty(),
@@ -1799,6 +1843,8 @@ private fun SonataAppContent(
                 onToggleEnabled = vm::setConnectEnabled,
                 onDeviceNameChange = vm::setConnectDeviceName,
                 onRefreshDiscovery = vm::refreshConnectDiscovery,
+                onRequestPairApproval = vm::requestPairConnectDevice,
+                onCancelPairing = vm::cancelConnectPairing,
                 onPairDevice = vm::pairConnectDevice,
                 onConnectPaired = vm::connectPairedDevice,
                 onDisconnect = vm::disconnectConnectDevice,
@@ -1861,7 +1907,7 @@ private fun SonataAppContent(
             modifier = Modifier.fillMaxSize(),
         ) {
             state.activeTrack?.let { track ->
-                BackHandler(enabled = showNowPlaying) { showNowPlaying = false }
+                BackHandler(enabled = showNowPlaying && !state.showConnectSheet) { showNowPlaying = false }
                 val downloads by vm.downloads.collectAsStateWithLifecycle()
                 val activeDownloads by vm.activeDownloads.collectAsStateWithLifecycle()
                 val currentCanvas by vm.currentCanvas.collectAsStateWithLifecycle()
@@ -1888,6 +1934,10 @@ private fun SonataAppContent(
                     activeLyricsSource = activeLyricsSource,
                     trackLyricOffsetMs = trackLyricOffsetMs,
                     clock = vm.playbackClock,
+                    connectDeviceName = activeConnectPeer?.deviceName,
+                    connectRemoteVolume = connectState.remoteState?.volume,
+                    onOpenConnectDevices = vm::openConnectSheet,
+                    onSetConnectVolume = vm::setConnectRemoteVolume,
                     onToggleLyrics = vm::toggleLyrics,
                     onToggleStar = { vm.toggleStarTrack(track.id) },
                     onTogglePlayPause = vm::togglePlayPause,
@@ -2027,13 +2077,16 @@ private fun SonataAppContent(
 }
 
 
-private fun AndroidArtistPage.toArtistScreenData(downloadedIds: Set<String>): ArtistScreenData {
+private fun AndroidArtistPage.toArtistScreenData(
+    downloadedIds: Set<String>,
+    strings: SonataStrings,
+): ArtistScreenData {
     val latest = latestRelease?.let { card ->
         ArtistReleaseItem(
             id = card.id,
             title = card.title,
             subtitle = card.subtitle,
-            kindLabel = if (card.kind == AndroidHomeCardKind.ALBUM) "Album" else "Single",
+            kindLabel = if (card.kind == AndroidHomeCardKind.ALBUM) strings.albumLabel else strings.singleLabel,
             thumbnailUrl = card.thumbnailUrl,
         )
     }
@@ -2055,7 +2108,7 @@ private fun AndroidArtistPage.toArtistScreenData(downloadedIds: Set<String>): Ar
                 id = card.id,
                 title = card.title,
                 subtitle = card.subtitle,
-                kindLabel = "Album",
+                kindLabel = strings.albumLabel,
                 thumbnailUrl = card.thumbnailUrl,
             )
         }
@@ -2070,7 +2123,7 @@ private fun AndroidArtistPage.toArtistScreenData(downloadedIds: Set<String>): Ar
                 id = card.id,
                 title = card.title,
                 subtitle = card.subtitle,
-                kindLabel = if (card.subtitle.contains("EP", ignoreCase = true)) "EP" else "Single",
+                kindLabel = if (card.subtitle.contains("EP", ignoreCase = true)) "EP" else strings.singleLabel,
                 thumbnailUrl = card.thumbnailUrl,
             )
         }

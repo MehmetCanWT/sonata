@@ -9,7 +9,7 @@ body:
       label: Platform
       options:
         - Android
-        - Desktop (Linux GPUI)
+        - Desktop (Tauri — Linux / macOS / Windows)
         - TUI (Terminal)
     validations:
       required: true

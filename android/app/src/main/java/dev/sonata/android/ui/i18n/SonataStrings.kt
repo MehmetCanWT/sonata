@@ -129,6 +129,44 @@ data class CommonStrings(
     val addedToLibraryStatus: (String) -> String,
     val removedFromLibraryStatus: (String) -> String,
     val removeFromLastPlayed: String = "Remove from Last Played",
+    val playing: String,
+    val paused: String,
+    val trackOptions: String,
+    val clearSearch: String,
+    val selectedTracks: String,
+    val saveToPlaylists: String,
+    val selected: String,
+    val couldNotReadImage: String,
+    val savedImageToGallery: String,
+    val failedToSaveImage: String,
+    val showLess: String,
+    val showMore: String,
+    val shareArtist: String,
+    val playPopularTracks: String,
+    val playSample: String,
+    val following: String,
+    val follow: String,
+    val activeDownloadsHeader: (Int) -> String,
+    val cancelDownload: String,
+    val deleteDownload: String,
+    val wifiOnlyChip: (Boolean) -> String,
+    val tracksCountWithDuration: (Int, Long) -> String,
+    val shareTrackCountBadge: (Int) -> String,
+    val shareEyebrowSong: String,
+    val shareEyebrowAlbum: String,
+    val shareEyebrowPlaylist: String,
+    val shareEyebrowArtist: String,
+    val ytmWebViewRendererGoneTitle: String,
+    val ytmWebViewRendererGoneBody: String,
+    val ytmWebViewUnavailableTitle: String,
+    val ytmWebViewUnavailableBody: String,
+    val updateSignatureMismatch: String,
+    val quickToggleGlass: String,
+    val quickToggleMotionArt: String,
+    val quickToggleLight: String,
+    val quickToggleDark: String,
+    val quickToggleAuto: String,
+    val translationLangName: (String) -> String,
 )
 
 data class FeedStrings(
@@ -225,6 +263,10 @@ data class FeedStrings(
     val homeErrorStatus: (String) -> String,
     val artistErrorStatus: (String) -> String,
     val collectionErrorStatus: (String) -> String,
+    val personalizedStationEyebrow: String,
+    val sonataListenerPlaceholder: String,
+    val yourListeningExperienceEyebrow: String,
+    val memberSinceEyebrow: String,
 )
 
 data class PlayerStrings(
@@ -277,6 +319,7 @@ data class PlayerStrings(
     val lyricsDisplay: String,
     val lyricsTiming: String,
     val syncOffset: String,
+    val syncLyrics: String,
     val translateLyrics: String,
     val romanizeLyrics: String,
     val sourceLabel: (String) -> String,
@@ -357,6 +400,21 @@ data class PlayerStrings(
     val exitFullscreen: String,
     val loadingVideo: String,
     val videoUnavailableStatus: String,
+    val upgradingQuality: String,
+    val losslessLabel: String,
+    val cachedLabel: String,
+    val pipelineSourceOfflineDownload: String,
+    val pipelineSourceAudioStream: String,
+    val pipelineSourceIdle: String,
+    val pipelineDspBypassed: String,
+    val pipelineDspActive: String,
+    val pipelineEqualizer: String,
+    val pipelineLoudnessNorm: String,
+    val jioSaavnStreamUnavailable: String,
+    val downloadStageStarting: String,
+    val downloadStageDownloading: String,
+    val downloadStageDownloadingVideo: String,
+    val downloadStageSaving: String,
 )
 
 data class SettingsStrings(
@@ -585,11 +643,11 @@ data class DiscordStrings(
     val discordSummary: String,
     val hdrDiscordAccount: String,
     val hdrDiscordPresence: String,
-    val hdrDiscordAppId: String,
-    val footerDiscordAppId: String,
     val discordSignInTitle: String,
     val discordSignInSubtitle: String,
     val discordSignInCompleting: String,
+    val discordSignInVerifying: String,
+    val discordSignInVerifyFailed: String,
     val discordSignInAction: String,
     val discordSignInActionDesc: String,
     val discordSignOutAction: String,
@@ -610,11 +668,6 @@ data class DiscordStrings(
     val discordShowArtworkDesc: String,
     val discordShowButtons: String,
     val discordShowButtonsDesc: String,
-    val discordAppIdLabel: String,
-    val discordAppIdPlaceholder: String,
-    val discordAppIdApply: String,
-    val discordAppIdReset: String,
-    val discordAppIdInvalid: String,
     val discordStatusLabel: String,
     val discordStatusConnected: String,
     val discordStatusConnectedAs: (String) -> String,
@@ -622,8 +675,15 @@ data class DiscordStrings(
     val discordStatusReconnecting: String,
     val discordStatusDisconnected: String,
     val discordStatusAuthFailed: String,
+    val discordStatusConnectionFailed: String,
     val discordStatusError: (String) -> String,
     val discordReconnect: String,
+    val discordWebViewRendererGoneTitle: String,
+    val discordWebViewRendererGoneBody: String,
+    val discordWebViewUnavailableTitle: String,
+    val discordWebViewUnavailableBody: String,
+    val discordWebViewLoadErrorTitle: String,
+    val discordWebViewLoadErrorBody: String,
 )
 
 /**
@@ -764,6 +824,44 @@ data class SonataStrings(
     val addedToLibraryStatus: (String) -> String get() = common.addedToLibraryStatus
     val removedFromLibraryStatus: (String) -> String get() = common.removedFromLibraryStatus
     val removeFromLastPlayed: String get() = common.removeFromLastPlayed
+    val playing: String get() = common.playing
+    val paused: String get() = common.paused
+    val trackOptions: String get() = common.trackOptions
+    val clearSearch: String get() = common.clearSearch
+    val selectedTracks: String get() = common.selectedTracks
+    val saveToPlaylists: String get() = common.saveToPlaylists
+    val selected: String get() = common.selected
+    val couldNotReadImage: String get() = common.couldNotReadImage
+    val savedImageToGallery: String get() = common.savedImageToGallery
+    val failedToSaveImage: String get() = common.failedToSaveImage
+    val showLess: String get() = common.showLess
+    val showMore: String get() = common.showMore
+    val shareArtist: String get() = common.shareArtist
+    val playPopularTracks: String get() = common.playPopularTracks
+    val playSample: String get() = common.playSample
+    val following: String get() = common.following
+    val follow: String get() = common.follow
+    val activeDownloadsHeader: (Int) -> String get() = common.activeDownloadsHeader
+    val cancelDownload: String get() = common.cancelDownload
+    val deleteDownload: String get() = common.deleteDownload
+    val wifiOnlyChip: (Boolean) -> String get() = common.wifiOnlyChip
+    val tracksCountWithDuration: (Int, Long) -> String get() = common.tracksCountWithDuration
+    val shareTrackCountBadge: (Int) -> String get() = common.shareTrackCountBadge
+    val shareEyebrowSong: String get() = common.shareEyebrowSong
+    val shareEyebrowAlbum: String get() = common.shareEyebrowAlbum
+    val shareEyebrowPlaylist: String get() = common.shareEyebrowPlaylist
+    val shareEyebrowArtist: String get() = common.shareEyebrowArtist
+    val ytmWebViewRendererGoneTitle: String get() = common.ytmWebViewRendererGoneTitle
+    val ytmWebViewRendererGoneBody: String get() = common.ytmWebViewRendererGoneBody
+    val ytmWebViewUnavailableTitle: String get() = common.ytmWebViewUnavailableTitle
+    val ytmWebViewUnavailableBody: String get() = common.ytmWebViewUnavailableBody
+    val updateSignatureMismatch: String get() = common.updateSignatureMismatch
+    val quickToggleGlass: String get() = common.quickToggleGlass
+    val quickToggleMotionArt: String get() = common.quickToggleMotionArt
+    val quickToggleLight: String get() = common.quickToggleLight
+    val quickToggleDark: String get() = common.quickToggleDark
+    val quickToggleAuto: String get() = common.quickToggleAuto
+    val translationLangName: (String) -> String get() = common.translationLangName
 
     val topPicksForYou: String get() = feed.topPicksForYou
     val lastPlayed: String get() = feed.lastPlayed
@@ -858,6 +956,10 @@ data class SonataStrings(
     val homeErrorStatus: (String) -> String get() = feed.homeErrorStatus
     val artistErrorStatus: (String) -> String get() = feed.artistErrorStatus
     val collectionErrorStatus: (String) -> String get() = feed.collectionErrorStatus
+    val personalizedStationEyebrow: String get() = feed.personalizedStationEyebrow
+    val sonataListenerPlaceholder: String get() = feed.sonataListenerPlaceholder
+    val yourListeningExperienceEyebrow: String get() = feed.yourListeningExperienceEyebrow
+    val memberSinceEyebrow: String get() = feed.memberSinceEyebrow
 
     val audioPipeline: String get() = player.audioPipeline
     val audioPipelineSubtitle: String get() = player.audioPipelineSubtitle
@@ -908,6 +1010,7 @@ data class SonataStrings(
     val lyricsDisplay: String get() = player.lyricsDisplay
     val lyricsTiming: String get() = player.lyricsTiming
     val syncOffset: String get() = player.syncOffset
+    val syncLyrics: String get() = player.syncLyrics
     val translateLyrics: String get() = player.translateLyrics
     val romanizeLyrics: String get() = player.romanizeLyrics
     val sourceLabel: (String) -> String get() = player.sourceLabel
@@ -988,6 +1091,21 @@ data class SonataStrings(
     val exitFullscreen: String get() = player.exitFullscreen
     val loadingVideo: String get() = player.loadingVideo
     val videoUnavailableStatus: String get() = player.videoUnavailableStatus
+    val upgradingQuality: String get() = player.upgradingQuality
+    val losslessLabel: String get() = player.losslessLabel
+    val cachedLabel: String get() = player.cachedLabel
+    val pipelineSourceOfflineDownload: String get() = player.pipelineSourceOfflineDownload
+    val pipelineSourceAudioStream: String get() = player.pipelineSourceAudioStream
+    val pipelineSourceIdle: String get() = player.pipelineSourceIdle
+    val pipelineDspBypassed: String get() = player.pipelineDspBypassed
+    val pipelineDspActive: String get() = player.pipelineDspActive
+    val pipelineEqualizer: String get() = player.pipelineEqualizer
+    val pipelineLoudnessNorm: String get() = player.pipelineLoudnessNorm
+    val jioSaavnStreamUnavailable: String get() = player.jioSaavnStreamUnavailable
+    val downloadStageStarting: String get() = player.downloadStageStarting
+    val downloadStageDownloading: String get() = player.downloadStageDownloading
+    val downloadStageDownloadingVideo: String get() = player.downloadStageDownloadingVideo
+    val downloadStageSaving: String get() = player.downloadStageSaving
 
     val settingsTitle: String get() = settings.settingsTitle
     val settingsSubtitle: String get() = settings.settingsSubtitle
@@ -1211,11 +1329,11 @@ data class SonataStrings(
     val discordSummary: String get() = discord.discordSummary
     val hdrDiscordAccount: String get() = discord.hdrDiscordAccount
     val hdrDiscordPresence: String get() = discord.hdrDiscordPresence
-    val hdrDiscordAppId: String get() = discord.hdrDiscordAppId
-    val footerDiscordAppId: String get() = discord.footerDiscordAppId
     val discordSignInTitle: String get() = discord.discordSignInTitle
     val discordSignInSubtitle: String get() = discord.discordSignInSubtitle
     val discordSignInCompleting: String get() = discord.discordSignInCompleting
+    val discordSignInVerifying: String get() = discord.discordSignInVerifying
+    val discordSignInVerifyFailed: String get() = discord.discordSignInVerifyFailed
     val discordSignInAction: String get() = discord.discordSignInAction
     val discordSignInActionDesc: String get() = discord.discordSignInActionDesc
     val discordSignOutAction: String get() = discord.discordSignOutAction
@@ -1236,11 +1354,6 @@ data class SonataStrings(
     val discordShowArtworkDesc: String get() = discord.discordShowArtworkDesc
     val discordShowButtons: String get() = discord.discordShowButtons
     val discordShowButtonsDesc: String get() = discord.discordShowButtonsDesc
-    val discordAppIdLabel: String get() = discord.discordAppIdLabel
-    val discordAppIdPlaceholder: String get() = discord.discordAppIdPlaceholder
-    val discordAppIdApply: String get() = discord.discordAppIdApply
-    val discordAppIdReset: String get() = discord.discordAppIdReset
-    val discordAppIdInvalid: String get() = discord.discordAppIdInvalid
     val discordStatusLabel: String get() = discord.discordStatusLabel
     val discordStatusConnected: String get() = discord.discordStatusConnected
     val discordStatusConnectedAs: (String) -> String get() = discord.discordStatusConnectedAs
@@ -1248,8 +1361,15 @@ data class SonataStrings(
     val discordStatusReconnecting: String get() = discord.discordStatusReconnecting
     val discordStatusDisconnected: String get() = discord.discordStatusDisconnected
     val discordStatusAuthFailed: String get() = discord.discordStatusAuthFailed
+    val discordStatusConnectionFailed: String get() = discord.discordStatusConnectionFailed
     val discordStatusError: (String) -> String get() = discord.discordStatusError
     val discordReconnect: String get() = discord.discordReconnect
+    val discordWebViewRendererGoneTitle: String get() = discord.discordWebViewRendererGoneTitle
+    val discordWebViewRendererGoneBody: String get() = discord.discordWebViewRendererGoneBody
+    val discordWebViewUnavailableTitle: String get() = discord.discordWebViewUnavailableTitle
+    val discordWebViewUnavailableBody: String get() = discord.discordWebViewUnavailableBody
+    val discordWebViewLoadErrorTitle: String get() = discord.discordWebViewLoadErrorTitle
+    val discordWebViewLoadErrorBody: String get() = discord.discordWebViewLoadErrorBody
 }
 
 val EnglishSonataStrings = SonataStrings(
@@ -1378,6 +1498,58 @@ val EnglishSonataStrings = SonataStrings(
         addedToLibraryStatus = { title -> "Added \"$title\" to Library" },
         removedFromLibraryStatus = { title -> "Removed \"$title\" from Library" },
         removeFromLastPlayed = "Remove from Last Played",
+        playing = "Playing",
+        paused = "Paused",
+        trackOptions = "Track options",
+        clearSearch = "Clear search",
+        selectedTracks = "Selected Tracks",
+        saveToPlaylists = "Save to playlists",
+        selected = "Selected",
+        couldNotReadImage = "Could not read selected image",
+        savedImageToGallery = "Saved image to Pictures/Sonata",
+        failedToSaveImage = "Failed to save image",
+        showLess = "Show less",
+        showMore = "More",
+        shareArtist = "Share artist",
+        playPopularTracks = "Play popular tracks",
+        playSample = "Play sample",
+        following = "Following",
+        follow = "Follow",
+        activeDownloadsHeader = { n -> "ACTIVE DOWNLOADS ($n)" },
+        cancelDownload = "Cancel download",
+        deleteDownload = "Delete download",
+        wifiOnlyChip = { on -> if (on) "Wi-Fi: On" else "Wi-Fi: Off" },
+        tracksCountWithDuration = { count, mins ->
+            val countLabel = if (count == 1) "1 song" else "$count songs"
+            if (mins > 0L) "$countLabel, $mins minutes" else countLabel
+        },
+        shareTrackCountBadge = { count -> "$count ${if (count == 1) "TRACK" else "TRACKS"}" },
+        shareEyebrowSong = "SONG",
+        shareEyebrowAlbum = "ALBUM",
+        shareEyebrowPlaylist = "PLAYLIST",
+        shareEyebrowArtist = "ARTIST",
+        ytmWebViewRendererGoneTitle = "Sign-in page was stopped by the system",
+        ytmWebViewRendererGoneBody = "Tap Retry to reload the sign-in page without losing progress.",
+        ytmWebViewUnavailableTitle = "WebView is unavailable on this device",
+        ytmWebViewUnavailableBody = "Could not initialize the system WebView provider. Retry or check Android System WebView.",
+        updateSignatureMismatch = "Downloaded APK signature does not match installed app",
+        quickToggleGlass = "Glass",
+        quickToggleMotionArt = "Motion Art",
+        quickToggleLight = "Basic Light",
+        quickToggleDark = "Basic Dark",
+        quickToggleAuto = "Auto",
+        translationLangName = { code ->
+            when (code.lowercase(Locale.ROOT)) {
+                "en" -> "English"
+                "tr" -> "Turkish"
+                "ru" -> "Russian"
+                "es" -> "Spanish"
+                "ja" -> "Japanese"
+                "ko" -> "Korean"
+                "de" -> "German"
+                else -> code.uppercase(Locale.ROOT)
+            }
+        },
     ),
     feed = FeedStrings(
         topPicksForYou = "Top Picks for You",
@@ -1473,6 +1645,10 @@ val EnglishSonataStrings = SonataStrings(
         homeErrorStatus = { msg -> "Home error: $msg" },
         artistErrorStatus = { msg -> "Artist error: $msg" },
         collectionErrorStatus = { msg -> "Collection error: $msg" },
+        personalizedStationEyebrow = "PERSONALIZED STATION",
+        sonataListenerPlaceholder = "SONATA LISTENER",
+        yourListeningExperienceEyebrow = "YOUR LISTENING EXPERIENCE",
+        memberSinceEyebrow = "MEMBER\nSINCE",
     ),
     player = PlayerStrings(
         audioPipeline = "Audio Pipeline",
@@ -1524,6 +1700,7 @@ val EnglishSonataStrings = SonataStrings(
         lyricsDisplay = "Lyrics Display",
         lyricsTiming = "Timing Offset",
         syncOffset = "Sync Offset",
+        syncLyrics = "Sync",
         translateLyrics = "Translate Lyrics",
         romanizeLyrics = "Romanize Lyrics",
         sourceLabel = { src -> "Source: $src" },
@@ -1604,6 +1781,21 @@ val EnglishSonataStrings = SonataStrings(
         exitFullscreen = "Exit Fullscreen",
         loadingVideo = "Loading video...",
         videoUnavailableStatus = "Music video stream unavailable",
+        upgradingQuality = "Upgrading Quality",
+        losslessLabel = "Lossless",
+        cachedLabel = "Cached",
+        pipelineSourceOfflineDownload = "Offline Download",
+        pipelineSourceAudioStream = "Audio Stream",
+        pipelineSourceIdle = "Idle",
+        pipelineDspBypassed = "Bypassed",
+        pipelineDspActive = "DSP Active",
+        pipelineEqualizer = "Equalizer",
+        pipelineLoudnessNorm = "Loudness Norm",
+        jioSaavnStreamUnavailable = "JioSaavn stream unavailable",
+        downloadStageStarting = "Starting",
+        downloadStageDownloading = "Downloading",
+        downloadStageDownloadingVideo = "Downloading video",
+        downloadStageSaving = "Saving",
     ),
     settings = SettingsStrings(
         settingsTitle = "Settings",
@@ -1744,7 +1936,7 @@ val EnglishSonataStrings = SonataStrings(
         translationLanguage = "Translation Language",
         romanizeLyricsDesc = "Transliterate Japanese, Korean, and Cyrillic scripts",
         globalLyricOffset = "Global Lyric Offset",
-        footerAppearanceTheme = "Basic activates the monochrome editorial UI overhaul on Home, Explore, Album, and Artist pages. Violet and Moonflower keep their full distinct visual styles.",
+        footerAppearanceTheme = "Choose Light, Dark, or System appearance with the Basic monochrome editorial style.",
         hdrDisplayRendering = "Display & Rendering",
         footerDisplayRendering = "Lowering frame rate or enabling Glass Performance Mode reduces GPU usage and improves battery life.",
         refreshRateHigh = "120 Hz High Refresh Rate",
@@ -1827,14 +2019,14 @@ val EnglishSonataStrings = SonataStrings(
     ),
     discord = DiscordStrings(
         catDiscord = "Discord Rich Presence",
-        discordSummary = "Mobile Discord RPC, status, app ID",
+        discordSummary = "Mobile Discord RPC and listening status",
         hdrDiscordAccount = "Discord Account",
         hdrDiscordPresence = "Presence Display",
-        hdrDiscordAppId = "Discord Application ID",
-        footerDiscordAppId = "Use Sonata's default Application ID or paste your own Discord Developer Portal Application ID.",
         discordSignInTitle = "Sign In to Discord",
         discordSignInSubtitle = "Authenticate in Discord to share Listening status",
         discordSignInCompleting = "Completing sign-in...",
+        discordSignInVerifying = "Verifying Discord session...",
+        discordSignInVerifyFailed = "Could not verify Discord session. Tap Retry to check again.",
         discordSignInAction = "Sign In to Discord",
         discordSignInActionDesc = "Connect your Discord account for mobile Rich Presence",
         discordSignOutAction = "Sign Out of Discord",
@@ -1854,12 +2046,7 @@ val EnglishSonataStrings = SonataStrings(
         discordShowArtwork = "Show Track Artwork",
         discordShowArtworkDesc = "Proxy album covers through Discord external assets",
         discordShowButtons = "Show Listen Button",
-        discordShowButtonsDesc = "Include a YouTube Music link button on your activity card",
-        discordAppIdLabel = "Application ID",
-        discordAppIdPlaceholder = "Enter Discord Application ID",
-        discordAppIdApply = "Save",
-        discordAppIdReset = "Reset Default",
-        discordAppIdInvalid = "Enter a valid numeric Discord Application ID (15–22 digits)",
+        discordShowButtonsDesc = "Include a Listen on Sonata button on your activity card",
         discordStatusLabel = "Connection Status",
         discordStatusConnected = "Connected",
         discordStatusConnectedAs = { user -> "Connected as $user" },
@@ -1867,8 +2054,15 @@ val EnglishSonataStrings = SonataStrings(
         discordStatusReconnecting = "Reconnecting to Discord...",
         discordStatusDisconnected = "Disconnected",
         discordStatusAuthFailed = "Session expired or rejected — sign in again",
+        discordStatusConnectionFailed = "Connection failed",
         discordStatusError = { err -> "Connection error: $err" },
         discordReconnect = "Reconnect Gateway",
+        discordWebViewRendererGoneTitle = "Discord sign-in page was stopped by the system",
+        discordWebViewRendererGoneBody = "Tap Retry to reload the Discord sign-in page.",
+        discordWebViewUnavailableTitle = "WebView is unavailable on this device",
+        discordWebViewUnavailableBody = "Could not initialize the system WebView provider. Retry or check Android System WebView.",
+        discordWebViewLoadErrorTitle = "Could not load Discord",
+        discordWebViewLoadErrorBody = "Check your internet connection, VPN, or Private DNS and try again.",
     ),
     servers = EnglishServerStrings,
 )
@@ -1999,6 +2193,58 @@ val TurkishSonataStrings = SonataStrings(
         addedToLibraryStatus = { title -> "\"$title\" kitaplığa eklendi" },
         removedFromLibraryStatus = { title -> "\"$title\" kitaplıktan kaldırıldı" },
         removeFromLastPlayed = "Son Çalınanlardan Kaldır",
+        playing = "Çalıyor",
+        paused = "Duraklatıldı",
+        trackOptions = "Parça seçenekleri",
+        clearSearch = "Aramayı temizle",
+        selectedTracks = "Seçilen Parçalar",
+        saveToPlaylists = "Çalma listelerine kaydet",
+        selected = "Seçildi",
+        couldNotReadImage = "Seçilen görsel okunamadı",
+        savedImageToGallery = "Görsel Pictures/Sonata klasörüne kaydedildi",
+        failedToSaveImage = "Görsel kaydedilemedi",
+        showLess = "Daha az göster",
+        showMore = "Daha fazla",
+        shareArtist = "Sanatçıyı paylaş",
+        playPopularTracks = "Popüler parçaları çal",
+        playSample = "Önizlemeyi çal",
+        following = "Takip ediliyor",
+        follow = "Takip et",
+        activeDownloadsHeader = { n -> "AKTİF İNDİRMELER ($n)" },
+        cancelDownload = "İndirmeyi iptal et",
+        deleteDownload = "İndirmeyi sil",
+        wifiOnlyChip = { on -> if (on) "Wi-Fi: Açık" else "Wi-Fi: Kapalı" },
+        tracksCountWithDuration = { count, mins ->
+            val countLabel = "$count şarkı"
+            if (mins > 0L) "$countLabel, $mins dakika" else countLabel
+        },
+        shareTrackCountBadge = { count -> "$count PARÇA" },
+        shareEyebrowSong = "ŞARKI",
+        shareEyebrowAlbum = "ALBÜM",
+        shareEyebrowPlaylist = "ÇALMA LİSTESİ",
+        shareEyebrowArtist = "SANATÇI",
+        ytmWebViewRendererGoneTitle = "Oturum açma sayfası yeniden başlatılmalı",
+        ytmWebViewRendererGoneBody = "Giriş işlemini güvenli biçimde sürdürmek için yeniden deneyin.",
+        ytmWebViewUnavailableTitle = "WebView kullanılamıyor",
+        ytmWebViewUnavailableBody = "Sistem WebView sağlayıcısı yüklenemedi. Tekrar deneyin veya Android Sistem WebView'i güncelleyin.",
+        updateSignatureMismatch = "İndirilen APK imzası yüklü uygulama ile eşleşmiyor",
+        quickToggleGlass = "Cam",
+        quickToggleMotionArt = "Hareketli Kapak",
+        quickToggleLight = "Basic Açık",
+        quickToggleDark = "Basic Koyu",
+        quickToggleAuto = "Otomatik",
+        translationLangName = { code ->
+            when (code.lowercase(Locale.ROOT)) {
+                "en" -> "İngilizce"
+                "tr" -> "Türkçe"
+                "ru" -> "Rusça"
+                "es" -> "İspanyolca"
+                "ja" -> "Japonca"
+                "ko" -> "Korece"
+                "de" -> "Almanca"
+                else -> code.uppercase(Locale.ROOT)
+            }
+        },
     ),
     feed = FeedStrings(
         topPicksForYou = "Senin İçin Seçilenler",
@@ -2094,6 +2340,10 @@ val TurkishSonataStrings = SonataStrings(
         homeErrorStatus = { msg -> "Ana sayfa hatası: $msg" },
         artistErrorStatus = { msg -> "Sanatçı hatası: $msg" },
         collectionErrorStatus = { msg -> "Koleksiyon hatası: $msg" },
+        personalizedStationEyebrow = "KİŞİSELLEŞTİRİLMİŞ İSTASYON",
+        sonataListenerPlaceholder = "SONATA DİNLEYİCİSİ",
+        yourListeningExperienceEyebrow = "DİNLEME DENEYİMİN",
+        memberSinceEyebrow = "ÜYELİK\nBAŞLANGICI",
     ),
     player = PlayerStrings(
         audioPipeline = "Ses Hattı",
@@ -2145,6 +2395,7 @@ val TurkishSonataStrings = SonataStrings(
         lyricsDisplay = "Söz Görünümü",
         lyricsTiming = "Zamanlama Kaydırma",
         syncOffset = "Senkron Kayması",
+        syncLyrics = "Hizala",
         translateLyrics = "Sözleri Çevir",
         romanizeLyrics = "Okunuşu Göster",
         sourceLabel = { src -> "Kaynak: $src" },
@@ -2225,6 +2476,21 @@ val TurkishSonataStrings = SonataStrings(
         exitFullscreen = "Tam Ekrandan Çık",
         loadingVideo = "Video yükleniyor...",
         videoUnavailableStatus = "Müzik videosu oynatılamadı",
+        upgradingQuality = "Kalite Yükseltiliyor",
+        losslessLabel = "Kayıpsız",
+        cachedLabel = "Önbellekte",
+        pipelineSourceOfflineDownload = "Çevrimdışı İndirme",
+        pipelineSourceAudioStream = "Ses Akışı",
+        pipelineSourceIdle = "Boşta",
+        pipelineDspBypassed = "Doğrudan",
+        pipelineDspActive = "DSP Etkin",
+        pipelineEqualizer = "Ekolayzer",
+        pipelineLoudnessNorm = "Ses Dengeleme",
+        jioSaavnStreamUnavailable = "JioSaavn akışı kullanılamıyor",
+        downloadStageStarting = "Başlatılıyor",
+        downloadStageDownloading = "İndiriliyor",
+        downloadStageDownloadingVideo = "Video indiriliyor",
+        downloadStageSaving = "Kaydediliyor",
     ),
     settings = SettingsStrings(
         settingsTitle = "Ayarlar",
@@ -2365,7 +2631,7 @@ val TurkishSonataStrings = SonataStrings(
         translationLanguage = "Çeviri Dili",
         romanizeLyricsDesc = "Japonca, Korece ve Kiril alfabesini Latin harflerine dönüştür",
         globalLyricOffset = "Genel Söz Kaydırma",
-        footerAppearanceTheme = "Basic; Ana Sayfa, Keşfet, Albüm ve Sanatçı sayfalarında monokrom editoryal görünümü açar. Violet ve Moonflower kendi stillerini korur.",
+        footerAppearanceTheme = "Basic monokrom editoryal görünüm için Açık, Koyu veya Sistem modunu seçin.",
         hdrDisplayRendering = "Ekran ve İşleme",
         footerDisplayRendering = "Yenileme hızını düşürmek veya Cam Performans Modu GPU kullanımını azaltıp pil ömrünü artırır.",
         refreshRateHigh = "120 Hz Yüksek Yenileme Hızı",
@@ -2448,14 +2714,14 @@ val TurkishSonataStrings = SonataStrings(
     ),
     discord = DiscordStrings(
         catDiscord = "Discord Rich Presence",
-        discordSummary = "Mobil Discord RPC, durum, uygulama kimliği",
+        discordSummary = "Mobil Discord RPC ve dinleme durumu",
         hdrDiscordAccount = "Discord Hesabı",
         hdrDiscordPresence = "Görünüm Seçenekleri",
-        hdrDiscordAppId = "Discord Uygulama Kimliği",
-        footerDiscordAppId = "Sonata'nın varsayılan Uygulama Kimliğini kullanın veya kendi Discord Developer Portal Uygulama Kimliğinizi yapıştırın.",
         discordSignInTitle = "Discord ile Giriş Yap",
         discordSignInSubtitle = "Dinliyor durumunu paylaşmak için Discord'da oturum açın",
         discordSignInCompleting = "Giriş tamamlanıyor...",
+        discordSignInVerifying = "Discord oturumu doğrulanıyor...",
+        discordSignInVerifyFailed = "Discord oturumu doğrulanamadı. Tekrar kontrol etmek için Yeniden Dene'ye dokunun.",
         discordSignInAction = "Discord ile Giriş Yap",
         discordSignInActionDesc = "Mobil Rich Presence için Discord hesabınızı bağlayın",
         discordSignOutAction = "Discord Çıkışı Yap",
@@ -2475,12 +2741,7 @@ val TurkishSonataStrings = SonataStrings(
         discordShowArtwork = "Parça Kapağını Göster",
         discordShowArtworkDesc = "Albüm kapaklarını Discord harici varlıkları üzerinden ilet",
         discordShowButtons = "Dinle Düğmesini Göster",
-        discordShowButtonsDesc = "Etkinlik kartında YouTube Music bağlantı düğmesi göster",
-        discordAppIdLabel = "Uygulama Kimliği",
-        discordAppIdPlaceholder = "Discord Uygulama Kimliği girin",
-        discordAppIdApply = "Kaydet",
-        discordAppIdReset = "Varsayılana Sıfırla",
-        discordAppIdInvalid = "Geçerli bir sayısal Discord Uygulama Kimliği girin (15–22 basamak)",
+        discordShowButtonsDesc = "Etkinlik kartında Sonata'da Dinle düğmesini göster",
         discordStatusLabel = "Bağlantı Durumu",
         discordStatusConnected = "Bağlı",
         discordStatusConnectedAs = { user -> "$user olarak bağlı" },
@@ -2488,8 +2749,15 @@ val TurkishSonataStrings = SonataStrings(
         discordStatusReconnecting = "Discord'a yeniden bağlanılıyor...",
         discordStatusDisconnected = "Bağlı değil",
         discordStatusAuthFailed = "Oturum süresi doldu veya reddedildi — tekrar giriş yapın",
+        discordStatusConnectionFailed = "Bağlantı başarısız",
         discordStatusError = { err -> "Bağlantı hatası: $err" },
         discordReconnect = "Gateway'e Yeniden Bağlan",
+        discordWebViewRendererGoneTitle = "Discord oturum açma sayfası sistem tarafından durduruldu",
+        discordWebViewRendererGoneBody = "Discord oturum açma sayfasını yeniden yüklemek için Yeniden Dene'ye dokunun.",
+        discordWebViewUnavailableTitle = "Bu cihazda WebView kullanılamıyor",
+        discordWebViewUnavailableBody = "Sistem WebView sağlayıcısı yüklenemedi. Tekrar deneyin veya Android System WebView'i güncelleyin.",
+        discordWebViewLoadErrorTitle = "Discord yüklenemedi",
+        discordWebViewLoadErrorBody = "İnternet bağlantınızı, VPN veya Özel DNS ayarınızı kontrol edip tekrar deneyin.",
     ),
     servers = TurkishServerStrings,
 )
@@ -2620,6 +2888,76 @@ val RussianSonataStrings = SonataStrings(
         addedToLibraryStatus = { title -> "Добавлено в медиатеку: «$title»" },
         removedFromLibraryStatus = { title -> "Удалено из медиатеки: «$title»" },
         removeFromLastPlayed = "Удалить из недавних",
+        playing = "Воспроизводится",
+        paused = "На паузе",
+        trackOptions = "Параметры трека",
+        clearSearch = "Очистить поиск",
+        selectedTracks = "Выбранные треки",
+        saveToPlaylists = "Сохранить в плейлисты",
+        selected = "Выбрано",
+        couldNotReadImage = "Не удалось прочитать выбранное изображение",
+        savedImageToGallery = "Изображение сохранено в Pictures/Sonata",
+        failedToSaveImage = "Не удалось сохранить изображение",
+        showLess = "Свернуть",
+        showMore = "Ещё",
+        shareArtist = "Поделиться исполнителем",
+        playPopularTracks = "Слушать популярные треки",
+        playSample = "Воспроизвести отрывок",
+        following = "В подписках",
+        follow = "Подписаться",
+        activeDownloadsHeader = { n -> "АКТИВНЫЕ ЗАГРУЗКИ ($n)" },
+        cancelDownload = "Отменить загрузку",
+        deleteDownload = "Удалить загрузку",
+        wifiOnlyChip = { on -> if (on) "Wi-Fi: Вкл" else "Wi-Fi: Выкл" },
+        tracksCountWithDuration = { count, mins ->
+            val mod100 = count % 100
+            val mod10 = count % 10
+            val word = when {
+                mod100 in 11..14 -> "треков"
+                mod10 == 1 -> "трек"
+                mod10 in 2..4 -> "трека"
+                else -> "треков"
+            }
+            val countLabel = "$count $word"
+            if (mins > 0L) "$countLabel, $mins мин" else countLabel
+        },
+        shareTrackCountBadge = { count ->
+            val mod100 = count % 100
+            val mod10 = count % 10
+            val word = when {
+                mod100 in 11..14 -> "ТРЕКОВ"
+                mod10 == 1 -> "ТРЕК"
+                mod10 in 2..4 -> "ТРЕКА"
+                else -> "ТРЕКОВ"
+            }
+            "$count $word"
+        },
+        shareEyebrowSong = "ТРЕК",
+        shareEyebrowAlbum = "АЛЬБОМ",
+        shareEyebrowPlaylist = "ПЛЕЙЛИСТ",
+        shareEyebrowArtist = "ИСПОЛНИТЕЛЬ",
+        ytmWebViewRendererGoneTitle = "Страница входа была остановлена системой",
+        ytmWebViewRendererGoneBody = "Нажмите «Повторить», чтобы продолжить вход.",
+        ytmWebViewUnavailableTitle = "WebView недоступен",
+        ytmWebViewUnavailableBody = "Не удалось загрузить системный WebView. Повторите попытку или обновите Android System WebView.",
+        updateSignatureMismatch = "Подпись загруженного APK не совпадает с установленным приложением",
+        quickToggleGlass = "Стекло",
+        quickToggleMotionArt = "Живые обложки",
+        quickToggleLight = "Basic Светлая",
+        quickToggleDark = "Basic Тёмная",
+        quickToggleAuto = "Авто",
+        translationLangName = { code ->
+            when (code.lowercase(Locale.ROOT)) {
+                "en" -> "Английский"
+                "tr" -> "Турецкий"
+                "ru" -> "Русский"
+                "es" -> "Испанский"
+                "ja" -> "Японский"
+                "ko" -> "Корейский"
+                "de" -> "Немецкий"
+                else -> code.uppercase(Locale.ROOT)
+            }
+        },
     ),
     feed = FeedStrings(
         topPicksForYou = "Рекомендации для вас",
@@ -2715,6 +3053,10 @@ val RussianSonataStrings = SonataStrings(
         homeErrorStatus = { msg -> "Ошибка главной: $msg" },
         artistErrorStatus = { msg -> "Ошибка страницы артиста: $msg" },
         collectionErrorStatus = { msg -> "Ошибка коллекции: $msg" },
+        personalizedStationEyebrow = "ПЕРСОНАЛЬНАЯ СТАНЦИЯ",
+        sonataListenerPlaceholder = "СЛУШАТЕЛЬ SONATA",
+        yourListeningExperienceEyebrow = "ВАШ МУЗЫКАЛЬНЫЙ ОПЫТ",
+        memberSinceEyebrow = "УЧАСТНИК\nС",
     ),
     player = PlayerStrings(
         audioPipeline = "Аудиотракт",
@@ -2766,6 +3108,7 @@ val RussianSonataStrings = SonataStrings(
         lyricsDisplay = "Отображение текста",
         lyricsTiming = "Сдвиг синхронизации",
         syncOffset = "Сдвиг текста",
+        syncLyrics = "Синхр.",
         translateLyrics = "Перевод текста",
         romanizeLyrics = "Транслитерация",
         sourceLabel = { src -> "Источник: $src" },
@@ -2846,6 +3189,21 @@ val RussianSonataStrings = SonataStrings(
         exitFullscreen = "Выйти из полноэкранного режима",
         loadingVideo = "Загрузка видео...",
         videoUnavailableStatus = "Видео недоступно",
+        upgradingQuality = "Улучшение качества",
+        losslessLabel = "Lossless",
+        cachedLabel = "Кэш",
+        pipelineSourceOfflineDownload = "Офлайн-загрузка",
+        pipelineSourceAudioStream = "Аудиопоток",
+        pipelineSourceIdle = "Ожидание",
+        pipelineDspBypassed = "Обход DSP",
+        pipelineDspActive = "DSP активен",
+        pipelineEqualizer = "Эквалайзер",
+        pipelineLoudnessNorm = "Нормализация",
+        jioSaavnStreamUnavailable = "Поток JioSaavn недоступен",
+        downloadStageStarting = "Запуск",
+        downloadStageDownloading = "Загрузка",
+        downloadStageDownloadingVideo = "Загрузка видео",
+        downloadStageSaving = "Сохранение",
     ),
     settings = SettingsStrings(
         settingsTitle = "Настройки",
@@ -2986,7 +3344,7 @@ val RussianSonataStrings = SonataStrings(
         translationLanguage = "Язык перевода",
         romanizeLyricsDesc = "Транслитерировать японский, корейский и кириллицу",
         globalLyricOffset = "Общий сдвиг текста",
-        footerAppearanceTheme = "Basic включает минималистичный монохромный стиль для Главной, Обзора, Альбома и Артиста. Violet и Moonflower сохраняют свои темы.",
+        footerAppearanceTheme = "Выберите светлую, тёмную или системную тему для монохромного стиля Basic.",
         hdrDisplayRendering = "Экран и рендеринг",
         footerDisplayRendering = "Снижение частоты кадров или облегчённый режим стекла уменьшают нагрузку на GPU и экономят заряд.",
         refreshRateHigh = "Повышенная частота 120 Гц",
@@ -3069,14 +3427,14 @@ val RussianSonataStrings = SonataStrings(
     ),
     discord = DiscordStrings(
         catDiscord = "Discord Rich Presence",
-        discordSummary = "Мобильный Discord RPC, статус, App ID",
+        discordSummary = "Мобильный Discord RPC и статус прослушивания",
         hdrDiscordAccount = "Аккаунт Discord",
         hdrDiscordPresence = "Отображение статуса",
-        hdrDiscordAppId = "ID приложения Discord",
-        footerDiscordAppId = "Используйте стандартный ID Sonata или вставьте свой Application ID из Discord Developer Portal.",
         discordSignInTitle = "Войти в Discord",
         discordSignInSubtitle = "Авторизуйтесь в Discord для показа статуса прослушивания",
         discordSignInCompleting = "Завершение входа...",
+        discordSignInVerifying = "Проверка сессии Discord...",
+        discordSignInVerifyFailed = "Не удалось проверить сессию Discord. Нажмите «Повторить».",
         discordSignInAction = "Войти в Discord",
         discordSignInActionDesc = "Подключите аккаунт Discord для мобильного Rich Presence",
         discordSignOutAction = "Выйти из Discord",
@@ -3096,12 +3454,7 @@ val RussianSonataStrings = SonataStrings(
         discordShowArtwork = "Показывать обложку трека",
         discordShowArtworkDesc = "Проксировать обложки через внешние ресурсы Discord",
         discordShowButtons = "Показывать кнопку «Слушать»",
-        discordShowButtonsDesc = "Добавить ссылку на YouTube Music в карточку активности",
-        discordAppIdLabel = "Application ID",
-        discordAppIdPlaceholder = "Введите Discord Application ID",
-        discordAppIdApply = "Сохранить",
-        discordAppIdReset = "Сбросить",
-        discordAppIdInvalid = "Введите корректный числовой ID приложения Discord (15–22 цифры)",
+        discordShowButtonsDesc = "Добавить кнопку «Слушать в Sonata» в карточку активности",
         discordStatusLabel = "Статус подключения",
         discordStatusConnected = "Подключено",
         discordStatusConnectedAs = { user -> "Подключено: $user" },
@@ -3109,8 +3462,15 @@ val RussianSonataStrings = SonataStrings(
         discordStatusReconnecting = "Переподключение к Discord...",
         discordStatusDisconnected = "Отключено",
         discordStatusAuthFailed = "Сессия истекла или отклонена — войдите снова",
+        discordStatusConnectionFailed = "Ошибка подключения",
         discordStatusError = { err -> "Ошибка подключения: $err" },
         discordReconnect = "Переподключить Gateway",
+        discordWebViewRendererGoneTitle = "Страница входа Discord была остановлена системой",
+        discordWebViewRendererGoneBody = "Нажмите «Повторить», чтобы перезагрузить страницу входа Discord.",
+        discordWebViewUnavailableTitle = "WebView недоступен на этом устройстве",
+        discordWebViewUnavailableBody = "Не удалось загрузить системный WebView. Повторите попытку или обновите Android System WebView.",
+        discordWebViewLoadErrorTitle = "Не удалось загрузить Discord",
+        discordWebViewLoadErrorBody = "Проверьте подключение к интернету, VPN или персональный DNS и попробуйте снова.",
     ),
     servers = RussianServerStrings,
 )

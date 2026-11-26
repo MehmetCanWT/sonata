@@ -44,7 +44,7 @@ meta = json.loads(
 )
 by_name = {pkg["name"]: {dep["name"] for dep in pkg["dependencies"] if dep.get("kind") is None} for pkg in meta["packages"]}
 
-forbidden_core = {"sonata-runtime", "sonata-tui", "sonata-desktop", "sonata-android", "ratatui", "crossterm", "gpui-kit", "uniffi"}
+forbidden_core = {"sonata-runtime", "sonata-tui", "sonata-desktop", "sonata-android", "ratatui", "crossterm", "tauri", "uniffi"}
 core_bad = by_name["sonata-core"] & forbidden_core
 if core_bad:
     sys.exit(f"sonata-core has forbidden normal dependencies: {sorted(core_bad)}")

@@ -7,8 +7,8 @@
 //! 3. **Activity & Speed Scaling**: Builds Discord `type = 2` (Listening) payloads with track
 //!    title, optional playback speed badge, artist, speed-scaled `start`/`end` timestamps while
 //!    playing, timestamp omission or clean clear-activity on pause/stop, artwork URLs, and buttons.
-//! 4. **Async Controller**: Exposes [`DiscordRpcHandle`] and [`DiscordConfig`] (with
-//!    [`DEFAULT_SONATA_DISCORD_APP_ID`] override support) for `sonata-tui` and `sonata-desktop`,
+//! 4. **Async Controller**: Exposes [`DiscordRpcHandle`] and [`DiscordConfig`] locked to
+//!    [`DEFAULT_SONATA_DISCORD_APP_ID`] for `sonata-tui` and `sonata-desktop`,
 //!    handling absent Discord clients and mid-session reconnects gracefully without blocking callers.
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -23,6 +23,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
+#[cfg(unix)]
 use tokio::net::UnixStream;
 use tokio::sync::{watch, Mutex};
 use tokio::task::JoinHandle;
@@ -186,7 +189,7 @@ async fn read_ipc_packet<R: AsyncRead + Unpin>(reader: &mut R) -> Result<IpcPack
 pub struct DiscordConfig {
     /// Whether Discord Rich Presence updates are enabled.
     pub enabled: bool,
-    /// Optional Discord Application ID overriding [`DEFAULT_SONATA_DISCORD_APP_ID`].
+    /// Legacy serialized field retained for backwards-compatible deserialization; ignored at runtime.
     pub app_id: Option<String>,
     /// When `true`, pausing playback sends a clean clear-activity update; when `false`,
     /// activity remains visible without progress timestamps.
@@ -213,26 +216,15 @@ impl Default for DiscordConfig {
 }
 
 impl DiscordConfig {
-    /// Returns the trimmed custom Application ID when non-empty, or
-    /// [`DEFAULT_SONATA_DISCORD_APP_ID`] otherwise.
+    /// Always returns the immutable Sonata Discord Application ID ([`DEFAULT_SONATA_DISCORD_APP_ID`]).
     pub fn effective_app_id(&self) -> &str {
-        self.app_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-            .unwrap_or(DEFAULT_SONATA_DISCORD_APP_ID)
+        DEFAULT_SONATA_DISCORD_APP_ID
     }
 
-    /// Sets an Application ID override (empty/whitespace overrides revert to the default ID).
-    pub fn with_app_id(mut self, app_id: Option<String>) -> Self {
-        self.app_id = app_id.and_then(|raw| {
-            let trimmed = raw.trim().to_string();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed)
-            }
-        });
+    /// Retains API compatibility while ignoring custom Application ID overrides so Sonata always uses
+    /// [`DEFAULT_SONATA_DISCORD_APP_ID`].
+    pub fn with_app_id(mut self, _app_id: Option<String>) -> Self {
+        self.app_id = None;
         self
     }
 }
@@ -279,10 +271,9 @@ impl DiscordTrackInfo {
             });
 
         let listen_url = derive_listen_url(track);
-        let button_url = listen_url.as_deref().unwrap_or(SONATA_PROJECT_URL);
         let buttons = vec![DiscordButton {
             label: DEFAULT_SONATA_DISCORD_BUTTON_LABEL.to_string(),
-            url: button_url.to_string(),
+            url: SONATA_PROJECT_URL.to_string(),
         }];
 
         let album = if track.album.trim().is_empty() {
@@ -632,14 +623,9 @@ pub fn build_activity(
         if !custom_buttons.is_empty() {
             custom_buttons
         } else {
-            let url = track
-                .listen_url
-                .as_deref()
-                .and_then(|u| sanitize_http_url(u, MAX_DISCORD_BUTTON_URL_CHARS))
-                .unwrap_or_else(|| SONATA_PROJECT_URL.to_string());
             sanitize_buttons(&[DiscordButton {
                 label: DEFAULT_SONATA_DISCORD_BUTTON_LABEL.to_string(),
-                url,
+                url: SONATA_PROJECT_URL.to_string(),
             }])
         }
     } else {
@@ -764,14 +750,25 @@ pub fn candidate_ipc_socket_paths_from(
     candidates
 }
 
-/// Discovers currently existing Discord IPC socket paths on disk.
+/// Discovers currently existing Discord IPC socket paths on disk (or Windows named pipes).
 pub fn discover_existing_ipc_sockets() -> Vec<PathBuf> {
-    candidate_ipc_socket_paths()
-        .into_iter()
-        .filter(|path| is_socket_path(path))
-        .collect()
+    #[cfg(windows)]
+    {
+        (0..10)
+            .map(|idx| PathBuf::from(format!(r"\\?\pipe\discord-ipc-{idx}")))
+            .filter(|path| path.exists())
+            .collect()
+    }
+    #[cfg(not(windows))]
+    {
+        candidate_ipc_socket_paths()
+            .into_iter()
+            .filter(|path| is_socket_path(path))
+            .collect()
+    }
 }
 
+#[cfg(not(windows))]
 fn is_socket_path(path: &Path) -> bool {
     #[cfg(unix)]
     {
@@ -849,8 +846,29 @@ impl SentActivitySnapshot {
     }
 }
 
+#[cfg(unix)]
+type DiscordIpcStream = UnixStream;
+#[cfg(windows)]
+type DiscordIpcStream = NamedPipeClient;
+
+async fn connect_discord_ipc(path: &Path) -> Result<DiscordIpcStream> {
+    #[cfg(unix)]
+    {
+        timeout(HANDSHAKE_TIMEOUT, UnixStream::connect(path))
+            .await
+            .context("timed out connecting to Discord IPC socket")?
+            .with_context(|| format!("failed to connect to {}", path.display()))
+    }
+    #[cfg(windows)]
+    {
+        ClientOptions::new()
+            .open(path)
+            .with_context(|| format!("failed to connect to {}", path.display()))
+    }
+}
+
 struct IpcConnection {
-    stream: UnixStream,
+    stream: DiscordIpcStream,
     socket_path: PathBuf,
     app_id: String,
     pid: u32,
@@ -877,10 +895,7 @@ impl IpcConnection {
     }
 
     async fn try_connect_one(path: &Path, app_id: &str) -> Result<Self> {
-        let mut stream = timeout(HANDSHAKE_TIMEOUT, UnixStream::connect(path))
-            .await
-            .context("timed out connecting to Discord IPC socket")?
-            .with_context(|| format!("failed to connect to {}", path.display()))?;
+        let mut stream = connect_discord_ipc(path).await?;
 
         let handshake = build_handshake_payload(app_id);
         timeout(
@@ -1267,6 +1282,7 @@ async fn run_discord_actor<F>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use tokio::net::UnixListener;
     use tokio::time::sleep;
 
@@ -1282,7 +1298,7 @@ mod tests {
             duration_secs: Some(243.0),
             buttons: vec![DiscordButton {
                 label: DEFAULT_SONATA_DISCORD_BUTTON_LABEL.to_string(),
-                url: "https://music.youtube.com/watch?v=dX3k_QDnzHE".to_string(),
+                url: SONATA_PROJECT_URL.to_string(),
             }],
         }
     }
@@ -1393,10 +1409,7 @@ mod tests {
         );
         assert_eq!(playing_act.buttons.len(), 1);
         assert_eq!(playing_act.buttons[0].label, "Listen on Sonata");
-        assert_eq!(
-            playing_act.buttons[0].url,
-            "https://music.youtube.com/watch?v=dX3k_QDnzHE"
-        );
+        assert_eq!(playing_act.buttons[0].url, SONATA_PROJECT_URL);
 
         // Pausing with clear_on_pause = false keeps activity but omits timestamps.
         let paused_state = DiscordPlaybackState::paused(Some(sample_track()), 45.0, 1.25);
@@ -1428,7 +1441,11 @@ mod tests {
         );
 
         let custom_cfg = DiscordConfig::default().with_app_id(Some(" 987654321012345678 ".into()));
-        assert_eq!(custom_cfg.effective_app_id(), "987654321012345678");
+        assert_eq!(custom_cfg.effective_app_id(), DEFAULT_SONATA_DISCORD_APP_ID);
+
+        let legacy_cfg: DiscordConfig =
+            serde_json::from_str(r#"{"enabled":true,"app_id":"987654321012345678"}"#).unwrap();
+        assert_eq!(legacy_cfg.effective_app_id(), DEFAULT_SONATA_DISCORD_APP_ID);
 
         let ytm_track = Track {
             id: "abc123xyz".to_string(),
@@ -1457,7 +1474,7 @@ mod tests {
             info.buttons,
             vec![DiscordButton {
                 label: "Listen on Sonata".to_string(),
-                url: "https://music.youtube.com/watch?v=abc123xyz".to_string(),
+                url: SONATA_PROJECT_URL.to_string(),
             }]
         );
 
@@ -1549,6 +1566,7 @@ mod tests {
         assert_eq!(distinct.len(), 90);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn controller_handshake_set_activity_and_clear_over_unix_socket() {
         let unique = SystemTime::now()
@@ -1566,7 +1584,7 @@ mod tests {
             let hs = read_ipc_packet(&mut stream).await.unwrap();
             assert_eq!(hs.opcode, IpcOpcode::Handshake as u32);
             assert_eq!(hs.payload["v"], 1);
-            assert_eq!(hs.payload["client_id"], "555555555555555555");
+            assert_eq!(hs.payload["client_id"], DEFAULT_SONATA_DISCORD_APP_ID);
 
             write_ipc_packet(
                 &mut stream,

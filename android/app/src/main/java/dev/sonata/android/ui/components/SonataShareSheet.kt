@@ -171,6 +171,11 @@ sealed interface SonataShareTarget {
                 trackCount?.takeIf { it > 0 }?.let { "$it ${if (it == 1) "TRACK" else "TRACKS"}" },
                 year?.takeIf { it.isNotBlank() },
             ).takeIf { it.isNotEmpty() }?.joinToString(" • ")
+
+        fun localizedBadgeMeta(strings: dev.sonata.android.ui.i18n.SonataStrings): String? = listOfNotNull(
+            trackCount?.takeIf { it > 0 }?.let { strings.shareTrackCountBadge(it) },
+            year?.takeIf { it.isNotBlank() },
+        ).takeIf { it.isNotEmpty() }?.joinToString(" • ")
     }
 
     data class Artist(
@@ -210,22 +215,10 @@ private fun buildShareCardPalette(
     val artSecondary = artPalette.meshColors.getOrNull(1) ?: artPalette.wash
     val artDeep = artPalette.meshColors.getOrNull(3) ?: artPalette.background
 
-    val themeAnchorTop = when {
-        theme.isBasic -> Color(0xFF1C1C1E)
-        theme.isMoonflower -> Color(0xFF4F2248)
-        else -> Color(0xFF28104B)
-    }
-    val themeAnchorBot = when {
-        theme.isBasic -> Color(0xFF0A0A0C)
-        theme.isMoonflower -> Color(0xFF261028)
-        else -> Color(0xFF100720)
-    }
-    val themeGlow = when {
-        theme.isBasic -> Color(0xFFE5E5EA)
-        theme.isMoonflower -> Color(0xFFF6A5CE)
-        else -> Color(0xFFB48CFF)
-    }
-    val themeAccent = if (theme.isBasic) Color(0xFFD1D1D6) else theme.petalLavender
+    val themeAnchorTop = Color(0xFF1C1C1E)
+    val themeAnchorBot = Color(0xFF0A0A0C)
+    val themeGlow = Color(0xFFE5E5EA)
+    val themeAccent = Color(0xFFD1D1D6)
 
     return ShareCardVisualPalette(
         topColor = lerpColor(artDeep, themeAnchorTop, 0.44f),
@@ -233,11 +226,7 @@ private fun buildShareCardPalette(
         bottomColor = lerpColor(artDeep, themeAnchorBot, 0.56f),
         glowPrimary = lerpColor(artPrimary, themeGlow, 0.34f),
         glowSecondary = lerpColor(artSecondary, theme.moonGlow, 0.38f),
-        strokeColor = when {
-            theme.isBasic -> Color.White.copy(alpha = 0.22f)
-            theme.isMoonflower -> Color(0xFFFFD8EC).copy(alpha = 0.44f)
-            else -> Color(0xFFCBB2FF).copy(alpha = 0.44f)
-        },
+        strokeColor = Color.White.copy(alpha = 0.22f),
         chipFill = Color.White.copy(alpha = 0.14f),
     )
 }
@@ -398,6 +387,7 @@ internal fun SonataShareSheet(
                                         artwork = loadedBitmap,
                                         palette = cardPalette,
                                         theme = theme,
+                                        strings = strings,
                                     )
                                     writeShareCachePng(context, rendered, target.shareTitle)
                                 }
@@ -433,14 +423,15 @@ internal fun SonataShareSheet(
                                         artwork = loadedBitmap,
                                         palette = cardPalette,
                                         theme = theme,
+                                        strings = strings,
                                     )
                                     saveSharePngToGallery(context, rendered, target.shareTitle)
                                 }
                                 busyAction = null
                                 val msg = if (savedOk) {
-                                    "Saved image to Pictures/Sonata"
+                                    strings.savedImageToGallery
                                 } else {
-                                    "Failed to save image"
+                                    strings.failedToSaveImage
                                 }
                                 onStatusMessage(msg)
                                 Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
@@ -461,12 +452,7 @@ private fun ShareCardPreview(
     theme: LunariaThemeTokens,
     modifier: Modifier = Modifier,
 ) {
-    val corner = when {
-        theme.isMoonflower -> 28.dp
-        theme.isBasic -> 16.dp
-        else -> 22.dp
-    }
-    val cardShape = RoundedCornerShape(corner)
+    val cardShape = RoundedCornerShape(16.dp)
     Box(
         modifier = modifier
             .aspectRatio(0.82f)
@@ -479,7 +465,7 @@ private fun ShareCardPreview(
             )
             .border(1.dp, palette.strokeColor, cardShape),
     ) {
-        // Atmospheric aura & theme geometry background
+        // Monochrome Basic aura background
         Canvas(modifier = Modifier.fillMaxSize()) {
             val w = size.width
             val h = size.height
@@ -501,35 +487,6 @@ private fun ShareCardPreview(
                 radius = w * 0.52f,
                 center = Offset(w * 0.84f, h * 0.78f),
             )
-            when {
-                theme.isMoonflower -> {
-                    // Soft silk petal curves for Moonflower
-                    drawCircle(
-                        color = Color.White.copy(alpha = 0.06f),
-                        radius = w * 0.44f,
-                        center = Offset(w * 0.5f, h * 0.36f),
-                        style = Stroke(width = 1.4.dp.toPx()),
-                    )
-                    drawCircle(
-                        color = Color(0xFFFFD0E9).copy(alpha = 0.08f),
-                        radius = w * 0.56f,
-                        center = Offset(w * 0.5f, h * 0.36f),
-                        style = Stroke(width = 1.dp.toPx()),
-                    )
-                }
-                theme.isViolet -> {
-                    // Celestial orbital ring & subtle ticks for Violet
-                    drawCircle(
-                        color = Color.White.copy(alpha = 0.08f),
-                        radius = w * 0.43f,
-                        center = Offset(w * 0.5f, h * 0.36f),
-                        style = Stroke(
-                            width = 1.dp.toPx(),
-                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 12f)),
-                        ),
-                    )
-                }
-            }
         }
 
         Column(
@@ -552,8 +509,9 @@ private fun ShareCardPreview(
                         .border(0.75.dp, Color.White.copy(alpha = 0.24f), RoundedCornerShape(percent = 50))
                         .padding(horizontal = 11.dp, vertical = 4.dp),
                 ) {
+                    val shareStrings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
                     Text(
-                        text = target.eyebrowLabel,
+                        text = target.localizedEyebrowLabel(shareStrings),
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
@@ -622,7 +580,9 @@ private fun ShareCardPreview(
                 )
             }
 
-            if (target is SonataShareTarget.Collection && !target.badgeMeta.isNullOrBlank()) {
+            val shareMetaStrings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
+            val localizedMeta = (target as? SonataShareTarget.Collection)?.localizedBadgeMeta(shareMetaStrings)
+            if (!localizedMeta.isNullOrBlank()) {
                 Spacer(Modifier.height(10.dp))
                 Box(
                     modifier = Modifier
@@ -631,7 +591,7 @@ private fun ShareCardPreview(
                         .padding(horizontal = 10.dp, vertical = 4.dp),
                 ) {
                     Text(
-                        text = target.badgeMeta.orEmpty(),
+                        text = localizedMeta,
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontSize = 10.sp,
                             fontWeight = FontWeight.SemiBold,
@@ -872,27 +832,13 @@ private fun ShareActionPill(
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
-    val shape = RoundedCornerShape(
-        when {
-            theme.isMoonflower -> 20.dp
-            theme.isBasic -> 14.dp
-            else -> 16.dp
-        },
-    )
-    val tintTop = when {
-        theme.isBasic -> Color(0xFF222226).copy(alpha = 0.90f)
-        theme.isMoonflower -> Color(0xFF4A2546).copy(alpha = 0.72f)
-        else -> Color(0xFF281948).copy(alpha = 0.74f)
-    }
-    val tintBot = when {
-        theme.isBasic -> Color(0xFF141416).copy(alpha = 0.95f)
-        theme.isMoonflower -> Color(0xFF261229).copy(alpha = 0.84f)
-        else -> Color(0xFF140B29).copy(alpha = 0.86f)
-    }
+    val shape = RoundedCornerShape(14.dp)
+    val tintTop = Color(0xFF222226).copy(alpha = 0.90f)
+    val tintBot = Color(0xFF141416).copy(alpha = 0.95f)
     val rimBrush = Brush.linearGradient(
         listOf(
-            Color.White.copy(alpha = if (theme.isBasic) 0.24f else 0.44f),
-            if (theme.isBasic) Color.White.copy(alpha = 0.10f) else theme.petalLavender.copy(alpha = 0.24f),
+            Color.White.copy(alpha = 0.24f),
+            Color.White.copy(alpha = 0.10f),
         ),
     )
     Column(
@@ -932,11 +878,20 @@ private fun ShareActionPill(
     }
 }
 
+private fun SonataShareTarget.localizedEyebrowLabel(
+    strings: dev.sonata.android.ui.i18n.SonataStrings,
+): String = when (this) {
+    is SonataShareTarget.Track -> strings.shareEyebrowSong
+    is SonataShareTarget.Collection -> if (isAlbum) strings.shareEyebrowAlbum else strings.shareEyebrowPlaylist
+    is SonataShareTarget.Artist -> strings.shareEyebrowArtist
+}
+
 private fun renderShareCardPngBitmap(
     target: SonataShareTarget,
     artwork: Bitmap?,
     palette: ShareCardVisualPalette,
     theme: LunariaThemeTokens,
+    strings: dev.sonata.android.ui.i18n.SonataStrings = dev.sonata.android.ui.i18n.EnglishSonataStrings,
 ): Bitmap {
     val w = 1080
     val h = 1320
@@ -997,7 +952,7 @@ private fun renderShareCardPngBitmap(
     }
 
     // 3. Eyebrow capsule pill
-    val eyebrowText = target.eyebrowLabel
+    val eyebrowText = target.localizedEyebrowLabel(strings)
     val chipTextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.White.copy(alpha = 0.94f).toArgb()
         textSize = 27f
@@ -1209,8 +1164,8 @@ private fun renderShareCardPngBitmap(
             )
             bx += barWidth + barGap
         }
-    } else if (target is SonataShareTarget.Collection && !target.badgeMeta.isNullOrBlank()) {
-        val metaText = target.badgeMeta.orEmpty()
+    } else if (target is SonataShareTarget.Collection && !target.localizedBadgeMeta(strings).isNullOrBlank()) {
+        val metaText = target.localizedBadgeMeta(strings).orEmpty()
         val metaPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.White.copy(alpha = 0.86f).toArgb()
             textSize = 27f

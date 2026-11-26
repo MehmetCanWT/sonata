@@ -43,11 +43,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import dev.sonata.android.ui.i18n.LocalSonataStrings
-import dev.sonata.android.ui.i18n.RussianSonataStrings
 import dev.sonata.android.ui.i18n.SonataStrings
-import dev.sonata.android.ui.i18n.TurkishSonataStrings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import java.net.URI
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
 private const val YTM_ORIGIN = "https://music.youtube.com"
@@ -61,6 +61,23 @@ private const val LOGGED_IN_PROBE_JS =
 
 private fun hasAuthCookie(raw: String): Boolean =
     raw.contains("SAPISID=") || raw.contains("__Secure-3PAPISID=")
+
+internal fun isAllowedYtMusicNavigationUrl(url: String?): Boolean {
+    if (url.isNullOrBlank()) return false
+    val parsed = runCatching { URI(url) }.getOrNull() ?: return false
+    val scheme = parsed.scheme?.lowercase(Locale.ROOT) ?: return false
+    if (scheme != "https") return false
+    val host = parsed.host?.lowercase(Locale.ROOT) ?: return false
+    return host == "music.youtube.com" ||
+        host == "youtube.com" ||
+        host == "accounts.youtube.com" ||
+        host.endsWith(".youtube.com") ||
+        host == "accounts.google.com" ||
+        host == "google.com" ||
+        host.endsWith(".google.com") ||
+        host.endsWith(".googleusercontent.com") ||
+        host.endsWith(".gstatic.com")
+}
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -177,6 +194,8 @@ fun YtMusicLoginScreen(
                                 setLayerType(View.LAYER_TYPE_HARDWARE, null)
                                 settings.javaScriptEnabled = true
                                 settings.domStorageEnabled = true
+                                settings.allowFileAccess = false
+                                settings.allowContentAccess = false
                                 cm.setAcceptThirdPartyCookies(this, true)
 
                                 fun inspectOriginAndCookies(view: WebView?, url: String?) {
@@ -206,7 +225,7 @@ fun YtMusicLoginScreen(
                                     override fun shouldOverrideUrlLoading(
                                         view: WebView?,
                                         request: WebResourceRequest?
-                                    ): Boolean = false
+                                    ): Boolean = !isAllowedYtMusicNavigationUrl(request?.url?.toString())
 
                                     override fun onPageCommitVisible(view: WebView?, url: String?) {
                                         inspectOriginAndCookies(view, url)
@@ -262,39 +281,15 @@ private fun WebViewFallbackBox(
     isRendererGone: Boolean,
     onRetry: () -> Unit,
 ) {
-    val title = when (strings) {
-        TurkishSonataStrings -> if (isRendererGone) {
-            "Oturum açma sayfası yeniden başlatılmalı"
-        } else {
-            "WebView kullanılamıyor"
-        }
-        RussianSonataStrings -> if (isRendererGone) {
-            "Страница входа была остановлена системой"
-        } else {
-            "WebView недоступен"
-        }
-        else -> if (isRendererGone) {
-            "Sign-in page was stopped by the system"
-        } else {
-            "WebView is unavailable on this device"
-        }
+    val title = if (isRendererGone) {
+        strings.ytmWebViewRendererGoneTitle
+    } else {
+        strings.ytmWebViewUnavailableTitle
     }
-    val subtitle = when (strings) {
-        TurkishSonataStrings -> if (isRendererGone) {
-            "Giriş işlemini güvenli biçimde sürdürmek için yeniden deneyin."
-        } else {
-            "Sistem WebView sağlayıcısı yüklenemedi. Tekrar deneyin veya Android Sistem WebView'i güncelleyin."
-        }
-        RussianSonataStrings -> if (isRendererGone) {
-            "Нажмите «Повторить», чтобы продолжить вход."
-        } else {
-            "Не удалось загрузить системный WebView. Повторите попытку или обновите Android System WebView."
-        }
-        else -> if (isRendererGone) {
-            "Tap Retry to reload the sign-in page without losing progress."
-        } else {
-            "Could not initialize the system WebView provider. Retry or check Android System WebView."
-        }
+    val subtitle = if (isRendererGone) {
+        strings.ytmWebViewRendererGoneBody
+    } else {
+        strings.ytmWebViewUnavailableBody
     }
 
     Box(

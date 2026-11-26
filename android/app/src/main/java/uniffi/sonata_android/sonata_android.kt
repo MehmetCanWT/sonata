@@ -909,6 +909,8 @@ internal open class UniffiVTableCallbackInterfaceAndroidJsCipherSolver(
 
 
 
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -1015,6 +1017,8 @@ fun uniffi_sonata_android_checksum_method_sonataandroidengine_probe_server_healt
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_query_listening_stats(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_record_listening_stat(
+): Short
+fun uniffi_sonata_android_checksum_method_sonataandroidengine_remove_from_listening_history(
 ): Short
 fun uniffi_sonata_android_checksum_method_sonataandroidengine_remove_track_from_personal_playlist(
 ): Short
@@ -1235,6 +1239,8 @@ fun uniffi_sonata_android_fn_method_sonataandroidengine_probe_server_health(`ptr
 fun uniffi_sonata_android_fn_method_sonataandroidengine_query_listening_stats(`ptr`: Pointer,`window`: RustBuffer.ByValue,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_record_listening_stat(`ptr`: Pointer,`track`: RustBuffer.ByValue,`sourceTag`: RustBuffer.ByValue,`playedSecs`: Long,`playedAtUnix`: RustBuffer.ByValue,
+): Long
+fun uniffi_sonata_android_fn_method_sonataandroidengine_remove_from_listening_history(`ptr`: Pointer,`videoId`: RustBuffer.ByValue,
 ): Long
 fun uniffi_sonata_android_fn_method_sonataandroidengine_remove_track_from_personal_playlist(`ptr`: Pointer,`playlistId`: RustBuffer.ByValue,`trackId`: RustBuffer.ByValue,
 ): Long
@@ -1566,6 +1572,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_record_listening_stat() != 23470.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_remove_from_listening_history() != 20274.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sonata_android_checksum_method_sonataandroidengine_remove_track_from_personal_playlist() != 19078.toShort()) {
@@ -2390,6 +2399,11 @@ public interface SonataAndroidEngineInterface {
      * Records a single on-device listening event into SQLite `stats.db` via `spawn_blocking`.
      */
     suspend fun `recordListeningStat`(`track`: AndroidTrack, `sourceTag`: kotlin.String, `playedSecs`: kotlin.ULong, `playedAtUnix`: kotlin.ULong?)
+    
+    /**
+     * Removes `video_id` from the signed-in user's YouTube Music listening history (`FEmusic_history`).
+     */
+    suspend fun `removeFromListeningHistory`(`videoId`: kotlin.String): kotlin.Boolean
     
     /**
      * Removes a track by ID from a locally persisted personal playlist.
@@ -3743,6 +3757,30 @@ open class SonataAndroidEngine: Disposable, AutoCloseable, SonataAndroidEngineIn
         // lift function
         { Unit },
         
+        // Error FFI converter
+        SonataAndroidException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Removes `video_id` from the signed-in user's YouTube Music listening history (`FEmusic_history`).
+     */
+    @Throws(SonataAndroidException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `removeFromListeningHistory`(`videoId`: kotlin.String) : kotlin.Boolean {
+        return uniffiRustCallAsync(
+        callWithPointer { thisPtr ->
+            UniffiLib.INSTANCE.uniffi_sonata_android_fn_method_sonataandroidengine_remove_from_listening_history(
+                thisPtr,
+                FfiConverterString.lower(`videoId`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_poll_i8(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_complete_i8(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_sonata_android_rust_future_free_i8(future) },
+        // lift function
+        { FfiConverterBoolean.lift(it) },
         // Error FFI converter
         SonataAndroidException.ErrorHandler,
     )

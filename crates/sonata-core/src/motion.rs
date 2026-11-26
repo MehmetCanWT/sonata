@@ -311,30 +311,112 @@ fn parse_jwt_expiry_ms(jwt: &str) -> Option<u64> {
     (exp > 0).then_some(exp.saturating_mul(1000))
 }
 
-async fn obtain_apple_jwt(http: &Client) -> Option<String> {
-    let mut guard = apple_jwt_mutex().lock().await;
-    let now_ms = now_epoch_ms();
-    if let Some(cached) = &guard.token {
-        if now_ms + 60_000 < guard.expiry_epoch_ms && !guard.rejected.contains(cached) {
-            return Some(cached.clone());
-        }
+/// Validates that a remote motion-media URL uses `https://` without embedded credentials
+/// and targets a public host (rejecting loopback, private, link-local, and local-only names).
+pub fn is_safe_public_https_url(raw: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(raw.trim()) else {
+        return false;
+    };
+    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
+        return false;
     }
-    if let Some(retry_at) = guard.retry_after {
-        if Instant::now() < retry_at {
-            return None;
-        }
+    let Some(host_str) = url.host_str() else {
+        return false;
+    };
+    let host_trimmed = host_str.trim_end_matches('.');
+    if host_trimmed.is_empty() {
+        return false;
     }
+    let host_lower = host_trimmed.to_ascii_lowercase();
+    if host_lower == "localhost"
+        || host_lower.ends_with(".localhost")
+        || host_lower.ends_with(".local")
+        || host_lower.ends_with(".internal")
+    {
+        return false;
+    }
+    let ip_candidate = host_trimmed
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(host_trimmed);
+    if let Ok(ip) = ip_candidate.parse::<std::net::IpAddr>() {
+        return is_public_ip(ip);
+    }
+    host_lower.contains('.')
+}
 
-    let browse_html = http
+fn is_public_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let octets = v4.octets();
+            let is_cgnat = octets[0] == 100 && (64..=127).contains(&octets[1]);
+            let is_benchmark = octets[0] == 198 && (18..=19).contains(&octets[1]);
+            let is_reserved = octets[0] >= 240;
+            !(v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_unspecified()
+                || v4.is_multicast()
+                || is_cgnat
+                || is_benchmark
+                || is_reserved)
+        }
+        std::net::IpAddr::V6(v6) => {
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return is_public_ip(std::net::IpAddr::V4(mapped));
+            }
+            let segs = v6.segments();
+            let is_unique_local = (segs[0] & 0xfe00) == 0xfc00;
+            let is_unicast_link_local = (segs[0] & 0xffc0) == 0xfe80;
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || is_unique_local
+                || is_unicast_link_local)
+        }
+    }
+}
+
+async fn obtain_apple_jwt(http: &Client) -> Option<String> {
+    let now_ms = now_epoch_ms();
+    let rejected_snapshot = {
+        let guard = apple_jwt_mutex().lock().await;
+        if let Some(cached) = &guard.token {
+            if now_ms + 60_000 < guard.expiry_epoch_ms && !guard.rejected.contains(cached) {
+                return Some(cached.clone());
+            }
+        }
+        if let Some(retry_at) = guard.retry_after {
+            if Instant::now() < retry_at {
+                return None;
+            }
+        }
+        guard.rejected.clone()
+    };
+
+    let browse_html = match http
         .get(APPLE_BROWSE_URL)
         .header("User-Agent", DESKTOP_UA)
         .timeout(Duration::from_secs(5))
         .send()
         .await
-        .ok()?
-        .text()
-        .await
-        .ok()?;
+    {
+        Ok(resp) => match resp.text().await {
+            Ok(text) => text,
+            Err(_) => {
+                let mut guard = apple_jwt_mutex().lock().await;
+                guard.retry_after = Some(Instant::now() + APPLE_TOKEN_RETRY_BACKOFF);
+                return None;
+            }
+        },
+        Err(_) => {
+            let mut guard = apple_jwt_mutex().lock().await;
+            guard.retry_after = Some(Instant::now() + APPLE_TOKEN_RETRY_BACKOFF);
+            return None;
+        }
+    };
 
     static SCRIPT_RE: OnceLock<Regex> = OnceLock::new();
     static JWT_RE: OnceLock<Regex> = OnceLock::new();
@@ -353,6 +435,7 @@ async fn obtain_apple_jwt(http: &Client) -> Option<String> {
         }
     }
 
+    let mut discovered: Option<(String, u64)> = None;
     for path in script_paths.into_iter().take(4) {
         let url = format!("https://music.apple.com{path}");
         let Ok(resp) = http
@@ -374,7 +457,7 @@ async fn obtain_apple_jwt(http: &Client) -> Option<String> {
         let mut candidates: Vec<(String, u64)> = Vec::new();
         for m in jwt_re.find_iter(&js) {
             let tok = m.as_str();
-            if guard.rejected.contains(tok) {
+            if rejected_snapshot.contains(tok) {
                 continue;
             }
             if let Some(exp) = parse_jwt_expiry_ms(tok) {
@@ -391,12 +474,24 @@ async fn obtain_apple_jwt(http: &Client) -> Option<String> {
             .find(|(tok, _)| is_apple_web_player_jwt(tok))
             .cloned()
             .unwrap_or_else(|| candidates[0].clone());
-        guard.token = Some(chosen.0.clone());
-        guard.expiry_epoch_ms = chosen.1;
-        guard.retry_after = None;
-        return Some(chosen.0);
+        discovered = Some(chosen);
+        break;
     }
 
+    let mut guard = apple_jwt_mutex().lock().await;
+    if let Some((token, expiry_epoch_ms)) = discovered {
+        if !guard.rejected.contains(&token) {
+            guard.token = Some(token.clone());
+            guard.expiry_epoch_ms = expiry_epoch_ms;
+            guard.retry_after = None;
+            return Some(token);
+        }
+    }
+    if let Some(cached) = &guard.token {
+        if now_epoch_ms() + 60_000 < guard.expiry_epoch_ms && !guard.rejected.contains(cached) {
+            return Some(cached.clone());
+        }
+    }
     guard.retry_after = Some(Instant::now() + APPLE_TOKEN_RETRY_BACKOFF);
     None
 }
@@ -770,16 +865,19 @@ async fn resolve_tidal_motion_url(
 }
 
 async fn load_community_manifest(http: &Client) -> Vec<CommunityEntry> {
-    let mut guard = community_mutex().lock().await;
-    if !guard.entries.is_empty()
-        && guard
-            .fetched_at
-            .is_some_and(|t| t.elapsed() < COMMUNITY_TTL)
-    {
-        return guard.entries.clone();
-    }
+    let fallback_entries = {
+        let mut guard = community_mutex().lock().await;
+        if !guard.entries.is_empty()
+            && guard
+                .fetched_at
+                .is_some_and(|t| t.elapsed() < COMMUNITY_TTL)
+        {
+            return guard.entries.clone();
+        }
+        guard.fetched_at = Some(Instant::now());
+        guard.entries.clone()
+    };
 
-    guard.fetched_at = Some(Instant::now());
     let Ok(resp) = http
         .get(COMMUNITY_MANIFEST_URL)
         .header("User-Agent", DESKTOP_UA)
@@ -787,16 +885,16 @@ async fn load_community_manifest(http: &Client) -> Vec<CommunityEntry> {
         .send()
         .await
     else {
-        return guard.entries.clone();
+        return fallback_entries;
     };
     if !resp.status().is_success() {
-        return guard.entries.clone();
+        return fallback_entries;
     }
     let Ok(root) = resp.json::<Value>().await else {
-        return guard.entries.clone();
+        return fallback_entries;
     };
     let Some(items) = root.get("items").and_then(Value::as_array) else {
-        return guard.entries.clone();
+        return fallback_entries;
     };
 
     let parsed: Vec<CommunityEntry> = items
@@ -805,7 +903,7 @@ async fn load_community_manifest(http: &Client) -> Vec<CommunityEntry> {
             let song = obj.get("song").and_then(Value::as_str)?.trim();
             let artist = obj.get("artist").and_then(Value::as_str)?.trim();
             let url = obj.get("url").and_then(Value::as_str)?.trim();
-            if song.is_empty() || artist.is_empty() || !url.starts_with("http") {
+            if song.is_empty() || artist.is_empty() || !is_safe_public_https_url(url) {
                 return None;
             }
             let album = obj
@@ -823,8 +921,10 @@ async fn load_community_manifest(http: &Client) -> Vec<CommunityEntry> {
         })
         .collect();
 
+    let mut guard = community_mutex().lock().await;
     if !parsed.is_empty() {
         guard.entries = parsed;
+        guard.fetched_at = Some(Instant::now());
     }
     guard.entries.clone()
 }
@@ -1256,5 +1356,39 @@ mod tests {
         assert!(
             score_apple_candidate(&wrong_artist, "Blinding Lights", "The Weeknd", None).is_none()
         );
+    }
+
+    #[test]
+    fn validates_public_https_motion_urls_and_blocks_ssrf_targets() {
+        assert!(is_safe_public_https_url(
+            "https://mvod.itunes.apple.com/itunes-assets/square.m3u8"
+        ));
+        assert!(is_safe_public_https_url("https://1.1.1.1/canvas/loop.mp4"));
+
+        for rejected in [
+            "http://mvod.itunes.apple.com/square.m3u8",
+            "file:///etc/passwd",
+            "https://localhost/loop.m3u8",
+            "https://sub.localhost/loop.m3u8",
+            "https://nas.local/loop.mp4",
+            "https://jf.internal/loop.mp4",
+            "https://metadata/latest/meta-data",
+            "https://127.0.0.1/loop.m3u8",
+            "https://10.0.0.1/loop.m3u8",
+            "https://172.16.0.1/loop.m3u8",
+            "https://192.168.1.10/loop.m3u8",
+            "https://169.254.169.254/latest/meta-data",
+            "https://100.64.0.1/loop.m3u8",
+            "https://[::1]/loop.m3u8",
+            "https://[::ffff:127.0.0.1]/loop.m3u8",
+            "https://[fe80::1]/loop.m3u8",
+            "https://[fc00::1]/loop.m3u8",
+            "https://user:pass@cdn.example.com/loop.mp4",
+        ] {
+            assert!(
+                !is_safe_public_https_url(rejected),
+                "expected URL `{rejected}` to be rejected"
+            );
+        }
     }
 }

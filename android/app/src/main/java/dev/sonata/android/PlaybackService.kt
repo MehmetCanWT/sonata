@@ -74,7 +74,6 @@ import kotlinx.coroutines.launch
 import java.io.File
 import java.io.InterruptedIOException
 import java.util.Locale
-import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -1394,6 +1393,18 @@ class PlaybackService : MediaLibraryService() {
                 controller: MediaSession.ControllerInfo,
                 mediaItems: MutableList<MediaItem>,
             ): ListenableFuture<MutableList<MediaItem>> {
+                val isInternalController = controller.packageName == packageName
+                if (!isInternalController) {
+                    val firstMediaId = mediaItems.firstNotNullOfOrNull { item ->
+                        item.mediaId.trim().takeIf { it.isNotEmpty() }
+                    }
+                    if (firstMediaId != null) {
+                        PlaybackQueueBridge.onPlayMediaId(firstMediaId)
+                    } else if (mediaItems.any { it.localConfiguration != null }) {
+                        Log.w(TAG, "Rejected untrusted external URI addMediaItems from ${controller.packageName}")
+                    }
+                    return Futures.immediateFuture(mutableListOf())
+                }
                 val resolved = mediaItems.map { requested ->
                     if (requested.localConfiguration != null) {
                         requested
@@ -1417,6 +1428,23 @@ class PlaybackService : MediaLibraryService() {
                 startIndex: Int,
                 startPositionMs: Long,
             ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+                val isInternalController = controller.packageName == packageName
+                if (!isInternalController) {
+                    val target = mediaItems.getOrNull(startIndex.coerceAtLeast(0)) ?: mediaItems.firstOrNull()
+                    val mediaId = target?.mediaId?.trim().orEmpty()
+                    if (mediaId.isNotBlank()) {
+                        PlaybackQueueBridge.onPlayMediaId(mediaId)
+                    } else if (mediaItems.any { it.localConfiguration != null }) {
+                        Log.w(TAG, "Rejected untrusted external URI setMediaItems from ${controller.packageName}")
+                    }
+                    return Futures.immediateFuture(
+                        MediaSession.MediaItemsWithStartPosition(
+                            emptyList(),
+                            C.INDEX_UNSET,
+                            C.TIME_UNSET,
+                        ),
+                    )
+                }
                 val hasExternalUri = mediaItems.any { it.localConfiguration != null }
                 if (!hasExternalUri && mediaItems.isNotEmpty()) {
                     val target = mediaItems.getOrNull(startIndex.coerceAtLeast(0)) ?: mediaItems.first()
@@ -1589,13 +1617,7 @@ class PlaybackService : MediaLibraryService() {
                 .firstOrNull { it.key.equals("User-Agent", ignoreCase = true) }
                 ?.value
             val effectiveUa = if (profile.isGooglevideo) profile.userAgent else (customUa ?: profile.userAgent)
-            val factory = httpFactoriesByUa.getOrPut(effectiveUa) {
-                DefaultHttpDataSource.Factory()
-                    .setAllowCrossProtocolRedirects(true)
-                    .setConnectTimeoutMs(8_000)
-                    .setReadTimeoutMs(15_000)
-                    .setUserAgent(effectiveUa)
-            }
+            val factory = getOrCreateHttpFactory(effectiveUa)
 
             val httpSource = factory.createDataSource()
             transferListeners.forEach { httpSource.addTransferListener(it) }
@@ -1993,8 +2015,32 @@ class PlaybackService : MediaLibraryService() {
         private const val DEFAULT_MOBILE_USER_AGENT =
             "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/131.0.0.0 Mobile Safari/537.36"
 
+        private const val MAX_HTTP_FACTORIES_BY_UA = 16
+        private val httpFactoriesLock = Any()
+
         @OptIn(UnstableApi::class)
-        private val httpFactoriesByUa = ConcurrentHashMap<String, DefaultHttpDataSource.Factory>()
+        private val httpFactoriesByUa = object : LinkedHashMap<String, DefaultHttpDataSource.Factory>(
+            MAX_HTTP_FACTORIES_BY_UA,
+            0.75f,
+            true,
+        ) {
+            override fun removeEldestEntry(
+                eldest: MutableMap.MutableEntry<String, DefaultHttpDataSource.Factory>?,
+            ): Boolean = size > MAX_HTTP_FACTORIES_BY_UA
+        }
+
+        @OptIn(UnstableApi::class)
+        private fun getOrCreateHttpFactory(userAgent: String): DefaultHttpDataSource.Factory {
+            synchronized(httpFactoriesLock) {
+                return httpFactoriesByUa.getOrPut(userAgent) {
+                    DefaultHttpDataSource.Factory()
+                        .setAllowCrossProtocolRedirects(false)
+                        .setConnectTimeoutMs(8_000)
+                        .setReadTimeoutMs(15_000)
+                        .setUserAgent(userAgent)
+                }
+            }
+        }
 
         @OptIn(UnstableApi::class)
         @Volatile

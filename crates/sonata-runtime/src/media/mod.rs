@@ -14,12 +14,17 @@ use image::DynamicImage;
 use reqwest::Client;
 use sonata_core::cache::prune_media_cache_in;
 use sonata_core::paths::CorePaths;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub use sonata_core::media::{
     art_cache_path_in, build_now_playing_json, extract_apple_motion_video_url, format_mm_ss,
     motion_cache_key_hex, resolve_track_cover, select_fast_hls_variant_url, upscale_artwork_url,
+    ExportedLyricLine, ExportedLyricWord, LyricsExport, NowPlayingArtwork, NowPlayingExport,
+    NowPlayingInput, NowPlayingLyricLine, NowPlayingLyricPreview, NowPlayingLyricWord,
+    NowPlayingLyrics, NowPlayingPlayback, NOW_PLAYING_SCHEMA_VERSION,
 };
+
+const MAX_ARTWORK_BYTES: usize = 16 * 1024 * 1024;
 
 pub fn now_playing_path() -> PathBuf {
     dirs::runtime_dir()
@@ -28,21 +33,63 @@ pub fn now_playing_path() -> PathBuf {
         .join("now_playing.json")
 }
 
-pub fn write_now_playing_json(payload: &serde_json::Value) {
-    let path = now_playing_path();
+pub fn lyrics_export_path() -> PathBuf {
+    dirs::runtime_dir()
+        .unwrap_or_else(AppConfig::cache_dir)
+        .join("sonata")
+        .join("lyrics.json")
+}
+
+pub fn path_to_file_url(path: &Path) -> Option<String> {
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    let raw = abs.to_str()?;
+    let mut encoded = String::with_capacity(raw.len() + 8);
+    encoded.push_str("file://");
+    for byte in raw.as_bytes() {
+        if matches!(
+            *byte,
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~'
+        ) {
+            encoded.push(*byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push_str(&format!("{byte:02X}"));
+        }
+    }
+    Some(encoded)
+}
+
+fn write_atomic_pretty_json<T: serde::Serialize>(path: PathBuf, payload: &T) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     let tmp = path.with_extension("json.tmp");
-    if let Ok(bytes) = serde_json::to_vec(payload) {
+    if let Ok(bytes) = serde_json::to_vec_pretty(payload) {
         if std::fs::write(&tmp, bytes).is_ok() {
             let _ = std::fs::rename(&tmp, &path);
         }
     }
 }
 
+pub fn write_now_playing_json(payload: &serde_json::Value) {
+    write_atomic_pretty_json(now_playing_path(), payload);
+}
+
+pub fn write_now_playing(payload: &NowPlayingExport) {
+    write_atomic_pretty_json(now_playing_path(), payload);
+}
+
+pub fn write_lyrics_export(payload: &LyricsExport) {
+    write_atomic_pretty_json(lyrics_export_path(), payload);
+}
+
 pub fn clear_now_playing() {
     let _ = std::fs::remove_file(now_playing_path());
+    let _ = std::fs::remove_file(lyrics_export_path());
 }
 
 pub fn art_cache_path(url: &str) -> PathBuf {
@@ -245,11 +292,26 @@ pub async fn fetch_and_decode_art(
         }
     }
 
-    let resp = http.get(url).send().await.ok()?;
+    let mut resp = http.get(url).send().await.ok()?;
     if !resp.status().is_success() {
         return None;
     }
-    let raw_bytes = resp.bytes().await.ok()?.to_vec();
+    if resp
+        .content_length()
+        .is_some_and(|len| len > MAX_ARTWORK_BYTES as u64)
+    {
+        return None;
+    }
+    let mut raw_bytes = Vec::new();
+    while let Some(chunk) = resp.chunk().await.ok()? {
+        if raw_bytes.len().saturating_add(chunk.len()) > MAX_ARTWORK_BYTES {
+            return None;
+        }
+        raw_bytes.extend_from_slice(&chunk);
+    }
+    if raw_bytes.is_empty() {
+        return None;
+    }
 
     tokio::task::spawn_blocking(move || {
         let decoded = trim_black_bars(image::load_from_memory(&raw_bytes).ok()?);
@@ -378,5 +440,44 @@ mod tests {
         let kept = trim_black_bars(DynamicImage::ImageRgb8(square));
         assert_eq!(kept.width(), 480);
         assert_eq!(kept.height(), 480);
+    }
+
+    #[tokio::test]
+    async fn fetch_and_decode_art_rejects_oversized_streaming_response() {
+        use crate::downloads::test_support::TempTestDir;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut req_buf = [0u8; 1024];
+                let _ = sock.read(&mut req_buf).await;
+                let _ = sock
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                    )
+                    .await;
+                let chunk = vec![0u8; 256 * 1024];
+                let header = format!("{:x}\r\n", chunk.len());
+                for _ in 0..66 {
+                    if sock.write_all(header.as_bytes()).await.is_err()
+                        || sock.write_all(&chunk).await.is_err()
+                        || sock.write_all(b"\r\n").await.is_err()
+                    {
+                        break;
+                    }
+                }
+                let _ = sock.write_all(b"0\r\n\r\n").await;
+            }
+        });
+
+        let dir = TempTestDir::new("art_size_cap");
+        let paths = CorePaths::for_app_roots(dir.path(), dir.path());
+        let http = sonata_core::providers::build_http_client();
+        let res = fetch_and_decode_art(&http, &format!("http://{addr}/huge.png"), &paths, 0).await;
+        assert!(res.is_none());
+        server.abort();
     }
 }

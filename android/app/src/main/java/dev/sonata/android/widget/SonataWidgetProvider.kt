@@ -1,15 +1,17 @@
 /*
- * Sonata Retro Pixel-Art Turntable Home Screen AppWidget.
+ * Reusable Home Screen AppWidget Infrastructure for Sonata Android.
  *
- * Renders the pastel blush-pink retro window frame with pixel-art vinyl turntable,
- * live track info, rounded album cover, working Previous / Play-Pause / Next controls,
- * and a star progress bar synced directly with PlaybackService.
+ * Provides persisted playback snapshot state (`SonataWidgetSnapshot`), Coil rounded artwork
+ * decoding, transport PendingIntent helpers (`SonataWidgetControlReceiver`), and a pluggable
+ * `SonataWidgetRenderer` registry so future widgets can render live playback state without
+ * touching `SonataViewModel` or `PlaybackService`.
  */
 package dev.sonata.android.widget
 
 import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -23,7 +25,6 @@ import android.graphics.RectF
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
-import android.widget.RemoteViews
 import coil3.SingletonImageLoader
 import coil3.request.ImageRequest
 import coil3.request.SuccessResult
@@ -32,7 +33,6 @@ import coil3.toBitmap
 import dev.sonata.android.MainActivity
 import dev.sonata.android.PlaybackAudioBridge
 import dev.sonata.android.PlaybackQueueBridge
-import dev.sonata.android.R
 import dev.sonata.android.data.AppLanguage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -42,23 +42,50 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import java.io.File
 import java.util.Locale
+import java.util.concurrent.CopyOnWriteArrayList
 
-class SonataWidgetProvider : AppWidgetProvider() {
+object SonataWidgetActions {
+    const val ACTION_PLAY_PAUSE = "dev.sonata.android.widget.ACTION_PLAY_PAUSE"
+    const val ACTION_NEXT = "dev.sonata.android.widget.ACTION_NEXT"
+    const val ACTION_PREV = "dev.sonata.android.widget.ACTION_PREV"
+}
 
-    override fun onUpdate(
+data class SonataWidgetSnapshot(
+    val title: String,
+    val rawArtist: String?,
+    val artistLine: String,
+    val artworkUrl: String?,
+    val isPlaying: Boolean,
+    val positionMs: Long,
+    val durationMs: Long,
+    val progressPercent: Int,
+    val remainingMs: Long,
+    val languageCode: String,
+)
+
+interface SonataWidgetRenderer {
+    val providerClass: Class<out AppWidgetProvider>
+
+    fun render(
         context: Context,
-        appWidgetManager: AppWidgetManager,
-        appWidgetIds: IntArray,
-    ) {
-        SonataWidgetUpdater.renderAll(context, appWidgetManager, appWidgetIds)
-    }
+        manager: AppWidgetManager,
+        widgetIds: IntArray,
+        snapshot: SonataWidgetSnapshot,
+        artworkBitmap: Bitmap?,
+    )
+}
+
+/**
+ * Non-exported receiver for home screen widget playback control PendingIntents.
+ * Keeps transport control actions private to Sonata so third-party apps cannot spoof broadcasts.
+ */
+class SonataWidgetControlReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
-        super.onReceive(context, intent)
         when (intent.action) {
-            ACTION_PLAY_PAUSE -> handlePlayPause(context)
-            ACTION_NEXT -> handleNext(context)
-            ACTION_PREV -> handlePrev(context)
+            SonataWidgetActions.ACTION_PLAY_PAUSE -> handlePlayPause(context)
+            SonataWidgetActions.ACTION_NEXT -> handleNext(context)
+            SonataWidgetActions.ACTION_PREV -> handlePrev(context)
         }
     }
 
@@ -104,12 +131,6 @@ class SonataWidgetProvider : AppWidgetProvider() {
             context.startActivity(launch)
         }
     }
-
-    companion object {
-        const val ACTION_PLAY_PAUSE = "dev.sonata.android.widget.ACTION_PLAY_PAUSE"
-        const val ACTION_NEXT = "dev.sonata.android.widget.ACTION_NEXT"
-        const val ACTION_PREV = "dev.sonata.android.widget.ACTION_PREV"
-    }
 }
 
 object SonataWidgetUpdater {
@@ -126,6 +147,7 @@ object SonataWidgetUpdater {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val artworkLock = Any()
+    private val renderers = CopyOnWriteArrayList<SonataWidgetRenderer>()
 
     private var artworkJob: Job? = null
 
@@ -137,6 +159,16 @@ object SonataWidgetUpdater {
 
     @Volatile
     private var cachedArtworkBitmap: Bitmap? = null
+
+    fun registerRenderer(renderer: SonataWidgetRenderer) {
+        if (renderers.none { it.providerClass == renderer.providerClass }) {
+            renderers.add(renderer)
+        }
+    }
+
+    fun unregisterRenderer(providerClass: Class<out AppWidgetProvider>) {
+        renderers.removeAll { it.providerClass == providerClass }
+    }
 
     fun pushUpdate(
         context: Context,
@@ -168,11 +200,11 @@ object SonataWidgetUpdater {
                 .putLong(KEY_DUR_MS, durationMs.coerceAtLeast(0L))
                 .apply()
 
+            if (renderers.isEmpty()) return@launch
             val manager = AppWidgetManager.getInstance(appContext)
-            val ids = manager.getAppWidgetIds(ComponentName(appContext, SonataWidgetProvider::class.java))
-            if (ids.isEmpty()) return@launch
+            if (!hasActiveWidgets(appContext, manager)) return@launch
 
-            renderAll(appContext, manager, ids)
+            renderRegistered(appContext, manager)
 
             if (cleanUrl != null && cleanUrl != cachedArtworkUrl) {
                 synchronized(artworkLock) {
@@ -184,12 +216,7 @@ object SonataWidgetUpdater {
                         if (bmp != null && requestedArtworkUrl == cleanUrl) {
                             cachedArtworkUrl = cleanUrl
                             cachedArtworkBitmap = bmp
-                            val latestIds = manager.getAppWidgetIds(
-                                ComponentName(appContext, SonataWidgetProvider::class.java),
-                            )
-                            if (latestIds.isNotEmpty()) {
-                                renderAll(appContext, manager, latestIds)
-                            }
+                            renderRegistered(appContext, manager)
                         }
                     }
                 }
@@ -212,19 +239,14 @@ object SonataWidgetUpdater {
                 .putLong(KEY_DUR_MS, durationMs.coerceAtLeast(0L))
                 .apply()
 
+            if (renderers.isEmpty()) return@launch
             val manager = AppWidgetManager.getInstance(appContext)
-            val ids = manager.getAppWidgetIds(ComponentName(appContext, SonataWidgetProvider::class.java))
-            if (ids.isEmpty()) return@launch
-            renderAll(appContext, manager, ids)
+            if (!hasActiveWidgets(appContext, manager)) return@launch
+            renderRegistered(appContext, manager)
         }
     }
 
-    internal fun renderAll(
-        context: Context,
-        manager: AppWidgetManager,
-        widgetIds: IntArray,
-    ) {
-        if (widgetIds.isEmpty()) return
+    fun readSnapshot(context: Context): SonataWidgetSnapshot {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val title = prefs.getString(KEY_TITLE, null)?.takeIf { it.isNotBlank() } ?: "Sonata"
         val rawArtist = prefs.getString(KEY_ARTIST, null)?.takeIf { it.isNotBlank() }
@@ -238,57 +260,71 @@ object SonataWidgetUpdater {
         val isPlaying = prefs.getBoolean(KEY_IS_PLAYING, false)
         val posMs = prefs.getLong(KEY_POS_MS, 0L).coerceAtLeast(0L)
         val durMs = prefs.getLong(KEY_DUR_MS, 0L).coerceAtLeast(0L)
-
         val progressPct = if (durMs > 0L) ((posMs * 100L) / durMs).toInt().coerceIn(0, 100) else 0
         val remainingMs = if (durMs > posMs) durMs - posMs else 0L
+        return SonataWidgetSnapshot(
+            title = title,
+            rawArtist = rawArtist,
+            artistLine = artistLine,
+            artworkUrl = artworkUrl,
+            isPlaying = isPlaying,
+            positionMs = posMs,
+            durationMs = durMs,
+            progressPercent = progressPct,
+            remainingMs = remainingMs,
+            languageCode = lang,
+        )
+    }
 
-        val views = RemoteViews(context.packageName, R.layout.widget_sonata_player).apply {
-            setTextViewText(R.id.widget_track_title, title)
-            setTextViewText(R.id.widget_track_artist, artistLine)
-            setTextViewText(R.id.widget_time_elapsed, formatClock(posMs))
-            setTextViewText(R.id.widget_time_remaining, formatClock(remainingMs))
-            setProgressBar(R.id.widget_progress, 100, progressPct, false)
-            setImageViewResource(
-                R.id.widget_btn_play_pause,
-                if (isPlaying) R.drawable.widget_icon_pause else R.drawable.widget_icon_play,
-            )
+    fun openAppPending(context: Context, reqCode: Int = 0): PendingIntent {
+        val openIntent = Intent(context, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        }
+        return PendingIntent.getActivity(
+            context,
+            reqCode,
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
 
-            val cachedBmp = if (artworkUrl != null && artworkUrl == cachedArtworkUrl) cachedArtworkBitmap else null
-            if (cachedBmp != null) {
-                setImageViewBitmap(R.id.widget_album_art, cachedBmp)
-            } else {
-                setImageViewResource(R.id.widget_album_art, R.drawable.ic_launcher_foreground_img)
-            }
+    fun broadcastPending(context: Context, action: String, reqCode: Int): PendingIntent {
+        val intent = Intent(context, SonataWidgetControlReceiver::class.java).apply {
+            this.action = action
+        }
+        return PendingIntent.getBroadcast(
+            context,
+            reqCode,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
 
-            // Open Sonata when tapping the widget frame
-            val openIntent = Intent(context, MainActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            }
-            val openPending = PendingIntent.getActivity(
-                context,
-                0,
-                openIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-            )
-            setOnClickPendingIntent(R.id.widget_root, openPending)
+    fun formatClock(ms: Long): String {
+        val totalSec = (ms / 1000L).coerceAtLeast(0L)
+        val mins = totalSec / 60L
+        val secs = totalSec % 60L
+        return "$mins:${secs.toString().padStart(2, '0')}"
+    }
 
-            // Transport controls
-            setOnClickPendingIntent(
-                R.id.widget_btn_prev,
-                broadcastPending(context, SonataWidgetProvider.ACTION_PREV, 101),
-            )
-            setOnClickPendingIntent(
-                R.id.widget_btn_play_pause,
-                broadcastPending(context, SonataWidgetProvider.ACTION_PLAY_PAUSE, 102),
-            )
-            setOnClickPendingIntent(
-                R.id.widget_btn_next,
-                broadcastPending(context, SonataWidgetProvider.ACTION_NEXT, 103),
-            )
+    private fun hasActiveWidgets(context: Context, manager: AppWidgetManager): Boolean =
+        renderers.any { renderer ->
+            manager.getAppWidgetIds(ComponentName(context, renderer.providerClass)).isNotEmpty()
         }
 
-        for (id in widgetIds) {
-            manager.updateAppWidget(id, views)
+    internal fun renderRegistered(context: Context, manager: AppWidgetManager) {
+        if (renderers.isEmpty()) return
+        val snapshot = readSnapshot(context)
+        val artworkBitmap = if (snapshot.artworkUrl != null && snapshot.artworkUrl == cachedArtworkUrl) {
+            cachedArtworkBitmap
+        } else {
+            null
+        }
+        for (renderer in renderers) {
+            val ids = manager.getAppWidgetIds(ComponentName(context, renderer.providerClass))
+            if (ids.isNotEmpty()) {
+                renderer.render(context, manager, ids, snapshot, artworkBitmap)
+            }
         }
     }
 
@@ -328,25 +364,6 @@ object SonataWidgetUpdater {
             trimmed.startsWith("/") -> Uri.fromFile(File(trimmed)).toString()
             else -> null
         }
-    }
-
-    private fun broadcastPending(context: Context, action: String, reqCode: Int): PendingIntent {
-        val intent = Intent(context, SonataWidgetProvider::class.java).apply {
-            this.action = action
-        }
-        return PendingIntent.getBroadcast(
-            context,
-            reqCode,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-    }
-
-    private fun formatClock(ms: Long): String {
-        val totalSec = (ms / 1000L).coerceAtLeast(0L)
-        val mins = totalSec / 60L
-        val secs = totalSec % 60L
-        return "$mins:${secs.toString().padStart(2, '0')}"
     }
 
     private suspend fun fetchRoundedArtwork(

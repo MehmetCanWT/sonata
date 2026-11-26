@@ -636,14 +636,71 @@ internal fun SonataViewModel.clearAccountLastPlayedHistoryImpl() = synchronized(
     localHistoryCache = null
     historyPrefs.edit()
         .remove(SonataViewModel.ACCOUNT_LAST_PLAYED_KEY)
+        .remove(SonataViewModel.DISMISSED_LAST_PLAYED_KEY)
         .remove(SonataViewModel.LAST_PLAYED_KEY)
         .apply()
+}
+
+private data class DismissedHistoryEntry(
+    val id: String,
+    val canonicalKey: String,
+)
+
+private fun parseDismissedEntries(raw: String?): List<DismissedHistoryEntry> {
+    if (raw.isNullOrBlank()) return emptyList()
+    return runCatching {
+        val arr = JSONArray(raw)
+        buildList {
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                val id = obj.optString("id").trim()
+                val key = obj.optString("key").trim()
+                if (id.isNotBlank() || key.isNotBlank()) {
+                    add(DismissedHistoryEntry(id = id, canonicalKey = key))
+                }
+            }
+        }.takeLast(SonataViewModel.MAX_DISMISSED_LAST_PLAYED)
+    }.getOrDefault(emptyList())
+}
+
+private fun encodeDismissedEntries(entries: List<DismissedHistoryEntry>): String {
+    val arr = JSONArray()
+    entries.takeLast(SonataViewModel.MAX_DISMISSED_LAST_PLAYED).forEach { entry ->
+        arr.put(
+            JSONObject().apply {
+                put("id", entry.id)
+                put("key", entry.canonicalKey)
+            },
+        )
+    }
+    return arr.toString()
+}
+
+internal fun isDismissedHistoryTrack(
+    track: AndroidTrack,
+    dismissed: Set<Pair<String, String>>,
+    dismissedIds: Set<String>,
+    dismissedKeys: Set<String>,
+): Boolean {
+    if (dismissed.isEmpty()) return false
+    val key = SonataViewModel.canonicalTrackKey(track)
+    return (track.id.isNotBlank() && track.id in dismissedIds) ||
+        (key.isNotBlank() && key in dismissedKeys)
 }
 
 internal fun SonataViewModel.recordLastPlayedImpl(track: AndroidTrack) {
     if (track.id.isBlank() || track.title.isBlank()) return
     val trackKey = SonataViewModel.canonicalTrackKey(track)
     val merged = synchronized(historyLock) {
+        val dismissed = parseDismissedEntries(historyPrefs.getString(SonataViewModel.DISMISSED_LAST_PLAYED_KEY, null))
+        val remainingDismissed = dismissed.filterNot {
+            it.id == track.id || (trackKey.isNotBlank() && it.canonicalKey == trackKey)
+        }
+        if (remainingDismissed.size != dismissed.size) {
+            historyPrefs.edit()
+                .putString(SonataViewModel.DISMISSED_LAST_PLAYED_KEY, encodeDismissedEntries(remainingDismissed))
+                .apply()
+        }
         val currentLocal = loadLocalLastPlayedHistoryImpl()
         val updatedLocal = SonataViewModel.deduplicateTracks(
             listOf(track) + currentLocal.filterNot {
@@ -669,6 +726,16 @@ internal fun SonataViewModel.removeFromLastPlayedImpl(track: AndroidTrack) {
     if (track.id.isBlank()) return
     val trackKey = SonataViewModel.canonicalTrackKey(track)
     val updated = synchronized(historyLock) {
+        val currentDismissed = parseDismissedEntries(historyPrefs.getString(SonataViewModel.DISMISSED_LAST_PLAYED_KEY, null))
+        val nextDismissed = (
+            currentDismissed.filterNot {
+                it.id == track.id || (trackKey.isNotBlank() && it.canonicalKey == trackKey)
+            } + DismissedHistoryEntry(id = track.id, canonicalKey = trackKey)
+        ).takeLast(SonataViewModel.MAX_DISMISSED_LAST_PLAYED)
+        historyPrefs.edit()
+            .putString(SonataViewModel.DISMISSED_LAST_PLAYED_KEY, encodeDismissedEntries(nextDismissed))
+            .apply()
+
         val currentLocal = loadLocalLastPlayedHistoryImpl()
         val nextLocal = currentLocal.filterNot {
             it.id == track.id || SonataViewModel.canonicalTrackKey(it) == trackKey
@@ -681,14 +748,39 @@ internal fun SonataViewModel.removeFromLastPlayedImpl(track: AndroidTrack) {
     _lastPlayedTracks.value = updated
     val updatedArtists = buildRecentArtistCardsImpl(updated, _uiState.value.shelves)
     _uiState.update { it.copy(lastPlayedTracks = updated, recentArtistCards = updatedArtists) }
+
+    val stateSnapshot = _uiState.value
+    if (
+        stateSnapshot.signedIn &&
+        !preferences.state.value.personalOnlyMode &&
+        !isPersonalTrackId(track.id)
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runSuspendCatching { requireEngine().removeFromListeningHistory(track.id) }
+                .onFailure { err ->
+                    handleRateLimitIfNeeded(err)
+                    Log.w("SonataLibrary", "Failed to remove track from YTM listening history: ${err.message}")
+                }
+        }
+    }
 }
 
 internal fun SonataViewModel.mergeYtmListeningHistoryImpl(ytmHistory: List<AndroidTrack>) {
     if (ytmHistory.isEmpty()) return
     if (preferences.state.value.personalOnlyMode || !_uiState.value.signedIn) return
     val merged = synchronized(historyLock) {
-        val accountLocal = loadLocalLastPlayedHistoryImpl(signedInOverride = true)
-        val combined = SonataViewModel.deduplicateTracks(ytmHistory + accountLocal)
+        val dismissedEntries = parseDismissedEntries(historyPrefs.getString(SonataViewModel.DISMISSED_LAST_PLAYED_KEY, null))
+        val dismissedPairs = dismissedEntries.mapTo(HashSet()) { it.id to it.canonicalKey }
+        val dismissedIds = dismissedEntries.mapNotNullTo(HashSet()) { it.id.takeIf(String::isNotBlank) }
+        val dismissedKeys = dismissedEntries.mapNotNullTo(HashSet()) { it.canonicalKey.takeIf(String::isNotBlank) }
+
+        val filteredRemote = ytmHistory.filterNot {
+            isDismissedHistoryTrack(it, dismissedPairs, dismissedIds, dismissedKeys)
+        }
+        val accountLocal = loadLocalLastPlayedHistoryImpl(signedInOverride = true).filterNot {
+            isDismissedHistoryTrack(it, dismissedPairs, dismissedIds, dismissedKeys)
+        }
+        val combined = SonataViewModel.deduplicateTracks(filteredRemote + accountLocal)
             .take(SonataViewModel.MAX_LAST_PLAYED_HISTORY)
         saveLocalLastPlayedHistoryImpl(combined, signedInOverride = true)
         combined
@@ -1321,6 +1413,11 @@ internal fun SonataViewModel.enqueueCollectionNextImpl(browseId: String) {
         _uiState.update {
             it.copy(queue = mutable, status = uiStrings().addedToPlayNextStatus(tracks.size))
         }
+        syncRemoteQueueIfConnectedImpl(
+            updatedQueue = mutable,
+            queueIndex = current.queueIndex,
+            playWhenReady = current.isPlaying,
+        )
     }
 }
 
@@ -1336,12 +1433,18 @@ internal fun SonataViewModel.enqueueCollectionLaterImpl(browseId: String) {
             playTrack(tracks.first(), tracks)
             return@launch
         }
+        val updated = existingQueue + tracks
         _uiState.update {
             it.copy(
-                queue = existingQueue + tracks,
+                queue = updated,
                 status = uiStrings().addedToQueueStatus(tracks.size),
             )
         }
+        syncRemoteQueueIfConnectedImpl(
+            updatedQueue = updated,
+            queueIndex = current.queueIndex,
+            playWhenReady = current.isPlaying,
+        )
     }
 }
 
@@ -1367,6 +1470,11 @@ internal fun SonataViewModel.playNextImpl(track: AndroidTrack) {
     val mutable = queue.toMutableList()
     mutable.add(insertIndex, track)
     _uiState.update { it.copy(queue = mutable, status = uiStrings().playingNextStatus(track.title)) }
+    syncRemoteQueueIfConnectedImpl(
+        updatedQueue = mutable,
+        queueIndex = current.queueIndex,
+        playWhenReady = current.isPlaying,
+    )
 }
 
 internal fun SonataViewModel.addToQueueImpl(track: AndroidTrack) {
@@ -1376,9 +1484,15 @@ internal fun SonataViewModel.addToQueueImpl(track: AndroidTrack) {
         playTrack(track, listOf(track))
         return
     }
+    val updated = queue + track
     _uiState.update {
-        it.copy(queue = queue + track, status = uiStrings().addedTrackToQueueStatus(track.title))
+        it.copy(queue = updated, status = uiStrings().addedTrackToQueueStatus(track.title))
     }
+    syncRemoteQueueIfConnectedImpl(
+        updatedQueue = updated,
+        queueIndex = current.queueIndex,
+        playWhenReady = current.isPlaying,
+    )
 }
 
 internal fun SonataViewModel.toggleShuffleAndPlayImpl(tracks: List<AndroidTrack>) {

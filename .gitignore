@@ -15,9 +15,6 @@
 *.db-shm
 *.log
 
-# Local agent skills (keep repo clean)
-/.agents/
-
 # Local architecture notes and research
 /research/
 
@@ -37,4 +34,11 @@
 /android/app/build/
 /android/app/src/main/jniLibs/
 /android/local.properties
+
+# Tauri desktop frontend & generated schemas/sidecars
+/desktop-ui/node_modules/
+/desktop-ui/dist/
+/desktop-ui/tsconfig.tsbuildinfo
+/crates/sonata-desktop/binaries/
+/crates/sonata-desktop/gen/
 

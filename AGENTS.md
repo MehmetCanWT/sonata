@@ -25,12 +25,10 @@ Sonata is a 5-crate Cargo workspace (`resolver = "2"`) plus a native Jetpack Com
   - `src/main.rs`, `src/input.rs`, `src/theme/`, `src/theme_tui.rs`
   - `src/app/` (`mod.rs`, `state.rs`, `playback.rs`, `library.rs`) — Thin adapter over `sonata_runtime::player::PlaybackSession` plus TUI-local lyrics/artwork/Kitty graphics
   - `src/ui/` (`mod.rs`, `fx.rs`, `modals.rs`, `now_playing.rs`, `sidebar.rs`, `track_list.rs`) — Terminal panes, modals, Kitty/Sixel/Halfblock artwork, `tachyonfx` transitions, and word-synced lyrics rendering
-- `crates/sonata-desktop` — **`sonata-desktop`** (GPUI Wayland desktop client):
-  - `src/main.rs`, `src/settings.rs`, `src/theme/` (+ 29 CSS skins in `themes/`)
-  - `src/backend/` (`mod.rs`, `types.rs`, `playback.rs`, `library.rs`) — Thin adapter over `sonata_runtime::player::PlaybackSession` plus `DesktopSnapshot` watch state and desktop-local cover/motion/lyrics tasks
-  - `src/ui/` (`mod.rs`, `components.rs`, `lyrics.rs`, `media.rs`) — Shared GPUI components, subpixel karaoke/spring lyrics renderer, and image/palette helpers
-  - `src/views/` (`mod.rs`, `artist.rs`, `chrome.rs`, `collection.rs`, `explore.rs`, `fullscreen.rs`, `home.rs`, `library.rs`, `modals.rs`, `player_bar.rs`, `right_panel.rs`, `search.rs`, `settings.rs`, `sidebar.rs`)
-  - `src/integrations/` — MPRIS2 (`mpris.rs`) and StatusNotifierItem system tray (`tray.rs`)
+- `crates/sonata-desktop` — **`sonata-desktop`** (Cross-platform Tauri v2 desktop host for Linux, macOS, and Windows) + `desktop-ui/` (Vite + React + TypeScript + Tailwind CSS v4 + shadcn/ui matte obsidian webview frontend):
+  - `src/main.rs`, `src/settings.rs`, `src/ipc.rs`, `tauri.conf.json`, `capabilities/default.json`
+  - `src/backend/` (`mod.rs`, `types.rs`, `playback.rs`, `library.rs`) — Shared playback engine over `sonata_runtime::player::PlaybackSession` plus `DesktopSnapshot` watch state and desktop-local cover/motion/lyrics tasks
+  - `src/integrations/` — MPRIS2 on Linux / `souvlaki` OS media controls on macOS & Windows (`mpris.rs`), plus Tauri cross-platform tray bridge (`tray.rs`)
 - `crates/sonata-android` — Cancellable async UniFFI (`0.29.5`, `async_runtime = "tokio"`, zero `Runtime::block_on`) Rust bridge backing the Jetpack Compose Android app (`android/`).
 - `android/app/` — Native Jetpack Compose + Media3 ExoPlayer Android client (JDK 21, `minSdk = 31`, `compileSdk = 35`, `targetSdk = 35`):
   - Top-level screens & chrome (`MainActivity.kt`, `SonataViewModel.kt`, `HomeScreen.kt`, `ExploreScreen.kt`, `LibraryScreen.kt`, `DetailScreen.kt`, `NowPlayingScreen.kt`, `SearchScreen.kt`, `SonataNavigationChrome.kt`, `YtMusicLoginSheet.kt`, `PlaybackService.kt`, `ApkUpdater.kt`)
@@ -45,11 +43,13 @@ Sonata is a 5-crate Cargo workspace (`resolver = "2"`) plus a native Jetpack Com
 
 Note: Local UI/UX design references and Liquid Glass guidelines (`research/PROJECT.md`, `research/liquidglass.md`, `research/images/`, `research/theme/`) reside in `research/` (gitignored).
 
+Note: Project-local agent skills live in `.agents/skills/` and are tracked in git alongside `skills-lock.json`. Install third-party skills with `npx -y skills add <owner/repo> -s <skill> -a antigravity --copy -y` (copied files, zero symlinks, no other tool dot-directories such as `.claude/` or `.cursor/`); author bespoke Sonata skills in English under `.agents/skills/sonata-*/SKILL.md`.
+
 ## Strict Dependency Boundaries
 
 - `sonata-tui` and `sonata-desktop` depend on `sonata-core` and `sonata-runtime`.
 - `sonata-android` depends on `sonata-core` and must **never** depend on `sonata-runtime` (or `image`, `dirs`, `toml`, `tracing-appender`).
-- `sonata-core` must **never** depend on `sonata-runtime`, `sonata-tui`, `sonata-desktop`, `sonata-android`, `ratatui`, `crossterm`, `gpui-kit`, or `uniffi`, and must contain zero `(std|tokio)::process::Command` launches or provider `cfg!(target_os = "android")` branches.
+- `sonata-core` must **never** depend on `sonata-runtime`, `sonata-tui`, `sonata-desktop`, `sonata-android`, `ratatui`, `crossterm`, `tauri`, or `uniffi`, and must contain zero `(std|tokio)::process::Command` launches or provider `cfg!(target_os = "android")` branches.
 - Workspace-wide dependencies live in root `Cargo.toml` under `[workspace.dependencies]`; add crate dependencies via `<dep>.workspace = true`.
 - Workspace lints (`unsafe_op_in_unsafe_fn = "deny"`, `dbg_macro = "deny"`, `todo = "deny"`, `undocumented_unsafe_blocks = "deny"`) apply to all workspace crates.
 - Android runtime APK remains 100% FOSS without proprietary tracking SDKs (`dependenciesInfo` disabled in `android/app/build.gradle.kts`; `REQUEST_INSTALL_PACKAGES` is scoped solely to user-initiated GitHub Releases APK updates via `ApkUpdater.kt` + `FileProvider`).
@@ -107,6 +107,12 @@ For fast single-client iteration during development, use `.cargo/config.toml` al
 - **Log & error redaction**: Always pass URLs, cookie headers, and auth tokens through `sonata_core::redaction` before logging (`~/.cache/sonata/sonata.log` or TUI stderr diagnostics `~/.cache/sonata/sonata-tui.log`) or surfacing errors. Never log raw `Cookie`, `Authorization`, `SAPISID`, or `sp_dc` values.
 - **Settings backup**: `SonataPreferences.exportBackupJson()` must exclude all session cookies and credentials.
 - **Blocking I/O**: Never call blocking `std::process::Command` or synchronous file/SQLite operations on async/UI threads without bounding or offloading via `tokio::task::spawn_blocking` (or `Dispatchers.IO` on Android).
+
+## Cross-Client Parity, i18n & External Telemetry
+
+- **Cross-client parity**: Propagate user-facing features, lyrics/sync improvements, Discord RPC policy, and MPRIS/telemetry contracts across all applicable clients (`sonata-desktop`, `sonata-tui`, `android/`) and shared `sonata-core`/`sonata-runtime` layers rather than fixing only one client.
+- **Zero hardcoded UI strings**: Never hardcode user-facing labels in UI components or status lines; route all visible text through modular per-language i18n catalogs (`desktop-ui/src/i18n/{types,en,tr,ru,index}.ts`, `crates/sonata-runtime/src/i18n/{mod,en,tr,ru}.rs`, `SonataStrings.kt`).
+- **Typed external integrations**: Serialize external runtime outputs (`$XDG_RUNTIME_DIR/sonata/now_playing.json`, `lyrics.json`) via typed `Serialize` structs (never ad-hoc JSON blobs or plain text) and keep third-party contracts documented in `docs/integrations.md`.
 
 ## Commits, PRs & Changelog
 

@@ -122,10 +122,10 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let s = sonata_runtime::i18n::strings(app.config.language);
     let mut title_tags = Vec::new();
     if app.config.lyrics_romanize {
-        title_tags.push("Rm");
+        title_tags.push(s.tui_badge_romanize);
     }
     if app.config.lyrics_translate {
-        title_tags.push("Tr");
+        title_tags.push(s.tui_badge_translate);
     }
     let lyrics_title = if title_tags.is_empty() {
         s.tui_lyrics_title.to_string()
@@ -182,7 +182,8 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             let mut rendered: Vec<Line> = vec![Line::raw("")];
             for (rel_i, line) in lines[start..end].iter().enumerate() {
                 let idx = start + rel_i;
-                let is_header = line.starts_with('[') && line.ends_with(']');
+                let safe_line = super::sanitize_tui_text(line);
+                let is_header = safe_line.starts_with('[') && safe_line.ends_with(']');
                 let style = if is_header {
                     Style::default()
                         .fg(app.theme.accent)
@@ -190,7 +191,7 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                 } else {
                     Style::default().fg(app.theme.fg)
                 };
-                rendered.push(Line::from(Span::styled(line.as_str(), style)));
+                rendered.push(Line::from(Span::styled(safe_line, style)));
                 if !is_header {
                     let (rom, tr) = secondary_lyric_slices(
                         idx,
@@ -200,7 +201,7 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                     );
                     if let Some(rom_text) = rom {
                         rendered.push(Line::from(Span::styled(
-                            rom_text,
+                            super::sanitize_tui_text(rom_text),
                             Style::default()
                                 .fg(app.theme.muted)
                                 .add_modifier(Modifier::ITALIC),
@@ -208,7 +209,7 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                     }
                     if let Some(tr_text) = tr {
                         rendered.push(Line::from(Span::styled(
-                            tr_text,
+                            super::sanitize_tui_text(tr_text),
                             Style::default().fg(app.theme.lyrics_inactive),
                         )));
                     }
@@ -251,16 +252,23 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             // Build invariant flattened visual rows (word-wrapped cleanly with uniform spacing so
             // rows never jump or reflow when a verse becomes active).
             let use_gaps = visible_rows >= 9;
+            let clean_texts: Vec<String> = lines
+                .iter()
+                .map(|item| {
+                    let clean = super::sanitize_tui_text(item.text.trim());
+                    if clean.is_empty() {
+                        "♪".to_string()
+                    } else {
+                        clean
+                    }
+                })
+                .collect();
             let mut visual_rows: Vec<TuiVisualRow> = Vec::with_capacity(lines.len() * 3);
             let mut focus_start_row = 0usize;
             let mut focus_row_count = 1usize;
 
             for (i, item) in lines.iter().enumerate() {
-                let text = if item.text.trim().is_empty() {
-                    "♪"
-                } else {
-                    item.text.trim()
-                };
+                let text = clean_texts[i].as_str();
                 let ranges = wrap_char_ranges(text, inner.width);
                 let line_row_start = visual_rows.len();
                 for (cs, ce) in ranges {
@@ -278,8 +286,9 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                         app.translated_lyrics.as_deref(),
                     );
                     for sec in [rom, tr].into_iter().flatten() {
-                        for (cs, ce) in wrap_char_ranges(sec, inner.width) {
-                            let slice = char_slice_bounds(sec, cs, ce).to_string();
+                        let clean_sec = super::sanitize_tui_text(sec);
+                        for (cs, ce) in wrap_char_ranges(&clean_sec, inner.width) {
+                            let slice = char_slice_bounds(&clean_sec, cs, ce).to_string();
                             if !slice.is_empty() {
                                 visual_rows.push(TuiVisualRow::Secondary {
                                     line_idx: i,
@@ -358,11 +367,7 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                 };
 
                 let item = &lines[line_idx];
-                let text = if item.text.trim().is_empty() {
-                    "♪"
-                } else {
-                    item.text.trim()
-                };
+                let text = clean_texts[line_idx].as_str();
 
                 // Continuous floating-point screen coordinate drives liquid 60 FPS luminance flow.
                 let sy_f = sy as f32 - sub_row;
@@ -461,7 +466,7 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                                 style = style.add_modifier(Modifier::ITALIC);
                             }
                             let slice = char_slice_bounds(text, *row_c_start, *row_c_end);
-                            rendered.push(Line::from(Span::styled(slice, style)));
+                            rendered.push(Line::from(Span::styled(slice.to_string(), style)));
                         }
                     }
                 }
@@ -473,7 +478,7 @@ pub fn render_lyrics(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     }
 }
 
-pub fn active_karaoke_line(app: &App) -> Option<Line<'_>> {
+pub fn active_karaoke_line(app: &App) -> Option<Line<'static>> {
     let pos = app.interpolated_position();
     match &app.lyrics {
         LyricsState::Synced(lines) if !lines.is_empty() => {
@@ -492,7 +497,7 @@ pub fn active_karaoke_line(app: &App) -> Option<Line<'_>> {
             let dur = app.playback.duration_secs.max(1.0);
             let progress = (pos / dur).clamp(0.0, 1.0);
             let idx = (((lines.len().saturating_sub(1)) as f64) * progress).round() as usize;
-            let text = lines.get(idx)?.trim();
+            let text = super::sanitize_tui_text(lines.get(idx)?.trim());
             if text.is_empty() {
                 return None;
             }
@@ -535,9 +540,21 @@ fn ease_out_cubic(t: f32) -> f32 {
     1.0 - u * u * u
 }
 
+fn ceil_char_boundary(s: &str, idx: usize) -> usize {
+    if idx >= s.len() {
+        return s.len();
+    }
+    let mut i = idx;
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
 /// Computes continuous illuminated character position (`0.0..=char_count`) for smooth karaoke sweep.
 fn compute_tui_sweep_chars(item: &LyricLine, next_time: Option<f64>, pos: f64) -> f32 {
-    let text = item.text.trim();
+    let clean = super::sanitize_tui_text(item.text.trim());
+    let text = clean.as_str();
     let total_chars = text.chars().count();
     if total_chars == 0 {
         return 0.0;
@@ -546,16 +563,16 @@ fn compute_tui_sweep_chars(item: &LyricLine, next_time: Option<f64>, pos: f64) -
     if !item.words.is_empty() {
         let mut cursor_byte = 0usize;
         for (wi, word) in item.words.iter().enumerate() {
-            let tok = word.text.trim();
+            let tok = super::sanitize_tui_text(word.text.trim());
             let start_byte = if tok.is_empty() {
                 cursor_byte
             } else {
                 text[cursor_byte..]
-                    .find(tok)
+                    .find(tok.as_str())
                     .map(|off| cursor_byte + off)
                     .unwrap_or(cursor_byte)
             };
-            let end_byte = (start_byte + tok.len()).min(text.len());
+            let end_byte = ceil_char_boundary(text, (start_byte + tok.len()).min(text.len()));
             let w_start = if wi == 0 {
                 item.time_secs.min(word.start_secs)
             } else {
@@ -774,8 +791,8 @@ fn render_active_tui_lyric_line(
     pos: f64,
     theme_accent: Color,
     inactive_color: Color,
-) -> Line<'_> {
-    let text = item.text.trim();
+) -> Line<'static> {
+    let text = super::sanitize_tui_text(item.text.trim());
     render_active_tui_lyric_slice(
         item,
         next_time,
@@ -795,7 +812,7 @@ fn render_active_tui_lyric_slice(
     row_end: usize,
     theme_accent: Color,
     inactive_color: Color,
-) -> Line<'_> {
+) -> Line<'static> {
     let lit_style = Style::default()
         .fg(theme_accent)
         .add_modifier(Modifier::BOLD);
@@ -803,7 +820,8 @@ fn render_active_tui_lyric_slice(
         .fg(inactive_color)
         .add_modifier(Modifier::DIM);
 
-    let text = item.text.trim();
+    let clean = super::sanitize_tui_text(item.text.trim());
+    let text = clean.as_str();
     if text.is_empty() {
         return Line::from(Span::styled("♪", lit_style));
     }
@@ -823,7 +841,7 @@ fn render_active_tui_lyric_slice(
     let lit_end = full_chars.clamp(rs, re);
     if lit_end > rs {
         spans.push(Span::styled(
-            char_slice_bounds(text, rs, lit_end),
+            char_slice_bounds(text, rs, lit_end).to_string(),
             lit_style,
         ));
     }
@@ -837,14 +855,14 @@ fn render_active_tui_lyric_slice(
             0.30 * frac,
         );
         spans.push(Span::styled(
-            char_slice_bounds(text, full_chars, full_chars + 1),
+            char_slice_bounds(text, full_chars, full_chars + 1).to_string(),
             Style::default().fg(lead_color).add_modifier(Modifier::BOLD),
         ));
         tail_start = full_chars + 1;
         if tail_start < re && frac > 0.35 {
             let soft_color = blend_color(inactive_color, theme_accent, (frac - 0.35) * 0.55);
             spans.push(Span::styled(
-                char_slice_bounds(text, tail_start, tail_start + 1),
+                char_slice_bounds(text, tail_start, tail_start + 1).to_string(),
                 Style::default().fg(soft_color),
             ));
             tail_start += 1;
@@ -853,7 +871,7 @@ fn render_active_tui_lyric_slice(
 
     if tail_start < re {
         spans.push(Span::styled(
-            char_slice_bounds(text, tail_start, re),
+            char_slice_bounds(text, tail_start, re).to_string(),
             unsung_style,
         ));
     }
@@ -903,7 +921,9 @@ pub fn secondary_lyric_slices<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::{render_active_tui_lyric_line, secondary_lyric_slices, wrapped_rows};
+    use super::{
+        compute_tui_sweep_chars, render_active_tui_lyric_line, secondary_lyric_slices, wrapped_rows,
+    };
     use ratatui::style::{Color, Modifier};
     use sonata_core::lyrics::{LyricLine, LyricVoice, LyricWord};
 
@@ -956,5 +976,47 @@ mod tests {
             secondary_lyric_slices(1, "hello", Some(&rom), Some(&tr)),
             (None, None)
         );
+    }
+
+    #[test]
+    fn compute_tui_sweep_chars_never_panics_on_unmatched_multibyte_tokens() {
+        let cases = [
+            (
+                "İstanbul şarkısı güneş",
+                vec!["X", "unmatched", "ğüşıöç", "a"],
+            ),
+            ("こんにちは世界", vec!["a", "ab", "xyz", "日本語"]),
+            ("🎵🔥✨🎶", vec!["a", "bb", "ccc", "🚀"]),
+        ];
+        for (text, tokens) in cases {
+            let line = LyricLine {
+                time_secs: 10.0,
+                text: text.to_string(),
+                words: tokens
+                    .iter()
+                    .enumerate()
+                    .map(|(i, tok)| LyricWord {
+                        start_secs: 10.0 + i as f64,
+                        end_secs: Some(11.0 + i as f64),
+                        text: (*tok).to_string(),
+                    })
+                    .collect(),
+                voice: LyricVoice::Lead,
+            };
+            let max_chars = text.chars().count() as f32;
+            for pos in [9.5, 10.0, 10.5, 11.2, 12.5, 13.7, 15.0] {
+                let sweep = compute_tui_sweep_chars(&line, Some(15.0), pos);
+                assert!(sweep >= 0.0 && sweep <= max_chars + 0.01);
+                let rendered = render_active_tui_lyric_line(
+                    &line,
+                    Some(15.0),
+                    pos,
+                    Color::Cyan,
+                    Color::DarkGray,
+                );
+                let joined: String = rendered.spans.iter().map(|s| s.content.as_ref()).collect();
+                assert_eq!(joined, text);
+            }
+        }
     }
 }

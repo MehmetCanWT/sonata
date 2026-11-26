@@ -6,14 +6,25 @@
 //! 2. **Opacity IPC**: `lua_set_opacity_script` targets Hyprland's built-in Lua `hyprctl eval`
 //!    engine first and falls back to `opacity_batch_command` (`hyprctl --batch`) on older releases.
 
+#[cfg(target_os = "linux")]
 use std::fs;
+#[cfg(target_os = "linux")]
 use std::process::Command as StdCommand;
+#[cfg(target_os = "linux")]
 use tokio::process::Command as AsyncCommand;
 
 pub fn is_hyprland() -> bool {
-    std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some()
+    #[cfg(target_os = "linux")]
+    {
+        std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
 }
 
+#[cfg(target_os = "linux")]
 fn ancestor_pids(max_depth: usize) -> Vec<u32> {
     let mut pids = Vec::new();
     let mut cur = std::process::id();
@@ -58,6 +69,7 @@ fn is_terminal_class(class: &str) -> bool {
         || lower.ends_with(".foot")
 }
 
+#[cfg(target_os = "linux")]
 pub fn find_terminal_window_address() -> Option<String> {
     if !is_hyprland() {
         return None;
@@ -119,6 +131,11 @@ pub fn find_terminal_window_address() -> Option<String> {
             return Some(addr);
         }
     }
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn find_terminal_window_address() -> Option<String> {
     None
 }
 
@@ -188,20 +205,28 @@ fn match_app_client_address(
 /// Looks up the Hyprland window address for a GUI app process or Wayland `app_id` / class.
 /// Returns `None` cleanly if Hyprland is not active or the window is not mapped yet.
 pub fn find_window_address_for_app(app_class: &str) -> Option<String> {
-    if !is_hyprland() {
-        return None;
+    #[cfg(target_os = "linux")]
+    {
+        if !is_hyprland() {
+            return None;
+        }
+        let self_pid = std::process::id();
+        let out = StdCommand::new("hyprctl")
+            .args(["clients", "-j"])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let clients: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+        let arr = clients.as_array()?;
+        match_app_client_address(arr, self_pid, app_class)
     }
-    let self_pid = std::process::id();
-    let out = StdCommand::new("hyprctl")
-        .args(["clients", "-j"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = app_class;
+        None
     }
-    let clients: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
-    let arr = clients.as_array()?;
-    match_app_client_address(arr, self_pid, app_class)
 }
 
 /// Switches a Hyprland GUI window between floating (for mini-player mode) and tiled (for full mode).
@@ -212,26 +237,33 @@ pub fn set_app_floating_mode(
     width: Option<u32>,
     height: Option<u32>,
 ) {
-    let Some(addr) = find_window_address_for_app(app_class) else {
-        return;
-    };
-    if !is_valid_hex_addr(&addr) {
-        return;
-    }
-    let batch = if floating {
-        if let (Some(w), Some(h)) = (width, height) {
-            format!(
-                "dispatch setfloating address:{addr} ; dispatch resizewindowpixel exact {w} {h},address:{addr}"
-            )
-        } else {
-            format!("dispatch setfloating address:{addr}")
+    #[cfg(target_os = "linux")]
+    {
+        let Some(addr) = find_window_address_for_app(app_class) else {
+            return;
+        };
+        if !is_valid_hex_addr(&addr) {
+            return;
         }
-    } else {
-        format!("dispatch settiled address:{addr}")
-    };
-    let _ = StdCommand::new("hyprctl")
-        .args(["--batch", &batch])
-        .output();
+        let batch = if floating {
+            if let (Some(w), Some(h)) = (width, height) {
+                format!(
+                    "dispatch setfloating address:{addr} ; dispatch resizewindowpixel exact {w} {h},address:{addr}"
+                )
+            } else {
+                format!("dispatch setfloating address:{addr}")
+            }
+        } else {
+            format!("dispatch settiled address:{addr}")
+        };
+        let _ = StdCommand::new("hyprctl")
+            .args(["--batch", &batch])
+            .output();
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (app_class, floating, width, height);
+    }
 }
 
 pub fn lua_set_opacity_script(addr: &str, opacity: f32) -> Option<String> {
@@ -262,6 +294,7 @@ pub fn opacity_batch_command(addr: &str, opacity: f32) -> Option<String> {
     ))
 }
 
+#[cfg(target_os = "linux")]
 fn eval_succeeded(out: &std::process::Output) -> bool {
     out.status.success()
         && !String::from_utf8_lossy(&out.stdout)
@@ -270,59 +303,73 @@ fn eval_succeeded(out: &std::process::Output) -> bool {
 }
 
 pub async fn set_window_opacity(addr: &str, opacity: f32) {
-    if let Some(script) = lua_set_opacity_script(addr, opacity) {
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(script) = lua_set_opacity_script(addr, opacity) {
+            if let Ok(out) = AsyncCommand::new("hyprctl")
+                .args(["eval", &script])
+                .output()
+                .await
+            {
+                if eval_succeeded(&out) {
+                    return;
+                }
+            }
+        }
+
+        let Some(batch) = opacity_batch_command(addr, opacity) else {
+            return;
+        };
         if let Ok(out) = AsyncCommand::new("hyprctl")
-            .args(["eval", &script])
+            .args(["--batch", &batch])
             .output()
             .await
         {
-            if eval_succeeded(&out) {
-                return;
+            if !out.status.success() {
+                tracing::debug!(
+                    addr = addr,
+                    status = ?out.status.code(),
+                    "hyprctl --batch opacity update returned non-zero status"
+                );
             }
         }
     }
-
-    let Some(batch) = opacity_batch_command(addr, opacity) else {
-        return;
-    };
-    if let Ok(out) = AsyncCommand::new("hyprctl")
-        .args(["--batch", &batch])
-        .output()
-        .await
+    #[cfg(not(target_os = "linux"))]
     {
-        if !out.status.success() {
-            tracing::debug!(
-                addr = addr,
-                status = ?out.status.code(),
-                "hyprctl --batch opacity update returned non-zero status"
-            );
-        }
+        let _ = (addr, opacity);
     }
 }
 
 pub fn set_window_opacity_sync(addr: &str, opacity: f32) {
-    if let Some(script) = lua_set_opacity_script(addr, opacity) {
-        if let Ok(out) = StdCommand::new("hyprctl").args(["eval", &script]).output() {
-            if eval_succeeded(&out) {
-                return;
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(script) = lua_set_opacity_script(addr, opacity) {
+            if let Ok(out) = StdCommand::new("hyprctl").args(["eval", &script]).output() {
+                if eval_succeeded(&out) {
+                    return;
+                }
+            }
+        }
+
+        let Some(batch) = opacity_batch_command(addr, opacity) else {
+            return;
+        };
+        if let Ok(out) = StdCommand::new("hyprctl")
+            .args(["--batch", &batch])
+            .output()
+        {
+            if !out.status.success() {
+                tracing::debug!(
+                    addr = addr,
+                    status = ?out.status.code(),
+                    "hyprctl --batch sync opacity update returned non-zero status"
+                );
             }
         }
     }
-
-    let Some(batch) = opacity_batch_command(addr, opacity) else {
-        return;
-    };
-    if let Ok(out) = StdCommand::new("hyprctl")
-        .args(["--batch", &batch])
-        .output()
+    #[cfg(not(target_os = "linux"))]
     {
-        if !out.status.success() {
-            tracing::debug!(
-                addr = addr,
-                status = ?out.status.code(),
-                "hyprctl --batch sync opacity update returned non-zero status"
-            );
-        }
+        let _ = (addr, opacity);
     }
 }
 

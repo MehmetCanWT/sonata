@@ -187,6 +187,25 @@ fn parse_responsive_playlist(r: &Value) -> Option<Playlist> {
 pub(super) fn collect_tracks(val: &Value, out: &mut Vec<Track>) {
     match val {
         Value::Object(map) => {
+            // Unwrap playlistPanelVideoWrapperRenderer using ONLY primaryRenderer so OMV
+            // counterparts never duplicate or inject music videos alongside official audio tracks.
+            if let Some(wrapper) = map.get("playlistPanelVideoWrapperRenderer") {
+                if let Some(primary) =
+                    wrapper.pointer("/primaryRenderer/playlistPanelVideoRenderer")
+                {
+                    if let Some(track) = parse_panel_video_track(primary) {
+                        out.push(track);
+                    }
+                }
+                return;
+            }
+            // Extract Top Result card without descending into "More from YouTube" sub-items.
+            if let Some(card) = map.get("musicCardShelfRenderer") {
+                if let Some(track) = super::search::parse_card_shelf_track(card) {
+                    out.push(track);
+                }
+                return;
+            }
             if let Some(renderer) = map.get("musicResponsiveListItemRenderer") {
                 if let Some(track) = parse_responsive_track(renderer) {
                     out.push(track);
@@ -353,10 +372,10 @@ fn parse_responsive_track(r: &Value) -> Option<Track> {
             }
         }
         if artist.is_empty() && !parts.is_empty() {
-            // Filter out category tags like "Song" / "Video"
+            // Filter out localized category/stats badges like "Song", "Şarkı", "Песня", "1M plays".
             let filtered: Vec<_> = parts
                 .into_iter()
-                .filter(|p| !matches!(p.as_str(), "Song" | "Video" | "Single" | "EP"))
+                .filter(|p| !super::browse::is_metadata_noise_token(p))
                 .collect();
             if let Some(a) = filtered.first() {
                 artist = a.clone();
@@ -528,10 +547,15 @@ pub(super) fn find_shelf_continuation(val: &Value) -> Option<String> {
                 "musicShelfContinuation",
                 "gridRenderer",
                 "gridContinuation",
+                "playlistPanelRenderer",
+                "playlistPanelContinuation",
             ] {
                 if let Some(shelf) = map.get(shelf_key) {
                     if let Some(tok) = shelf
-                        .pointer("/continuations/0/nextContinuationData/continuation")
+                        .pointer("/continuations/0/nextRadioContinuationData/continuation")
+                        .or_else(|| {
+                            shelf.pointer("/continuations/0/nextContinuationData/continuation")
+                        })
                         .and_then(|v| v.as_str())
                     {
                         return Some(tok.to_string());
@@ -552,6 +576,35 @@ pub(super) fn find_shelf_continuation(val: &Value) -> Option<String> {
             None
         }
         Value::Array(arr) => arr.iter().find_map(find_shelf_continuation),
+        _ => None,
+    }
+}
+
+pub(super) fn find_radio_continuation(val: &Value) -> Option<String> {
+    match val {
+        Value::Object(map) => {
+            for key in ["playlistPanelRenderer", "playlistPanelContinuation"] {
+                if let Some(panel) = map.get(key) {
+                    if let Some(tok) = panel
+                        .pointer("/continuations/0/nextRadioContinuationData/continuation")
+                        .or_else(|| {
+                            panel.pointer("/continuations/0/nextContinuationData/continuation")
+                        })
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                    {
+                        return Some(tok.to_string());
+                    }
+                }
+            }
+            for v in map.values() {
+                if let Some(found) = find_radio_continuation(v) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        Value::Array(arr) => arr.iter().find_map(find_radio_continuation),
         _ => None,
     }
 }
@@ -935,6 +988,92 @@ pub(super) fn find_automix_endpoint(val: &Value) -> Option<(String, Option<Strin
     }
 }
 
+pub(crate) fn collect_history_feedback_tokens(
+    val: &Value,
+    out: &mut std::collections::HashMap<String, Vec<String>>,
+) {
+    match val {
+        Value::Object(map) => {
+            if let Some(renderer) = map.get("musicResponsiveListItemRenderer") {
+                if let Some(video_id) = renderer
+                    .pointer("/playlistItemData/videoId")
+                    .or_else(|| renderer.pointer("/overlay/musicItemThumbnailOverlayRenderer/content/musicPlayButtonRenderer/playNavigationEndpoint/watchEndpoint/videoId"))
+                    .or_else(|| renderer.pointer("/flexColumns/0/musicResponsiveListItemFlexColumnRenderer/text/runs/0/navigationEndpoint/watchEndpoint/videoId"))
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    if let Some(items) = renderer
+                        .pointer("/menu/menuRenderer/items")
+                        .and_then(|v| v.as_array())
+                    {
+                        for item in items {
+                            let (entry, token_ptr, icon_ptr, text_ptr) =
+                                if let Some(s) = item.get("menuServiceItemRenderer") {
+                                    (
+                                        s,
+                                        "/serviceEndpoint/feedbackEndpoint/feedbackToken",
+                                        "/icon/iconType",
+                                        "/text",
+                                    )
+                                } else if let Some(t) = item.get("toggleMenuServiceItemRenderer") {
+                                    (
+                                        t,
+                                        "/defaultServiceEndpoint/feedbackEndpoint/feedbackToken",
+                                        "/defaultIcon/iconType",
+                                        "/defaultText",
+                                    )
+                                } else {
+                                    continue;
+                                };
+                            let Some(token) = entry
+                                .pointer(token_ptr)
+                                .and_then(|v| v.as_str())
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty())
+                            else {
+                                continue;
+                            };
+                            let icon_type = entry
+                                .pointer(icon_ptr)
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let label = entry
+                                .pointer(text_ptr)
+                                .and_then(extract_runs_text)
+                                .unwrap_or_default()
+                                .to_lowercase();
+                            let matches_icon = matches!(
+                                icon_type,
+                                "DELETE" | "REMOVE_FROM_HISTORY" | "DELETE_SWEEP" | "REMOVE"
+                            );
+                            let matches_label = label.contains("history")
+                                || label.contains("geçmiş")
+                                || label.contains("gecmis")
+                                || label.contains("истори");
+                            if matches_icon || matches_label {
+                                let bucket = out.entry(video_id.to_string()).or_default();
+                                if !bucket.iter().any(|existing| existing == token) {
+                                    bucket.push(token.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            for v in map.values() {
+                collect_history_feedback_tokens(v, out);
+            }
+        }
+        Value::Array(arr) => {
+            for item in arr {
+                collect_history_feedback_tokens(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1259,5 +1398,56 @@ mod tests {
         assert!(playlists[0].is_owned);
         assert!(!playlists[1].is_owned);
         assert!(!playlists[2].is_owned);
+    }
+
+    #[test]
+    fn collects_history_feedback_tokens_from_responsive_items_and_ignores_unrelated_menus() {
+        let sample = json!({
+            "contents": [{
+                "musicResponsiveListItemRenderer": {
+                    "playlistItemData": { "videoId": "hist_vid_1" },
+                    "menu": {
+                        "menuRenderer": {
+                            "items": [
+                                {
+                                    "menuServiceItemRenderer": {
+                                        "text": { "runs": [{ "text": "Remove from history" }] },
+                                        "icon": { "iconType": "REMOVE_FROM_HISTORY" },
+                                        "serviceEndpoint": {
+                                            "feedbackEndpoint": { "feedbackToken": "tok_remove_1" }
+                                        }
+                                    }
+                                },
+                                {
+                                    "toggleMenuServiceItemRenderer": {
+                                        "defaultText": { "runs": [{ "text": "Geçmişten kaldır" }] },
+                                        "defaultIcon": { "iconType": "DELETE" },
+                                        "defaultServiceEndpoint": {
+                                            "feedbackEndpoint": { "feedbackToken": "tok_remove_2" }
+                                        }
+                                    }
+                                },
+                                {
+                                    "menuServiceItemRenderer": {
+                                        "text": { "runs": [{ "text": "Add to library" }] },
+                                        "icon": { "iconType": "LIBRARY_ADD" },
+                                        "serviceEndpoint": {
+                                            "feedbackEndpoint": { "feedbackToken": "tok_unrelated" }
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }]
+        });
+
+        let mut tokens = std::collections::HashMap::new();
+        collect_history_feedback_tokens(&sample, &mut tokens);
+        assert_eq!(
+            tokens.get("hist_vid_1").map(Vec::as_slice),
+            Some(["tok_remove_1".to_string(), "tok_remove_2".to_string()].as_slice())
+        );
     }
 }

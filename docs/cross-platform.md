@@ -6,7 +6,7 @@ Sonata separates its portable Rust engine (`sonata-core`) from OS-specific runti
 
 Enforced automatically by [`scripts/check_boundaries.sh`](../scripts/check_boundaries.sh), `crates/sonata-core` maintains strict platform neutrality:
 
-- **Zero UI or FFI dependencies**: `sonata-core` never depends on `ratatui`, `crossterm`, `gpui-kit`, `uniffi`, or `sonata-runtime`.
+- **Zero UI or FFI dependencies**: `sonata-core` never depends on `ratatui`, `crossterm`, `tauri`, `uniffi`, or `sonata-runtime`.
 - **Zero subprocesses**: `std::process::Command` and `tokio::process::Command` are forbidden inside `crates/sonata-core/src`.
 - **Zero OS-policy branching in providers**: Provider modules use explicit configuration rather than `cfg!(target_os = ...)` checks.
 - **Injected paths (`CorePaths`)**: [`crates/sonata-core/src/paths.rs`](../crates/sonata-core/src/paths.rs) accepts client-resolved `config_dir` and `cache_dir` roots without calling `dirs` or assuming XDG conventions:
@@ -30,7 +30,7 @@ Enforced automatically by [`scripts/check_boundaries.sh`](../scripts/check_bound
 | Audio playback | `MpvController` (`player/mpv.rs`) via Unix JSON-IPC socket | `PlaybackAudioDriver` trait (`player/session/mod.rs`) |
 | Stream fallback & JS cipher | `LinuxStreamResolver` (`process/ytdlp.rs`) & `CliJsCipherBridge` (`process/cipher.rs`) | `PlaybackStreamSource` trait + `ResolverProfile` |
 | Secret & cookie persistence | `0o600`/`0o700` files in `auth/cookies.rs` + `auth/browser.rs` | OS keychain / credential store shim + browser DB reader |
-| Media keys & OS integration | `mpris.rs` (`mpris-server` D-Bus) & `tray.rs` (`ksni` StatusNotifierItem) | Platform media-session & tray adapters in `sonata-desktop/src/integrations/` |
+| Media keys & OS integration | `mpris.rs` (`mpris-server` D-Bus on Linux, `souvlaki` on macOS/Windows) & `tray.rs` (Tauri `tray-icon`) | Platform media-session & tray adapters in `sonata-desktop/src/integrations/` |
 | Discord Rich Presence | Unix domain sockets `$XDG_RUNTIME_DIR/discord-ipc-*` (`discord.rs`) | Transport enum: Unix socket (Linux/macOS) vs named pipe (Windows) |
 
 ### 2.2 macOS Shim Plan (`target_os = "macos"`)
@@ -42,8 +42,8 @@ Enforced automatically by [`scripts/check_boundaries.sh`](../scripts/check_bound
 2. **Credential Storage (Keychain) & Browser Cookies**:
    - Store YouTube Music `SAPISID` cookies, Spotify `sp_dc`, and Last.fm / ListenBrainz API secrets in macOS Keychain Services (`SecItemAdd`, `SecItemCopyMatching`, `SecItemUpdate`) under service `dev.sonata.Desktop`.
    - Extend `auth/browser.rs` to probe macOS browser profiles (`~/Library/Application Support/Google/Chrome`, `Firefox`, `Arc`, `BraveSoftware`, and `~/Library/Cookies/Cookies.binarycookies` when Full Disk Access is granted).
-3. **Window Vibrancy (`NSWindow`)**:
-   - In `sonata-desktop`, configure `gpui-kit` macOS window options with `titlebarAppearsTransparent = true`, `NSVisualEffectView` (`NSVisualEffectMaterial::UnderWindowBackground` / `HudWindow` controlled by `DesktopSettings.opacity`), native traffic-light padding in `views/chrome.rs`, and `NSAppearance` synchronization for Light/Dark mode.
+3. **Tauri v2 Window & Sidecar Packaging (`NSWindow` / WebKit)**:
+   - Configure `crates/sonata-desktop/tauri.conf.json` and `tauri.sidecar.conf.json` for the native macOS WebKit webview, Tauri system tray, `souvlaki` `MPNowPlayingInfoCenter` media controls, and bundled `mpv`/`yt-dlp`/`ffmpeg` sidecars.
 4. **Packaging & Updates**:
    - Bundle `sonata-desktop` and `sonata` into `Sonata.app` (universal `aarch64-apple-darwin` + `x86_64-apple-darwin` `.dmg`), notarized via `codesign` + `notarytool`, with `sonata_core::updater` targeting the `.dmg` / `.tar.gz` GitHub Release assets.
 
@@ -58,7 +58,7 @@ Enforced automatically by [`scripts/check_boundaries.sh`](../scripts/check_bound
 3. **Window Material (Mica), Taskbar Identity (`AppUserModelID`), & IPC**:
    - On Windows 11 (`>= 22621`), call `DwmSetWindowAttribute` with `DWMWA_SYSTEMBACKDROP_TYPE` (`DWMSBT_MAINWINDOW` for Mica or `DWMSBT_TRANSIENTWINDOW` for Acrylic) and `DWMWA_USE_IMMERSIVE_DARK_MODE` to match `Sonata Glass` translucency.
    - Call `SetCurrentProcessExplicitAppUserModelID("dev.sonata.Desktop")` at startup in `sonata-desktop/src/main.rs` so taskbar pinning, Start Menu shortcuts, SMTC attribution, and Windows toast notifications bind to a single identity.
-   - Implement a `Shell_NotifyIconW` tray adapter alongside `ksni`, and connect `sonata-runtime/src/discord.rs` to Discord's Windows named pipes (`\\.\pipe\discord-ipc-0`..`9`).
+   - Use Tauri's native Windows tray (`tray-icon`) and `souvlaki` SMTC integration alongside `sonata-runtime/src/discord.rs` and `sonata-runtime/src/player/mpv.rs` Windows named-pipe transports (`\\?\pipe\discord-ipc-0`..`9` and `\\.\pipe\sonata-mpv-<pid>`).
 4. **Packaging**:
    - Package `sonata-desktop.exe` and `sonata.exe` via WiX / MSIX installer or portable `.zip` on `x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc`.
 

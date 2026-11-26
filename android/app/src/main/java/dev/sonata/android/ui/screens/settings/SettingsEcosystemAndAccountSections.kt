@@ -18,8 +18,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -36,7 +34,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -51,7 +48,6 @@ import dev.sonata.android.data.SonataSettingsState
 import dev.sonata.android.data.ThemeMode
 import dev.sonata.android.data.VideoDownloadQuality
 import dev.sonata.android.discord.DiscordActivityType
-import dev.sonata.android.discord.DiscordApplication
 import dev.sonata.android.discord.DiscordRpcStatus
 import dev.sonata.android.ui.SonataIcons
 import dev.sonata.android.ui.i18n.EcosystemStrings
@@ -73,7 +69,9 @@ internal fun discordStatusLabel(status: DiscordRpcStatus, strings: SonataStrings
             ?: strings.discordStatusConnected
     DiscordRpcStatus.Reconnecting -> strings.discordStatusReconnecting
     DiscordRpcStatus.AuthFailed -> strings.discordStatusAuthFailed
-    is DiscordRpcStatus.Error -> strings.discordStatusError(status.message)
+    is DiscordRpcStatus.Error ->
+        status.message.takeIf { it.isNotBlank() }?.let { strings.discordStatusError(it) }
+            ?: strings.discordStatusConnectionFailed
 }
 
 internal fun discordActivityTypeLabel(type: DiscordActivityType, strings: SonataStrings): String = when (type) {
@@ -233,14 +231,14 @@ internal fun ScrobblingCategoryContent(
                 OutlinedTextField(
                     value = lfmUser,
                     onValueChange = { lfmUser = it },
-                    label = { Text("Username") },
+                    label = { Text(eco.scrobbleUsernameLabel) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 OutlinedTextField(
                     value = lfmApiKey,
                     onValueChange = { lfmApiKey = it },
-                    label = { Text("API Key") },
+                    label = { Text(eco.scrobbleApiKeyLabel) },
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                     modifier = Modifier.fillMaxWidth(),
@@ -248,7 +246,7 @@ internal fun ScrobblingCategoryContent(
                 OutlinedTextField(
                     value = lfmApiSecret,
                     onValueChange = { lfmApiSecret = it },
-                    label = { Text("API Secret") },
+                    label = { Text(eco.scrobbleApiSecretLabel) },
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                     modifier = Modifier.fillMaxWidth(),
@@ -256,7 +254,7 @@ internal fun ScrobblingCategoryContent(
                 OutlinedTextField(
                     value = lfmSessionKey,
                     onValueChange = { lfmSessionKey = it },
-                    label = { Text("Session Key") },
+                    label = { Text(eco.scrobbleSessionKeyLabel) },
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                     modifier = Modifier.fillMaxWidth(),
@@ -314,7 +312,7 @@ internal fun ScrobblingCategoryContent(
                 OutlinedTextField(
                     value = lbUser,
                     onValueChange = { lbUser = it },
-                    label = { Text("Username") },
+                    label = { Text(eco.scrobbleUsernameLabel) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -355,8 +353,6 @@ internal fun DiscordCategoryContent(
     onReconnect: () -> Unit,
 ) {
     val strings = LocalSonataStrings.current
-    var appIdDraft by remember(settings.discordAppId) { mutableStateOf(settings.discordAppId) }
-    var appIdValidationError by remember(settings.discordAppId) { mutableStateOf(false) }
 
     SettingsGroup(
         cardBg = cardBg,
@@ -434,7 +430,7 @@ internal fun DiscordCategoryContent(
         header = strings.hdrDiscordPresence,
         secondaryText = secondaryText,
     ) {
-        if (search.matches("Discord", "Enable", "Rich Presence", "RPC")) {
+        if (search.matches(strings.catDiscord, strings.discordEnableRpc, strings.discordEnableRpcDesc, "RPC")) {
             SettingsSwitchRow(
                 title = strings.discordEnableRpc,
                 subtitle = strings.discordEnableRpcDesc,
@@ -446,7 +442,14 @@ internal fun DiscordCategoryContent(
                 },
             )
         }
-        if (search.matches("Discord", "Activity", "Listening", "Playing", "Watching")) {
+        if (search.matches(
+                strings.catDiscord,
+                strings.discordActivityType,
+                strings.discordActivityListening,
+                strings.discordActivityPlaying,
+                strings.discordActivityWatching,
+            )
+        ) {
             SettingsRow(
                 icon = SonataIcons.MusicNote,
                 title = strings.discordActivityType,
@@ -456,7 +459,7 @@ internal fun DiscordCategoryContent(
                 onClick = { onOpenChoice(SettingsChoiceKind.DISCORD_ACTIVITY_TYPE) },
             )
         }
-        if (search.matches("Discord", "Timestamps", "Progress", "Speed")) {
+        if (search.matches(strings.catDiscord, strings.discordShowTimestamps, strings.discordShowTimestampsDesc)) {
             SettingsSwitchRow(
                 title = strings.discordShowTimestamps,
                 subtitle = strings.discordShowTimestampsDesc,
@@ -468,7 +471,7 @@ internal fun DiscordCategoryContent(
                 },
             )
         }
-        if (search.matches("Discord", "Artwork", "Cover", "Image")) {
+        if (search.matches(strings.catDiscord, strings.discordShowArtwork, strings.discordShowArtworkDesc)) {
             SettingsSwitchRow(
                 title = strings.discordShowArtwork,
                 subtitle = strings.discordShowArtworkDesc,
@@ -480,7 +483,7 @@ internal fun DiscordCategoryContent(
                 },
             )
         }
-        if (search.matches("Discord", "Button", "Link", "YouTube Music")) {
+        if (search.matches(strings.catDiscord, strings.discordShowButtons, strings.discordShowButtonsDesc)) {
             SettingsSwitchRow(
                 title = strings.discordShowButtons,
                 subtitle = strings.discordShowButtonsDesc,
@@ -491,107 +494,6 @@ internal fun DiscordCategoryContent(
                     onUpdateSettings { it.copy(discordShowButtons = enabled) }
                 },
             )
-        }
-    }
-
-    Spacer(Modifier.height(14.dp))
-
-    SettingsGroup(
-        cardBg = cardBg,
-        dividerColor = dividerColor,
-        header = strings.hdrDiscordAppId,
-        footer = strings.footerDiscordAppId,
-        secondaryText = secondaryText,
-    ) {
-        addRow(dividerStart = ROW_INSET) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = ROW_INSET, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Text(
-                    text = strings.discordAppIdLabel,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = primaryText,
-                )
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(dividerColor.copy(alpha = 0.45f))
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                ) {
-                    if (appIdDraft.isEmpty()) {
-                        Text(
-                            text = strings.discordAppIdPlaceholder,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = secondaryText,
-                        )
-                    }
-                    BasicTextField(
-                        value = appIdDraft,
-                        onValueChange = { next ->
-                            appIdDraft = next.filter { it.isDigit() }
-                            appIdValidationError = false
-                        },
-                        singleLine = true,
-                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = primaryText),
-                        cursorBrush = SolidColor(primaryText),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-                if (appIdValidationError) {
-                    Text(
-                        text = strings.discordAppIdInvalid,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = BasicPalette.AccentRed,
-                    )
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(primaryText)
-                            .clickable {
-                                val trimmed = appIdDraft.trim()
-                                if (DiscordApplication.isValidSnowflakeAppId(trimmed)) {
-                                    appIdValidationError = false
-                                    onUpdateSettings { it.copy(discordAppId = trimmed) }
-                                } else {
-                                    appIdValidationError = true
-                                }
-                            }
-                            .padding(horizontal = 14.dp, vertical = 8.dp),
-                    ) {
-                        Text(
-                            text = strings.discordAppIdApply,
-                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                            color = if (primaryText == Color.White) Color.Black else Color.White,
-                        )
-                    }
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(dividerColor.copy(alpha = 0.6f))
-                            .clickable {
-                                appIdDraft = DiscordApplication.DEFAULT_APP_ID
-                                appIdValidationError = false
-                                onUpdateSettings { it.copy(discordAppId = DiscordApplication.DEFAULT_APP_ID) }
-                            }
-                            .padding(horizontal = 14.dp, vertical = 8.dp),
-                    ) {
-                        Text(
-                            text = strings.discordAppIdReset,
-                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium),
-                            color = primaryText,
-                        )
-                    }
-                }
-            }
         }
     }
 }
@@ -874,31 +776,21 @@ internal fun SettingsChoicePage(
                 footer = strings.footerAppearanceTheme,
                 secondaryText = secondaryText,
             ) {
-                val activeDesign = settings.resolvedDesignTheme()
-                DesignTheme.entries.forEach { design ->
+                ThemeMode.entries.forEach { mode ->
+                    val label = when (mode) {
+                        ThemeMode.SYSTEM -> strings.themeModeSystem
+                        ThemeMode.LIGHT -> strings.themeModeLight
+                        ThemeMode.DARK -> strings.themeModeDark
+                    }
                     SettingsChoiceRow(
-                        title = designThemeLabel(design),
-                        subtitle = designThemeDescription(design, strings),
-                        selected = activeDesign == design,
+                        title = label,
+                        subtitle = strings.themeBasicDesc,
+                        selected = settings.themeMode == mode,
                         primaryText = primaryText,
                         secondaryText = secondaryText,
                         accentTint = accentTint,
                         onClick = {
-                            val nextMode = when (settings.themeMode) {
-                                ThemeMode.SYSTEM -> ThemeMode.SYSTEM
-                                ThemeMode.AMOLED -> ThemeMode.AMOLED
-                                ThemeMode.VIOLET_LIGHT, ThemeMode.MOONFLOWER_LIGHT, ThemeMode.BASIC_LIGHT -> when (design) {
-                                    DesignTheme.VIOLET -> ThemeMode.VIOLET_LIGHT
-                                    DesignTheme.MOONFLOWER -> ThemeMode.MOONFLOWER_LIGHT
-                                    DesignTheme.BASIC -> ThemeMode.BASIC_LIGHT
-                                }
-                                ThemeMode.VIOLET_DARK, ThemeMode.MOONFLOWER_DARK, ThemeMode.BASIC_DARK -> when (design) {
-                                    DesignTheme.VIOLET -> ThemeMode.VIOLET_DARK
-                                    DesignTheme.MOONFLOWER -> ThemeMode.MOONFLOWER_DARK
-                                    DesignTheme.BASIC -> ThemeMode.BASIC_DARK
-                                }
-                            }
-                            onUpdateSettings { it.copy(designTheme = design, themeMode = nextMode) }
+                            onUpdateSettings { it.copy(designTheme = DesignTheme.BASIC, themeMode = mode) }
                             onSelectDone()
                         },
                     )
@@ -935,9 +827,9 @@ internal fun SettingsChoicePage(
                 dividerColor = dividerColor,
                 secondaryText = secondaryText,
             ) {
-                TranslationLangs.forEach { (code, name) ->
+                TranslationLangs.forEach { (code, _) ->
                     SettingsChoiceRow(
-                        title = name,
+                        title = strings.translationLangName(code),
                         subtitle = code.uppercase(Locale.US),
                         selected = settings.lyricsTranslationLang == code,
                         primaryText = primaryText,

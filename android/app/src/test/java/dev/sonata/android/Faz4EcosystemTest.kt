@@ -5,12 +5,18 @@ import android.content.ContextWrapper
 import android.content.SharedPreferences
 import dev.sonata.android.connect.CONNECT_DISCOVERY_PORT
 import dev.sonata.android.connect.ConnectBeacon
+import dev.sonata.android.connect.ConnectClientException
 import dev.sonata.android.connect.ConnectCommand
 import dev.sonata.android.connect.ConnectDeviceInfo
+import dev.sonata.android.connect.ConnectError
 import dev.sonata.android.connect.ConnectStateSnapshot
 import dev.sonata.android.connect.ConnectTrackSnapshot
 import dev.sonata.android.connect.PairAck
+import dev.sonata.android.connect.PairApprovalInitAck
+import dev.sonata.android.connect.PairApprovalRequest
+import dev.sonata.android.connect.PairApprovalStatus
 import dev.sonata.android.connect.PairRequest
+import dev.sonata.android.connect.PairStatusAck
 import dev.sonata.android.connect.SonataConnectClient
 import dev.sonata.android.connect.SonataConnectCrypto
 import dev.sonata.android.data.AppLanguage
@@ -21,6 +27,7 @@ import dev.sonata.android.playback.SonataAutoBrowser
 import dev.sonata.android.ui.i18n.EnglishEcosystemStrings
 import dev.sonata.android.ui.i18n.RussianEcosystemStrings
 import dev.sonata.android.ui.i18n.TurkishEcosystemStrings
+import dev.sonata.android.ui.i18n.connectErrorMessage
 import dev.sonata.android.ui.i18n.ecosystemStrings
 import kotlinx.coroutines.test.runTest
 import org.json.JSONObject
@@ -488,6 +495,76 @@ class Faz4EcosystemTest {
             assertNotNull(receivedCommandBody)
             assertTrue(SonataConnectCrypto.verifySignature(secret, receivedCommandBody!!, receivedCommandSig!!))
             assertEquals(ConnectCommand.SeekAbsolute(98_000L), ConnectCommand.fromJson(receivedCommandBody!!))
+
+            // Verify canonical Rust wire format payloads emitted and parsed by Android client
+            val pairReqJson = JSONObject(
+                PairRequest("android-test-1", "Pixel Test", "654321").toJson(),
+            )
+            assertEquals("android-test-1", pairReqJson.getString("device_id"))
+            assertEquals("Pixel Test", pairReqJson.getString("device_name"))
+            assertEquals("654321", pairReqJson.getString("pin"))
+            assertFalse(pairReqJson.has("client_device_id"))
+
+            val rustPairAck = PairAck.fromJson(
+                """{"accepted":true,"device_id":"sonata-linux","device_name":"Sonata Linux","token":"deadbeef","message":null}""",
+            )
+            assertNotNull(rustPairAck)
+            assertTrue(rustPairAck!!.accepted)
+            assertEquals("deadbeef", rustPairAck.sharedSecret)
+            assertNull(rustPairAck.message)
+
+            val rustState = ConnectStateSnapshot.fromJson(
+                """
+                {
+                  "device_id": "sonata-linux",
+                  "device_name": "Sonata Linux",
+                  "playing": true,
+                  "paused": false,
+                  "track_id": "test-track-1",
+                  "title": "Test Track",
+                  "artist": "Test Artist",
+                  "album": "Test Album",
+                  "thumbnail_url": null,
+                  "position_secs": 42.5,
+                  "duration_secs": 180.0,
+                  "volume": 70,
+                  "shuffle": false,
+                  "repeat_mode": "Off",
+                  "queue": [],
+                  "current_index": 2,
+                  "updated_at_unix": 1700000123
+                }
+                """.trimIndent(),
+            )
+            assertNotNull(rustState)
+            assertTrue(rustState!!.isPlaying)
+            assertEquals(42_500L, rustState.positionMs)
+            assertEquals(180_000L, rustState.durationMs)
+            assertEquals(0.70f, rustState.volume, 0.001f)
+            assertEquals("test-track-1", rustState.activeTrack?.id)
+            assertEquals("Test Track", rustState.activeTrack?.title)
+            assertEquals("Test Artist", rustState.activeTrack?.artist)
+            assertNull(rustState.activeTrack?.thumbnailUrl)
+            assertEquals(2, rustState.queueIndex)
+            assertEquals(1_700_000_123_000L, rustState.timestampMs)
+
+            val playJson = JSONObject(ConnectCommand.Play.toJson())
+            assertEquals("play", playJson.getString("command"))
+            val seekJson = JSONObject(ConnectCommand.SeekAbsolute(12_500L).toJson())
+            assertEquals("seek_absolute", seekJson.getString("command"))
+            assertEquals(12.5, seekJson.getDouble("position_secs"), 0.001)
+            val volJson = JSONObject(ConnectCommand.SetVolume(0.75f).toJson())
+            assertEquals("set_volume", volJson.getString("command"))
+            assertEquals(75, volJson.getInt("volume"))
+            val transferJson = JSONObject(
+                ConnectCommand.TransferQueue(listOf(track), startIndex = 0, positionMs = 9_500L).toJson(),
+            )
+            assertEquals("transfer_queue", transferJson.getString("command"))
+            assertEquals(9.5, transferJson.getDouble("position_secs"), 0.001)
+            assertEquals(
+                "YouTubeMusic",
+                transferJson.getJSONArray("tracks").getJSONObject(0).getString("source"),
+            )
         } finally {
             runCatching { server.close() }
             serverThread.join(2_000L)
@@ -510,6 +587,10 @@ class Faz4EcosystemTest {
         assertEquals("Liked Music", en.autoLikedMusic)
         assertEquals("Beğenilen Müzikler", tr.autoLikedMusic)
         assertEquals("Понравившиеся", ru.autoLikedMusic)
+
+        assertEquals("Playing on Sonata Linux", en.connectPlayingOn("Sonata Linux"))
+        assertEquals("Sonata Linux üzerinde çalınıyor", tr.connectPlayingOn("Sonata Linux"))
+        assertEquals("Воспроизводится на Sonata Linux", ru.connectPlayingOn("Sonata Linux"))
 
         listOf(en, tr, ru).forEach { s ->
             assertTrue(s.gaplessPlaybackTitle.isNotBlank())
@@ -535,6 +616,22 @@ class Faz4EcosystemTest {
             assertTrue(s.connectTransferPlayback.isNotBlank())
             assertTrue(s.connectDisconnect.isNotBlank())
             assertTrue(s.connectPairFailed.isNotBlank())
+            assertTrue(s.connectDevicesTitle.isNotBlank())
+            assertTrue(s.connectThisPhone.isNotBlank())
+            assertTrue(s.connectThisPhoneSubtitle.isNotBlank())
+            assertTrue(s.connectActiveBadge.isNotBlank())
+            assertTrue(s.connectTrustedBadge.isNotBlank())
+            assertTrue(s.connectTrustedDevicesTitle.isNotBlank())
+            assertTrue(s.connectPlayingOn("Sonata Linux").contains("Sonata Linux"))
+            assertTrue(s.connectWaitingApprovalTitle.isNotBlank())
+            assertTrue(s.connectWaitingApprovalBody("Sonata Linux").contains("Sonata Linux"))
+            assertTrue(s.connectUsePinFallback.isNotBlank())
+            assertTrue(s.connectRemoteVolume.isNotBlank())
+            assertTrue(s.connectOfflineLabel.isNotBlank())
+            assertTrue(s.connectSelectDeviceHint.isNotBlank())
+            ConnectError.entries.forEach { err ->
+                assertTrue("Missing localized error for $err", s.connectErrorMessage(err).isNotBlank())
+            }
             assertTrue(s.scrobblingTitle.isNotBlank())
             assertTrue(s.scrobblingSubtitle.isNotBlank())
             assertEquals("Last.fm", s.lastFmTitle)
@@ -575,5 +672,124 @@ class Faz4EcosystemTest {
         assertNotEquals(en.gaplessPlaybackTitle, ru.gaplessPlaybackTitle)
         assertNotEquals(en.listeningStatsTitle, tr.listeningStatsTitle)
         assertNotEquals(en.listeningStatsTitle, ru.listeningStatsTitle)
+        assertNotEquals(en.connectThisPhone, tr.connectThisPhone)
+        assertNotEquals(en.connectThisPhone, ru.connectThisPhone)
+        assertNotEquals(en.connectErrorPairingRejected, tr.connectErrorPairingRejected)
+        assertNotEquals(en.connectErrorPairingRejected, ru.connectErrorPairingRejected)
+    }
+
+    @Test
+    fun `sonata connect supports interactive approval request, status polling, and trust verification`() = runTest {
+        val secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        var trustChecks = 0
+        val server = ServerSocket(0)
+        val port = server.localPort
+        val serverThread = thread(isDaemon = true) {
+            repeat(5) {
+                val socket = runCatching { server.accept() }.getOrNull() ?: return@thread
+                socket.use { sock ->
+                    val reader = BufferedReader(InputStreamReader(sock.getInputStream(), StandardCharsets.UTF_8))
+                    val requestLine = reader.readLine().orEmpty()
+                    val headers = HashMap<String, String>()
+                    var contentLength = 0
+                    while (true) {
+                        val line = reader.readLine() ?: break
+                        if (line.isEmpty()) break
+                        val idx = line.indexOf(':')
+                        if (idx > 0) {
+                            val name = line.substring(0, idx).trim().lowercase(Locale.ROOT)
+                            val value = line.substring(idx + 1).trim()
+                            headers[name] = value
+                            if (name == "content-length") contentLength = value.toIntOrNull() ?: 0
+                        }
+                    }
+                    val reqBody = if (contentLength > 0) {
+                        val chars = CharArray(contentLength)
+                        var readTotal = 0
+                        while (readTotal < contentLength) {
+                            val n = reader.read(chars, readTotal, contentLength - readTotal)
+                            if (n < 0) break
+                            readTotal += n
+                        }
+                        String(chars, 0, readTotal)
+                    } else {
+                        ""
+                    }
+
+                    val (statusLine, respBody) = when {
+                        requestLine.startsWith("POST /connect/pair/request") -> {
+                            val parsed = PairApprovalRequest.fromJson(reqBody)
+                            assertNotNull(parsed)
+                            assertEquals("android-test-2", parsed!!.clientDeviceId)
+                            assertEquals("Test Phone", parsed.clientDeviceName)
+                            "HTTP/1.1 202 Accepted" to PairApprovalInitAck(
+                                requestId = "req-42",
+                                status = "pending",
+                                deviceId = "linux-host-1",
+                                deviceName = "Sonata Linux",
+                            ).toJson()
+                        }
+                        requestLine.startsWith("GET /connect/pair/status?request_id=req-42") -> {
+                            "HTTP/1.1 200 OK" to PairStatusAck(
+                                status = PairApprovalStatus.APPROVED,
+                                accepted = true,
+                                deviceId = "linux-host-1",
+                                deviceName = "Sonata Linux",
+                                sharedSecret = secret,
+                            ).toJson()
+                        }
+                        requestLine.startsWith("GET /connect/trust") -> {
+                            trustChecks++
+                            val ts = headers[SonataConnectClient.HEADER_TIMESTAMP.lowercase(Locale.ROOT)].orEmpty()
+                            val sig = headers[SonataConnectClient.HEADER_SIGNATURE.lowercase(Locale.ROOT)].orEmpty()
+                            val valid = SonataConnectCrypto.verifySignature(secret, ts, sig)
+                            if (trustChecks == 1 && valid) {
+                                "HTTP/1.1 200 OK" to """{"trusted":true}"""
+                            } else {
+                                "HTTP/1.1 401 Unauthorized" to """{"trusted":false}"""
+                            }
+                        }
+                        requestLine.startsWith("POST /connect/command") -> {
+                            "HTTP/1.1 401 Unauthorized" to """{"error":"untrusted"}"""
+                        }
+                        else -> "HTTP/1.1 404 Not Found" to "{}"
+                    }
+
+                    val bytes = respBody.toByteArray(StandardCharsets.UTF_8)
+                    val httpResp = "$statusLine\r\n" +
+                        "Content-Type: application/json\r\n" +
+                        "Content-Length: ${bytes.size}\r\n" +
+                        "Connection: close\r\n\r\n"
+                    val out = sock.getOutputStream()
+                    out.write(httpResp.toByteArray(StandardCharsets.US_ASCII))
+                    out.write(bytes)
+                    out.flush()
+                }
+            }
+        }
+
+        try {
+            val client = SonataConnectClient(localDeviceId = "android-test-2")
+            val baseUrl = "http://127.0.0.1:$port"
+
+            val init = client.requestPairApproval(baseUrl, "Test Phone").getOrThrow()
+            assertEquals("req-42", init.requestId)
+            assertEquals("pending", init.status)
+
+            val status = client.pollPairStatus(baseUrl, init.requestId).getOrThrow()
+            assertEquals(PairApprovalStatus.APPROVED, status.status)
+            assertTrue(status.accepted)
+            assertEquals(secret, status.sharedSecret)
+
+            assertTrue(client.checkTrust(baseUrl, secret).getOrThrow())
+            assertFalse(client.checkTrust(baseUrl, secret).getOrThrow())
+
+            val cmdErr = client.sendCommand(baseUrl, secret, ConnectCommand.Play).exceptionOrNull()
+            assertTrue(cmdErr is ConnectClientException)
+            assertEquals(ConnectError.TRUST_REVOKED, (cmdErr as ConnectClientException).error)
+        } finally {
+            runCatching { server.close() }
+            serverThread.join(2_000L)
+        }
     }
 }

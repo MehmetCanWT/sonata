@@ -366,11 +366,21 @@ internal fun SearchTabContent(
             }
         }
     }
-    val filteredLibraryTracks = remember(state.tracks, state.query, selectedSegment) {
-        if (state.query.isBlank()) state.tracks
-        else state.tracks.filter {
+    val filteredLibraryTracks = remember(
+        state.localMusicLibrary.tracks,
+        state.lastPlayedTracks,
+        state.query,
+        selectedSegment,
+    ) {
+        val libraryPool = (
+            state.localMusicLibrary.tracks.map { it.toAndroidTrack() } +
+                state.lastPlayedTracks
+            ).distinctBy { it.id }
+        if (state.query.isBlank()) libraryPool
+        else libraryPool.filter {
             it.title.contains(state.query, ignoreCase = true) ||
-                it.artist.contains(state.query, ignoreCase = true)
+                it.artist.contains(state.query, ignoreCase = true) ||
+                it.album.contains(state.query, ignoreCase = true)
         }
     }
     val filteredPlaylists = remember(state.playlists, state.query, selectedSegment) {
@@ -487,10 +497,12 @@ internal fun SearchTabContent(
                             .padding(start = PAGE_GUTTER, end = PAGE_GUTTER, top = 10.dp, bottom = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        val badgeBg = LocalLunariaColors.current.eclipseCard
+                        val badgeInk = LocalLunariaColors.current.onSurfacePrimary
                         ExpressiveScallopedBadge(
-                            badgeColor = Color(0xFFC5D2FF),
+                            badgeColor = badgeBg,
                             icon = SonataIcons.History,
-                            iconTint = Color(0xFF141826),
+                            iconTint = badgeInk,
                         )
                         Spacer(Modifier.width(12.dp))
                         Text(
@@ -548,10 +560,12 @@ internal fun SearchTabContent(
                             .padding(start = PAGE_GUTTER, end = PAGE_GUTTER, top = 2.dp, bottom = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        val badgeBg = LocalLunariaColors.current.eclipseCard
+                        val badgeInk = LocalLunariaColors.current.onSurfacePrimary
                         ExpressiveScallopedBadge(
-                            badgeColor = Color(0xFFF6B7D1),
+                            badgeColor = badgeBg,
                             icon = SonataIcons.GraphicEq,
-                            iconTint = Color(0xFF28121C),
+                            iconTint = badgeInk,
                         )
                         Spacer(Modifier.width(12.dp))
                         Text(
@@ -934,27 +948,31 @@ internal fun ExpressiveScallopedBadge(
     size: Dp = 36.dp,
 ) {
     Box(
-        modifier = Modifier.size(size),
+        modifier = Modifier
+            .size(size)
+            .drawWithCache {
+                val cx = this.size.width / 2f
+                val cy = this.size.height / 2f
+                val baseR = this.size.minDimension * 0.44f
+                val amp = this.size.minDimension * 0.06f
+                val lobes = 10
+                val steps = 120
+                val path = Path().apply {
+                    for (i in 0..steps) {
+                        val theta = (i.toDouble() / steps) * 2.0 * kotlin.math.PI
+                        val r = baseR + amp * kotlin.math.cos(lobes * theta).toFloat()
+                        val x = cx + r * kotlin.math.cos(theta).toFloat()
+                        val y = cy + r * kotlin.math.sin(theta).toFloat()
+                        if (i == 0) moveTo(x, y) else lineTo(x, y)
+                    }
+                    close()
+                }
+                onDrawBehind {
+                    drawPath(path = path, color = badgeColor)
+                }
+            },
         contentAlignment = Alignment.Center,
     ) {
-        androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
-            val cx = this.size.width / 2f
-            val cy = this.size.height / 2f
-            val baseR = this.size.minDimension * 0.44f
-            val amp = this.size.minDimension * 0.06f
-            val lobes = 10
-            val steps = 120
-            val path = androidx.compose.ui.graphics.Path()
-            for (i in 0..steps) {
-                val theta = (i.toDouble() / steps) * 2.0 * kotlin.math.PI
-                val r = baseR + amp * kotlin.math.cos(lobes * theta).toFloat()
-                val x = cx + r * kotlin.math.cos(theta).toFloat()
-                val y = cy + r * kotlin.math.sin(theta).toFloat()
-                if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
-            }
-            path.close()
-            drawPath(path = path, color = badgeColor)
-        }
         Icon(
             imageVector = icon,
             contentDescription = null,
@@ -1142,7 +1160,7 @@ internal fun SearchSamplePortraitCard(
             ) {
                 Icon(
                     imageVector = if (isCurrent && isPlaying) SonataIcons.Pause else SonataIcons.Play,
-                    contentDescription = "Play sample",
+                    contentDescription = dev.sonata.android.ui.i18n.LocalSonataStrings.current.playSample,
                     tint = Color(0xFF101012),
                     modifier = Modifier.size(18.dp),
                 )

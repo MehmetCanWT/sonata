@@ -286,4 +286,27 @@ class SmbClientTest {
         assertEquals("FLAC\\Albums", SmbClient.toSmbWinPath("FLAC/", "/Albums/"))
         assertEquals("", SmbClient.toSmbWinPath("", "///"))
     }
+
+    @Test
+    fun toSmbWinPathRejectsTraversalAndDriveColonSegments() {
+        val maliciousInputs = listOf(
+            "" to "../etc/passwd",
+            "Music" to "..\\secret.flac",
+            "Music" to "./track.flac",
+            "." to "track.flac",
+            ".." to "track.flac",
+            "" to "C:/Windows/win.ini",
+            "Music" to "track.flac:hiddenStream",
+            "Music" to "bad\u0000name.flac",
+        )
+        for ((base, rel) in maliciousInputs) {
+            val threw = try {
+                SmbClient.toSmbWinPath(base, rel)
+                false
+            } catch (_: IllegalArgumentException) {
+                true
+            }
+            assertTrue("Expected IllegalArgumentException for base='$base', rel='$rel'", threw)
+        }
+    }
 }

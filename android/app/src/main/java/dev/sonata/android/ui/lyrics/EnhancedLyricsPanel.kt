@@ -10,14 +10,22 @@
 package dev.sonata.android.ui.lyrics
 
 import android.os.Build
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -31,11 +39,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -43,7 +54,6 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -61,6 +71,7 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDirection
@@ -73,9 +84,12 @@ import dev.sonata.android.ui.LYRIC_SYNC_LEAD_MS
 import dev.sonata.android.ui.LyricsSkeleton
 import dev.sonata.android.ui.SonataAccent
 import dev.sonata.android.ui.SweptKaraokeLyricText
+import dev.sonata.android.ui.i18n.LocalSonataStrings
 import uniffi.sonata_android.AndroidLyricLine
 import kotlin.math.abs
 import kotlin.math.roundToInt
+
+private const val INSTRUMENTAL_BREAK_MIN_GAP_MS = 5_000L
 
 @Composable
 fun EnhancedLyricsPanel(
@@ -89,7 +103,7 @@ fun EnhancedLyricsPanel(
     translationLang: String,
     romanizationEnabled: Boolean,
     offsetMs: Long,
-    sourceLabel: String = "Synced",
+    sourceLabel: String = "",
     onToggleTranslation: () -> Unit,
     onToggleRomanization: () -> Unit,
     onStepOffsetMs: (Long) -> Unit,
@@ -118,7 +132,9 @@ fun EnhancedLyricsPanel(
     val density = LocalDensity.current
     val listState = rememberLazyListState()
     var panelHeightPx by remember { mutableIntStateOf(0) }
-    var lastUserTouchMs by remember { mutableLongStateOf(0L) }
+    var isUserDragging by remember { mutableStateOf(false) }
+    var autoFollow by remember(trackId) { mutableStateOf(true) }
+    val strings = LocalSonataStrings.current
 
     val cleanedLines = remember(lyrics) {
         lyrics.map { line ->
@@ -153,13 +169,21 @@ fun EnhancedLyricsPanel(
         }
     }
 
+    val isSyncedLyrics = remember(lyrics) {
+        lyrics.isNotEmpty() &&
+            lyrics.none { it.timeSecs < 0.0 } &&
+            lyrics.any { it.timeSecs > 0.0 || it.words.any { w -> w.startSecs > 0.0 } } &&
+            (lyrics.size < 2 || lyrics.map { (it.timeSecs * 100.0).toLong() }.distinct().size >= 2)
+    }
+
     // Offset-adjusted clock state read strictly inside derivedStateOf / draw
     val adjustedClockMs = remember(clockMs, offsetMs) {
         derivedStateOf { (clockMs.value - offsetMs).coerceAtLeast(0L) }
     }
 
-    val activeIndex by remember(lyrics, cleanedLines) {
+    val activeIndex by remember(lyrics, cleanedLines, adjustedClockMs, isSyncedLyrics) {
         derivedStateOf {
+            if (!isSyncedLyrics) return@derivedStateOf -1
             val pos = adjustedClockMs.value + LYRIC_SYNC_LEAD_MS
             var cand = lyrics.indexOfLast { (it.timeSecs * 1000.0).toLong() <= pos }.coerceAtLeast(0)
             // Keep an overlapping lead verse anchored while a nested (...) ad-lib starts mid-verse.
@@ -184,23 +208,68 @@ fun EnhancedLyricsPanel(
         }
     }
 
-    LaunchedEffect(listState.isScrollInProgress) {
-        if (listState.isScrollInProgress) {
-            lastUserTouchMs = System.currentTimeMillis()
+    val gapAfterIndices = remember(lyrics, cleanedLines, isSyncedLyrics) {
+        if (!isSyncedLyrics || lyrics.size < 2) {
+            emptySet()
+        } else {
+            val gaps = HashSet<Int>()
+            var runningMaxEndMs = 0L
+            for (i in 0 until lyrics.size - 1) {
+                val cur = lyrics[i]
+                val curStartMs = (cur.timeSecs * 1000.0).toLong()
+                val curClean = cleanedLines[i]
+                val curBg = curClean.startsWith("(") && curClean.endsWith(")") && curClean.length > 2
+                val wordMax = cur.words.maxOfOrNull {
+                    ((it.endSecs ?: (it.startSecs + 0.45)) * 1000.0).toLong()
+                }
+                val curEndMs = when {
+                    wordMax != null && wordMax > curStartMs -> wordMax
+                    curBg -> curStartMs + (curClean.length * 85L).coerceIn(1_400L, 3_600L)
+                    else -> {
+                        val nextNonBgStart = ((i + 1) until lyrics.size)
+                            .firstOrNull { idx ->
+                                val nc = cleanedLines[idx]
+                                !(nc.startsWith("(") && nc.endsWith(")") && nc.length > 2)
+                            }
+                            ?.let { (lyrics[it].timeSecs * 1000.0).toLong() }
+                        nextNonBgStart ?: (curStartMs + 3_000L)
+                    }
+                }
+                runningMaxEndMs = maxOf(runningMaxEndMs, curEndMs)
+                val nextStartMs = (lyrics[i + 1].timeSecs * 1000.0).toLong()
+                if (nextStartMs - runningMaxEndMs >= INSTRUMENTAL_BREAK_MIN_GAP_MS) {
+                    gaps.add(i)
+                }
+            }
+            gaps
         }
     }
 
-    LaunchedEffect(activeIndex, lyrics.size, panelHeightPx) {
-        val now = System.currentTimeMillis()
-        if (activeIndex !in lyrics.indices ||
-            listState.isScrollInProgress ||
-            (now - lastUserTouchMs) <= 2_400L
+    LaunchedEffect(listState.interactionSource) {
+        listState.interactionSource.interactions.collect { interaction ->
+            when (interaction) {
+                is DragInteraction.Start -> {
+                    isUserDragging = true
+                    autoFollow = false
+                }
+                is DragInteraction.Stop, is DragInteraction.Cancel -> {
+                    isUserDragging = false
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(activeIndex, lyrics.size, panelHeightPx, isSyncedLyrics, autoFollow, isUserDragging) {
+        if (!isSyncedLyrics ||
+            !autoFollow ||
+            isUserDragging ||
+            activeIndex !in lyrics.indices
         ) {
             return@LaunchedEffect
         }
         val info = listState.layoutInfo
         val span = (info.viewportEndOffset - info.viewportStartOffset).coerceAtLeast(1)
-        val anchor = info.viewportStartOffset + (span * 0.28f).roundToInt()
+        val anchor = info.viewportStartOffset + (span * 0.38f).roundToInt()
         val visible = info.visibleItemsInfo.firstOrNull { it.index == activeIndex }
         if (visible != null) {
             val delta = (visible.offset + visible.size / 2 - anchor).toFloat()
@@ -208,20 +277,23 @@ fun EnhancedLyricsPanel(
                 listState.animateScrollBy(delta, tween(340, easing = FastOutSlowInEasing))
             }
         } else {
-            listState.scrollToItem(activeIndex, 0)
+            listState.scrollToItem(activeIndex, -(span * 0.32f).roundToInt())
             withFrameNanos { }
             val updated = listState.layoutInfo
             val target = updated.visibleItemsInfo.firstOrNull { it.index == activeIndex }
             if (target != null) {
                 val delta = (target.offset + target.size / 2 - anchor).toFloat()
                 if (abs(delta) > 3f) {
-                    listState.animateScrollBy(delta, tween(360, easing = FastOutSlowInEasing))
+                    listState.animateScrollBy(delta, tween(300, easing = FastOutSlowInEasing))
                 }
             }
         }
     }
 
     val durationMs = clock.durationMs
+    val topPadDp = with(density) {
+        ((panelHeightPx * 0.12f).roundToInt().coerceAtLeast(16)).toDp()
+    }.coerceIn(16.dp, 72.dp)
     val bottomPadDp = with(density) {
         ((panelHeightPx * 0.56f).roundToInt().coerceAtLeast(1)).toDp()
     }.coerceAtLeast(180.dp)
@@ -265,7 +337,7 @@ fun EnhancedLyricsPanel(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(
-                        top = 16.dp,
+                        top = topPadDp,
                         bottom = bottomPadDp,
                         start = horizontalPad,
                         end = horizontalPad,
@@ -317,9 +389,19 @@ fun EnhancedLyricsPanel(
                             else -> baseNextStartMs
                         }
 
-                        val isActive by remember(index, lineStartMs, nextStartMs, isBackground, isCounter) {
+                        val isActive by remember(
+                            index,
+                            lineStartMs,
+                            nextStartMs,
+                            isBackground,
+                            isCounter,
+                            adjustedClockMs,
+                            isSyncedLyrics,
+                        ) {
                             derivedStateOf {
-                                if (index == activeIndex) {
+                                if (!isSyncedLyrics) {
+                                    true
+                                } else if (index == activeIndex) {
                                     true
                                 } else {
                                     val pos = adjustedClockMs.value + LYRIC_SYNC_LEAD_MS
@@ -396,6 +478,7 @@ fun EnhancedLyricsPanel(
                                 fontSize = if (isBackground) bgFontSp else mainFontSp,
                                 lineHeight = if (isBackground) bgLineHeightSp else mainLineHeightSp,
                                 fontWeight = if (isBackground) FontWeight.SemiBold else FontWeight.Bold,
+                                fontStyle = if (isBackground) FontStyle.Italic else FontStyle.Normal,
                                 textAlign = if (isCounter) TextAlign.End else TextAlign.Start,
                                 textDirection = TextDirection.Content,
                             )
@@ -417,14 +500,23 @@ fun EnhancedLyricsPanel(
                                 }
                                 .then(if (blurDp >= 0.5.dp && !reduceBlur) Modifier.blur(blurDp) else Modifier)
                                 .clip(RoundedCornerShape(12.dp))
-                                .clickable(
-                                    interactionSource = interactionSource,
-                                    indication = null,
-                                ) { onSeekTo((lineStartMs + offsetMs).coerceAtLeast(0L)) }
+                                .then(
+                                    if (isSyncedLyrics) {
+                                        Modifier.clickable(
+                                            interactionSource = interactionSource,
+                                            indication = null,
+                                        ) {
+                                            autoFollow = true
+                                            onSeekTo((lineStartMs + offsetMs).coerceAtLeast(0L))
+                                        }
+                                    } else {
+                                        Modifier
+                                    },
+                                )
                                 .padding(vertical = 4.dp),
                             horizontalAlignment = if (isCounter) Alignment.End else Alignment.Start,
                         ) {
-                            if (prioritizeWordSync) {
+                            if (prioritizeWordSync && isSyncedLyrics) {
                                 SweptKaraokeLyricText(
                                     text = cleanText,
                                     lineStartMs = lineStartMs,
@@ -496,6 +588,54 @@ fun EnhancedLyricsPanel(
                                     )
                                 }
                             }
+                            if (index in gapAfterIndices) {
+                                Spacer(Modifier.height(10.dp))
+                                Text(
+                                    text = "• • •",
+                                    style = MaterialTheme.typography.titleMedium.copy(
+                                        letterSpacing = 6.sp,
+                                    ),
+                                    color = Color.White.copy(alpha = 0.34f),
+                                    textAlign = if (isCounter) TextAlign.End else TextAlign.Start,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
+                        }
+                    }
+                }
+
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = isSyncedLyrics && !autoFollow,
+                    enter = fadeIn(tween(180)) + slideInVertically(tween(200)) { -it / 2 },
+                    exit = fadeOut(tween(150)) + slideOutVertically(tween(150)) { -it / 2 },
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 10.dp),
+                ) {
+                    Surface(
+                        onClick = { autoFollow = true },
+                        shape = CircleShape,
+                        color = Color.Black.copy(alpha = 0.56f),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(7.dp),
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.White.copy(alpha = 0.90f)),
+                            )
+                            Text(
+                                text = strings.syncLyrics,
+                                style = MaterialTheme.typography.labelLarge.copy(
+                                    fontWeight = FontWeight.SemiBold,
+                                ),
+                                color = Color.White.copy(alpha = 0.92f),
+                            )
                         }
                     }
                 }

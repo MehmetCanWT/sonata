@@ -30,6 +30,65 @@ pub fn is_auto_compact(area: Rect) -> bool {
     area.width < 90 || area.height < 20
 }
 
+/// Strips ANSI escape sequences (CSI/OSC/DCS/APC/ESC), C0/C1 control characters,
+/// and Unicode bidirectional override/isolate codepoints from untrusted terminal text.
+pub fn sanitize_tui_text(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\x1b' => match chars.peek().copied() {
+                Some('[') => {
+                    chars.next();
+                    for c in chars.by_ref() {
+                        if ('\x40'..='\x7e').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                Some(']' | 'P' | '_' | '^' | 'X') => {
+                    chars.next();
+                    while let Some(c) = chars.next() {
+                        if c == '\x07' {
+                            break;
+                        }
+                        if c == '\x1b' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                Some(c) if ('\x20'..='\x7e').contains(&c) => {
+                    chars.next();
+                }
+                _ => {}
+            },
+            '\u{009B}' => {
+                for c in chars.by_ref() {
+                    if ('\x40'..='\x7e').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            '\u{0090}' | '\u{009D}' | '\u{009E}' | '\u{009F}' => {
+                while let Some(c) = chars.next() {
+                    if c == '\x07' || c == '\u{009C}' {
+                        break;
+                    }
+                    if c == '\x1b' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            '\x00'..='\x1f' | '\x7f'..='\u{009f}' => {}
+            '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' => {}
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 pub fn mini_layout_tier(area: Rect) -> MiniLayoutTier {
     if area.width >= 60 && area.height >= 13 {
         MiniLayoutTier::SideBySide
@@ -214,7 +273,11 @@ fn render_mini_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App, allo
 
     let s = sonata_runtime::i18n::strings(app.config.language);
     let title_text = match app.playback.current_track() {
-        Some(t) => format!("{} — {}", t.title, t.artist),
+        Some(t) => format!(
+            "{} — {}",
+            sanitize_tui_text(&t.title),
+            sanitize_tui_text(&t.artist)
+        ),
         None => s.no_track_playing.to_string(),
     };
     let top_line = Line::from(Span::styled(
@@ -257,33 +320,40 @@ fn render_mini_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App, allo
         return;
     };
 
-    let (prev_lbl, play_lbl, next_lbl, prev_w, play_w, next_w) = if inner.width >= 30 {
-        (
-            " ⏮ Prev ",
-            if app.playback.paused {
-                " ▶ Play "
-            } else {
-                " ⏸ Pause "
-            },
-            " Next ⏭ ",
-            8u16,
-            12u16,
-            8u16,
-        )
+    let full_prev = format!(" ⏮ {} ", s.prev_short);
+    let full_play = if app.playback.paused {
+        format!(" ▶ {} ", s.play)
     } else {
-        (
-            " ⏮ ",
-            if app.playback.paused {
-                " ▶ "
-            } else {
-                " ⏸ "
-            },
-            " ⏭ ",
-            4u16,
-            5u16,
-            4u16,
-        )
+        format!(" ⏸ {} ", s.pause)
     };
+    let full_next = format!(" {} ⏭ ", s.next_short);
+    let full_prev_w = (full_prev.chars().count() as u16).max(8);
+    let full_play_w = (full_play.chars().count() as u16 + 2).max(12);
+    let full_next_w = (full_next.chars().count() as u16).max(8);
+    let (prev_lbl, play_lbl, next_lbl, prev_w, play_w, next_w) =
+        if inner.width >= full_prev_w + full_play_w + full_next_w + 2 {
+            (
+                full_prev,
+                full_play,
+                full_next,
+                full_prev_w,
+                full_play_w,
+                full_next_w,
+            )
+        } else {
+            (
+                " ⏮ ".to_string(),
+                if app.playback.paused {
+                    " ▶ ".to_string()
+                } else {
+                    " ⏸ ".to_string()
+                },
+                " ⏭ ".to_string(),
+                4u16,
+                5u16,
+                4u16,
+            )
+        };
 
     let ctrl_cols = Layout::default()
         .direction(Direction::Horizontal)
@@ -429,12 +499,15 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 
     let title_line = Line::from(vec![
         Span::styled(
-            title,
+            sanitize_tui_text(title),
             Style::default()
                 .fg(app.theme.fg)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!(" — {artist}"), Style::default().fg(app.theme.muted)),
+        Span::styled(
+            format!(" — {}", sanitize_tui_text(artist)),
+            Style::default().fg(app.theme.muted),
+        ),
     ]);
     frame.render_widget(
         Paragraph::new(title_line).alignment(Alignment::Center),
@@ -442,7 +515,7 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     );
 
     let badges = Line::from(vec![Span::styled(
-        format!("[{quality_badge}] "),
+        format!("[{}] ", sanitize_tui_text(quality_badge)),
         Style::default().fg(app.theme.success),
     )]);
     frame.render_widget(
@@ -461,10 +534,12 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         ])
         .split(rows[2]);
 
+    let vol_lbl = format!(" {} ", s.vol_short);
+    let vol_lbl_w = (vol_lbl.chars().count() as u16).max(5);
     let vol_cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(5),
+            Constraint::Length(vol_lbl_w),
             Constraint::Length(12),
             Constraint::Length(6),
             Constraint::Fill(1),
@@ -473,7 +548,7 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     app.ui_rects.volume_bar = vol_cols[1];
 
     frame.render_widget(
-        Paragraph::new(Span::styled(" Vol ", Style::default().fg(app.theme.muted))),
+        Paragraph::new(Span::styled(vol_lbl, Style::default().fg(app.theme.muted))),
         vol_cols[0],
     );
     let vol_ratio = (app.playback.volume as f64 / 100.0).clamp(0.0, 1.0);
@@ -546,15 +621,27 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     } else {
         vec![
             Span::styled(
-                if app.playback.shuffle {
-                    "⇄ On"
-                } else {
-                    "⇄ Off"
-                },
+                format!(
+                    "⇄ {}",
+                    if app.playback.shuffle {
+                        s.on_label
+                    } else {
+                        s.off
+                    }
+                ),
                 shuffle_style,
             ),
             Span::styled(" · ", Style::default().fg(app.theme.border)),
-            Span::styled(format!("↻ {}", app.playback.repeat.label()), repeat_style),
+            Span::styled(
+                format!(
+                    "↻ {}",
+                    sonata_runtime::i18n::repeat_mode_label(
+                        app.config.language,
+                        app.playback.repeat
+                    )
+                ),
+                repeat_style,
+            ),
         ]
     };
     if (app.playback_speed - 1.0).abs() > 0.01 {
@@ -569,7 +656,7 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     if app.skip_silence {
         mode_spans.push(Span::styled(" · ", Style::default().fg(app.theme.border)));
         mode_spans.push(Span::styled(
-            "Skip",
+            s.skip_label,
             Style::default()
                 .fg(app.theme.accent)
                 .add_modifier(Modifier::BOLD),
@@ -587,12 +674,12 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     if app.config.connect_enabled {
         let conn_txt = if let Some(port) = app.connect_http_port {
             if !app.connect_paired_devices.is_empty() {
-                format!("◎ Connect:{}", app.connect_paired_devices.len())
+                format!("◎ {}:{}", s.connect_short, app.connect_paired_devices.len())
             } else {
                 format!("◎ :{port}")
             }
         } else {
-            "◎ Connect".to_string()
+            format!("◎ {}", s.connect_short)
         };
         mode_spans.push(Span::styled(" · ", Style::default().fg(app.theme.border)));
         mode_spans.push(Span::styled(
@@ -618,7 +705,8 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         .is_some_and(|info| info.update_available);
     let right_footer = if !app.status_line.trim().is_empty() {
         let max_chars = bot_cols[2].width.saturating_sub(1) as usize;
-        let status = truncate_footer_text(app.status_line.trim(), max_chars);
+        let clean_status = sanitize_tui_text(app.status_line.trim());
+        let status = truncate_footer_text(&clean_status, max_chars);
         Line::from(Span::styled(
             format!("{status} "),
             Style::default().fg(app.theme.fg),
@@ -627,18 +715,27 @@ fn render_player_bar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         let mut spans = Vec::new();
         if has_update {
             spans.push(Span::styled(
-                "● Update · ",
+                format!("● {} · ", s.update_label),
                 Style::default()
                     .fg(app.theme.warning)
                     .add_modifier(Modifier::BOLD),
             ));
         }
         spans.extend([
-            Span::styled("Theme ", Style::default().fg(app.theme.muted)),
+            Span::styled(
+                format!("{} ", s.theme_label),
+                Style::default().fg(app.theme.muted),
+            ),
             Span::styled("(t)", Style::default().fg(app.theme.fg)),
-            Span::styled(" · Settings ", Style::default().fg(app.theme.muted)),
+            Span::styled(
+                format!(" · {} ", s.settings),
+                Style::default().fg(app.theme.muted),
+            ),
             Span::styled("(S)", Style::default().fg(app.theme.fg)),
-            Span::styled(" · Keys ", Style::default().fg(app.theme.muted)),
+            Span::styled(
+                format!(" · {} ", s.keys_label),
+                Style::default().fg(app.theme.muted),
+            ),
             Span::styled("(k) ", Style::default().fg(app.theme.fg)),
         ]);
         Line::from(spans)
@@ -759,7 +856,9 @@ fn render_progress_row(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_auto_compact, mini_layout_tier, slider_line, MiniLayoutTier};
+    use super::{
+        is_auto_compact, mini_layout_tier, sanitize_tui_text, slider_line, MiniLayoutTier,
+    };
     use ratatui::layout::Rect;
     use ratatui::style::Color;
 
@@ -804,6 +903,34 @@ mod tests {
         assert_eq!(
             mini_layout_tier(Rect::new(0, 0, 36, 9)),
             MiniLayoutTier::UltraCompact
+        );
+    }
+
+    #[test]
+    fn sanitize_tui_text_strips_ansi_control_and_bidi_overrides() {
+        assert_eq!(
+            sanitize_tui_text("\x1b[31mRed\x1b[0m \x1b[2J\x1b[HTitle"),
+            "Red Title"
+        );
+        assert_eq!(
+            sanitize_tui_text("\x1b]0;Pwned Title\x07Song \x1b]52;c;ZGF0YQ==\x1b\\Name"),
+            "Song Name"
+        );
+        assert_eq!(
+            sanitize_tui_text("\x1b_Ga=T,f=100;AAAA\x1b\\Clean"),
+            "Clean"
+        );
+        assert_eq!(
+            sanitize_tui_text("a\x00b\rc\nd\x1fe\x7ff\u{0085}g\u{009b}31mh"),
+            "abcdefgh"
+        );
+        assert_eq!(
+            sanitize_tui_text("safe\u{202E}evil\u{202C}\u{2066}iso\u{2069}ok"),
+            "safeevilisook"
+        );
+        assert_eq!(
+            sanitize_tui_text("İstanbul şarkı · こんにちは 🎵"),
+            "İstanbul şarkı · こんにちは 🎵"
         );
     }
 }

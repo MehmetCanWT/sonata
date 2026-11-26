@@ -50,32 +50,44 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                 }
                 SidebarEntry::ListeningStats => Cow::Borrowed(s.listening_stats),
                 SidebarEntry::LocalSongs => {
-                    Cow::Owned(format!("Songs ({})", app.local_scan.tracks.len()))
+                    Cow::Owned(format!("{} ({})", s.songs, app.local_scan.tracks.len()))
                 }
                 SidebarEntry::LocalAlbum(idx) => app
                     .local_scan
                     .albums
                     .get(*idx)
-                    .map(|a| Cow::Owned(a.name.clone()))
-                    .unwrap_or(Cow::Borrowed("Album")),
+                    .map(|a| Cow::Owned(super::sanitize_tui_text(&a.name)))
+                    .unwrap_or(Cow::Borrowed(s.album)),
                 SidebarEntry::LocalFolder(idx) => app
                     .local_scan
                     .folders
                     .get(*idx)
-                    .map(|f| Cow::Owned(format!("{} ({})", f.name, f.tracks.len())))
-                    .unwrap_or(Cow::Borrowed("Folder")),
-                SidebarEntry::PersonalPlaylist(ppl) => {
-                    Cow::Owned(format!("{} ({})", ppl.name, ppl.tracks.len()))
-                }
+                    .map(|f| {
+                        Cow::Owned(format!(
+                            "{} ({})",
+                            super::sanitize_tui_text(&f.name),
+                            f.tracks.len()
+                        ))
+                    })
+                    .unwrap_or(Cow::Borrowed(s.folder_label)),
+                SidebarEntry::PersonalPlaylist(ppl) => Cow::Owned(format!(
+                    "{} ({})",
+                    super::sanitize_tui_text(&ppl.name),
+                    ppl.tracks.len()
+                )),
                 SidebarEntry::Server(srv) => {
                     let badge = app
                         .server_health
                         .get(&srv.id)
                         .map(|h| if h.alive { "●" } else { "○" })
                         .unwrap_or("◈");
-                    Cow::Owned(format!("{badge} {} [{}]", srv.name, srv.kind.short_tag()))
+                    Cow::Owned(format!(
+                        "{badge} {} [{}]",
+                        super::sanitize_tui_text(&srv.name),
+                        srv.kind.short_tag()
+                    ))
                 }
-                SidebarEntry::Playlist(p) => Cow::Borrowed(p.name.as_str()),
+                SidebarEntry::Playlist(p) => Cow::Owned(super::sanitize_tui_text(&p.name)),
             };
             ListItem::new(Line::from(vec![
                 Span::styled(prefix, Style::default().fg(color)),
@@ -138,7 +150,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     }
     if tab_spans.is_empty() {
         tab_spans.push(Span::styled(
-            "[v: Sources]",
+            format!("[v: {}]", s.sources),
             Style::default().fg(app.theme.muted),
         ));
     }

@@ -8,7 +8,10 @@
 //! 3. **Subprocess Hygiene**: Runs `yt-dlp` with `kill_on_drop(true)`, strict timeouts, redacted
 //!    stderr logging, and `0o600` temporary Netscape cookie copies cleaned up via RAII guards.
 
-use crate::config::{resolve_distro_binary, AppConfig};
+use crate::config::{
+    configure_background_std_command, configure_background_tokio_command, resolve_distro_binary,
+    AppConfig,
+};
 use crate::downloads::DownloadStore;
 use crate::player::mpv::{
     compute_local_file_bitrate_kbps, format_measured_audio_badge, normalize_audio_codec_label,
@@ -573,7 +576,21 @@ impl LinuxStreamResolver {
             let path = resolve_existing_local_path(raw).ok_or_else(|| {
                 anyhow!("Local audio file not found for track '{}'", track_clone.id)
             })?;
-            let stream = build_local_resolved_stream(&path, &track_clone, "Local");
+            let canonical = std::fs::canonicalize(&path).map_err(|err| {
+                anyhow!(
+                    "Failed to canonicalize local audio file '{}': {err}",
+                    track_clone.id
+                )
+            })?;
+            if !canonical.is_file()
+                || !sonata_core::providers::local::is_supported_audio_path(&canonical)
+            {
+                return Err(anyhow!(
+                    "Local path for track '{}' is not a supported audio file",
+                    track_clone.id
+                ));
+            }
+            let stream = build_local_resolved_stream(&canonical, &track_clone, "Local");
             tracing::debug!(
                 "[sonata:resolver] result=ok method=local path={} badge={}",
                 redact_stream_url(&stream.url),
@@ -941,6 +958,7 @@ async fn run_ytdlp_invocation(
     use_cookies: bool,
 ) -> Result<std::process::Output> {
     let mut command = Command::new(ytdlp_bin);
+    configure_background_tokio_command(&mut command);
     command.kill_on_drop(true);
     command.args([
         "--no-playlist",
@@ -1002,7 +1020,9 @@ fn detect_js_runtime_entry() -> Option<(&'static str, String)> {
                 .into_iter()
                 .find_map(|candidate| {
                     let bin = resolve_distro_binary(candidate);
-                    let ok = std::process::Command::new(&bin)
+                    let mut cmd = std::process::Command::new(&bin);
+                    configure_background_std_command(&mut cmd);
+                    let ok = cmd
                         .arg("--version")
                         .stdout(std::process::Stdio::null())
                         .stderr(std::process::Stdio::null())
@@ -1131,26 +1151,40 @@ fn resolve_existing_local_path(raw: &str) -> Option<PathBuf> {
 }
 
 fn join_mounted_relative_path(mount_root: &Path, raw_item: &str) -> Option<PathBuf> {
+    let canonical_root = std::fs::canonicalize(mount_root).ok()?;
     let try_join = |candidate: &str| -> Option<PathBuf> {
-        let rel = candidate.trim().trim_start_matches('/');
-        if rel.is_empty() {
+        let trimmed = candidate.trim();
+        if trimmed.is_empty() || trimmed.starts_with("file://") || trimmed.starts_with('/') {
             return None;
         }
-        let mut joined = mount_root.to_path_buf();
-        for comp in Path::new(rel).components() {
+        let mut joined = canonical_root.clone();
+        for comp in Path::new(trimmed).components() {
             match comp {
                 Component::Normal(part) => joined.push(part),
                 Component::CurDir => {}
                 Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
             }
         }
-        joined.is_file().then_some(joined)
+        let canonical_target = std::fs::canonicalize(&joined).ok()?;
+        (canonical_target.starts_with(&canonical_root) && canonical_target.is_file())
+            .then_some(canonical_target)
     };
 
     try_join(raw_item).or_else(|| {
         let decoded = percent_decode_str(raw_item);
         try_join(&decoded)
     })
+}
+
+fn contains_smb_escape_attempt(raw_item: &str) -> bool {
+    let check = |s: &str| {
+        let trimmed = s.trim();
+        trimmed.starts_with("file://")
+            || Path::new(trimmed)
+                .components()
+                .any(|c| matches!(c, Component::ParentDir))
+    };
+    check(raw_item) || check(&percent_decode_str(raw_item))
 }
 
 fn infer_local_codec(path: &Path) -> Option<String> {
@@ -1196,14 +1230,33 @@ fn resolve_smb_mounted_sync(paths: &CorePaths, track: &Track) -> Result<Option<R
         .strip_prefix("smb:")
         .ok_or_else(|| anyhow!("Track is not an SMB item"))?;
 
-    if rest.starts_with("file://") || rest.starts_with('/') {
-        return Ok(resolve_existing_local_path(rest)
-            .map(|path| build_local_resolved_stream(&path, track, "SMB")));
+    let rest_trimmed = rest.trim();
+    let rest_decoded = percent_decode_str(rest_trimmed);
+    if rest_trimmed.starts_with("file://")
+        || rest_trimmed.starts_with('/')
+        || rest_decoded.trim().starts_with("file://")
+        || rest_decoded.trim().starts_with('/')
+    {
+        return Err(anyhow!(
+            "Invalid SMB track path '{}': external absolute and file:// paths are rejected",
+            track.id
+        ));
     }
 
-    let Some((raw_server_id, raw_item_id)) = rest.split_once(':') else {
+    let Some((raw_server_id, raw_item_id)) = rest_trimmed.split_once(':') else {
         return Ok(None);
     };
+    if contains_smb_escape_attempt(raw_item_id) {
+        return Err(anyhow!(
+            "Invalid SMB track path '{}': traversal and file:// URIs are rejected",
+            track.id
+        ));
+    }
+    let item_trimmed = raw_item_id.trim();
+    let item_decoded = percent_decode_str(item_trimmed);
+    let is_abs_item =
+        Path::new(item_trimmed).is_absolute() || Path::new(item_decoded.trim()).is_absolute();
+
     let server_id = percent_decode_str(raw_server_id);
     let mut mount_root: Option<PathBuf> = None;
 
@@ -1245,9 +1298,36 @@ fn resolve_smb_mounted_sync(paths: &CorePaths, track: &Track) -> Result<Option<R
         }
     }
 
-    if let Some(path) = resolve_existing_local_path(raw_item_id) {
-        return Ok(Some(build_local_resolved_stream(&path, track, "SMB")));
+    if is_abs_item {
+        let Some(root) = mount_root else {
+            return Err(anyhow!(
+                "Invalid SMB track path '{}': external absolute path outside mount",
+                track.id
+            ));
+        };
+        let canonical_root = std::fs::canonicalize(&root).map_err(|err| {
+            anyhow!(
+                "Failed to canonicalize SMB mount root '{}': {err}",
+                root.display()
+            )
+        })?;
+        for candidate in [item_trimmed, item_decoded.trim()] {
+            if let Ok(canonical_target) = std::fs::canonicalize(candidate) {
+                if canonical_target.starts_with(&canonical_root) && canonical_target.is_file() {
+                    return Ok(Some(build_local_resolved_stream(
+                        &canonical_target,
+                        track,
+                        "SMB",
+                    )));
+                }
+            }
+        }
+        return Err(anyhow!(
+            "Invalid SMB track path '{}': path escapes configured SMB mount",
+            track.id
+        ));
     }
+
     if let Some(root) = mount_root {
         if let Some(path) = join_mounted_relative_path(&root, raw_item_id) {
             return Ok(Some(build_local_resolved_stream(&path, track, "SMB")));
@@ -1555,9 +1635,18 @@ mod tests {
         // Missing local file must error cleanly without invoking yt-dlp.
         let missing = Track {
             id: format!("local:{}/missing.flac", music_dir.path().display()),
-            ..track
+            ..track.clone()
         };
         assert!(resolver.resolve_fast(&missing).await.is_err());
+
+        // Non-audio local file must be rejected.
+        let secret_txt = music_dir.path().join("notes.txt");
+        std::fs::write(&secret_txt, b"private data").expect("write txt");
+        let non_audio = Track {
+            id: format!("local:{}", secret_txt.display()),
+            ..track
+        };
+        assert!(resolver.resolve_fast(&non_audio).await.is_err());
     }
 
     #[tokio::test]
@@ -1652,6 +1741,39 @@ mod tests {
             ..smb_track.clone()
         };
         assert!(resolver.resolve_fast(&traversal_track).await.is_err());
+
+        // External absolute paths, file:// URIs, and symlink escapes must be rejected.
+        let outside_dir = TempTestDir::new("ytdlp_smb_outside");
+        let outside_mp3 = outside_dir.path().join("outside.mp3");
+        std::fs::write(&outside_mp3, vec![0u8; 40_000]).expect("write outside mp3");
+
+        for bad_id in [
+            format!("smb:file://{}", outside_mp3.display()),
+            format!("smb:{}", outside_mp3.display()),
+            format!("smb:nas-smb:{}", outside_mp3.display()),
+            format!("smb:nas-smb:file://{}", outside_mp3.display()),
+            format!("smb:nas-smb:file://{}", mp3_path.display()),
+        ] {
+            let bad_track = Track {
+                id: bad_id.clone(),
+                ..smb_track.clone()
+            };
+            assert!(
+                resolver.resolve_fast(&bad_track).await.is_err(),
+                "expected SMB escape id `{bad_id}` to be rejected"
+            );
+        }
+
+        #[cfg(unix)]
+        {
+            let escape_link = album_dir.join("escape.mp3");
+            std::os::unix::fs::symlink(&outside_mp3, &escape_link).expect("create symlink");
+            let symlink_track = Track {
+                id: "smb:nas-smb:Artist/Album/escape.mp3".to_string(),
+                ..smb_track.clone()
+            };
+            assert!(resolver.resolve_fast(&symlink_track).await.is_err());
+        }
 
         // Disabled SMB server must return an error.
         let disabled_track = Track {

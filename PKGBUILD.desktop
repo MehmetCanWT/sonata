@@ -1,13 +1,13 @@
 # Maintainer: MehmetCanWT
 pkgname=sonata-desktop
-pkgver=1.0.9
+pkgver=1.0.10
 pkgrel=1
 pkgdesc="Native Wayland desktop music player for YouTube Music and Spotify"
 arch=('x86_64' 'aarch64')
 url="https://github.com/MehmetCanWT/sonata"
 license=('MIT')
 depends=('mpv' 'yt-dlp' 'ffmpeg' 'nodejs' 'wayland' 'vulkan-icd-loader' 'libxkbcommon' 'libxkbcommon-x11' 'libxcb' 'fontconfig' 'alsa-lib' 'dbus')
-makedepends=('cargo')
+makedepends=('cargo' 'pkgconf')
 optdepends=(
     'hyprland: dynamic window opacity and compositor blur'
     'xdg-utils: open GitHub releases and external links'
@@ -17,20 +17,17 @@ sha256sums=('SKIP')
 
 prepare() {
     cd "sonata-$pkgver"
-    export RUSTUP_TOOLCHAIN=stable
     cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
 }
 
 build() {
     cd "sonata-$pkgver"
-    export RUSTUP_TOOLCHAIN=stable
     export CARGO_TARGET_DIR=target
     cargo build --frozen --release -p sonata-desktop
 }
 
 check() {
     cd "sonata-$pkgver"
-    export RUSTUP_TOOLCHAIN=stable
     cargo test --frozen -p sonata-core -p sonata-desktop
 }
 

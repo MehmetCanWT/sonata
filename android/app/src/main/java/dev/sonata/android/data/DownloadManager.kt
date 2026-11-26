@@ -286,7 +286,7 @@ class SonataDownloadManager(private val context: Context) {
             val mimeType = inferMimeType(parsedUri, effectiveTrack.codec)
             val extension = extensionForMime(mimeType)
             val totalLength = when {
-                isLocalFile -> File(streamUrl.removePrefix("file://")).takeIf { it.isFile }?.length()
+                isLocalFile -> resolveContainedLocalFile(streamUrl).takeIf { it.isFile }?.length()
                 isSmbStream -> null
                 else -> parsedUri.getQueryParameter("clen")?.toLongOrNull()
                     ?: probeContentLength(streamUrl, parsedUri, headers)
@@ -678,7 +678,7 @@ class SonataDownloadManager(private val context: Context) {
             return written
         }
         if (isLocalFile) {
-            val sourceFile = File(streamUrl.removePrefix("file://"))
+            val sourceFile = resolveContainedLocalFile(streamUrl)
             if (!sourceFile.isFile) throw IOException("Cached audio source missing")
             val total = sourceFile.length().coerceAtLeast(1L)
             var written = 0L
@@ -974,6 +974,28 @@ class SonataDownloadManager(private val context: Context) {
     private fun privateVideoDownloadsDir(): File =
         File(privateDownloadsDir(), "videos").apply { mkdirs() }
 
+    private fun allowedLocalSourceRoots(): List<File> = listOfNotNull(
+        appContext.cacheDir,
+        appContext.filesDir,
+        privateDownloadsDir(),
+        appContext.externalCacheDir,
+        appContext.getExternalFilesDir(Environment.DIRECTORY_MUSIC),
+    )
+
+    private fun resolveContainedLocalFile(streamUrl: String): File {
+        val rawPath = if (streamUrl.startsWith("file://", ignoreCase = true)) {
+            runCatching { java.net.URI(streamUrl).path }.getOrNull()
+                ?: streamUrl.removePrefix("file://")
+        } else {
+            streamUrl
+        }
+        val candidate = File(rawPath)
+        if (!isCanonicalFileWithinAllowedRoots(candidate, allowedLocalSourceRoots())) {
+            throw SecurityException("Refusing local file outside Sonata's allowed directories")
+        }
+        return candidate.canonicalFile
+    }
+
     private fun persistAndPublishLocked(records: List<DownloadedTrackRecord>) {
         val array = JSONArray()
         records.forEach { rec ->
@@ -1159,6 +1181,23 @@ class SonataDownloadManager(private val context: Context) {
     }
 
     companion object {
+        internal fun isCanonicalFileWithinAllowedRoots(
+            candidate: File,
+            allowedRoots: List<File>,
+        ): Boolean {
+            val canonicalCandidate = runCatching { candidate.canonicalFile }.getOrNull() ?: return false
+            val candidateName = canonicalCandidate.name.lowercase(Locale.ROOT)
+            if (candidateName.endsWith(".cookie") || candidateName.endsWith(".key") || candidateName.contains(".db")) {
+                return false
+            }
+            val candidatePath = canonicalCandidate.toPath()
+            return allowedRoots.any { root ->
+                val canonicalRoot = runCatching { root.canonicalFile.toPath() }.getOrNull()
+                    ?: return@any false
+                candidatePath.startsWith(canonicalRoot)
+            }
+        }
+
         private const val PREFS_NAME = "sonata_downloads"
         private const val KEY_RECORDS_JSON = "downloaded_records_v1"
         private const val EXPORT_FOLDER = "Sonata"

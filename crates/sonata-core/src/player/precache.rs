@@ -1,4 +1,10 @@
-//! Shared next-track precache scheduling rules.
+//! Shared next-track precache scheduling rules and lifecycle state machine.
+//!
+//! 1. **Scheduling Window (`NEXT_TRACK_PRECACHE_LEAD_SECS`)**: Triggers lookahead precaching
+//!    once playback enters the final 10 seconds of the active track without duplicating work.
+//! 2. **Invalidation & Lifecycle (`NextTrackPrecache`, `PrecacheKey`)**: Tracks `Idle`,
+//!    `Resolving`, `Ready`, and `Failed` states and cancels only when playback identity or the
+//!    resolved next track changes.
 
 /// Delay before a track ends when the next-track cache may start.
 pub const NEXT_TRACK_PRECACHE_LEAD_SECS: f64 = 10.0;

@@ -10,9 +10,7 @@
 use super::{tui_track_source_tag, ActiveModal, App, AppEvent, ExportFingerprint};
 use base64::Engine as _;
 use ratatui_image::picker::ProtocolType;
-use sonata_core::lyrics::{
-    active_line_index, lrclib, romanize_lyrics_state, translate_lyrics_state, LyricsState,
-};
+use sonata_core::lyrics::{lrclib, romanize_lyrics_state, translate_lyrics_state, LyricsState};
 use sonata_core::player::RepeatMode;
 use sonata_core::providers::Track;
 use sonata_core::redaction::sensitive_text;
@@ -231,6 +229,24 @@ impl App {
             return;
         }
         sess.stats_recorded = true;
+        let ytm_watchtime_track = (!self.config.personal_only_mode
+            && self.ytm.is_authenticated()
+            && !sess.track.id.is_empty()
+            && !sess.track.id.starts_with("local:")
+            && !sess.track.id.starts_with("jiosaavn:")
+            && sonata_core::providers::servers::parse_server_item_id(&sess.track.id).is_none())
+        .then(|| {
+            (
+                self.ytm.clone(),
+                sess.track.id.clone(),
+                sess.track.duration_secs,
+            )
+        });
+        if let Some((ytm, vid, dur)) = ytm_watchtime_track {
+            tokio::spawn(async move {
+                let _ = ytm.report_watchtime(&vid, played_secs, dur).await;
+            });
+        }
         let Some(db) = self.stats_db.clone() else {
             return;
         };
@@ -264,7 +280,7 @@ impl App {
 
     pub fn toggle_gapless(&mut self) {
         self.config.gapless_enabled = !self.config.gapless_enabled;
-        let _ = self.config.save();
+        self.save_config_async();
         self.enqueue_session_cmd(SessionCommand::SetGapless(self.config.gapless_enabled));
         let s = sonata_runtime::i18n::strings(self.config.language);
         self.status_line = format!(
@@ -292,7 +308,7 @@ impl App {
             cur - 1
         };
         self.config.crossfade_secs = next;
-        let _ = self.config.save();
+        self.save_config_async();
         self.enqueue_session_cmd(SessionCommand::SetCrossfade(next));
         let s = sonata_runtime::i18n::strings(self.config.language);
         self.status_line = if next == 0 {
@@ -312,7 +328,7 @@ impl App {
                 self.playback.queue = queue;
                 self.playback.current_index = current_index;
                 if let Some(msg) = status {
-                    self.status_line = msg;
+                    self.status_line = crate::ui::sanitize_tui_text(&msg);
                 }
             }
             SessionEvent::TrackTransition {
@@ -330,16 +346,27 @@ impl App {
                 self.playback.duration_secs = track.duration_secs.unwrap_or(0) as f64;
                 self.playback.loading_track = true;
                 self.playback.paused = true;
-                self.playback.stream_badge = "Resolving...".to_string();
-                self.status_line = format!("Loading: {} — {}", track.title, track.artist);
+                let s = sonata_runtime::i18n::strings(self.config.language);
+                self.playback.stream_badge = s.badge_resolving.to_string();
+                self.status_line = format!(
+                    "{}: {} — {}",
+                    s.loading_prefix,
+                    crate::ui::sanitize_tui_text(&track.title),
+                    crate::ui::sanitize_tui_text(&track.artist)
+                );
                 self.start_client_media_for_track(generation.value(), track);
                 self.sync_discord_rpc();
             }
             SessionEvent::PreparingNextTrack { track, .. } => {
+                let s = sonata_runtime::i18n::strings(self.config.language);
                 self.playback.loading_track = true;
                 self.playback.paused = true;
-                self.playback.stream_badge = "Preparing next track...".to_string();
-                self.status_line = format!("Caching next track: {}", track.title);
+                self.playback.stream_badge = s.badge_preparing_next.to_string();
+                self.status_line = format!(
+                    "{}: {}",
+                    s.caching_next_track,
+                    crate::ui::sanitize_tui_text(&track.title)
+                );
             }
             SessionEvent::StreamLoaded {
                 generation,
@@ -357,7 +384,13 @@ impl App {
                 self.playback.set_active_stream(stream.clone());
                 self.playback.stream_badge = stream.badge;
                 if let Some(track) = self.playback.current_track().filter(|t| t.id == track_id) {
-                    self.status_line = format!("Starting: {} — {}", track.title, track.artist);
+                    let s = sonata_runtime::i18n::strings(self.config.language);
+                    self.status_line = format!(
+                        "{}: {} — {}",
+                        s.starting_prefix,
+                        crate::ui::sanitize_tui_text(&track.title),
+                        crate::ui::sanitize_tui_text(&track.artist)
+                    );
                 }
                 self.sync_discord_rpc();
             }
@@ -469,6 +502,9 @@ impl App {
             }
             SessionEvent::Seeked { position_secs, .. } => {
                 self.playback.position_secs = position_secs;
+                let _ = self
+                    .mpris_tx
+                    .send(crate::mpris::MprisUpdate::Seeked(position_secs));
                 self.sync_discord_rpc();
             }
             SessionEvent::DurationChanged {
@@ -557,16 +593,18 @@ impl App {
                 self.playback.paused = true;
                 self.playback.set_active_stream(stream.clone());
                 self.playback.stream_badge = stream.badge;
-                self.status_line = "Quality upgrade failed; continuing original stream".to_string();
+                let s = sonata_runtime::i18n::strings(self.config.language);
+                self.status_line = s.upgrade_failed_continuing.to_string();
             }
             SessionEvent::RecoveryStarted { generation, .. } => {
                 if generation.value() != self.play_seq {
                     return;
                 }
+                let s = sonata_runtime::i18n::strings(self.config.language);
                 self.playback.loading_track = true;
                 self.playback.paused = true;
-                self.playback.stream_badge = "Retrying...".to_string();
-                self.status_line = "Stream expired, retrying...".to_string();
+                self.playback.stream_badge = s.badge_retrying.to_string();
+                self.status_line = s.stream_expired_retrying.to_string();
             }
             SessionEvent::TrackEnded { .. } => {
                 self.finalize_listen_stats();
@@ -579,38 +617,33 @@ impl App {
                     && !self.playback.queue.is_empty()
                 {
                     let play_seq = self.play_seq;
-                    let seeds: Vec<String> = self
-                        .playback
-                        .queue
-                        .iter()
-                        .rev()
-                        .map(|t| t.id.clone())
-                        .filter(|id| {
-                            !id.is_empty()
-                                && !id.starts_with("local:")
-                                && !id.starts_with("jiosaavn:")
-                                && sonata_core::providers::servers::parse_server_item_id(id)
-                                    .is_none()
-                        })
-                        .take(2)
-                        .collect();
+                    let is_ytm_seed = |t: &Track| {
+                        !t.id.is_empty()
+                            && !t.id.starts_with("local:")
+                            && !t.id.starts_with("jiosaavn:")
+                            && sonata_core::providers::servers::parse_server_item_id(&t.id)
+                                .is_none()
+                    };
+                    let mut seeds: Vec<String> = Vec::new();
+                    if let Some(first) = self.playback.queue.iter().find(|t| is_ytm_seed(t)) {
+                        seeds.push(first.id.clone());
+                    }
+                    if let Some(cur) = self.playback.current_track().filter(|t| is_ytm_seed(t)) {
+                        if !seeds.iter().any(|id| id == &cur.id) {
+                            seeds.push(cur.id.clone());
+                        }
+                    }
                     let excludes: Vec<String> =
                         self.playback.queue.iter().map(|t| t.id.clone()).collect();
-                    let preferred_artists: Vec<String> = self
-                        .playback
-                        .queue
-                        .iter()
-                        .rev()
-                        .take(8)
-                        .map(|t| t.artist.clone())
-                        .filter(|a| !a.is_empty())
-                        .collect();
-                    let playlist_id = self.current_playlist_id.clone();
+                    let preferred_artists: Vec<String> = Vec::new();
+                    // Do not attach `self.current_playlist_id` (sidebar view state) to endless radio.
+                    let playlist_id: Option<String> = None;
                     let ytm = self.ytm.clone();
                     let tx = self.tx.clone();
                     self.playback.loading_track = true;
                     self.playback.paused = true;
-                    self.playback.stream_badge = "Radio...".to_string();
+                    let s = sonata_runtime::i18n::strings(self.config.language);
+                    self.playback.stream_badge = s.badge_radio.to_string();
                     self.media_tasks.spawn(async move {
                         let tracks = ytm
                             .fetch_endless_radio_queue(
@@ -624,10 +657,11 @@ impl App {
                         let _ = tx.send(AppEvent::AutoplayTracksReady { play_seq, tracks });
                     });
                 } else {
+                    let s = sonata_runtime::i18n::strings(self.config.language);
                     self.playback.paused = true;
                     self.playback.loading_track = false;
                     self.playback.position_secs = 0.0;
-                    self.playback.stream_badge = "Finished".to_string();
+                    self.playback.stream_badge = s.badge_finished.to_string();
                     self.discord_rpc.try_clear_activity();
                 }
             }
@@ -637,10 +671,11 @@ impl App {
                 self.active_listen_session = None;
                 self.play_seq = generation.value();
                 self.media_tasks.restart();
+                let s = sonata_runtime::i18n::strings(self.config.language);
                 self.playback.paused = true;
                 self.playback.loading_track = false;
                 self.playback.position_secs = 0.0;
-                self.playback.stream_badge = "Stopped".to_string();
+                self.playback.stream_badge = s.badge_stopped.to_string();
                 self.discord_rpc.try_clear_activity();
             }
             SessionEvent::PlaybackError {
@@ -655,7 +690,12 @@ impl App {
                 self.playback.loading_track = false;
                 self.playback.paused = true;
                 self.playback.stream_badge = badge;
-                self.status_line = format!("Playback error: {error}");
+                let s = sonata_runtime::i18n::strings(self.config.language);
+                self.status_line = format!(
+                    "{}: {}",
+                    s.playback_error,
+                    crate::ui::sanitize_tui_text(&error)
+                );
                 self.sync_discord_rpc();
             }
             SessionEvent::ModeChanged {
@@ -697,7 +737,7 @@ impl App {
         let sanitized = sonata_runtime::config::sanitize_playback_speed(speed);
         self.playback_speed = sanitized;
         self.config.playback_speed = sanitized;
-        let _ = self.config.save();
+        self.save_config_async();
         self.enqueue_session_cmd(SessionCommand::SetPlaybackSpeed(sanitized));
         self.sync_discord_rpc();
         let s = sonata_runtime::i18n::strings(self.config.language);
@@ -712,7 +752,7 @@ impl App {
     pub fn toggle_skip_silence(&mut self) {
         self.config.skip_silence = !self.config.skip_silence;
         self.skip_silence = self.config.skip_silence && !self.video_mode;
-        let _ = self.config.save();
+        self.save_config_async();
         self.enqueue_session_cmd(SessionCommand::SetSkipSilence(self.config.skip_silence));
         let s = sonata_runtime::i18n::strings(self.config.language);
         self.status_line = format!(
@@ -739,7 +779,7 @@ impl App {
 
     pub fn toggle_lyrics_translate(&mut self) {
         self.config.lyrics_translate = !self.config.lyrics_translate;
-        let _ = self.config.save();
+        self.save_config_async();
         if !self.config.lyrics_translate {
             self.translated_lyrics = None;
         } else {
@@ -759,7 +799,7 @@ impl App {
 
     pub fn toggle_lyrics_romanize(&mut self) {
         self.config.lyrics_romanize = !self.config.lyrics_romanize;
-        let _ = self.config.save();
+        self.save_config_async();
         if !self.config.lyrics_romanize {
             self.romanized_lyrics = None;
         } else {
@@ -835,17 +875,19 @@ impl App {
 
     pub fn toggle_hifi_substitution(&mut self) {
         self.config.hifi_substitution = !self.config.hifi_substitution;
-        let _ = self.config.save();
+        self.save_config_async();
         self.enqueue_session_cmd(SessionCommand::UpdatePolicy {
             policy: self.session_policy(),
             trigger_upgrade: self.config.hifi_substitution,
         });
+        let i18n = sonata_runtime::i18n::strings(self.config.language);
         self.status_line = format!(
-            "YouTube Music Quality Upgrade: {}",
+            "{}: {}",
+            i18n.hifi_upgrade,
             if self.config.hifi_substitution {
-                "Enabled"
+                i18n.enabled
             } else {
-                "Disabled"
+                i18n.disabled
             }
         );
     }
@@ -904,6 +946,7 @@ impl App {
         self.album_art = None;
         self.kitty_art_png = None;
         self.anim_art_frames.clear();
+        self.motion_cover_path = None;
         self.anim_art_idx = 0;
         self.last_anim_step = Instant::now();
         self.album_art_track_id = Some(track.id.clone());
@@ -956,85 +999,104 @@ impl App {
         }
         self.start_cover_enrichment();
 
-        if !self.config.personal_only_mode
-            && self.config.motion_covers
-            && !self.config.reduce_motion
-        {
+        if !self.config.personal_only_mode && self.config.motion_covers {
             let anim_tx = self.tx.clone();
             let anim_http = http;
             let anim_track = track;
             let anim_paths = self.paths.clone();
             let anim_enabled = self.config.motion_covers;
-            let picker = self.picker.clone();
-            let need_kitty_png = picker.protocol_type() == ProtocolType::Kitty;
-            let (max_dim, target_fps, max_frames) = if need_kitty_png {
-                (320, 15.0, 40)
-            } else {
-                (360, 15.0, 40)
-            };
-            self.media_tasks.spawn(async move {
-                let Some(motion) = sonata_runtime::motion::resolve_motion_cover(
-                    &anim_http,
-                    &anim_track,
-                    &anim_paths,
-                    anim_enabled,
-                    max_dim,
-                    target_fps,
-                    max_frames,
-                )
-                .await
-                else {
-                    return;
-                };
-                let fps = motion.fps;
-                let frames = tokio::task::spawn_blocking(move || {
-                    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
-                    use image::ImageEncoder as _;
-
-                    let mut decoded = Vec::with_capacity(motion.frames_rgba.len());
-                    for rgba in motion.frames_rgba {
-                        if need_kitty_png {
-                            let mut buf = Vec::new();
-                            let encoder = PngEncoder::new_with_quality(
-                                &mut buf,
-                                CompressionType::Fast,
-                                FilterType::Sub,
-                            );
-                            if encoder
-                                .write_image(
-                                    &rgba,
-                                    motion.width,
-                                    motion.height,
-                                    image::ExtendedColorType::Rgba8,
-                                )
-                                .is_err()
-                            {
-                                continue;
-                            }
-                            decoded.push((None, buf));
-                        } else {
-                            let Some(img_buf) =
-                                image::RgbaImage::from_raw(motion.width, motion.height, rgba)
-                            else {
-                                continue;
-                            };
-                            let dyn_img = image::DynamicImage::ImageRgba8(img_buf);
-                            decoded.push((Some(picker.new_resize_protocol(dyn_img)), Vec::new()));
-                        }
+            if self.config.reduce_motion {
+                self.media_tasks.spawn(async move {
+                    if let Some(motion_path) = sonata_runtime::motion::resolve_motion_cover_path(
+                        &anim_http,
+                        &anim_track,
+                        &anim_paths,
+                        anim_enabled,
+                    )
+                    .await
+                    {
+                        let _ = anim_tx.send(AppEvent::MotionPathReady {
+                            play_seq,
+                            track_id: anim_track.id,
+                            motion_path,
+                        });
                     }
-                    decoded
-                })
-                .await
-                .unwrap_or_default();
-                if !frames.is_empty() {
-                    let _ = anim_tx.send(AppEvent::AnimatedArtworkReady {
-                        play_seq,
-                        track_id: anim_track.id,
-                        fps,
-                        frames,
-                    });
-                }
-            });
+                });
+            } else {
+                let picker = self.picker.clone();
+                let need_kitty_png = picker.protocol_type() == ProtocolType::Kitty;
+                let (max_dim, target_fps, max_frames) = if need_kitty_png {
+                    (320, 15.0, 40)
+                } else {
+                    (360, 15.0, 40)
+                };
+                self.media_tasks.spawn(async move {
+                    let Some((motion_path, motion)) =
+                        sonata_runtime::motion::resolve_motion_cover_with_path(
+                            &anim_http,
+                            &anim_track,
+                            &anim_paths,
+                            anim_enabled,
+                            max_dim,
+                            target_fps,
+                            max_frames,
+                        )
+                        .await
+                    else {
+                        return;
+                    };
+                    let fps = motion.fps;
+                    let frames = tokio::task::spawn_blocking(move || {
+                        use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+                        use image::ImageEncoder as _;
+
+                        let mut decoded = Vec::with_capacity(motion.frames_rgba.len());
+                        for rgba in motion.frames_rgba {
+                            if need_kitty_png {
+                                let mut buf = Vec::new();
+                                let encoder = PngEncoder::new_with_quality(
+                                    &mut buf,
+                                    CompressionType::Fast,
+                                    FilterType::Sub,
+                                );
+                                if encoder
+                                    .write_image(
+                                        &rgba,
+                                        motion.width,
+                                        motion.height,
+                                        image::ExtendedColorType::Rgba8,
+                                    )
+                                    .is_err()
+                                {
+                                    continue;
+                                }
+                                decoded.push((None, buf));
+                            } else {
+                                let Some(img_buf) =
+                                    image::RgbaImage::from_raw(motion.width, motion.height, rgba)
+                                else {
+                                    continue;
+                                };
+                                let dyn_img = image::DynamicImage::ImageRgba8(img_buf);
+                                decoded
+                                    .push((Some(picker.new_resize_protocol(dyn_img)), Vec::new()));
+                            }
+                        }
+                        decoded
+                    })
+                    .await
+                    .unwrap_or_default();
+                    if !frames.is_empty() {
+                        let _ = anim_tx.send(AppEvent::AnimatedArtworkReady {
+                            play_seq,
+                            track_id: anim_track.id,
+                            fps,
+                            motion_path,
+                            frames,
+                        });
+                    }
+                });
+            }
         }
     }
 
@@ -1049,8 +1111,8 @@ impl App {
             let track = &self.visible_tracks[selected];
             let is_downloaded = self.downloaded_track_ids.contains(&track.id);
             if !super::can_play_tui_track(track, true, is_downloaded) {
-                self.status_line =
-                    "Personal Only Mode active: streaming tracks are disabled".to_string();
+                let s = sonata_runtime::i18n::strings(self.config.language);
+                self.status_line = s.personal_only_streaming_disabled.to_string();
                 return;
             }
             let filtered: Vec<Track> = self
@@ -1217,7 +1279,7 @@ impl App {
         self.config.volume = next;
         if save_now {
             self.config_dirty = false;
-            let _ = self.config.save();
+            self.save_config_async();
         } else {
             self.config_dirty = true;
         }
@@ -1241,25 +1303,36 @@ impl App {
     pub fn toggle_shuffle(&mut self) {
         self.playback.shuffle = !self.playback.shuffle;
         self.config.shuffle = self.playback.shuffle;
-        let _ = self.config.save();
+        self.save_config_async();
         self.enqueue_session_cmd(SessionCommand::SetShuffle(self.playback.shuffle));
+        let s = sonata_runtime::i18n::strings(self.config.language);
         self.status_line = format!(
-            "Shuffle: {}",
-            if self.playback.shuffle { "On" } else { "Off" }
+            "{}: {}",
+            s.shuffle,
+            if self.playback.shuffle {
+                s.on_label
+            } else {
+                s.off
+            }
         );
     }
 
     pub fn cycle_repeat(&mut self) {
         self.playback.repeat = self.playback.repeat.next();
         self.config.repeat_mode = self.playback.repeat;
-        let _ = self.config.save();
+        self.save_config_async();
         self.enqueue_session_cmd(SessionCommand::SetRepeat(self.playback.repeat));
-        self.status_line = format!("Repeat: {}", self.playback.repeat.label());
+        let s = sonata_runtime::i18n::strings(self.config.language);
+        self.status_line = format!(
+            "{}: {}",
+            s.repeat,
+            sonata_runtime::i18n::repeat_mode_label(self.config.language, self.playback.repeat)
+        );
     }
 
     pub fn toggle_autoplay(&mut self) {
         self.config.autoplay = !self.config.autoplay;
-        let _ = self.config.save();
+        self.save_config_async();
         let s = sonata_runtime::i18n::strings(self.config.language);
         self.status_line = if self.config.autoplay {
             s.autoplay_on
@@ -1286,29 +1359,10 @@ impl App {
             Some(_) => "Playing",
         };
         let track_id = track.map(|t| t.id.as_str()).unwrap_or("");
-        let cur_pos = self.interpolated_position();
-        let pos_secs = cur_pos.max(0.0).floor() as u64;
-        let dur_secs = self.playback.duration_secs.max(0.0).floor() as u64;
-
-        let active_lyric = match &self.lyrics {
-            LyricsState::Synced(lines) => active_line_index(lines, cur_pos)
-                .and_then(|idx| lines.get(idx))
-                .map(|l| l.text.as_str())
-                .filter(|s| !s.is_empty()),
-            _ => None,
-        };
-
-        if let Some(prev) = self.last_exported_state.as_ref() {
-            if prev.track_id == track_id
-                && prev.status == status
-                && prev.pos_secs == pos_secs
-                && prev.dur_secs == dur_secs
-                && prev.lyric.as_deref() == active_lyric
-                && (prev.art_path.is_some() || self.album_art_track_id.as_deref() != Some(track_id))
-            {
-                return;
-            }
-        }
+        let cur_pos = self.interpolated_position().max(0.0);
+        let dur_secs_f = self.playback.duration_secs.max(0.0);
+        let pos_secs = cur_pos.floor() as u64;
+        let dur_secs = dur_secs_f.floor() as u64;
 
         let cached_art_path = self.last_exported_state.as_ref().and_then(|prev| {
             if prev.track_id == track_id {
@@ -1330,13 +1384,68 @@ impl App {
                 .or_else(|| art_url.map(media::art_cache_path).filter(|p| p.exists()))
                 .map(|p| p.to_string_lossy().into_owned())
         });
+        let motion_art_path = self.motion_cover_path.as_ref().filter(|p| p.exists());
+        let motion_art_path_str = motion_art_path.map(|p| p.to_string_lossy().into_owned());
+        let motion_art_url = motion_art_path.and_then(|p| media::path_to_file_url(p));
+        let ambient_rgb = match self.base_theme.accent {
+            crate::theme::RgbColor::Rgb(r, g, b) => Some((r, g, b)),
+            _ => None,
+        };
 
-        let active_lyric_owned = active_lyric.map(str::to_string);
+        let export = media::NowPlayingExport::build(media::NowPlayingInput {
+            client: "tui",
+            status,
+            track,
+            quality: &self.playback.stream_badge,
+            position_secs: cur_pos,
+            duration_secs: dur_secs_f,
+            lyrics: &self.lyrics,
+            lyric_position_secs: cur_pos,
+            translated_lyrics: self.translated_lyrics.as_deref(),
+            romanized_lyrics: self.romanized_lyrics.as_deref(),
+            art_path: art_path.as_deref(),
+            art_url,
+            motion_art_path: motion_art_path_str.as_deref(),
+            motion_art_url: motion_art_url.as_deref(),
+            ambient_rgb,
+        });
+
+        let lyrics_key = format!(
+            "{track_id}|{}|{}|{:?}|{}|{}",
+            export.lyrics.state,
+            export.lyrics.line_count,
+            export.lyrics.active_index,
+            self.translated_lyrics.is_some(),
+            self.romanized_lyrics.is_some(),
+        );
+        if self.last_lyrics_export_key.as_ref() != Some(&lyrics_key) {
+            self.last_lyrics_export_key = Some(lyrics_key);
+            let full_lyrics = media::LyricsExport::build(
+                "tui",
+                track,
+                &self.lyrics,
+                cur_pos,
+                self.translated_lyrics.as_deref(),
+                self.romanized_lyrics.as_deref(),
+            );
+            media::write_lyrics_export(&full_lyrics);
+        }
+
         let fingerprint = ExportFingerprint {
             track_id: track_id.to_string(),
             status: status.to_string(),
-            lyric: active_lyric_owned.clone(),
+            lyric: export.lyric.clone(),
+            lyric_index: export.lyrics.active_index,
+            lyric_word_index: export
+                .lyrics
+                .current
+                .as_ref()
+                .and_then(|c| c.active_word.as_ref().map(|w| w.index)),
+            lyrics_state: export.lyrics.state.clone(),
+            has_translation: self.translated_lyrics.is_some(),
+            has_romanization: self.romanized_lyrics.is_some(),
             art_path: art_path.clone(),
+            motion_art_path: motion_art_path_str,
             pos_secs,
             dur_secs,
         };
@@ -1344,18 +1453,36 @@ impl App {
             return;
         }
         self.last_exported_state = Some(fingerprint);
+        media::write_now_playing(&export);
+        self.sync_mpris(art_path.as_deref().map(std::path::PathBuf::from));
+    }
 
-        let payload = media::build_now_playing_json(
-            status,
+    pub fn sync_mpris(&self, art_path_override: Option<std::path::PathBuf>) {
+        let track = self.playback.current_track().cloned();
+        let art_path = art_path_override.or_else(|| {
+            track
+                .as_ref()
+                .and_then(|t| t.thumbnail_url.as_deref())
+                .map(media::art_cache_path)
+                .filter(|p| p.exists())
+        });
+        let snap = crate::mpris::TuiMprisSnapshot {
             track,
-            &self.playback.stream_badge,
-            pos_secs,
-            dur_secs,
-            active_lyric,
-            art_path.as_deref(),
-            art_url,
-        );
-        media::write_now_playing_json(&payload);
+            art_path,
+            motion_cover_path: self.motion_cover_path.clone(),
+            position_secs: self.interpolated_position(),
+            duration_secs: self.playback.duration_secs,
+            paused: self.playback.paused,
+            muted: self.playback.volume == 0,
+            volume: self.playback.volume,
+            shuffle: self.playback.shuffle,
+            repeat: self.playback.repeat,
+            queue_len: self.playback.queue.len(),
+            current_index: self.playback.current_index,
+        };
+        let _ = self
+            .mpris_tx
+            .send(crate::mpris::MprisUpdate::Sync(Box::new(snap)));
     }
 
     pub fn clear_now_playing(&self) {
@@ -1365,10 +1492,10 @@ impl App {
     pub(super) fn discord_config_from(
         config: &AppConfig,
     ) -> sonata_runtime::discord::DiscordConfig {
-        let mut dc = sonata_runtime::discord::DiscordConfig::default()
-            .with_app_id(config.discord_app_id.clone());
-        dc.enabled = config.discord_rpc_enabled;
-        dc
+        sonata_runtime::discord::DiscordConfig {
+            enabled: config.discord_rpc_enabled,
+            ..sonata_runtime::discord::DiscordConfig::default()
+        }
     }
 
     fn discord_track_info(track: &Track) -> sonata_runtime::discord::DiscordTrackInfo {
@@ -1440,7 +1567,7 @@ mod tests {
     }
 
     #[test]
-    fn tui_discord_config_respects_enabled_and_app_id() {
+    fn tui_discord_config_locks_app_id_and_respects_enabled() {
         let cfg = AppConfig {
             discord_rpc_enabled: true,
             discord_app_id: Some("123456789012345678".to_string()),
@@ -1448,7 +1575,10 @@ mod tests {
         };
         let dc = App::discord_config_from(&cfg);
         assert!(dc.enabled);
-        assert_eq!(dc.effective_app_id(), "123456789012345678");
+        assert_eq!(
+            dc.effective_app_id(),
+            sonata_runtime::discord::DEFAULT_SONATA_DISCORD_APP_ID
+        );
     }
 
     #[test]

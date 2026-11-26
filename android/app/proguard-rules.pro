@@ -13,12 +13,6 @@
 -dontwarn com.sun.jna.**
 -dontwarn java.awt.**
 
-# WebView JS bridge
--keep class dev.sonata.android.SonataViewModel$WebViewJsCipherSolver { *; }
--keepclassmembers class * {
-    @android.webkit.JavascriptInterface <methods>;
-}
-
 # Third-party warnings suppressed for R8
 -dontwarn androidx.profileinstaller.**
 -dontwarn androidx.media3.**
@@ -41,10 +35,3 @@
 -dontwarn com.hierynomus.**
 -dontwarn net.engio.mbassy.**
 -dontwarn javax.el.**
-
-# Kotlin coroutines & runtime
--keepnames class kotlinx.coroutines.internal.MainDispatcherFactory {}
--keepnames class kotlinx.coroutines.CoroutineExceptionHandler {}
--keepclassmembers class kotlinx.coroutines.** {
-    volatile <fields>;
-}

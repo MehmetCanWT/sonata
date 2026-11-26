@@ -18,15 +18,27 @@ jobs:
   quality:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: desktop-ui/package-lock.json
+      - name: Build and test desktop-ui frontend
+        working-directory: desktop-ui
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
+          npm test
       - name: Install native build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y appstream desktop-file-utils libasound2-dev libdbus-1-dev libegl1-mesa-dev libfontconfig1-dev libwayland-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev pkg-config ripgrep
+          sudo apt-get install -y appstream desktop-file-utils libasound2-dev libayatana-appindicator3-dev libdbus-1-dev libegl1-mesa-dev libfontconfig1-dev libgtk-3-dev librsvg2-dev libwayland-dev libwebkit2gtk-4.1-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev pkg-config ripgrep
       - name: Architecture & dependency boundary checks
         run: ./scripts/check_boundaries.sh
       - name: Validate Flatpak & desktop metadata
@@ -46,7 +58,7 @@ jobs:
           cargo run --locked -p sonata-android --bin uniffi-bindgen -- generate --no-format --library target/debug/libsonata_android.so --language kotlin --out-dir /tmp/uniffi-check
           diff -u android/app/src/main/java/uniffi/sonata_android/sonata_android.kt /tmp/uniffi-check/uniffi/sonata_android/sonata_android.kt
       - name: Install cargo-audit
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@893d6ee8d714b6c7dfe2bcd94e5759e9a7958a7e # v2
         with:
           tool: cargo-audit
       - name: Dependency audit
@@ -59,12 +71,12 @@ jobs:
   android-unit-tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-java@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6
         with:
           distribution: temurin
           java-version: "21"
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6
       - name: Run Android JVM unit tests
         working-directory: android
         run: ./gradlew testDebugUnitTest --console=plain
@@ -72,15 +84,15 @@ jobs:
   android-native-arm64:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           targets: aarch64-linux-android
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: android-arm64
       - name: Install cargo-ndk
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@893d6ee8d714b6c7dfe2bcd94e5759e9a7958a7e # v2
         with:
           tool: cargo-ndk
       - name: Install Android NDK 27.2.12479018
@@ -97,20 +109,20 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           targets: aarch64-linux-android
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: android-arm64-inst
-      - uses: actions/setup-java@v6
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6
         with:
           distribution: temurin
           java-version: "21"
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6
       - name: Install cargo-ndk
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@893d6ee8d714b6c7dfe2bcd94e5759e9a7958a7e # v2
         with:
           tool: cargo-ndk
       - name: Build arm64-v8a native library
@@ -118,10 +130,35 @@ jobs:
           yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018" >/dev/null
           ANDROID_NDK_HOME="${ANDROID_HOME}/ndk/27.2.12479018" cargo ndk -t arm64-v8a -P 31 -o android/app/src/main/jniLibs build -p sonata-android --release --locked
       - name: Run instrumented Android tests on arm64 emulator
-        uses: reactivecircus/android-emulator-runner@v2
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
         with:
           api-level: 34
           arch: arm64-v8a
           profile: pixel_6
           working-directory: android
           script: ./gradlew connectedDebugAndroidTest --console=plain
+
+  desktop-cross-platform:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: cross-${{ matrix.os }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: desktop-ui/package-lock.json
+      - name: Build desktop-ui frontend
+        working-directory: desktop-ui
+        run: |
+          npm ci
+          npm run build
+      - name: Verify cross-platform desktop & runtime compilation
+        run: cargo check --locked -p sonata-core -p sonata-runtime -p sonata-desktop

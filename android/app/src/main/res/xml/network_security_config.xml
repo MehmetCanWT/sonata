@@ -1,5 +1,30 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <!-- Self-hosted Jellyfin, Subsonic, and WebDAV servers often run over plain HTTP on LAN or private hosts. -->
+    <!-- Self-hosted Jellyfin, Subsonic, WebDAV, and Sonata Connect servers often run over plain HTTP on arbitrary LAN IPs. -->
     <base-config cleartextTrafficPermitted="true" />
+
+    <!-- Strictly require HTTPS for all public API, auth, update, streaming, and lyrics domains. -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">youtube.com</domain>
+        <domain includeSubdomains="true">googlevideo.com</domain>
+        <domain includeSubdomains="true">ytimg.com</domain>
+        <domain includeSubdomains="true">googleapis.com</domain>
+        <domain includeSubdomains="true">google.com</domain>
+        <domain includeSubdomains="true">jiosaavn.com</domain>
+        <domain includeSubdomains="true">saavncdn.com</domain>
+        <domain includeSubdomains="true">discord.com</domain>
+        <domain includeSubdomains="true">discordapp.com</domain>
+        <domain includeSubdomains="true">audioscrobbler.com</domain>
+        <domain includeSubdomains="true">listenbrainz.org</domain>
+        <domain includeSubdomains="true">github.com</domain>
+        <domain includeSubdomains="true">githubusercontent.com</domain>
+        <domain includeSubdomains="true">apple.com</domain>
+        <domain includeSubdomains="true">deezer.com</domain>
+        <domain includeSubdomains="true">lrclib.net</domain>
+        <domain includeSubdomains="true">lrc.red</domain>
+        <domain includeSubdomains="true">kugou.com</domain>
+        <domain includeSubdomains="true">genius.com</domain>
+        <domain includeSubdomains="true">spotify.com</domain>
+        <domain includeSubdomains="true">tidal.com</domain>
+    </domain-config>
 </network-security-config>

@@ -34,40 +34,18 @@ fn render_search_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
     let inner_width = area.width.saturating_sub(4);
     let text = if app.search_query.is_empty() && !is_search {
-        match app.config.language {
-            sonata_runtime::i18n::AppLanguage::Tr => {
-                if inner_width >= 78 {
-                    "YouTube Music & Spotify'da aramak için / veya Spotify listesi için i bas..."
-                } else if inner_width >= 42 {
-                    "Aramak için / · liste aktarmak için i"
-                } else {
-                    "Aramak için / bas..."
-                }
-            }
-            sonata_runtime::i18n::AppLanguage::Ru => {
-                if inner_width >= 78 {
-                    "Нажмите / для поиска в YouTube Music & Spotify или i для импорта Spotify..."
-                } else if inner_width >= 42 {
-                    "Нажмите / для поиска · i для импорта"
-                } else {
-                    "Нажмите / для поиска..."
-                }
-            }
-            sonata_runtime::i18n::AppLanguage::En => {
-                if inner_width >= 78 {
-                    "Press / to search YouTube Music & Spotify, or i to import Spotify playlist URL..."
-                } else if inner_width >= 42 {
-                    "Press / to search · i to import playlist"
-                } else {
-                    "Press / to search..."
-                }
-            }
+        if inner_width >= 78 {
+            s.tui_search_hint_wide
+        } else if inner_width >= 42 {
+            s.tui_search_hint_medium
+        } else {
+            s.tui_search_hint_short
         }
         .to_string()
     } else if is_search {
-        format!("{}▏", app.search_query)
+        format!("{}▏", super::sanitize_tui_text(&app.search_query))
     } else {
-        app.search_query.clone()
+        super::sanitize_tui_text(&app.search_query)
     };
 
     let style = if app.search_query.is_empty() && !is_search {
@@ -102,11 +80,8 @@ fn render_search_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn render_tracks_table(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
-    let (h_title, h_artist, h_time) = match app.config.language {
-        sonata_runtime::i18n::AppLanguage::Tr => ("Başlık", "Sanatçı", "Süre"),
-        sonata_runtime::i18n::AppLanguage::Ru => ("Название", "Исполнитель", "Время"),
-        sonata_runtime::i18n::AppLanguage::En => ("Title", "Artist", "Time"),
-    };
+    let s = sonata_runtime::i18n::strings(app.config.language);
+    let (h_title, h_artist, h_time) = (s.col_title, s.col_artist, s.col_time);
     let is_focused = app.focus == FocusPane::Tracks;
     let border_color = if is_focused {
         app.theme.accent
@@ -121,7 +96,7 @@ fn render_tracks_table(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         Cell::from(h_title),
         Cell::from(h_artist),
         Cell::from(Line::from(h_time).centered()),
-        Cell::from(Line::from("Src").centered()),
+        Cell::from(Line::from(s.col_source).centered()),
     ])
     .style(
         Style::default()
@@ -156,17 +131,19 @@ fn render_tracks_table(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             } else {
                 ""
             };
+            let safe_title = super::sanitize_tui_text(&track.title);
             let title_cell: Cow<'_, str> = if track.liked || !dl_prefix.is_empty() {
                 let heart = if track.liked { "♥ " } else { "" };
-                Cow::Owned(format!("{dl_prefix}{heart}{}", track.title))
+                Cow::Owned(format!("{dl_prefix}{heart}{safe_title}"))
             } else {
-                Cow::Borrowed(track.title.as_str())
+                Cow::Owned(safe_title)
             };
 
             Row::new([
                 Cell::from(Line::from(num).centered()),
                 Cell::from(title_cell),
-                Cell::from(track.artist.as_str()).style(Style::default().fg(app.theme.muted)),
+                Cell::from(super::sanitize_tui_text(&track.artist))
+                    .style(Style::default().fg(app.theme.muted)),
                 Cell::from(Line::from(format_duration(track.duration_secs)).centered()),
                 Cell::from(Line::from(track.source_tag()).centered()),
             ])
@@ -174,7 +151,11 @@ fn render_tracks_table(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         })
         .collect();
 
-    let title = format!(" {} ({}) ", app.tracks_heading, app.visible_tracks.len());
+    let title = format!(
+        " {} ({}) ",
+        super::sanitize_tui_text(&app.tracks_heading),
+        app.visible_tracks.len()
+    );
     let title_style = Style::default()
         .fg(if is_focused {
             app.theme.accent

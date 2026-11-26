@@ -175,7 +175,7 @@ fun Modifier.liquidGlass(
     shape: CornerBasedShape,
     /** Drawn over the glass in place of the neutral default tint when explicitly requested. */
     surfaceTint: Color? = null,
-    chromaticAberration: Boolean = true,
+    chromaticAberration: Boolean = false,
 ): Modifier {
     val tokens = LocalLunariaColors.current
     if (!LocalLiquidGlassEnabled.current || !isGlassSupported()) {
@@ -248,7 +248,7 @@ fun Modifier.sonataThemeGlassButton(
     shape: CornerBasedShape,
     surfaceTint: Color? = null,
     fallbackColor: Color = LocalLunariaColors.current.eclipseSurface,
-    chromaticAberration: Boolean = true,
+    chromaticAberration: Boolean = false,
     shadowElevation: Dp = 6.dp,
 ): Modifier {
     val tokens = LocalLunariaColors.current

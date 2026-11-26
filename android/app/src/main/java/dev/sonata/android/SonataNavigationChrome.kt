@@ -339,7 +339,7 @@ internal fun Modifier.adaptiveLiquidGlass(
     shape: CornerBasedShape,
     fallbackColor: Color = LocalLunariaColors.current.eclipseSurface.copy(alpha = 0.92f),
     surfaceTint: Color? = null,
-    chromaticAberration: Boolean = true,
+    chromaticAberration: Boolean = false,
 ): Modifier = sonataThemeGlassButton(
     shape = shape,
     surfaceTint = surfaceTint,
@@ -1010,26 +1010,28 @@ internal fun GlassMiniPlayer(
                     )
                 }
             } else {
+                val miniStrings = LocalSonataStrings.current
                 IconButton(
                     onClick = onPlayPause,
                     modifier = Modifier.size(if (isInline) 34.dp else 40.dp),
                 ) {
                     Icon(
                         imageVector = if (isPlaying) SonataIcons.Pause else SonataIcons.Play,
-                        contentDescription = if (isPlaying) "Pause" else "Play",
+                        contentDescription = if (isPlaying) miniStrings.pause else miniStrings.play,
                         tint = contentColor,
                         modifier = Modifier.size(if (isInline) 18.dp else 20.dp),
                     )
                 }
             }
             if (!isInline) {
+                val nextDesc = LocalSonataStrings.current.next
                 IconButton(
                     onClick = onNext,
                     modifier = Modifier.size(38.dp),
                 ) {
                     Icon(
                         imageVector = SonataIcons.FastForward,
-                        contentDescription = "Next",
+                        contentDescription = nextDesc,
                         tint = contentColor,
                         modifier = Modifier.size(22.dp),
                     )

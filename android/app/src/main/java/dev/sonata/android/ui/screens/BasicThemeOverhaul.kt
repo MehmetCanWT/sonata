@@ -76,7 +76,9 @@ import dev.sonata.android.ui.theme.BasicPalette
 import dev.sonata.android.ui.theme.LocalLunariaColors
 import uniffi.sonata_android.AndroidHomeCard
 import uniffi.sonata_android.AndroidHomeCardKind
+import uniffi.sonata_android.AndroidHomeShelf
 import uniffi.sonata_android.AndroidMoodCategory
+import uniffi.sonata_android.AndroidTrack
 
 // ---- Basic theme geometry constants -----------------------------------------
 
@@ -210,7 +212,10 @@ fun BasicExploreScreen(
     moodCategories: List<AndroidMoodCategory> = emptyList(),
     onOpenMoodCategory: (String, String, String) -> Unit = { title, _, _ -> onOpenMood(title) },
     personalizedHeroCards: List<AndroidHomeCard> = emptyList(),
+    viralHitsTracks: List<AndroidTrack> = emptyList(),
+    exploreShelves: List<AndroidHomeShelf> = emptyList(),
     onOpenCard: (AndroidHomeCard) -> Unit = {},
+    onPlayTrack: (AndroidTrack, List<AndroidTrack>) -> Unit = { _, _ -> },
     onStartDiscoveryStation: () -> Unit = {},
 ) {
     PullToRefreshBox(
@@ -303,6 +308,122 @@ fun BasicExploreScreen(
                                     onClick = { onOpenCard(card) },
                                     width = 148.dp,
                                 )
+                            }
+                        }
+                    }
+                }
+                if (viralHitsTracks.isNotEmpty()) {
+                    item(key = "basic_explore_charts", contentType = "basic_explore_charts") {
+                        Column(Modifier.padding(bottom = 18.dp)) {
+                            Text(
+                                text = dev.sonata.android.ui.i18n.LocalSonataStrings.current.trendingViralHits,
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onBackground,
+                                modifier = Modifier.padding(horizontal = PAGE_GUTTER, vertical = 6.dp),
+                            )
+                            val cols = remember(viralHitsTracks) { viralHitsTracks.chunked(4) }
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                items(
+                                    items = cols,
+                                    key = { col -> "basic_viral_${col.first().id}" },
+                                ) { col ->
+                                    Column(
+                                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                                        modifier = Modifier.width(272.dp),
+                                    ) {
+                                        col.forEach { track ->
+                                            val artUrl = remember(track.thumbnailUrl) {
+                                                track.thumbnailUrl?.artworkAt(CARD_ART_PX)
+                                            }
+                                            val artReq = rememberArtworkRequest(artUrl, 192, 192)
+                                            val thumbPlaceholder = if (LocalLunariaColors.current.isDark) {
+                                                BasicPalette.DarkSurfaceVariant
+                                            } else {
+                                                BasicPalette.LightSurfaceVariant
+                                            }
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clip(RoundedCornerShape(10.dp))
+                                                    .clickable { onPlayTrack(track, viralHitsTracks) }
+                                                    .padding(vertical = 3.dp),
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(46.dp)
+                                                        .clip(RoundedCornerShape(8.dp))
+                                                        .background(thumbPlaceholder),
+                                                ) {
+                                                    if (artReq != null) {
+                                                        AsyncImage(
+                                                            model = artReq,
+                                                            contentDescription = track.title,
+                                                            contentScale = ContentScale.Crop,
+                                                            modifier = Modifier.fillMaxSize(),
+                                                        )
+                                                    }
+                                                }
+                                                Column(Modifier.weight(1f)) {
+                                                    Text(
+                                                        text = track.title,
+                                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                                        color = MaterialTheme.colorScheme.onBackground,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                    )
+                                                    Text(
+                                                        text = track.artist,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                items(
+                    items = exploreShelves.take(6),
+                    key = { shelf -> "basic_explore_shelf_${shelf.title}" },
+                    contentType = { "basic_explore_shelf" },
+                ) { shelf ->
+                    val shelfCards = remember(shelf.cards) {
+                        shelf.cards.filter { it.kind != AndroidHomeCardKind.MOOD }
+                    }
+                    if (shelfCards.isNotEmpty()) {
+                        Column(Modifier.padding(bottom = 18.dp)) {
+                            Text(
+                                text = shelf.title,
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onBackground,
+                                modifier = Modifier.padding(horizontal = PAGE_GUTTER, vertical = 6.dp),
+                            )
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                items(
+                                    items = shelfCards,
+                                    key = { c -> "basic_shelf_${shelf.title}_${c.id}" },
+                                ) { card ->
+                                    SonataEditorialCard(
+                                        title = card.title,
+                                        subtitle = card.subtitle,
+                                        artworkUrl = card.thumbnailUrl,
+                                        onClick = { onOpenCard(card) },
+                                        width = 148.dp,
+                                    )
+                                }
                             }
                         }
                     }
@@ -796,6 +917,7 @@ fun BasicArtistHeroHeader(
             horizontalArrangement = Arrangement.spacedBy(BasicArtistActionGap),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            val artistStrings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
             Box(
                 modifier = Modifier
                     .size(BasicArtistSideButton)
@@ -806,7 +928,7 @@ fun BasicArtistHeroHeader(
             ) {
                 Icon(
                     imageVector = SonataIcons.Shuffle,
-                    contentDescription = "Shuffle",
+                    contentDescription = artistStrings.shuffle,
                     tint = primaryText,
                     modifier = Modifier.size(22.dp),
                 )
@@ -822,7 +944,7 @@ fun BasicArtistHeroHeader(
             ) {
                 Icon(
                     imageVector = SonataIcons.Play,
-                    contentDescription = "Play",
+                    contentDescription = artistStrings.play,
                     tint = primaryContent,
                     modifier = Modifier.size(34.dp),
                 )
@@ -838,7 +960,7 @@ fun BasicArtistHeroHeader(
             ) {
                 Icon(
                     imageVector = if (artist.isSubscribed) SonataIcons.StarFilled else SonataIcons.Star,
-                    contentDescription = if (artist.isSubscribed) "Following" else "Follow",
+                    contentDescription = if (artist.isSubscribed) artistStrings.following else artistStrings.follow,
                     tint = if (artist.isSubscribed) Color.White else primaryText,
                     modifier = Modifier.size(22.dp),
                 )

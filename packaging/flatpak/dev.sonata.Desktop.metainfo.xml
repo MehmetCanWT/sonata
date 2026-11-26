@@ -10,7 +10,7 @@
   <description>
     <p>
       Sonata is a fast, native desktop and terminal music player built in Rust with
-      GPUI and Ratatui. It supports offline Local Music collections, self-hosted
+      Tauri v2 and Ratatui. It supports offline Local Music collections, self-hosted
       Jellyfin, Subsonic/Navidrome, WebDAV, and SMB servers, YouTube Music and Spotify
       metadata with Hi-Fi upgrades, word-synced karaoke lyrics, animated album
       artwork, and LAN playback handoff via Sonata Connect.
@@ -19,10 +19,10 @@
     <ul>
       <li>Bit-transparent playback powered by mpv with real-time codec/kbps measurement, gapless transitions, and 0–12 s crossfade</li>
       <li>Local Music folder scanning plus self-hosted Jellyfin, Subsonic, WebDAV, and SMB sources with optional Personal Only Mode</li>
-      <li>29 live-reloading CSS themes, compositor blur, and dual-hue ambient fullscreen backdrops</li>
+      <li>Matte obsidian Tauri v2 interface with Dark and Light modes, Album/Artist/Immersive Lyrics views, and responsive layout</li>
       <li>Multi-source word-synced lyrics (TTML, Enhanced LRC, LRCLIB) with live translation and romanization</li>
       <li>MPRIS2 media controls, system tray integration, Discord Rich Presence, and Last.fm / ListenBrainz scrobbling</li>
-      <li>Includes both the GPUI desktop app (sonata-desktop) and the Ratatui terminal client (sonata)</li>
+      <li>Includes both the Tauri v2 desktop app (sonata-desktop) and the Ratatui terminal client (sonata)</li>
     </ul>
   </description>
 
@@ -63,7 +63,7 @@
 
   <screenshots>
     <screenshot type="default">
-      <caption>Sonata Wayland Desktop Client</caption>
+      <caption>Sonata Desktop Client</caption>
       <image type="source" width="1920" height="1080">https://raw.githubusercontent.com/MehmetCanWT/sonata/main/assets/hyprland-glass-desktop.png</image>
     </screenshot>
     <screenshot>
@@ -73,6 +73,18 @@
   </screenshots>
 
   <releases>
+    <release version="1.0.10" date="2026-11-27">
+      <description>
+        <p>
+          Migrated the desktop client to Tauri v2 with React, TypeScript, Tailwind CSS v4,
+          and cross-platform system tray and OS media controls across Linux, macOS, and Windows.
+          Added MPRIS2 animated artwork metadata, seamless motion cover playback, interactive
+          Sonata Connect pairing approval and trusted remote handoff, fixed Android Discord login
+          and Gateway Rich Presence with an immutable Discord Application ID, and completed
+          English, Turkish, and Russian localization across all clients.
+        </p>
+      </description>
+    </release>
     <release version="1.0.9" date="2026-11-25">
       <description>
         <p>

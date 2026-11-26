@@ -430,7 +430,7 @@ fun ArtistScreen(
                             ) {
                                 Icon(
                                     imageVector = SonataIcons.Play,
-                                    contentDescription = "Play popular tracks",
+                                    contentDescription = dev.sonata.android.ui.i18n.LocalSonataStrings.current.playPopularTracks,
                                     tint = themeTokens.onSurfacePrimary,
                                     modifier = Modifier.size(16.dp),
                                 )
@@ -544,13 +544,14 @@ fun ArtistScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                val backLabel = dev.sonata.android.ui.i18n.LocalSonataStrings.current.back
                 FloatingTopCircleButton(
                     onClick = onBack,
-                    contentDescription = "Back",
+                    contentDescription = backLabel,
                 ) {
                     Icon(
                         imageVector = SonataIcons.ChevronLeft,
-                        contentDescription = "Back",
+                        contentDescription = backLabel,
                         tint = themeTokens.onSurfacePrimary,
                         modifier = Modifier.size(22.dp),
                     )
@@ -1058,9 +1059,10 @@ private fun LatestReleaseCard(
                 .clickable(onClick = onSaveClick),
             contentAlignment = Alignment.Center,
         ) {
+            val saveStrings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
             Icon(
                 imageVector = if (release.isSaved) SonataIcons.Check else ArtistPlusIcon,
-                contentDescription = if (release.isSaved) "Saved" else "Add to library",
+                contentDescription = if (release.isSaved) saveStrings.saved else saveStrings.addToLibrary,
                 tint = themeTokens.onSurfacePrimary,
                 modifier = Modifier.size(20.dp),
             )
@@ -1190,7 +1192,7 @@ private fun ArtistSongRow(
                 if (item.isDownloaded) {
                     Icon(
                         imageVector = SonataIcons.Download,
-                        contentDescription = "Downloaded",
+                        contentDescription = dev.sonata.android.ui.i18n.LocalSonataStrings.current.downloaded,
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(13.dp),
                     )
@@ -1206,7 +1208,7 @@ private fun ArtistSongRow(
         ) {
             Icon(
                 imageVector = SonataIcons.MoreVert,
-                contentDescription = "Track options",
+                contentDescription = dev.sonata.android.ui.i18n.LocalSonataStrings.current.trackOptions,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(18.dp),
             )
@@ -1403,7 +1405,7 @@ private fun SectionHeaderRow(
         if (showChevron) {
             Icon(
                 imageVector = SonataIcons.ChevronRight,
-                contentDescription = "See all",
+                contentDescription = dev.sonata.android.ui.i18n.LocalSonataStrings.current.seeAll,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(18.dp),
             )
@@ -1458,6 +1460,7 @@ private fun FloatingShareAndAvatarPill(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
+        val pillStrings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
         Box(
             modifier = Modifier
                 .size(32.dp)
@@ -1467,7 +1470,7 @@ private fun FloatingShareAndAvatarPill(
         ) {
             Icon(
                 imageVector = ArtistShareIcon,
-                contentDescription = "Share artist",
+                contentDescription = pillStrings.shareArtist,
                 tint = tokens.onSurfacePrimary,
                 modifier = Modifier.size(18.dp),
             )
@@ -1491,14 +1494,14 @@ private fun FloatingShareAndAvatarPill(
             if (avatarReq != null) {
                 AsyncImage(
                     model = avatarReq,
-                    contentDescription = "Account",
+                    contentDescription = pillStrings.account,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),
                 )
             } else {
                 Icon(
                     imageVector = SonataIcons.Person,
-                    contentDescription = "Account",
+                    contentDescription = pillStrings.account,
                     tint = tokens.onSurfacePrimary,
                     modifier = Modifier.size(16.dp),
                 )
@@ -1596,8 +1599,9 @@ private fun AboutArtistSection(
                 overflow = TextOverflow.Ellipsis,
             )
             if (bio.length > 140) {
+                val aboutStrings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
                 Text(
-                    text = if (expanded) "Show less" else "More",
+                    text = if (expanded) aboutStrings.showLess else aboutStrings.showMore,
                     style = MaterialTheme.typography.labelLarge.copy(
                         fontWeight = FontWeight.SemiBold,
                     ),

@@ -59,11 +59,23 @@ fn init_at(client: &'static str, log_path: PathBuf) -> TelemetryGuard {
 
 fn open_log_file(path: &Path) -> std::io::Result<File> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt as _;
+            builder.mode(0o700);
+        }
+        builder.create(parent)?;
     }
     let truncate = fs::metadata(path).is_ok_and(|metadata| metadata.len() > MAX_LOG_BYTES);
     let mut options = OpenOptions::new();
     options.create(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
     if truncate {
         options.truncate(true);
     } else {
@@ -110,6 +122,16 @@ mod tests {
 
         let contents = fs::read_to_string(&path).expect("telemetry log must be readable");
         assert!(contents.contains("telemetry test event"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = fs::metadata(&path)
+                .expect("log metadata")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
         let _ = fs::remove_file(path);
     }
 }

@@ -111,7 +111,7 @@ internal fun SonataViewModel.onPersonalOnlyModeChangedImpl(enabled: Boolean) {
                     currentCollectionId.startsWith(SonataViewModel.LOCAL_PLAYLIST_PREFIX) ||
                     isSelfHostedId(currentCollectionId)
                 )
-            val resolvedIndex = if (keepActiveTrack && activeTrack != null) {
+            val resolvedIndex = if (keepActiveTrack) {
                 personalQueue.indexOfFirst { it.id == activeTrack.id }.coerceAtLeast(0)
             } else {
                 -1
@@ -288,7 +288,7 @@ internal fun SonataViewModel.probeServerHealthImpl(serverId: String) {
                         serverDiagnostics = state.serverDiagnostics + (
                             serverId to current.copy(
                                 checkingHealth = false,
-                                healthError = err.message ?: "Health check failed",
+                                healthError = err.message ?: uiStrings().servers.healthCheckFailed,
                             )
                             ),
                     )
@@ -349,7 +349,7 @@ internal fun SonataViewModel.runServerSpeedTestImpl(serverId: String) {
                         serverDiagnostics = state.serverDiagnostics + (
                             serverId to current.copy(
                                 runningSpeedTest = false,
-                                speedTestError = err.message ?: "Speed test failed",
+                                speedTestError = err.message ?: uiStrings().servers.speedTestFailed,
                             )
                             ),
                     )
@@ -479,7 +479,7 @@ internal fun SonataViewModel.rescanServerSourceImpl(serverId: String) {
                         serverDiagnostics = state.serverDiagnostics + (
                             serverId to current.copy(
                                 rescanning = false,
-                                rescanError = err.message ?: "Rescan failed",
+                                rescanError = err.message ?: uiStrings().servers.rescanFailed,
                             )
                             ),
                     )

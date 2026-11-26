@@ -1,0 +1,8 @@
+{
+  "bundle": {
+    "externalBin": [
+      "binaries/mpv",
+      "binaries/yt-dlp"
+    ]
+  }
+}

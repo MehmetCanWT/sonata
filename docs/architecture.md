@@ -1,15 +1,15 @@
 # Sonata Architecture
 
-Sonata is a 5-crate Cargo workspace paired with a native Android Jetpack Compose application: a portable Rust engine (`sonata-core`), a shared Linux runtime adapter crate (`sonata-runtime`), two Linux clients (`sonata-tui` and `sonata-desktop`), and a cancellable async UniFFI Android bridge (`sonata-android`) backing `android/`.
+Sonata is a 5-crate Cargo workspace paired with a native Android Jetpack Compose application: a portable Rust engine (`sonata-core`), a shared desktop/TUI runtime adapter crate (`sonata-runtime`), two desktop/terminal clients (`sonata-tui` and cross-platform Tauri v2 `sonata-desktop`), and a cancellable async UniFFI Android bridge (`sonata-android`) backing `android/`.
 
 ## 1. Workspace & Client Map
 
 | Component | Kind | Role | Status |
 |---|---|---|---|
 | [`sonata-core`](../crates/sonata-core) | Rust library | Portable auth/cookies, YTM/Spotify/JioSaavn providers, `ResolverProfile`, Hi-Fi `StreamResolver` & cipher hook, SQLite WAL cache, lyrics, `MotionMedia` discovery, `PlaybackCoordinator`, `CorePaths`, `CoreError`, `redaction`, `updater` | stable |
-| [`sonata-runtime`](../crates/sonata-runtime) | Rust library | Shared Linux runtime adapters: XDG TOML `AppConfig`, Hyprland IPC, tracing/log rotation, `i18n` (`en`/`tr`/`ru`), browser cookie extraction, `MpvController`, shared `PlaybackSession`, `CliJsCipherBridge`, `LinuxStreamResolver` (`yt-dlp`), image/`ffmpeg` decoding, `now_playing.json` | stable |
+| [`sonata-runtime`](../crates/sonata-runtime) | Rust library | Shared desktop/TUI runtime adapters (Linux, macOS, Windows): XDG TOML `AppConfig`, Hyprland IPC, tracing/log rotation, `i18n` (`en`/`tr`/`ru`), browser cookie extraction, `MpvController`, shared `PlaybackSession`, `CliJsCipherBridge`, `LinuxStreamResolver` (`yt-dlp`), image/`ffmpeg` decoding, `now_playing.json` | stable |
 | [`sonata-tui`](../crates/sonata-tui) | Binary `sonata` | Ratatui/crossterm terminal client (`src/app/{mod,state,playback,library}.rs`, `src/ui/fx.rs` `tachyonfx` transitions, `src/theme/`) with Kitty/Sixel/Halfblock artwork | stable |
-| [`sonata-desktop`](../crates/sonata-desktop) | Binary `sonata-desktop` | GPUI native Wayland/Hyprland client (`src/backend/`, `src/ui/`, `src/views/`, `src/theme/`, 29 CSS skins in `themes/`) with audio-only background freeze, tray, and MPRIS2 | stable |
+| [`sonata-desktop`](../crates/sonata-desktop) + [`desktop-ui/`](../desktop-ui) | Binary `sonata-desktop` | Cross-platform Tauri v2 desktop client (`src/backend/`, `src/ipc.rs`, `src/integrations/{mpris,tray}.rs`, `desktop-ui/` React 19 + Tailwind CSS v4 + shadcn/ui matte obsidian UI) with system tray, `sonata:motionArtUrl` MPRIS2, and `souvlaki` media controls | stable |
 | [`sonata-android`](../crates/sonata-android) | UniFFI library | Cancellable async Rust-to-Kotlin FFI bridge (`#[uniffi::export(async_runtime = "tokio")]`, zero `Runtime::block_on`) | stable |
 | [`android/`](../android) | Android app | Jetpack Compose + Media3 ExoPlayer client (`SonataEngineGateway`, `PlaybackOrchestrator`, `Basic` [default], `Violet` & `Moonflower` themes, neutral Liquid Glass chrome, `en`/`tr`/`ru` `SonataStrings`, `EditPlaylistDialog`, `ApkUpdater`, Share Sheet, Widget) | stable |
 
@@ -45,7 +45,7 @@ flowchart TD
 | `player/{mod,coordinator,tasks,precache}.rs` | Pure `PlaybackState`, `PlaybackGeneration`, `PlaybackCoordinator`, `PlaybackTaskSet`, and `NextTrackPrecache` |
 | `cache.rs`, `cache/media.rs` | SQLite WAL record cache with poison recovery; byte-budget pruning of art/audio/lyrics files |
 | `lyrics/{mod,lrclib,providers,ttml}.rs` | LRC/TTML/KRC/YRC parsing and concurrent multi-source word-synced lyric fetching |
-| `media.rs`, `motion.rs` | `now_playing.json` schema, artwork URL upscaling, Deezer/iTunes cover lookup, and platform-neutral `MotionMedia` discovery (Apple Music AMP/HTML, Tidal, Community Canvas) |
+| `media.rs`, `motion.rs` | Typed `now_playing.json` &amp; `lyrics.json` telemetry schemas, artwork URL upscaling, Deezer/iTunes cover lookup, and platform-neutral `MotionMedia` discovery (Apple Music AMP/HTML, Tidal, Community Canvas) |
 | `redaction.rs`, `updater.rs` | Secret scrubbing (cookies, auth headers, signed URLs, nested JSON) and per-platform GitHub Releases updater |
 
 ### Inside `sonata-runtime`
@@ -68,7 +68,7 @@ flowchart LR
     AND_UI[Android Compose + ViewModel + PlaybackOrchestrator] <-->|Cancellable Async UniFFI| AND_FFI[sonata-android -> sonata-core]
     AND_UI <--> EXO[Media3 ExoPlayer + PlaybackService]
     AND_WV[Offscreen WebView JS Cipher Solver] <--> AND_FFI
-    MPRISTH[MPRIS2 + ksni tray, Linux] <--> DBUS[(D-Bus)]
+    MPRISTH[MPRIS2 / souvlaki + Tauri tray] <--> OS[(OS Media & Tray)]
 ```
 
 - **TUI** (`sonata-tui`) and **Desktop** (`sonata-desktop`): Delegate all playback orchestration (queue transitions, generation isolation, `mpv` IPC, Hi-Fi upgrades, recovery, and next-track precaching) to `sonata_runtime::player::PlaybackSession`, retaining client-local UI, graphics/effects, MPRIS2/tray, and per-generation cover/lyrics tasks (`media_tasks`).
@@ -89,4 +89,5 @@ Paths are constructed explicitly via `CorePaths` (XDG roots from `sonata-runtime
 | `~/.cache/sonata/sonata.log` | Linux Desktop/runtime diagnostics log (`10 MiB` startup cap, `0o600`) |
 | `~/.cache/sonata/sonata-tui.log` | Linux TUI stderr diagnostics redirect (`2 MiB` startup cap) |
 | `<cache>/updates/` | Android in-app APK updater staging directory (`ApkUpdater.kt` + `FileProvider`) |
-| `$XDG_RUNTIME_DIR/sonata/now_playing.json` | Atomically written Linux now-playing export |
+| `$XDG_RUNTIME_DIR/sonata/now_playing.json` | Atomically written structured Linux now-playing telemetry (`schema_version = 2`; see [integrations.md](integrations.md)) |
+| `$XDG_RUNTIME_DIR/sonata/lyrics.json` | Atomically written full synced/translated/romanized lyrics sheet (see [integrations.md](integrations.md)) |

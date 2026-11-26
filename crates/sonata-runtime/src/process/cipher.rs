@@ -6,7 +6,8 @@
 //! 3. **Bounded Subprocess Execution**: Evaluates `globalThis._yt_solve(sig, n)` with a hard
 //!    wall-clock deadline, killing and reaping hung subprocesses on timeout.
 
-use crate::config::resolve_distro_binary;
+use crate::config::{configure_background_std_command, resolve_distro_binary};
+use sonata_core::auth::ensure_private_dir;
 use sonata_core::paths::CorePaths;
 use sonata_core::providers::hifi::{JsCipherBridge, SolvedCipherPair};
 use std::fs::{self, OpenOptions};
@@ -22,6 +23,53 @@ use std::time::{Duration, Instant};
 static CLI_CIPHER_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 const CIPHER_TIMEOUT: Duration = Duration::from_millis(3500);
 const CIPHER_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const DENO_CIPHER_RUNNER_SCRIPT: &str =
+    "(0,eval)(Deno.readTextFileSync(Deno.args[0]));console.log(globalThis._yt_solve(Deno.args[1]||'',Deno.args[2]||''));\n";
+
+struct TempRunnerGuard(PathBuf);
+
+impl Drop for TempRunnerGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn create_deno_runner_script(dir: &Path) -> std::io::Result<TempRunnerGuard> {
+    ensure_private_dir(dir)?;
+    let seq = CLI_CIPHER_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path = dir.join(format!(
+        "yt_cipher_runner_{}_{}.js",
+        std::process::id(),
+        seq
+    ));
+    let mut opts = OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    opts.mode(0o600);
+    let mut file = opts.open(&path)?;
+    #[cfg(unix)]
+    let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+    if let Err(err) = file.write_all(DENO_CIPHER_RUNNER_SCRIPT.as_bytes()) {
+        let _ = fs::remove_file(&path);
+        return Err(err);
+    }
+    Ok(TempRunnerGuard(path))
+}
+
+fn build_deno_run_args(runner_path: &Path, script_path: &Path, sig: &str, n: &str) -> Vec<String> {
+    let runner = runner_path.to_string_lossy().into_owned();
+    let script = script_path.to_string_lossy().into_owned();
+    vec![
+        "run".to_string(),
+        "--no-prompt".to_string(),
+        "--no-remote".to_string(),
+        format!("--allow-read={script}"),
+        runner,
+        script,
+        sig.to_string(),
+        n.to_string(),
+    ]
+}
 
 /// Local CLI implementation of [`JsCipherBridge`] backed by `node`, `bun`, or `deno`.
 #[derive(Debug, Clone)]
@@ -49,8 +97,9 @@ pub(crate) fn detect_cli_cipher_runtime() -> Option<&'static str> {
     *CLI_RUNTIME.get_or_init(|| {
         ["node", "bun", "deno"].into_iter().find(|&candidate| {
             let bin = resolve_distro_binary(candidate);
-            Command::new(&bin)
-                .arg("--version")
+            let mut cmd = Command::new(&bin);
+            configure_background_std_command(&mut cmd);
+            cmd.arg("--version")
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status()
@@ -61,9 +110,7 @@ pub(crate) fn detect_cli_cipher_runtime() -> Option<&'static str> {
 
 fn write_private_cache_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent)?;
-    #[cfg(unix)]
-    let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+    ensure_private_dir(parent)?;
 
     let file_name = path
         .file_name()
@@ -110,22 +157,20 @@ impl JsCipherBridge for CliJsCipherBridge {
             return None;
         }
 
-        let js_path_str = js_path.to_string_lossy().to_string();
         let runtime_bin = resolve_distro_binary(runtime);
         let mut cmd = Command::new(&runtime_bin);
+        configure_background_std_command(&mut cmd);
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        if runtime == "deno" {
-            cmd.args([
-                "eval",
-                "(0,eval)(Deno.readTextFileSync(Deno.args[0]));console.log(globalThis._yt_solve(Deno.args[1]||'',Deno.args[2]||''));",
-                "--",
-                &js_path_str,
-                sig,
-                n,
-            ]);
+        let _runner_guard = if runtime == "deno" {
+            let runner_dir = js_path.parent().unwrap_or(&self.paths.cache_dir);
+            let runner = create_deno_runner_script(runner_dir).ok()?;
+            let args = build_deno_run_args(&runner.0, &js_path, sig, n);
+            cmd.args(&args);
+            Some(runner)
         } else {
+            let js_path_str = js_path.to_string_lossy().to_string();
             cmd.args([
                 "-e",
                 "const fs=require('fs');(0,eval)(fs.readFileSync(process.argv[1],'utf8'));console.log(globalThis._yt_solve(process.argv[2]||'',process.argv[3]||''));",
@@ -134,7 +179,8 @@ impl JsCipherBridge for CliJsCipherBridge {
                 sig,
                 n,
             ]);
-        }
+            None
+        };
 
         let mut child = cmd.spawn().ok()?;
         let deadline = Instant::now() + CIPHER_TIMEOUT;
@@ -169,5 +215,45 @@ impl JsCipherBridge for CliJsCipherBridge {
             .rev()
             .find(|l| l.trim_start().starts_with('{'))?;
         serde_json::from_str::<SolvedCipherPair>(line.trim()).ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::downloads::test_support::TempTestDir;
+
+    #[test]
+    fn deno_invocation_uses_sandboxed_run_with_scoped_read_only_permission() {
+        let dir = TempTestDir::new("cipher_deno_sandbox");
+        let script = dir.path().join("yt_cipher_abc.js");
+        let runner = create_deno_runner_script(dir.path()).expect("create runner");
+        let runner_path = runner.0.clone();
+
+        #[cfg(unix)]
+        {
+            let mode = fs::metadata(&runner_path)
+                .expect("runner metadata")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+
+        let args = build_deno_run_args(&runner_path, &script, "sig_val", "n_val");
+        assert_eq!(args[0], "run");
+        assert!(args.iter().any(|a| a == "--no-prompt"));
+        assert!(args.iter().any(|a| a == "--no-remote"));
+        assert!(args
+            .iter()
+            .any(|a| a == &format!("--allow-read={}", script.display())));
+        assert!(!args.iter().any(|a| a == "eval"
+            || a.starts_with("--allow-net")
+            || a.starts_with("--allow-write")
+            || a.starts_with("--allow-env")
+            || a.starts_with("--allow-run")));
+
+        drop(runner);
+        assert!(!runner_path.exists());
     }
 }

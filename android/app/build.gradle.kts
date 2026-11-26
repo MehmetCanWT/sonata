@@ -1,9 +1,9 @@
 import java.util.Properties
+import org.gradle.api.GradleException
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
@@ -12,8 +12,8 @@ android {
     compileSdk = 35
     ndkVersion = "27.2.12479018"
 
-    val appVersionName = (project.findProperty("sonataVersion") as String?)?.trim().takeIf { !it.isNullOrEmpty() } ?: "1.0.9"
-    val appVersionCode = (project.findProperty("sonataVersionCode") as String?)?.toIntOrNull() ?: 10009
+    val appVersionName = (project.findProperty("sonataVersion") as String?)?.trim().takeIf { !it.isNullOrEmpty() } ?: "1.0.10"
+    val appVersionCode = (project.findProperty("sonataVersionCode") as String?)?.toIntOrNull() ?: 10010
 
     defaultConfig {
         applicationId = "dev.sonata.android"
@@ -67,10 +67,30 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+            signingConfigs.findByName("release")?.let { releaseSigning ->
+                signingConfig = releaseSigning
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
+            )
+        }
+    }
+
+    val hasReleaseSigning = signingConfigs.findByName("release") != null
+    val allowUnsignedRelease = (project.findProperty("allowUnsignedRelease") as String?)
+        ?.equals("true", ignoreCase = true) == true
+    gradle.taskGraph.whenReady {
+        val requiresReleaseSigning = allTasks.any { task ->
+            task.project == project && (
+                task.name.equals("assembleRelease", ignoreCase = true) ||
+                    task.name.equals("bundleRelease", ignoreCase = true)
+                )
+        }
+        if (requiresReleaseSigning && !hasReleaseSigning && !allowUnsignedRelease) {
+            throw GradleException(
+                "Release signing configuration is missing. Configure ANDROID_KEYSTORE_PATH " +
+                    "(or ~/.config/sonata/keystore.properties) or pass -PallowUnsignedRelease=true explicitly."
             )
         }
     }

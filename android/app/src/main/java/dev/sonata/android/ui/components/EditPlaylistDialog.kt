@@ -464,7 +464,7 @@ fun EditPlaylistDialog(
                                 }
                                 if (selectedCoverUri != null && cover == null) {
                                     saving = false
-                                    errorMessage = "Could not read selected image"
+                                    errorMessage = strings.couldNotReadImage
                                     return@launch
                                 }
                                 onSave(

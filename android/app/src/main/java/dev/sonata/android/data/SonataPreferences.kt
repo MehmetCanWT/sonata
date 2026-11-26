@@ -27,11 +27,9 @@ enum class AppLanguage {
 }
 
 /**
- * Structural & aesthetic design theme family for Sonata Android.
+ * Structural & aesthetic design theme family for Sonata Android (monochrome Basic theme).
  */
 enum class DesignTheme {
-    VIOLET,
-    MOONFLOWER,
     BASIC,
 }
 
@@ -39,14 +37,9 @@ enum class DesignTheme {
  * Application color theme preference for Sonata Android.
  */
 enum class ThemeMode {
-    VIOLET_LIGHT,
-    VIOLET_DARK,
-    MOONFLOWER_LIGHT,
-    MOONFLOWER_DARK,
-    BASIC_LIGHT,
-    BASIC_DARK,
     SYSTEM,
-    AMOLED,
+    LIGHT,
+    DARK,
 }
 
 /**
@@ -257,16 +250,11 @@ data class SonataSettingsState(
     val lastFmEnabled: Boolean = false,
     val listenBrainzEnabled: Boolean = false,
 ) {
-    fun resolvedDesignTheme(): DesignTheme = when (themeMode) {
-        ThemeMode.VIOLET_LIGHT, ThemeMode.VIOLET_DARK -> DesignTheme.VIOLET
-        ThemeMode.MOONFLOWER_LIGHT, ThemeMode.MOONFLOWER_DARK -> DesignTheme.MOONFLOWER
-        ThemeMode.BASIC_LIGHT, ThemeMode.BASIC_DARK -> DesignTheme.BASIC
-        ThemeMode.SYSTEM, ThemeMode.AMOLED -> designTheme
-    }
+    fun resolvedDesignTheme(): DesignTheme = DesignTheme.BASIC
 
     fun isDarkActive(systemDark: Boolean): Boolean = when (themeMode) {
-        ThemeMode.VIOLET_LIGHT, ThemeMode.MOONFLOWER_LIGHT, ThemeMode.BASIC_LIGHT -> false
-        ThemeMode.VIOLET_DARK, ThemeMode.MOONFLOWER_DARK, ThemeMode.BASIC_DARK, ThemeMode.AMOLED -> true
+        ThemeMode.LIGHT -> false
+        ThemeMode.DARK -> true
         ThemeMode.SYSTEM -> systemDark
     }
 
@@ -395,7 +383,7 @@ class SonataPreferences(context: Context) {
      * Persists or clears the Discord user token in dedicated private [SharedPreferences].
      */
     fun setDiscordToken(token: String?) {
-        val cleaned = token?.trim()?.takeIf { it.isNotEmpty() }
+        val cleaned = DiscordApplication.sanitizeToken(token)
         synchronized(lock) {
             ensureStateLoadedLocked()
             val editor = discordAuthPrefs.edit()
@@ -416,7 +404,7 @@ class SonataPreferences(context: Context) {
     fun hasDiscordToken(): Boolean = !getDiscordToken().isNullOrBlank()
 
     private fun readDiscordToken(): String? =
-        discordAuthPrefs.getString(KEY_DISCORD_AUTH_SECRET, null)?.trim()?.takeIf { it.isNotEmpty() }
+        DiscordApplication.sanitizeToken(discordAuthPrefs.getString(KEY_DISCORD_AUTH_SECRET, null))
 
     /**
      * Applies [transform] to the current [SonataSettingsState], normalizes bounded values,
@@ -696,7 +684,7 @@ class SonataPreferences(context: Context) {
                         KEY_DISCORD_RPC_ENABLED,
                         defaults.discordRpcEnabled,
                     ),
-                    discordAppId = settingsObj.optString(KEY_DISCORD_APP_ID, defaults.discordAppId),
+                    discordAppId = DiscordApplication.DEFAULT_APP_ID,
                     discordActivityType = parseEnum(
                         settingsObj.optString(KEY_DISCORD_ACTIVITY_TYPE),
                         defaults.discordActivityType,
@@ -880,7 +868,7 @@ class SonataPreferences(context: Context) {
                 ),
                 videoQuality = parseEnum(prefs.getString(KEY_VIDEO_QUALITY, null), defaults.videoQuality),
                 discordRpcEnabled = prefs.getBoolean(KEY_DISCORD_RPC_ENABLED, defaults.discordRpcEnabled),
-                discordAppId = prefs.getString(KEY_DISCORD_APP_ID, null) ?: defaults.discordAppId,
+                discordAppId = DiscordApplication.DEFAULT_APP_ID,
                 discordActivityType = parseEnum(
                     prefs.getString(KEY_DISCORD_ACTIVITY_TYPE, null),
                     defaults.discordActivityType,
@@ -969,7 +957,7 @@ class SonataPreferences(context: Context) {
             .putBoolean(KEY_SUPPRESS_VIDEO_AUDIO_WARNING, state.suppressVideoAudioQualityWarning)
             .putString(KEY_VIDEO_QUALITY, state.videoQuality.name)
             .putBoolean(KEY_DISCORD_RPC_ENABLED, state.discordRpcEnabled)
-            .putString(KEY_DISCORD_APP_ID, state.discordAppId)
+            .putString(KEY_DISCORD_APP_ID, DiscordApplication.DEFAULT_APP_ID)
             .putString(KEY_DISCORD_ACTIVITY_TYPE, state.discordActivityType.name)
             .putBoolean(KEY_DISCORD_SHOW_TIMESTAMPS, state.discordShowTimestamps)
             .putBoolean(KEY_DISCORD_SHOW_ARTWORK, state.discordShowArtwork)
@@ -1063,6 +1051,7 @@ class SonataPreferences(context: Context) {
                 else -> 120
             }
             return state.copy(
+                designTheme = DesignTheme.BASIC,
                 fpsLimit = normalizedFps,
                 crossfadeSeconds = state.crossfadeSeconds.coerceIn(MIN_CROSSFADE_SEC, MAX_CROSSFADE_SEC),
                 playbackSpeed = normalizedSpeed,
@@ -1073,7 +1062,7 @@ class SonataPreferences(context: Context) {
                 lyricsOffsetMs = state.lyricsOffsetMs.coerceIn(MIN_LYRIC_OFFSET_MS, MAX_LYRIC_OFFSET_MS),
                 localMusicMinDurationSecs = state.localMusicMinDurationSecs.coerceIn(0, MAX_LOCAL_MIN_DURATION_SEC),
                 localMusicFolders = normalizeLocalMusicFolders(state.localMusicFolders),
-                discordAppId = DiscordApplication.resolveAppId(state.discordAppId),
+                discordAppId = DiscordApplication.DEFAULT_APP_ID,
                 connectDeviceName = normalizeConnectDeviceName(state.connectDeviceName),
             )
         }
@@ -1126,10 +1115,9 @@ class SonataPreferences(context: Context) {
         internal fun parseThemeMode(raw: String?, fallback: ThemeMode): ThemeMode {
             val normalized = raw?.trim()?.uppercase() ?: return fallback
             return when (normalized) {
-                "DARK" -> ThemeMode.MOONFLOWER_DARK
-                "LIGHT" -> ThemeMode.MOONFLOWER_LIGHT
-                "ELECTRIC_LAVENDER" -> ThemeMode.VIOLET_DARK
-                "IMPERIAL_VIOLET" -> ThemeMode.VIOLET_LIGHT
+                "LIGHT", "BASIC_LIGHT", "VIOLET_LIGHT", "MOONFLOWER_LIGHT", "IMPERIAL_VIOLET" -> ThemeMode.LIGHT
+                "DARK", "BASIC_DARK", "VIOLET_DARK", "MOONFLOWER_DARK", "ELECTRIC_LAVENDER", "AMOLED" -> ThemeMode.DARK
+                "SYSTEM" -> ThemeMode.SYSTEM
                 else -> runCatching { ThemeMode.valueOf(normalized) }.getOrDefault(fallback)
             }
         }
@@ -1312,7 +1300,7 @@ class SonataPreferences(context: Context) {
                 put(KEY_SUPPRESS_VIDEO_AUDIO_WARNING, current.suppressVideoAudioQualityWarning)
                 put(KEY_VIDEO_QUALITY, current.videoQuality.name)
                 put(KEY_DISCORD_RPC_ENABLED, current.discordRpcEnabled)
-                put(KEY_DISCORD_APP_ID, current.discordAppId)
+                put(KEY_DISCORD_APP_ID, DiscordApplication.DEFAULT_APP_ID)
                 put(KEY_DISCORD_ACTIVITY_TYPE, current.discordActivityType.name)
                 put(KEY_DISCORD_SHOW_TIMESTAMPS, current.discordShowTimestamps)
                 put(KEY_DISCORD_SHOW_ARTWORK, current.discordShowArtwork)

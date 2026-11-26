@@ -109,6 +109,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
@@ -130,6 +131,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
@@ -234,15 +236,12 @@ import kotlin.random.Random
 // 1. Theme, Colors & Typography
 // =============================================================================
 
-/** Signature Lunaria Moon Lavender accent across Violet/Moonflower themes. */
-val SonataAccent = LunariaColors.PetalLavender
+/** Monochrome signature accent for Basic theme interactive highlights. */
+val SonataAccent = BasicPalette.AccentRed
 
-/** Theme-aware accent (`BasicPalette.AccentRed` for Basic, `petalLavender` for Violet/Moonflower). */
+/** Theme-aware crimson accent for Basic interactive highlights. */
 @Composable
-fun sonataThemeAccent(): Color {
-    val tokens = LocalLunariaColors.current
-    return if (tokens.isBasic) BasicPalette.AccentRed else tokens.petalLavender
-}
+fun sonataThemeAccent(): Color = BasicPalette.AccentRed
 
 private fun Typography.withFamily(family: FontFamily) = Typography(
     displayLarge = displayLarge.copy(fontFamily = family),
@@ -521,11 +520,7 @@ fun MoodTile(
 ) {
     val tokens = LocalLunariaColors.current
     val shape = RoundedCornerShape(18.dp)
-    val borderColor = if (tokens.isViolet) {
-        tokens.petalLavender.copy(alpha = 0.28f)
-    } else {
-        tokens.glassRimTopLeft.copy(alpha = 0.55f)
-    }
+    val borderColor = tokens.glassRimTopLeft.copy(alpha = 0.55f)
     Column(
         modifier = modifier
             .width(tileWidth)
@@ -598,20 +593,6 @@ private val BasicCollagePalettes = listOf(
     CollagePalette(Color(0xFF111113), Color(0xFF232327), Color(0xFFE5E5EA)),
 )
 
-private val VioletCollagePalettes = listOf(
-    CollagePalette(Color(0xFF4A208B), Color(0xFF8C53DE), Color(0xFFE7D6FF)),
-    CollagePalette(Color(0xFF33186E), Color(0xFF6B3EC4), Color(0xFFDCC8FF)),
-    CollagePalette(Color(0xFF5D217F), Color(0xFFA84EC4), Color(0xFFF6D4FF)),
-    CollagePalette(Color(0xFF281960), Color(0xFF5843BA), Color(0xFFD1D6FF)),
-)
-
-private val MoonflowerCollagePalettes = listOf(
-    CollagePalette(Color(0xFF6E4B7C), Color(0xFFB57CA5), Color(0xFFFDE4F2)),
-    CollagePalette(Color(0xFF534982), Color(0xFF8C84C8), Color(0xFFE8E6FF)),
-    CollagePalette(Color(0xFF7A486C), Color(0xFFC9829D), Color(0xFFFFE5EE)),
-    CollagePalette(Color(0xFF4B426E), Color(0xFF886EA8), Color(0xFFF2E2FA)),
-)
-
 @Composable
 fun ArtistCollageArt(
     images: List<String>,
@@ -624,41 +605,19 @@ fun ArtistCollageArt(
     cardHeight: Dp? = null,
 ) {
     val tokens = LocalLunariaColors.current
-    val palettes = when {
-        tokens.isBasic -> BasicCollagePalettes
-        tokens.isViolet -> VioletCollagePalettes
-        else -> MoonflowerCollagePalettes
-    }
-    val palette = palettes[abs(title.hashCode()) % palettes.size]
-    val cardCorner = if (tokens.isMoonflower) 26.dp else 14.dp
+    val palette = BasicCollagePalettes[abs(title.hashCode()) % BasicCollagePalettes.size]
+    val cardCorner = 14.dp
     val shape = remember(cardCorner) { RoundedCornerShape(cardCorner) }
-    val w = cardWidth ?: if (tokens.isMoonflower) 282.dp else 244.dp
-    val h = cardHeight ?: if (tokens.isMoonflower) 356.dp else 330.dp
-    val borderColor = if (tokens.isMoonflower) {
-        Color.White.copy(alpha = if (tokens.isDark) 0.34f else 0.78f)
-    } else {
-        tokens.glassRimTopLeft.copy(alpha = 0.65f)
-    }
+    val w = cardWidth ?: 244.dp
+    val h = cardHeight ?: 330.dp
+    val borderColor = tokens.glassRimTopLeft.copy(alpha = 0.65f)
     Box(
         modifier
             .width(w)
             .height(h)
-            .then(
-                if (tokens.isViolet) {
-                    Modifier.shadow(
-                        elevation = 12.dp,
-                        shape = shape,
-                        clip = false,
-                        ambientColor = tokens.glassShadowColor,
-                        spotColor = tokens.glassShadowColor,
-                    )
-                } else {
-                    Modifier
-                },
-            )
             .clip(shape)
             .background(Brush.verticalGradient(listOf(palette.top, palette.bottom)))
-            .border(if (tokens.isMoonflower) 1.25.dp else 1.dp, borderColor, shape),
+            .border(1.dp, borderColor, shape),
     ) {
         val slots = when (images.size) {
             0 -> emptyList()
@@ -788,7 +747,7 @@ fun ReleaseArt(
     artworkUrl: String?,
     title: String,
     subtitle: String = "",
-    eyebrow: String = "NEW RELEASE",
+    eyebrow: String = dev.sonata.android.ui.i18n.LocalSonataStrings.current.newReleaseEyebrow,
     modifier: Modifier = Modifier,
     showBrandLogo: Boolean = false,
     canvasMedia: CanvasMedia? = null,
@@ -1047,29 +1006,18 @@ fun ReplayCreditCard(
     value: String,
     detail: String? = null,
     artworkUrl: String? = null,
-    holder: String = "SONATA LISTENER",
+    holder: String = dev.sonata.android.ui.i18n.LocalSonataStrings.current.sonataListenerPlaceholder,
     memberSince: String? = "09/26",
     cardIndex: Int = 0,
     onClick: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val tokens = LocalLunariaColors.current
-    val cardCorner = when {
-        tokens.isMoonflower -> 24.dp
-        tokens.isBasic -> 16.dp
-        else -> 20.dp
-    }
+    val strings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
+    val cardCorner = 16.dp
     val cardShape = remember(cardCorner) { RoundedCornerShape(cardCorner) }
-    val scrimTint = when {
-        tokens.isBasic -> Color(0xFF000000)
-        tokens.isMoonflower -> Color(0xFF3E122F)
-        else -> Color(0xFF1A0933)
-    }
-    val borderColor = when {
-        tokens.isBasic -> Color.White.copy(alpha = if (tokens.isDark) 0.16f else 0.24f)
-        tokens.isMoonflower -> Color(0xFFFFD8ED).copy(alpha = if (tokens.isDark) 0.36f else 0.72f)
-        else -> Color(0xFFCCB2FF).copy(alpha = if (tokens.isDark) 0.38f else 0.56f)
-    }
+    val scrimTint = Color(0xFF000000)
+    val borderColor = Color.White.copy(alpha = if (tokens.isDark) 0.16f else 0.24f)
     Box(
         modifier = modifier
             .aspectRatio(1.586f)
@@ -1078,38 +1026,16 @@ fun ReplayCreditCard(
             .border(1.dp, borderColor, cardShape)
             .clickable(onClick = onClick),
     ) {
-        if (tokens.isBasic) {
-            val basicGradient = if (cardIndex % 2 == 0) {
-                Brush.linearGradient(listOf(Color(0xFF242428), Color(0xFF0D0D0F)))
-            } else {
-                Brush.linearGradient(listOf(Color(0xFF1C1C20), Color(0xFF08080A)))
-            }
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(basicGradient),
-            )
+        val basicGradient = if (cardIndex % 2 == 0) {
+            Brush.linearGradient(listOf(Color(0xFF242428), Color(0xFF0D0D0F)))
         } else {
-            val bgDrawable = if (tokens.isMoonflower) {
-                if (cardIndex % 2 == 0) {
-                    R.drawable.bg_listening_exp_moonflower
-                } else {
-                    R.drawable.bg_listening_exp_moonflower_alt
-                }
-            } else {
-                if (cardIndex % 2 == 0) {
-                    R.drawable.bg_listening_exp_violet
-                } else {
-                    R.drawable.bg_listening_exp_violet_alt
-                }
-            }
-            Image(
-                painter = painterResource(bgDrawable),
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
-            )
+            Brush.linearGradient(listOf(Color(0xFF1C1C20), Color(0xFF08080A)))
         }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(basicGradient),
+        )
         Box(
             Modifier
                 .fillMaxSize()
@@ -1134,7 +1060,7 @@ fun ReplayCreditCard(
         ) {
             Row(verticalAlignment = Alignment.Top) {
                 Text(
-                    text = "YOUR LISTENING EXPERIENCE",
+                    text = strings.yourListeningExperienceEyebrow,
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.W700,
                     letterSpacing = 1.4.sp,
@@ -1174,7 +1100,7 @@ fun ReplayCreditCard(
             Row(verticalAlignment = Alignment.Bottom) {
                 Column(Modifier.weight(1f)) {
                     EmbossedCardLine(
-                        text = holder.ifBlank { "SONATA LISTENER" }.uppercase(Locale.getDefault()),
+                        text = holder.ifBlank { strings.sonataListenerPlaceholder }.uppercase(Locale.getDefault()),
                         size = 13.sp,
                     )
                     if (!detail.isNullOrBlank()) {
@@ -1191,7 +1117,7 @@ fun ReplayCreditCard(
                     Spacer(Modifier.width(10.dp))
                     Column(horizontalAlignment = Alignment.End) {
                         Text(
-                            text = "MEMBER\nSINCE",
+                            text = strings.memberSinceEyebrow,
                             style = MaterialTheme.typography.labelSmall,
                             fontSize = 7.sp,
                             lineHeight = 8.sp,
@@ -1295,41 +1221,55 @@ fun ThinSlider(
             },
         contentAlignment = Alignment.Center,
     ) {
-        Canvas(
+        val sheenColors = remember(activeColor) {
+            listOf(
+                activeColor.copy(alpha = 0f),
+                activeColor.copy(alpha = 0.65f),
+                activeColor.copy(alpha = 0f),
+            )
+        }
+        Spacer(
             Modifier
                 .fillMaxWidth()
-                .height(height),
-        ) {
-            val radius = CornerRadius(size.height / 2f)
-            drawRoundRect(color = inactiveColor, cornerRadius = radius)
-            if (loading) {
-                val sweep = sweepState?.value ?: 0f
-                val band = size.width * 0.34f
-                val startX = -band + sweep * (size.width + band * 2f)
-                drawRoundRect(
-                    brush = Brush.horizontalGradient(
-                        colors = listOf(
-                            activeColor.copy(alpha = 0f),
-                            activeColor.copy(alpha = 0.65f),
-                            activeColor.copy(alpha = 0f),
-                        ),
-                        startX = startX,
-                        endX = startX + band,
-                    ),
-                    cornerRadius = radius,
-                )
-            } else {
-                val fraction = value.coerceIn(0f, 1f)
-                val filled = (size.width * fraction).coerceAtLeast(size.height).coerceAtMost(size.width)
-                if (fraction > 0.001f) {
-                    drawRoundRect(
-                        color = activeColor,
-                        size = Size(filled, size.height),
-                        cornerRadius = radius,
+                .height(height)
+                .drawWithCache {
+                    val radius = CornerRadius(size.height / 2f)
+                    val band = (size.width * 0.34f).coerceAtLeast(1f)
+                    val sheenBrush = Brush.horizontalGradient(
+                        colors = sheenColors,
+                        startX = 0f,
+                        endX = band,
                     )
-                }
-            }
-        }
+                    val pillPath = Path().apply {
+                        addRoundRect(RoundRect(0f, 0f, size.width, size.height, radius))
+                    }
+                    onDrawBehind {
+                        drawRoundRect(color = inactiveColor, cornerRadius = radius)
+                        if (loading) {
+                            val sweep = sweepState?.value ?: 0f
+                            val startX = -band + sweep * (size.width + band * 2f)
+                            clipPath(pillPath) {
+                                translate(left = startX) {
+                                    drawRect(
+                                        brush = sheenBrush,
+                                        size = Size(band, size.height),
+                                    )
+                                }
+                            }
+                        } else {
+                            val fraction = value.coerceIn(0f, 1f)
+                            val filled = (size.width * fraction).coerceAtLeast(size.height).coerceAtMost(size.width)
+                            if (fraction > 0.001f) {
+                                drawRoundRect(
+                                    color = activeColor,
+                                    size = Size(filled, size.height),
+                                    cornerRadius = radius,
+                                )
+                            }
+                        }
+                    }
+                },
+        )
     }
 }
 
@@ -1665,9 +1605,10 @@ fun SearchField(
     onQueryChange: (String) -> Unit,
     onSubmit: () -> Unit,
     focusRequester: FocusRequester = remember { FocusRequester() },
-    placeholder: String = "Artists, Songs, Lyrics, and More",
+    placeholder: String = dev.sonata.android.ui.i18n.LocalSonataStrings.current.searchPlaceholder,
     modifier: Modifier = Modifier,
 ) {
+    val searchStrings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val submit = {
@@ -1691,7 +1632,7 @@ fun SearchField(
     ) {
         Icon(
             imageVector = SonataIcons.Search,
-            contentDescription = "Search",
+            contentDescription = searchStrings.tabSearch,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier
                 .size(32.dp)
@@ -1739,7 +1680,7 @@ fun SearchField(
             ) {
                 Icon(
                     imageVector = SonataIcons.Close,
-                    contentDescription = "Clear search",
+                    contentDescription = searchStrings.clearSearch,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp),
                 )
@@ -1908,8 +1849,15 @@ internal class SteeredLyricClock(startMs: Long) {
         lastNowMs = Double.NaN
     }
 
-    fun frame(nowMs: Double, reportedMs: Long, sampledAtMs: Double, discontinuity: Long): Long {
+    fun frame(
+        nowMs: Double,
+        reportedMs: Long,
+        sampledAtMs: Double,
+        discontinuity: Long,
+        playbackSpeed: Float = 1f,
+    ): Long {
         val safeReported = reportedMs.coerceAtLeast(0L)
+        val safeSpeed = if (playbackSpeed.isFinite() && playbackSpeed > 0.1f) playbackSpeed.toDouble() else 1.0
         val firstOfRun = lastNowMs.isNaN()
         val jumped = lastDiscontinuity != null && discontinuity != lastDiscontinuity
         lastDiscontinuity = discontinuity
@@ -1927,11 +1875,11 @@ internal class SteeredLyricClock(startMs: Long) {
             }
             anchorAtMs = takenAt
             anchorMs = safeReported.toDouble()
-            displayedMs = (anchorMs + (nowMs - anchorAtMs)).coerceAtLeast(0.0)
+            displayedMs = (anchorMs + (nowMs - anchorAtMs) * safeSpeed).coerceAtLeast(0.0)
             return displayedMs.toLong()
         }
 
-        val dt = (nowMs - lastNowMs).coerceIn(0.0, 100.0)
+        val dt = (nowMs - lastNowMs).coerceIn(0.0, 100.0) * safeSpeed
         lastNowMs = nowMs
 
         if (isNewReading) {
@@ -1946,7 +1894,7 @@ internal class SteeredLyricClock(startMs: Long) {
             }
         }
 
-        val target = anchorMs + (nowMs - anchorAtMs).coerceIn(0.0, 500.0)
+        val target = anchorMs + (nowMs - anchorAtMs).coerceIn(0.0, 500.0) * safeSpeed
         val error = target - (displayedMs + dt)
         displayedMs = when {
             abs(error) > 400.0 -> target
@@ -1973,6 +1921,7 @@ fun rememberSmoothLyricClock(
     isBuffering: Boolean,
     fpsLimit: Int = 60,
     trackKey: String = "",
+    playbackSpeed: Float = 1f,
 ): State<Long> {
     val initialPos = remember(trackKey, clock) {
         Snapshot.withoutReadObservation { clock.positionMs.coerceAtLeast(0L) }
@@ -1981,7 +1930,7 @@ fun rememberSmoothLyricClock(
     val engine = remember(trackKey) { SteeredLyricClock(initialPos) }
     val minFrameStepNanos = if (fpsLimit >= 120) 7_000_000L else 15_500_000L
 
-    LaunchedEffect(clock, trackKey, isPlaying, isBuffering, minFrameStepNanos) {
+    LaunchedEffect(clock, trackKey, isPlaying, isBuffering, minFrameStepNanos, playbackSpeed) {
         if (!isPlaying || isBuffering) {
             snapshotFlow { clock.positionMs to clock.seekDiscontinuity }
                 .collectLatest { (reported, _) ->
@@ -2005,6 +1954,7 @@ fun rememberSmoothLyricClock(
                         reportedMs = clock.positionMs,
                         sampledAtMs = sampledAtMs,
                         discontinuity = clock.seekDiscontinuity,
+                        playbackSpeed = playbackSpeed,
                     )
                 }
             }
@@ -2118,16 +2068,25 @@ private fun buildKaraokeSpans(
         if (spans.isNotEmpty()) return spans
     }
 
-    // Synthesize smooth proportional spans across the exact source line duration when word timestamps are absent.
+    // Synthesize smooth proportional spans with punctuation cadence weights when word timestamps are absent.
     val matches = KaraokeWordRegex.findAll(text).toList()
     if (matches.isEmpty()) {
         return listOf(KaraokeWordSpan(0, text.length, lineStartMs, safeLineEnd))
     }
-    val totalWeight = matches.sumOf { it.value.length.coerceAtLeast(1) }.toFloat()
-    val duration = (safeLineEnd - lineStartMs).coerceAtLeast(250L)
+    fun wordCadenceWeight(word: String): Float {
+        val trimmed = word.trim()
+        val base = trimmed.length.coerceAtLeast(1).toFloat()
+        return when (trimmed.lastOrNull()) {
+            ',', ';', ':' -> base + 0.55f
+            '.', '!', '?' -> base + 0.85f
+            else -> base
+        }
+    }
+    val totalWeight = matches.sumOf { wordCadenceWeight(it.value).toDouble() }.toFloat().coerceAtLeast(1f)
+    val duration = (safeLineEnd - lineStartMs).coerceIn(250L, 6_200L)
     var accWeight = 0f
     return matches.map { m ->
-        val w = m.value.length.coerceAtLeast(1).toFloat()
+        val w = wordCadenceWeight(m.value)
         val sMs = lineStartMs + ((accWeight / totalWeight) * duration).roundToInt().toLong()
         accWeight += w
         val eMs = lineStartMs + ((accWeight / totalWeight) * duration).roundToInt().toLong()
@@ -2135,8 +2094,8 @@ private fun buildKaraokeSpans(
     }
 }
 
-/** Exact source lyric timing offset (0 ms keeps playback strictly aligned to provider timestamps). */
-const val LYRIC_SYNC_LEAD_MS = 0L
+/** Small perceptual lead aligning swept letter illumination smoothly with vocal onset. */
+const val LYRIC_SYNC_LEAD_MS = 35L
 
 /**
  * Per-frame word/character karaoke lyric text rendered via `onTextLayout` +
@@ -2191,9 +2150,9 @@ fun SweptKaraokeLyricText(
             text = text,
             style = style.copy(
                 shadow = androidx.compose.ui.graphics.Shadow(
-                    color = color.copy(alpha = 0.30f),
+                    color = color.copy(alpha = 0.46f),
                     offset = Offset.Zero,
-                    blurRadius = 16f,
+                    blurRadius = 22f,
                 ),
             ),
             color = color,

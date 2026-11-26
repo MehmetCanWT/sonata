@@ -302,13 +302,36 @@ pub(crate) fn classify_browse_id(id: &str, fallback: HomeCardKind) -> HomeCardKi
 }
 
 pub(crate) fn is_metadata_noise_token(txt: &str) -> bool {
-    let lower = txt.trim().to_ascii_lowercase();
+    let lower = txt.trim().to_lowercase();
     if lower.is_empty() {
         return true;
     }
     if matches!(
         lower.as_str(),
-        "song" | "video" | "single" | "ep" | "album" | "playlist" | "explicit" | "artist"
+        "song"
+            | "video"
+            | "single"
+            | "ep"
+            | "album"
+            | "playlist"
+            | "explicit"
+            | "artist"
+            | "podcast"
+            | "episode"
+            | "şarkı"
+            | "sarki"
+            | "tekli"
+            | "albüm"
+            | "albumu"
+            | "sanatçı"
+            | "sanatci"
+            | "oynatma listesi"
+            | "песня"
+            | "видео"
+            | "сингл"
+            | "альбом"
+            | "исполнитель"
+            | "плейлист"
     ) {
         return true;
     }
@@ -320,6 +343,16 @@ pub(crate) fn is_metadata_noise_token(txt: &str) -> bool {
         || lower.contains(" subscriber")
         || lower.contains(" track")
         || lower.contains(" song")
+        || lower.contains("görüntüleme")
+        || lower.contains("çalma")
+        || lower.contains("dinleme")
+        || lower.contains("abone")
+        || lower.contains("parça")
+        || lower.contains("şarkı")
+        || lower.contains("просмотр")
+        || lower.contains("прослушиван")
+        || lower.contains("подписчик")
+        || lower.contains("трек")
     {
         return true;
     }
@@ -340,6 +373,9 @@ pub(crate) fn parse_responsive_track(
         .pointer("/playlistItemData/videoId")
         .or_else(|| {
             resp.pointer("/overlay/musicItemThumbnailOverlayRenderer/content/musicPlayButtonRenderer/playNavigationEndpoint/watchEndpoint/videoId")
+        })
+        .or_else(|| {
+            resp.pointer("/flexColumns/0/musicResponsiveListItemFlexColumnRenderer/text/runs/0/navigationEndpoint/watchEndpoint/videoId")
         })
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())?

@@ -14,6 +14,7 @@
         desktopLibs = with pkgs; [
           wayland
           vulkan-loader
+          libglvnd
           libxkbcommon
           xorg.libxcb
           fontconfig
@@ -33,7 +34,7 @@
         packages = {
           sonata = pkgs.rustPlatform.buildRustPackage {
             pname = "sonata";
-            version = "1.0.9";
+            version = "1.0.10";
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
             cargoBuildFlags = [ "-p" "sonata-tui" ];
@@ -49,7 +50,7 @@
 
           sonata-desktop = pkgs.rustPlatform.buildRustPackage {
             pname = "sonata-desktop";
-            version = "1.0.9";
+            version = "1.0.10";
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
             cargoBuildFlags = [ "-p" "sonata-desktop" ];

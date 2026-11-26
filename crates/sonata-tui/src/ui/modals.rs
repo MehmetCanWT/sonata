@@ -4,7 +4,7 @@
 //! 2. **Library & Theme Modals**: Renders theme picker, Spotify playlist import, playlist creation/addition, image protocol warning, and keybindings help.
 
 use crate::app::{
-    format_tui_health_badge, format_tui_speed_badge, ActiveModal, App, LastFmField,
+    format_tui_health_badge_for, format_tui_speed_badge_for, ActiveModal, App, LastFmField,
     LastFmFormState, ListenBrainzField, ListenBrainzFormState, ServerBrowserState,
     ServerBrowserTab, ServerFormField, ServerFormState, StatsModalState, TuiPlaylistAddTarget,
 };
@@ -53,6 +53,15 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
         }
         ActiveModal::Help => render_help(frame, area, app),
     }
+
+    if let Some(ref pending) = app.connect_pending_pair {
+        if matches!(
+            app.modal,
+            ActiveModal::None | ActiveModal::ConnectManager(_)
+        ) {
+            render_connect_pair_prompt(frame, area, app, pending);
+        }
+    }
 }
 
 pub fn sized_popup(min_w: u16, max_w: u16, target_h: u16, area: Rect) -> Rect {
@@ -69,7 +78,7 @@ pub fn sized_popup(min_w: u16, max_w: u16, target_h: u16, area: Rect) -> Rect {
     }
 }
 
-pub const SETTINGS_ROW_COUNT: usize = 33;
+pub const SETTINGS_ROW_COUNT: usize = 32;
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn settings_popup_rect(area: Rect, row_count: usize) -> Rect {
@@ -82,11 +91,12 @@ pub fn settings_label_width(row_width: u16) -> u16 {
 }
 
 fn render_image_warning(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize) {
+    let s = sonata_runtime::i18n::strings(app.config.language);
     let popup = sized_popup(42, 74, 13, area);
     frame.render_widget(Clear, popup);
 
     let block = Block::default()
-        .title(" Terminal Image Protocol Notice ")
+        .title(s.tui_image_notice_title)
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -104,20 +114,16 @@ fn render_image_warning(frame: &mut Frame<'_>, area: Rect, app: &App, selected: 
         .constraints([Constraint::Min(2), Constraint::Length(2)])
         .split(inner);
 
-    let body = Paragraph::new(
-        "Your current terminal does not advertise Kitty, Sixel, or iTerm2 image support.\n\
-         Album covers will fall back to coarse Unicode half-blocks.\n\n\
-         For crisp HD album artwork, use Ghostty, Kitty, WezTerm, or Foot.",
-    )
-    .wrap(Wrap { trim: true })
-    .alignment(Alignment::Center)
-    .style(Style::default().fg(app.theme.fg));
+    let body = Paragraph::new(s.tui_image_notice_body)
+        .wrap(Wrap { trim: true })
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(app.theme.fg));
     frame.render_widget(body, chunks[0]);
 
     let labels = if inner.width >= 56 {
-        [" Okay (o) ", " Don't Show Again (d) ", " Exit (q) "]
+        [s.tui_btn_okay, s.tui_btn_dont_show, s.tui_btn_exit]
     } else {
-        [" Okay (o) ", " Hide (d) ", " Quit (q) "]
+        [s.tui_btn_okay, s.tui_btn_hide, s.tui_btn_quit]
     };
     let spans: Vec<Span> = labels
         .iter()
@@ -145,6 +151,7 @@ fn render_image_warning(frame: &mut Frame<'_>, area: Rect, app: &App, selected: 
 }
 
 fn render_theme_picker(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize) {
+    let s = sonata_runtime::i18n::strings(app.config.language);
     let target_h = (app.themes.len() as u16 + 4).clamp(8, 18);
     let popup = sized_popup(36, 72, target_h, area);
     frame.render_widget(Clear, popup);
@@ -153,17 +160,24 @@ fn render_theme_picker(frame: &mut Frame<'_>, area: Rect, app: &App, selected: u
         .themes
         .iter()
         .map(|t| {
+            let display =
+                sonata_runtime::i18n::display_theme_name(app.config.language, &t.name).into_owned();
             ListItem::new(Line::from(vec![
                 Span::styled(" ■ ", Style::default().fg(to_ratatui_color(t.accent))),
-                Span::styled(t.name.clone(), Style::default().fg(app.theme.fg)),
+                Span::styled(display, Style::default().fg(app.theme.fg)),
             ]))
         })
         .collect();
 
     let title = if popup.width >= 52 {
-        format!(" Themes (custom: {}) ", AppConfig::themes_dir().display())
+        format!(
+            " {} ({}: {}) ",
+            s.themes_label,
+            s.custom_label.to_lowercase(),
+            AppConfig::themes_dir().display()
+        )
     } else {
-        " Color Themes ".to_string()
+        s.tui_themes_title.to_string()
     };
     let list = List::new(items)
         .block(
@@ -193,8 +207,8 @@ fn render_spotify_import(frame: &mut Frame<'_>, area: Rect, app: &App, input: &s
     frame.render_widget(Clear, popup);
 
     let text = format!(
-        "Paste a Spotify playlist URL or ID (no API key required):\n\n> {input}▏\n\nEnter: {}   Esc: {}",
-        s.create, s.cancel
+        "{}\n\n> {input}▏\n\nEnter: {}   Esc: {}",
+        s.tui_spotify_import_prompt, s.create, s.cancel
     );
     let p = Paragraph::new(text).wrap(Wrap { trim: false }).block(
         Block::default()
@@ -219,7 +233,10 @@ fn render_add_to_playlist(frame: &mut Frame<'_>, area: Rect, app: &App, selected
         .iter()
         .map(|target| match target {
             TuiPlaylistAddTarget::Personal(ppl) => ListItem::new(Line::from(vec![
-                Span::styled(" ★ [Personal] ", Style::default().fg(app.theme.accent)),
+                Span::styled(
+                    format!(" ★ [{}] ", s.personal_tag),
+                    Style::default().fg(app.theme.accent),
+                ),
                 Span::styled(ppl.name.clone(), Style::default().fg(app.theme.fg)),
             ])),
             TuiPlaylistAddTarget::Ytm(p) => ListItem::new(Line::from(vec![
@@ -270,9 +287,9 @@ fn render_create_playlist(
         s.youtube
     };
     let switch_hint = if !app.config.personal_only_mode && app.ytm.is_authenticated() {
-        "   Tab: Switch"
+        format!("   Tab: {}", s.switch_label)
     } else {
-        ""
+        String::new()
     };
     let text = format!(
         "[{}] {}:\n\n> {input}▏\n\nEnter: {}   Esc: {}{}",
@@ -321,12 +338,14 @@ fn render_local_music_manager(frame: &mut Frame<'_>, area: Rect, app: &App, sele
     let status_tag = if !app.config.local_music_enabled {
         s.disabled.to_string()
     } else if app.local_scanning {
-        "Scanning...".to_string()
+        s.scanning.to_string()
     } else {
         format!(
-            "{} tracks · {} albums",
+            "{} {} · {} {}",
             app.local_scan.tracks.len(),
-            app.local_scan.albums.len()
+            s.tracks_word,
+            app.local_scan.albums.len(),
+            s.albums_word
         )
     };
     let block = Block::default()
@@ -349,7 +368,7 @@ fn render_local_music_manager(frame: &mut Frame<'_>, area: Rect, app: &App, sele
         .split(inner);
 
     if dirs.is_empty() {
-        let p = Paragraph::new("No folders configured. Press 'a' to add a music folder.")
+        let p = Paragraph::new(s.tui_local_no_folders)
             .wrap(Wrap { trim: false })
             .style(Style::default().fg(app.theme.muted));
         frame.render_widget(p, chunks[0]);
@@ -372,7 +391,7 @@ fn render_local_music_manager(frame: &mut Frame<'_>, area: Rect, app: &App, sele
         frame.render_stateful_widget(list, chunks[0], &mut state);
     }
 
-    let hint = Paragraph::new("Enter: Toggle Local  a: Add folder  s: Scan  d: Remove  Esc: Back")
+    let hint = Paragraph::new(s.tui_local_hints)
         .style(Style::default().fg(app.theme.muted))
         .wrap(Wrap { trim: false });
     frame.render_widget(hint, chunks[1]);
@@ -413,11 +432,8 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
         ),
     };
 
-    let dl_limit_text = if app.config.downloads_limit_gb == 0 {
-        s.unlimited.to_string()
-    } else {
-        AppConfig::downloads_limit_label(app.config.downloads_limit_gb)
-    };
+    let dl_limit_text =
+        AppConfig::downloads_limit_label_for(app.config.language, app.config.downloads_limit_gb);
     let dl_dir_text = app
         .config
         .effective_downloads_dir()
@@ -429,20 +445,15 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
         app.downloaded_tracks.len(),
         s.tracks
     );
-    let discord_app_text = app
-        .config
-        .discord_app_id
-        .clone()
-        .unwrap_or_else(|| "Default".to_string());
     let servers_text = if app.server_profiles.is_empty() {
-        "None (Enter to add)".to_string()
+        s.none_enter_to_add.to_string()
     } else {
-        format!("{} configured (Enter)", app.server_profiles.len())
+        format!("{} {}", app.server_profiles.len(), s.configured_enter)
     };
     let local_text = if !app.config.local_music_enabled {
         s.disabled.to_string()
     } else if app.local_scanning {
-        "Scanning...".to_string()
+        s.scanning.to_string()
     } else {
         format!(
             "{} {} · {} {}",
@@ -502,7 +513,12 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
             section: Some(s.tui_sec_audio),
             label: s.tui_providers,
             description: s.tui_providers_desc,
-            value: SettingValueKind::Text(app.config.provider_mode.label().to_string()),
+            value: SettingValueKind::Text(
+                app.config
+                    .provider_mode
+                    .label_for(app.config.language)
+                    .to_string(),
+            ),
             adjustable: true,
         },
         SettingEntry {
@@ -591,7 +607,10 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
             section: None,
             label: s.color_theme,
             description: s.color_theme_desc,
-            value: SettingValueKind::ThemeSwatch(app.base_theme.name.clone()),
+            value: SettingValueKind::ThemeSwatch(
+                sonata_runtime::i18n::display_theme_name(app.config.language, &app.base_theme.name)
+                    .into_owned(),
+            ),
             adjustable: true,
         },
         SettingEntry {
@@ -623,7 +642,10 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
             section: Some(s.tui_sec_storage),
             label: s.cache_limit,
             description: s.cache_limit_desc,
-            value: SettingValueKind::Text(AppConfig::cache_limit_label(app.config.cache_limit_gb)),
+            value: SettingValueKind::Text(AppConfig::cache_limit_label_for(
+                app.config.language,
+                app.config.cache_limit_gb,
+            )),
             adjustable: true,
         },
         SettingEntry {
@@ -656,13 +678,6 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
         },
         SettingEntry {
             section: None,
-            label: s.discord_app_id,
-            description: s.discord_app_id_desc,
-            value: SettingValueKind::Text(discord_app_text),
-            adjustable: true,
-        },
-        SettingEntry {
-            section: None,
             label: s.lastfm_scrobbling,
             description: s.lastfm_scrobbling_desc,
             value: SettingValueKind::Toggle(
@@ -670,7 +685,7 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
                 if app.scrobble_config.lastfm.is_configured() {
                     s.enabled
                 } else {
-                    "Incomplete"
+                    s.incomplete
                 },
                 s.disabled,
             ),
@@ -685,7 +700,7 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
                 if app.scrobble_config.listenbrainz.is_configured() {
                     s.enabled
                 } else {
-                    "Incomplete"
+                    s.incomplete
                 },
                 s.disabled,
             ),
@@ -696,8 +711,11 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
             label: s.listening_stats,
             description: s.listening_stats_desc,
             value: SettingValueKind::Text(format!(
-                "{} {} · {}m",
-                app.stats_summary.total_plays, s.total_plays, app.stats_summary.total_minutes
+                "{} {} · {}{}",
+                app.stats_summary.total_plays,
+                s.total_plays,
+                app.stats_summary.total_minutes,
+                s.min_short
             )),
             adjustable: true,
         },
@@ -943,7 +961,7 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
                             ));
                         } else {
                             val_spans.push(Span::styled(
-                                "Solid (100% · Locked)",
+                                s.tui_opacity_locked,
                                 row_style.fg(app.theme.muted),
                             ));
                         }
@@ -1014,9 +1032,9 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
         height: 1,
     };
     let hint = if hint_rect.width >= 66 {
-        "↑/↓ Navigate   ←/→/Enter Toggle   u Check Updates   r Rescan Browser   Esc Close"
+        s.tui_settings_hints_wide
     } else {
-        "↑/↓ Nav  ←/→/Enter Change  u Update  Esc Close"
+        s.tui_settings_hints_narrow
     };
     frame.render_widget(
         Paragraph::new(Span::styled(hint, Style::default().fg(app.theme.muted)))
@@ -1026,28 +1044,8 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App, selected: usize
 }
 
 fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let lines = vec![
-        "Navigation:  Tab / h / l   Switch pane  |  ↑/↓ / j   Move up/down",
-        "Resize:      H / L         Resize pane  |  Mouse Drag Drag pane borders",
-        "Search:      /             Search       |  Enter     Play",
-        "Playback:    Space         Play/Pause   |  n / p     Next / Prev",
-        "Speed/Seek:  [ / ]         Speed ±step  |  < / >     Seek ±5s",
-        "Volume:      - / +         Volume ±5%   |  T / O     Translate / Romanize",
-        "Queue Modes: s             Shuffle      |  r         Repeat (Off/All/One)",
-        "YTM Sync:    y             Like / Unlike on YouTube Music account",
-        "             a / x (Del)   Add to / Remove from playlist (Personal/YTM)",
-        "             c / e / R     Create playlist / Rename Personal / Refresh",
-        "Sources:     v             Switch active Library source tab",
-        "Spotify:     i             Import any Spotify playlist URL",
-        "Offline:     d / D         Download/remove track or collection",
-        "Ecosystem:   W             Listening Stats  |  C  Sonata Connect",
-        "Settings:    S             Providers, Downloads, Servers, Scrobbling & Theme",
-        "Keybinds:    k / ?         Show or close this Keybindings menu",
-        "Mini Mode:   m / Dbl-Click Toggle Mini Mode (Art + Lyrics / Art / Mini Player)",
-        "Themes:      t             Open Theme Picker (live preview)",
-        "             Custom themes & transparency: ~/.config/sonata/themes/*.toml",
-        "Quit:        q / Ctrl+C    Exit Sonata cleanly",
-    ];
+    let s = sonata_runtime::i18n::strings(app.config.language);
+    let lines = s.tui_help_lines;
 
     let max_line_w = lines
         .iter()
@@ -1062,7 +1060,7 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .wrap(Wrap { trim: false })
         .block(
             Block::default()
-                .title(" Sonata Keybindings (Esc, k, or ? to close) ")
+                .title(s.tui_help_modal_title)
                 .title_alignment(Alignment::Center)
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
@@ -1137,20 +1135,22 @@ fn render_server_manager(frame: &mut Frame<'_>, area: Rect, app: &App, selected:
             .server_profiles
             .iter()
             .map(|srv| {
-                let state_tag = if srv.enabled { "ON" } else { "OFF" };
+                let state_tag = if srv.enabled { s.on_upper } else { s.off_upper };
                 let health = app
                     .server_health
                     .get(&srv.id)
-                    .map(format_tui_health_badge)
+                    .map(|h| format_tui_health_badge_for(app.config.language, h))
                     .or_else(|| app.server_statuses.get(&srv.id).cloned())
                     .map(|st| format!(" · {st}"))
                     .unwrap_or_default();
                 let speed = if app.server_speed_testing.contains(&srv.id) {
-                    " · Testing speed...".to_string()
+                    format!(" · {}", s.testing_speed)
                 } else {
                     app.server_speed_tests
                         .get(&srv.id)
-                        .map(|sp| format!(" · {}", format_tui_speed_badge(sp)))
+                        .map(|sp| {
+                            format!(" · {}", format_tui_speed_badge_for(app.config.language, sp))
+                        })
                         .unwrap_or_default()
                 };
                 let loc = if srv.base_url.trim().is_empty() {
@@ -1185,11 +1185,9 @@ fn render_server_manager(frame: &mut Frame<'_>, area: Rect, app: &App, selected:
         frame.render_stateful_widget(list, chunks[0], &mut state);
     }
 
-    let hint = Paragraph::new(
-        "a: Add  e: Edit  t: Health  s: Speed  Enter: Toggle  b: Browse  d: Del  Esc",
-    )
-    .style(Style::default().fg(app.theme.muted))
-    .wrap(Wrap { trim: false });
+    let hint = Paragraph::new(s.tui_server_manager_hints)
+        .style(Style::default().fg(app.theme.muted))
+        .wrap(Wrap { trim: false });
     frame.render_widget(hint, chunks[1]);
 }
 
@@ -1202,14 +1200,18 @@ fn render_add_server(frame: &mut Frame<'_>, area: Rect, app: &App, form: &Server
     let kind_label = match form.kind {
         ServerKind::Jellyfin => "Jellyfin / Emby",
         ServerKind::Subsonic => "Subsonic / Navidrome",
-        ServerKind::Smb => "SMB / CIFS Share",
+        ServerKind::Smb => s.smb_cifs_share,
         ServerKind::WebDav => "WebDAV",
     };
     let mask = "*".repeat(form.password.chars().count());
     let mut rows = vec![
-        (ServerFormField::Kind, "Protocol", kind_label),
-        (ServerFormField::Name, "Name", form.name.as_str()),
-        (ServerFormField::BaseUrl, "Base URL", form.base_url.as_str()),
+        (ServerFormField::Kind, s.field_protocol, kind_label),
+        (ServerFormField::Name, s.field_name, form.name.as_str()),
+        (
+            ServerFormField::BaseUrl,
+            s.field_base_url,
+            form.base_url.as_str(),
+        ),
     ];
     if form.kind == ServerKind::Smb {
         rows.push((ServerFormField::Share, s.smb_share, form.share.as_str()));
@@ -1222,14 +1224,14 @@ fn render_add_server(frame: &mut Frame<'_>, area: Rect, app: &App, form: &Server
     }
     rows.push((
         ServerFormField::Username,
-        "Username",
+        s.field_username,
         form.username.as_str(),
     ));
-    rows.push((ServerFormField::Password, "Password", mask.as_str()));
+    rows.push((ServerFormField::Password, s.field_password, mask.as_str()));
     if form.kind != ServerKind::Smb {
         rows.push((
             ServerFormField::Token,
-            "API Key / Token",
+            s.field_api_key_token,
             form.token.as_str(),
         ));
     }
@@ -1264,7 +1266,7 @@ fn render_add_server(frame: &mut Frame<'_>, area: Rect, app: &App, form: &Server
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Tab/↑↓: Field  ←/→: Protocol  Ctrl+T: Test  Enter: Save  Esc: Cancel",
+        s.tui_add_server_hints,
         Style::default().fg(app.theme.muted),
     )));
 
@@ -1286,6 +1288,7 @@ fn render_add_server(frame: &mut Frame<'_>, area: Rect, app: &App, form: &Server
 }
 
 fn render_server_browser(frame: &mut Frame<'_>, area: Rect, app: &App, st: &ServerBrowserState) {
+    let s = sonata_runtime::i18n::strings(app.config.language);
     let popup = sized_popup(52, 88, 20, area);
     frame.render_widget(Clear, popup);
 
@@ -1314,16 +1317,16 @@ fn render_server_browser(frame: &mut Frame<'_>, area: Rect, app: &App, st: &Serv
         .split(inner);
 
     let tabs = [
-        (ServerBrowserTab::Tracks, "Tracks"),
-        (ServerBrowserTab::Playlists, "Playlists"),
-        (ServerBrowserTab::Albums, "Albums"),
-        (ServerBrowserTab::Artists, "Artists"),
+        (ServerBrowserTab::Tracks, s.tracks),
+        (ServerBrowserTab::Playlists, s.playlists),
+        (ServerBrowserTab::Albums, s.albums),
+        (ServerBrowserTab::Artists, s.artists),
         (
             ServerBrowserTab::Libraries,
             if matches!(st.server_kind, ServerKind::WebDav | ServerKind::Smb) {
-                "Folders"
+                s.folders
             } else {
-                "Libraries"
+                s.libraries_label
             },
         ),
     ];
@@ -1346,12 +1349,12 @@ fn render_server_browser(frame: &mut Frame<'_>, area: Rect, app: &App, st: &Serv
 
     if app.server_loading {
         frame.render_widget(
-            Paragraph::new("Loading server library...").style(Style::default().fg(app.theme.muted)),
+            Paragraph::new(s.loading_server_library).style(Style::default().fg(app.theme.muted)),
             chunks[1],
         );
     } else if let Some(ref err) = app.server_error {
         frame.render_widget(
-            Paragraph::new(format!("Error: {err}"))
+            Paragraph::new(format!("{}: {err}", s.error_label))
                 .style(Style::default().fg(app.theme.error))
                 .wrap(Wrap { trim: false }),
             chunks[1],
@@ -1384,8 +1387,7 @@ fn render_server_browser(frame: &mut Frame<'_>, area: Rect, app: &App, st: &Serv
         };
         if labels.is_empty() {
             frame.render_widget(
-                Paragraph::new("No items in this section.")
-                    .style(Style::default().fg(app.theme.muted)),
+                Paragraph::new(s.no_items_in_section).style(Style::default().fg(app.theme.muted)),
                 chunks[1],
             );
         } else {
@@ -1406,8 +1408,7 @@ fn render_server_browser(frame: &mut Frame<'_>, area: Rect, app: &App, st: &Serv
     }
 
     frame.render_widget(
-        Paragraph::new("←/→/Tab: Section  ↑/↓: Select  Enter: Open/Play  r: Refresh  Esc: Close")
-            .style(Style::default().fg(app.theme.muted)),
+        Paragraph::new(s.tui_server_browser_hints).style(Style::default().fg(app.theme.muted)),
         chunks[2],
     );
 }
@@ -1499,7 +1500,7 @@ fn render_listening_stats(frame: &mut Frame<'_>, area: Rect, app: &App, st: &Sta
                 Style::default().fg(app.theme.muted),
             ),
             Span::styled(
-                format!("{}m  ", summary.total_minutes),
+                format!("{}{}  ", summary.total_minutes, s.min_short),
                 Style::default()
                     .fg(app.theme.fg)
                     .add_modifier(Modifier::BOLD),
@@ -1509,7 +1510,7 @@ fn render_listening_stats(frame: &mut Frame<'_>, area: Rect, app: &App, st: &Sta
                 Style::default().fg(app.theme.muted),
             ),
             Span::styled(
-                format!("{}d", summary.streak_days),
+                format!("{}{}", summary.streak_days, s.day_short),
                 Style::default()
                     .fg(app.theme.success)
                     .add_modifier(Modifier::BOLD),
@@ -1551,11 +1552,13 @@ fn render_listening_stats(frame: &mut Frame<'_>, area: Rect, app: &App, st: &Sta
             .enumerate()
             .map(|(i, a)| {
                 format!(
-                    "{}. {}  ({} plays · {}m)",
+                    "{}. {}  ({} {} · {}{})",
                     i + 1,
                     a.artist,
                     a.plays,
-                    a.minutes
+                    s.plays_word,
+                    a.minutes,
+                    s.min_short
                 )
             })
             .collect(),
@@ -1565,12 +1568,14 @@ fn render_listening_stats(frame: &mut Frame<'_>, area: Rect, app: &App, st: &Sta
             .enumerate()
             .map(|(i, a)| {
                 format!(
-                    "{}. {} — {}  ({} plays · {}m)",
+                    "{}. {} — {}  ({} {} · {}{})",
                     i + 1,
                     a.album,
                     a.artist,
                     a.plays,
-                    a.minutes
+                    s.plays_word,
+                    a.minutes,
+                    s.min_short
                 )
             })
             .collect(),
@@ -1580,20 +1585,22 @@ fn render_listening_stats(frame: &mut Frame<'_>, area: Rect, app: &App, st: &Sta
             .enumerate()
             .map(|(i, t)| {
                 format!(
-                    "{}. {} — {} [{}] ({} plays · {}m)",
+                    "{}. {} — {} [{}] ({} {} · {}{})",
                     i + 1,
                     t.title,
                     t.artist,
                     t.source_tag,
                     t.plays,
-                    t.minutes
+                    s.plays_word,
+                    t.minutes,
+                    s.min_short
                 )
             })
             .collect(),
     };
     if app.stats_loading {
         frame.render_widget(
-            Paragraph::new("Loading stats...").style(Style::default().fg(app.theme.muted)),
+            Paragraph::new(s.loading_stats).style(Style::default().fg(app.theme.muted)),
             chunks[3],
         );
     } else if rows.is_empty() {
@@ -1618,8 +1625,7 @@ fn render_listening_stats(frame: &mut Frame<'_>, area: Rect, app: &App, st: &Sta
     }
 
     frame.render_widget(
-        Paragraph::new("1-4: Window  Tab/←→: Chart  ↑↓: Scroll  Enter: Play  r: Refresh  Esc")
-            .style(Style::default().fg(app.theme.muted)),
+        Paragraph::new(s.tui_stats_hints).style(Style::default().fg(app.theme.muted)),
         chunks[4],
     );
 }
@@ -1633,13 +1639,21 @@ fn render_lastfm_form(frame: &mut Frame<'_>, area: Rect, app: &App, form: &LastF
     let session_mask = "*".repeat(form.session_key.chars().count());
     let enabled_lbl = if form.enabled { s.enabled } else { s.disabled };
     let rows = [
-        (LastFmField::Enabled, "Status", enabled_lbl),
-        (LastFmField::Username, "Username", form.username.as_str()),
-        (LastFmField::ApiKey, "API Key", form.api_key.as_str()),
-        (LastFmField::ApiSecret, "API Secret", secret_mask.as_str()),
+        (LastFmField::Enabled, s.status_label, enabled_lbl),
+        (
+            LastFmField::Username,
+            s.field_username,
+            form.username.as_str(),
+        ),
+        (LastFmField::ApiKey, s.field_api_key, form.api_key.as_str()),
+        (
+            LastFmField::ApiSecret,
+            s.field_api_secret,
+            secret_mask.as_str(),
+        ),
         (
             LastFmField::SessionKey,
-            "Session Key",
+            s.field_session_key,
             session_mask.as_str(),
         ),
     ];
@@ -1674,7 +1688,7 @@ fn render_lastfm_form(frame: &mut Frame<'_>, area: Rect, app: &App, form: &LastF
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Tab/↑↓: Field  Space/←→: Toggle  Enter: Save  Esc: Cancel",
+        s.tui_scrobble_form_hints,
         Style::default().fg(app.theme.muted),
     )));
 
@@ -1703,13 +1717,17 @@ fn render_listenbrainz_form(
     let token_mask = "*".repeat(form.token.chars().count());
     let enabled_lbl = if form.enabled { s.enabled } else { s.disabled };
     let rows = [
-        (ListenBrainzField::Enabled, "Status", enabled_lbl),
+        (ListenBrainzField::Enabled, s.status_label, enabled_lbl),
         (
             ListenBrainzField::Username,
-            "Username",
+            s.field_username,
             form.username.as_str(),
         ),
-        (ListenBrainzField::Token, "User Token", token_mask.as_str()),
+        (
+            ListenBrainzField::Token,
+            s.field_user_token,
+            token_mask.as_str(),
+        ),
     ];
 
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(rows.len() + 4);
@@ -1742,7 +1760,7 @@ fn render_listenbrainz_form(
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Tab/↑↓: Field  Space/←→: Toggle  Enter: Save  Esc: Cancel",
+        s.tui_scrobble_form_hints,
         Style::default().fg(app.theme.muted),
     )));
 
@@ -1791,7 +1809,7 @@ fn render_connect_manager(frame: &mut Frame<'_>, area: Rect, app: &App, selected
     let status_txt = if !app.config.connect_enabled {
         s.disabled.to_string()
     } else if let Some(ref err) = app.connect_error {
-        format!("Error: {err}")
+        format!("{}: {err}", s.error_label)
     } else if let Some(port) = app.connect_http_port {
         format!("{} (HTTP :{port})", s.enabled)
     } else {
@@ -1800,7 +1818,10 @@ fn render_connect_manager(frame: &mut Frame<'_>, area: Rect, app: &App, selected
     let pin_txt = app.connect_pin.as_deref().unwrap_or("------");
     let info_lines = vec![
         Line::from(vec![
-            Span::styled("Status: ", Style::default().fg(app.theme.muted)),
+            Span::styled(
+                format!("{}: ", s.status_label),
+                Style::default().fg(app.theme.muted),
+            ),
             Span::styled(
                 status_txt,
                 Style::default()
@@ -1869,9 +1890,59 @@ fn render_connect_manager(frame: &mut Frame<'_>, area: Rect, app: &App, selected
     }
 
     frame.render_widget(
-        Paragraph::new("t: Toggle  r: New PIN  n: Name  d/Del: Unpair  Esc: Close")
-            .style(Style::default().fg(app.theme.muted)),
+        Paragraph::new(s.connect_modal_hints).style(Style::default().fg(app.theme.muted)),
         chunks[2],
+    );
+}
+
+fn render_connect_pair_prompt(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    app: &App,
+    pending: &sonata_runtime::connect::PendingPairRequest,
+) {
+    let s = sonata_runtime::i18n::strings(app.config.language);
+    let popup = sized_popup(46, 68, 9, area);
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .title(format!(" {} ", s.connect_pair_request_title))
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(app.theme.accent))
+        .style(Style::default().bg(app.theme.surface).fg(app.theme.fg));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let lines = vec![
+        Line::from(Span::styled(
+            crate::ui::sanitize_tui_text(&pending.device_name),
+            Style::default()
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            s.connect_pair_request_prompt,
+            Style::default().fg(app.theme.fg),
+        )),
+        Line::from(Span::styled(
+            crate::ui::sanitize_tui_text(&pending.device_id),
+            Style::default().fg(app.theme.muted),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            s.connect_pair_hints,
+            Style::default()
+                .fg(app.theme.success)
+                .add_modifier(Modifier::BOLD),
+        )),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true }),
+        inner,
     );
 }
 

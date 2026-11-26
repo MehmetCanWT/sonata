@@ -1,5 +1,6 @@
 /*
- * Sonata Connect LAN Discovery, 6-Digit PIN Pairing, Remote Control & Queue Handoff Sheet.
+ * Sonata Connect Devices, Interactive Approval Pairing, Legacy PIN Fallback,
+ * Remote Playback Control & Queue Handoff Sheet.
  */
 package dev.sonata.android.ui.screens
 
@@ -17,7 +18,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -40,6 +40,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -62,12 +63,15 @@ import dev.sonata.android.ui.CircleGlyph
 import dev.sonata.android.ui.PAGE_GUTTER
 import dev.sonata.android.ui.SonataIcons
 import dev.sonata.android.ui.i18n.LocalSonataStrings
+import dev.sonata.android.ui.i18n.connectErrorMessage
 import dev.sonata.android.ui.i18n.ecosystemStrings
 import dev.sonata.android.ui.sonataThemeAccent
 import dev.sonata.android.ui.theme.BasicPalette
 import dev.sonata.android.ui.theme.LocalLunariaColors
 import dev.sonata.android.ui.theme.SonataGlassCard
 import kotlin.math.roundToLong
+
+private val ConnectActiveGreen = Color(0xFF34C759)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -78,6 +82,8 @@ fun ConnectSheet(
     onToggleEnabled: (Boolean) -> Unit,
     onDeviceNameChange: (String) -> Unit,
     onRefreshDiscovery: () -> Unit,
+    onRequestPairApproval: (ConnectBeacon) -> Unit,
+    onCancelPairing: () -> Unit,
     onPairDevice: (ConnectBeacon, String) -> Unit,
     onConnectPaired: (ConnectBeacon) -> Unit,
     onDisconnect: () -> Unit,
@@ -91,15 +97,77 @@ fun ConnectSheet(
     val strings = LocalSonataStrings.current
     val eco = remember(appLanguage) { ecosystemStrings(appLanguage) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    var pairingTarget by remember { mutableStateOf<ConnectBeacon?>(null) }
+    var pinPairingTarget by remember { mutableStateOf<ConnectBeacon?>(null) }
     var pinInput by remember { mutableStateOf("") }
     var deviceNameDraft by remember(connectState.deviceName) { mutableStateOf(connectState.deviceName) }
 
-    pairingTarget?.let { target ->
+    LaunchedEffect(connectState.activePeer?.deviceId, connectState.pairedDeviceIds) {
+        val targetId = pinPairingTarget?.deviceId
+        if (targetId != null &&
+            (connectState.activePeer?.deviceId == targetId || targetId in connectState.pairedDeviceIds)
+        ) {
+            pinPairingTarget = null
+            pinInput = ""
+        }
+    }
+
+    // Interactive approval polling dialog (default pairing flow)
+    connectState.pendingPair?.let { pending ->
+        AlertDialog(
+            onDismissRequest = onCancelPairing,
+            containerColor = tokens.eclipseSurface,
+            titleContentColor = tokens.onSurfacePrimary,
+            textContentColor = tokens.onSurfaceSecondary,
+            title = { Text(eco.connectWaitingApprovalTitle) },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    CircularProgressIndicator(
+                        color = accent,
+                        strokeWidth = 2.5.dp,
+                        modifier = Modifier.size(30.dp),
+                    )
+                    Text(
+                        text = eco.connectWaitingApprovalBody(pending.beacon.deviceName),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = tokens.onSurfacePrimary,
+                    )
+                    TextButton(
+                        onClick = {
+                            val target = pending.beacon
+                            onCancelPairing()
+                            pinInput = ""
+                            pinPairingTarget = target
+                        },
+                    ) {
+                        Text(
+                            text = eco.connectUsePinFallback,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = accent,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = onCancelPairing) {
+                    Text(strings.cancel, color = tokens.onSurfaceSecondary)
+                }
+            },
+        )
+    }
+
+    // Optional legacy 6-digit PIN fallback dialog
+    val pinTarget = pinPairingTarget
+    if (pinTarget != null && connectState.pendingPair == null) {
         AlertDialog(
             onDismissRequest = {
-                pairingTarget = null
-                pinInput = ""
+                if (!connectState.pairingInProgress) {
+                    pinPairingTarget = null
+                    pinInput = ""
+                }
             },
             containerColor = tokens.eclipseSurface,
             titleContentColor = tokens.onSurfacePrimary,
@@ -108,7 +176,7 @@ fun ConnectSheet(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        text = "${target.deviceName} · ${eco.connectPairPinHint}",
+                        text = "${pinTarget.deviceName} · ${eco.connectPairPinHint}",
                         style = MaterialTheme.typography.bodySmall,
                         color = tokens.onSurfaceSecondary,
                     )
@@ -117,14 +185,15 @@ fun ConnectSheet(
                         onValueChange = { raw ->
                             pinInput = raw.filter { it.isDigit() }.take(6)
                         },
+                        enabled = !connectState.pairingInProgress,
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         placeholder = { Text("000000") },
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    if (!connectState.pairingError.isNullOrBlank()) {
+                    connectState.pairingError?.let { err ->
                         Text(
-                            text = eco.connectPairFailed,
+                            text = eco.connectErrorMessage(err),
                             style = MaterialTheme.typography.labelSmall,
                             color = BasicPalette.AccentRed,
                         )
@@ -134,19 +203,16 @@ fun ConnectSheet(
             confirmButton = {
                 TextButton(
                     enabled = SonataConnectCrypto.isValidPin(pinInput) && !connectState.pairingInProgress,
-                    onClick = {
-                        onPairDevice(target, pinInput)
-                        pairingTarget = null
-                        pinInput = ""
-                    },
+                    onClick = { onPairDevice(pinTarget, pinInput) },
                 ) {
                     Text(eco.connectPairButton, color = accent, fontWeight = FontWeight.SemiBold)
                 }
             },
             dismissButton = {
                 TextButton(
+                    enabled = !connectState.pairingInProgress,
                     onClick = {
-                        pairingTarget = null
+                        pinPairingTarget = null
                         pinInput = ""
                     },
                 ) {
@@ -154,6 +220,20 @@ fun ConnectSheet(
                 }
             },
         )
+    }
+
+    val discoveredIds = remember(connectState.discoveredDevices) {
+        connectState.discoveredDevices.mapTo(HashSet()) { it.deviceId }
+    }
+    val offlineTrustedDevices = remember(
+        connectState.pairedDeviceIds,
+        connectState.trustedDeviceNames,
+        discoveredIds,
+    ) {
+        connectState.pairedDeviceIds
+            .filter { it !in discoveredIds }
+            .map { id -> id to (connectState.trustedDeviceNames[id]?.takeIf { it.isNotBlank() } ?: id) }
+            .sortedBy { it.second.lowercase() }
     }
 
     ModalBottomSheet(
@@ -178,7 +258,7 @@ fun ConnectSheet(
                 ) {
                     Column(Modifier.weight(1f)) {
                         Text(
-                            text = eco.connectTitle,
+                            text = eco.connectDevicesTitle,
                             style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
                             color = tokens.onSurfacePrimary,
                         )
@@ -196,52 +276,77 @@ fun ConnectSheet(
                 }
             }
 
-            item(key = "connect_controls_card") {
-                SonataGlassCard(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(tokens.cardCornerRadius),
+            // "This Phone" local playback selector
+            item(key = "connect_this_phone") {
+                val isLocalActive = connectState.activePeer == null
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(
+                            if (isLocalActive) ConnectActiveGreen.copy(alpha = 0.12f) else tokens.eclipseCard,
+                        )
+                        .border(
+                            width = if (isLocalActive) 1.dp else 0.75.dp,
+                            color = if (isLocalActive) ConnectActiveGreen.copy(alpha = 0.55f) else tokens.cardStroke,
+                            shape = RoundedCornerShape(14.dp),
+                        )
+                        .clickable(enabled = !isLocalActive, onClick = onDisconnect)
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                    Icon(
+                        imageVector = SonataIcons.MusicNote,
+                        contentDescription = null,
+                        tint = if (isLocalActive) ConnectActiveGreen else tokens.onSurfaceSecondary,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            text = eco.connectThisPhone,
+                            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                            color = tokens.onSurfacePrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            text = eco.connectThisPhoneSubtitle,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = tokens.onSurfaceSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    if (isLocalActive) {
+                        Box(
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .background(ConnectActiveGreen.copy(alpha = 0.18f))
+                                .padding(horizontal = 10.dp, vertical = 4.dp),
                         ) {
                             Text(
-                                text = eco.connectEnableTitle,
-                                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
-                                color = tokens.onSurfacePrimary,
-                            )
-                            Switch(
-                                checked = connectState.enabled,
-                                onCheckedChange = onToggleEnabled,
-                                colors = SwitchDefaults.colors(checkedTrackColor = Color(0xFF34C759)),
+                                text = eco.connectActiveBadge,
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                color = ConnectActiveGreen,
                             )
                         }
+                    }
+                }
+            }
 
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            OutlinedTextField(
-                                value = deviceNameDraft,
-                                onValueChange = { deviceNameDraft = it },
-                                label = { Text(eco.connectDeviceNameLabel) },
-                                singleLine = true,
-                                modifier = Modifier.weight(1f),
-                            )
-                            TextButton(
-                                onClick = { onDeviceNameChange(deviceNameDraft) },
-                            ) {
-                                Text(strings.save, color = accent, fontWeight = FontWeight.SemiBold)
-                            }
-                        }
+            if (pinTarget == null && connectState.pendingPair == null && connectState.pairingError != null) {
+                item(key = "connect_pairing_error") {
+                    SonataGlassCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(tokens.cardCornerRadius),
+                    ) {
+                        Text(
+                            text = eco.connectErrorMessage(connectState.pairingError),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = BasicPalette.AccentRed,
+                            modifier = Modifier.padding(14.dp),
+                        )
                     }
                 }
             }
@@ -266,7 +371,7 @@ fun ConnectSheet(
                             ) {
                                 Column(Modifier.weight(1f)) {
                                     Text(
-                                        text = eco.connectConnectedTo(activePeer.deviceName),
+                                        text = eco.connectPlayingOn(activePeer.deviceName),
                                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                         color = tokens.onSurfacePrimary,
                                     )
@@ -279,13 +384,13 @@ fun ConnectSheet(
                                 Box(
                                     modifier = Modifier
                                         .clip(CircleShape)
-                                        .background(Color(0xFF34C759).copy(alpha = 0.18f))
+                                        .background(ConnectActiveGreen.copy(alpha = 0.18f))
                                         .padding(horizontal = 10.dp, vertical = 4.dp),
                                 ) {
                                     Text(
-                                        text = eco.connectPairedBadge,
+                                        text = eco.connectActiveBadge,
                                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-                                        color = Color(0xFF34C759),
+                                        color = ConnectActiveGreen,
                                     )
                                 }
                             }
@@ -350,29 +455,36 @@ fun ConnectSheet(
                                 var volumeDraft by remember(remote.volume) {
                                     mutableFloatStateOf(remote.volume.coerceIn(0f, 1f))
                                 }
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                ) {
-                                    Icon(
-                                        imageVector = SonataIcons.GraphicEq,
-                                        contentDescription = null,
-                                        tint = tokens.onSurfaceSecondary,
-                                        modifier = Modifier.size(18.dp),
+                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(
+                                        text = eco.connectRemoteVolume,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = tokens.onSurfaceSecondary,
                                     )
-                                    Slider(
-                                        value = volumeDraft,
-                                        onValueChange = { volumeDraft = it },
-                                        onValueChangeFinished = {
-                                            onSendCommand(ConnectCommand.SetVolume(volumeDraft))
-                                        },
-                                        modifier = Modifier.weight(1f),
-                                        colors = SliderDefaults.colors(
-                                            thumbColor = accent,
-                                            activeTrackColor = accent,
-                                        ),
-                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    ) {
+                                        Icon(
+                                            imageVector = SonataIcons.GraphicEq,
+                                            contentDescription = eco.connectRemoteVolume,
+                                            tint = tokens.onSurfaceSecondary,
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                        Slider(
+                                            value = volumeDraft,
+                                            onValueChange = { volumeDraft = it },
+                                            onValueChangeFinished = {
+                                                onSendCommand(ConnectCommand.SetVolume(volumeDraft))
+                                            },
+                                            modifier = Modifier.weight(1f),
+                                            colors = SliderDefaults.colors(
+                                                thumbColor = accent,
+                                                activeTrackColor = accent,
+                                            ),
+                                        )
+                                    }
                                 }
                             }
 
@@ -478,20 +590,26 @@ fun ConnectSheet(
                 items(connectState.discoveredDevices, key = { it.deviceId }) { beacon ->
                     val isPaired = beacon.deviceId in connectState.pairedDeviceIds
                     val isActive = connectState.activePeer?.deviceId == beacon.deviceId
+                    val actionClick = {
+                        when {
+                            isActive -> onDisconnect()
+                            isPaired -> onConnectPaired(beacon)
+                            else -> onRequestPairApproval(beacon)
+                        }
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(14.dp))
-                            .background(tokens.eclipseCard)
-                            .border(0.75.dp, tokens.cardStroke, RoundedCornerShape(14.dp))
-                            .clickable {
-                                if (isPaired) {
-                                    onConnectPaired(beacon)
-                                } else {
-                                    pinInput = ""
-                                    pairingTarget = beacon
-                                }
-                            }
+                            .background(
+                                if (isActive) ConnectActiveGreen.copy(alpha = 0.12f) else tokens.eclipseCard,
+                            )
+                            .border(
+                                width = if (isActive) 1.dp else 0.75.dp,
+                                color = if (isActive) ConnectActiveGreen.copy(alpha = 0.55f) else tokens.cardStroke,
+                                shape = RoundedCornerShape(14.dp),
+                            )
+                            .clickable(onClick = actionClick)
                             .padding(horizontal = 14.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -499,7 +617,7 @@ fun ConnectSheet(
                         Icon(
                             imageVector = SonataIcons.Wifi,
                             contentDescription = null,
-                            tint = if (isActive) Color(0xFF34C759) else accent,
+                            tint = if (isActive) ConnectActiveGreen else accent,
                             modifier = Modifier.size(20.dp),
                         )
                         Column(Modifier.weight(1f)) {
@@ -511,9 +629,15 @@ fun ConnectSheet(
                                 overflow = TextOverflow.Ellipsis,
                             )
                             Text(
-                                text = "${beacon.platform} · ${beacon.hostAddress}:${beacon.httpPort}",
+                                text = if (isPaired && !isActive) {
+                                    "${beacon.platform} · ${eco.connectSelectDeviceHint}"
+                                } else {
+                                    "${beacon.platform} · ${beacon.hostAddress}:${beacon.httpPort}"
+                                },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = tokens.onSurfaceSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                             )
                         }
                         if (isPaired) {
@@ -521,25 +645,125 @@ fun ConnectSheet(
                                 Text(strings.remove, color = tokens.onSurfaceSecondary)
                             }
                         }
+                        val badgeTint = when {
+                            isActive -> ConnectActiveGreen
+                            isPaired -> ConnectActiveGreen
+                            else -> accent
+                        }
+                        val badgeText = when {
+                            isActive -> eco.connectActiveBadge
+                            isPaired -> eco.connectTrustedBadge
+                            else -> eco.connectPairButton
+                        }
                         Box(
                             modifier = Modifier
                                 .clip(CircleShape)
-                                .background(accent.copy(alpha = 0.16f))
-                                .clickable {
-                                    if (isPaired) {
-                                        onConnectPaired(beacon)
-                                    } else {
-                                        pinInput = ""
-                                        pairingTarget = beacon
-                                    }
-                                }
+                                .background(badgeTint.copy(alpha = 0.16f))
+                                .clickable(onClick = actionClick)
                                 .padding(horizontal = 12.dp, vertical = 6.dp),
                         ) {
                             Text(
-                                text = if (isPaired) eco.connectPairedBadge else eco.connectPairButton,
+                                text = badgeText,
                                 style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                                color = accent,
+                                color = badgeTint,
                             )
+                        }
+                    }
+                }
+            }
+
+            if (offlineTrustedDevices.isNotEmpty()) {
+                item(key = "connect_trusted_offline_header") {
+                    Text(
+                        text = eco.connectTrustedDevicesTitle,
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = tokens.onSurfaceSecondary,
+                    )
+                }
+                items(offlineTrustedDevices, key = { "trusted_${it.first}" }) { (deviceId, deviceName) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(tokens.eclipseCard.copy(alpha = 0.72f))
+                            .border(0.75.dp, tokens.cardStroke, RoundedCornerShape(14.dp))
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Icon(
+                            imageVector = SonataIcons.Wifi,
+                            contentDescription = null,
+                            tint = tokens.onSurfaceSecondary.copy(alpha = 0.6f),
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                text = deviceName,
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                color = tokens.onSurfacePrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = "${eco.connectTrustedBadge} · ${eco.connectOfflineLabel}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = tokens.onSurfaceSecondary,
+                            )
+                        }
+                        TextButton(onClick = { onForgetDevice(deviceId) }) {
+                            Text(strings.remove, color = tokens.onSurfaceSecondary)
+                        }
+                    }
+                }
+            }
+
+            item(key = "connect_controls_card") {
+                Spacer(Modifier.height(2.dp))
+                SonataGlassCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(tokens.cardCornerRadius),
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(
+                                text = eco.connectEnableTitle,
+                                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                                color = tokens.onSurfacePrimary,
+                            )
+                            Switch(
+                                checked = connectState.enabled,
+                                onCheckedChange = onToggleEnabled,
+                                colors = SwitchDefaults.colors(checkedTrackColor = ConnectActiveGreen),
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            OutlinedTextField(
+                                value = deviceNameDraft,
+                                onValueChange = { deviceNameDraft = it },
+                                label = { Text(eco.connectDeviceNameLabel) },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f),
+                            )
+                            TextButton(
+                                onClick = { onDeviceNameChange(deviceNameDraft) },
+                            ) {
+                                Text(strings.save, color = accent, fontWeight = FontWeight.SemiBold)
+                            }
                         }
                     }
                 }

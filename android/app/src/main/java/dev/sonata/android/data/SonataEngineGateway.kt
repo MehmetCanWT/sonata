@@ -85,6 +85,7 @@ interface SonataEngineGateway {
     suspend fun resolveAlbumBrowseId(albumName: String, artistName: String): String?
     suspend fun fetchRadioMixes(): List<AndroidHomeShelf>
     suspend fun fetchListeningHistory(): List<AndroidTrack>
+    suspend fun removeFromListeningHistory(videoId: String): Boolean
     suspend fun resolveExplicitCounterpart(track: AndroidTrack): AndroidTrack?
     suspend fun fetchRadioQueue(videoId: String): List<AndroidTrack>
     suspend fun fetchEndlessRadioQueue(
@@ -255,6 +256,9 @@ class NativeSonataEngineGateway(
 
     override suspend fun fetchListeningHistory(): List<AndroidTrack> =
         engine.fetchListeningHistory()
+
+    override suspend fun removeFromListeningHistory(videoId: String): Boolean =
+        engine.removeFromListeningHistory(videoId)
 
     override suspend fun resolveExplicitCounterpart(track: AndroidTrack): AndroidTrack? =
         engine.resolveExplicitCounterpart(track)

@@ -142,15 +142,16 @@ fun AddToPlaylistSheet(
             )
         }
 
-        val headerTitle = remember(targets, overrideTitle) {
+        val sheetStrings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
+        val headerTitle = remember(targets, overrideTitle, sheetStrings) {
             overrideTitle?.takeIf { it.isNotBlank() }
                 ?: targets.firstOrNull()?.title
-                ?: "Selected Tracks"
+                ?: sheetStrings.selectedTracks
         }
-        val headerSubtitle = remember(targets, overrideSubtitle) {
+        val headerSubtitle = remember(targets, overrideSubtitle, sheetStrings) {
             overrideSubtitle?.takeIf { it.isNotBlank() }
                 ?: if (targets.size > 1) {
-                    "${targets.size} tracks"
+                    sheetStrings.tracksCount(targets.size)
                 } else {
                     targets.firstOrNull()?.artist.orEmpty()
                 }
@@ -180,7 +181,7 @@ fun AddToPlaylistSheet(
                 IconButton(onClick = onDismiss) {
                     Icon(
                         imageVector = SonataIcons.Close,
-                        contentDescription = "Close",
+                        contentDescription = sheetStrings.close,
                         tint = themeTokens.onSurfacePrimary,
                         modifier = Modifier.size(22.dp),
                     )
@@ -194,7 +195,7 @@ fun AddToPlaylistSheet(
                 ) {
                     Icon(
                         imageVector = SonataIcons.Check,
-                        contentDescription = "Save to playlists",
+                        contentDescription = sheetStrings.saveToPlaylists,
                         tint = if (selectedIds.isNotEmpty()) themeTokens.petalLavender else themeTokens.onSurfaceSecondary.copy(alpha = 0.40f),
                         modifier = Modifier.size(24.dp),
                     )
@@ -417,7 +418,7 @@ fun AddToPlaylistSheet(
                             if (isSelected) {
                                 Icon(
                                     imageVector = SonataIcons.Check,
-                                    contentDescription = "Selected",
+                                    contentDescription = sheetStrings.selected,
                                     tint = Color.White,
                                     modifier = Modifier.size(15.dp),
                                 )

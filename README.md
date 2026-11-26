@@ -15,7 +15,7 @@
 
 <br/><br/>
 
-### Aesthetic Cross-Platform Music Player — Android, Linux Desktop &amp; Terminal
+### Aesthetic Cross-Platform Music Player — Android, Desktop (Linux, macOS, Windows) &amp; Terminal
 
 [**Download**](#download) · [**Screenshots**](#screenshots) · [**Features**](#features) · [**Local &amp; Cloud Sources**](docs/local-and-cloud-sources.md) · [**Docs**](#documentation) · [**Build from Source**](#build-from-source) · [**Privacy**](PRIVACY.md) · [**Disclaimer**](#disclaimer)
 
@@ -45,7 +45,7 @@
 #### Cross-Platform Ecosystem &amp; Sync
 - **Android (Phone &amp; Tablet)** — native Jetpack Compose + Media3 ExoPlayer client backed by async Rust (`sonata-core` via UniFFI), adaptive portrait/landscape split layouts, home-screen widget, and **60 / 90 / 120 Hz** support.
 - **Full YouTube Music Attribution, Playlist Editing & Sync** — reports playback (`report_playback`), playlist metadata &amp; custom cover uploads, and likes across Android, Desktop, and Terminal so Listening History and Replay stay accurate, paired with an in-app **Listening History** view.
-- **Linux Wayland Desktop (`sonata-desktop`)** — native GPUI (`gpui-kit`) client with compositor blur, 29 live-reloading CSS skins, dual-hue ambient wave shaders, 60 FPS subpixel karaoke lyrics, background audio-only freeze + low-power mini mode, MPRIS2, System Tray, and `en`/`tr`/`ru` UI localization.
+- **Cross-Platform Desktop (`sonata-desktop`)** — Tauri v2 (Linux, macOS, Windows) with a React 19 + TypeScript + Tailwind CSS v4 + shadcn/ui matte obsidian interface, Dark &amp; Light modes, 60 FPS interpolated word-synced immersive lyrics, MPRIS2 / OS media controls (`souvlaki`), System Tray, and `en`/`tr`/`ru` UI localization.
 - **Terminal Client (`sonata`)** — ultra-fast Ratatui TUI with Kitty/Sixel/Halfblock artwork, animated motion covers, 60 FPS character-by-character lyrics with `tachyonfx` transitions, `en`/`tr`/`ru` localization, and responsive Mini Mode.
 
     </td>
@@ -77,7 +77,7 @@
 
 <table>
   <tr>
-    <th width="50%">Linux Wayland Desktop (<code>sonata-desktop</code>)</th>
+    <th width="50%">Desktop (<code>sonata-desktop</code>)</th>
     <th width="50%">Linux Terminal TUI (<code>sonata</code>)</th>
   </tr>
   <tr>
@@ -109,7 +109,7 @@
     </td>
     <td width="50%" valign="top">
 
-#### Linux Desktop &amp; Terminal (`x86_64`)
+#### Desktop (Linux, macOS, Windows) &amp; Terminal
 - **Packages &amp; AppImage:** Download **`.deb`**, **`.rpm`**, **`.tar.gz`**, or **`Sonata-v1.0.9-x86_64.AppImage`** from [GitHub Releases](https://github.com/MehmetCanWT/sonata/releases/latest) (`--tui` launches the terminal client).
 - **One-Line Installer:**
   ```sh
@@ -140,9 +140,9 @@
 | Crate / Folder | Role |
 |---|---|
 | `crates/sonata-core` | Portable Rust engine (auth, Hi-Fi cipher &amp; stream resolution, YTM/Spotify/JioSaavn providers, multi-provider TTML/YRC/KRC/LRCLIB lyrics, SQLite WAL cache, motion media discovery, redaction, updater) |
-| `crates/sonata-runtime` | Shared Linux runtime adapter (`mpv` IPC, `PlaybackSession`, browser cookie extraction, `yt-dlp` fast-start/recovery, `ffmpeg` motion decoding, `en`/`tr`/`ru` i18n, XDG TOML config, Hyprland IPC) |
+| `crates/sonata-runtime` | Shared desktop/TUI runtime adapter (Linux, macOS, Windows) (`mpv` IPC, `PlaybackSession`, browser cookie extraction, `yt-dlp` fast-start/recovery, `ffmpeg` motion decoding, `en`/`tr`/`ru` i18n, XDG TOML config, Hyprland IPC) |
 | `crates/sonata-android` + `android/` | Cancellable async UniFFI Rust bridge (`libsonata_android.so`) + Jetpack Compose / Media3 ExoPlayer Android app (`Basic`, `Violet` &amp; `Moonflower` themes, neutral Liquid Glass, `en`/`tr`/`ru` i18n, YTM playlist/cover editor, Share Sheet, Widget, in-app APK updater) |
-| `crates/sonata-desktop` | Native GPUI Wayland desktop client with ambient wave shaders, 29 CSS themes, background audio-only freeze, MPRIS2 &amp; system tray |
+| `crates/sonata-desktop` + `desktop-ui/` | Cross-platform Tauri v2 desktop client (Linux, macOS, Windows) with React + Tailwind CSS v4 + shadcn/ui matte obsidian UI, MPRIS2 / `souvlaki` media controls &amp; system tray |
 | `crates/sonata-tui` | Ratatui terminal client with Kitty/Sixel/Halfblock artwork, `tachyonfx` transitions &amp; 60 FPS synced lyrics |
 
 ### Build Commands
@@ -177,6 +177,7 @@ cd android && ./gradlew testDebugUnitTest --console=plain
 
 | Guide | Topic |
 |---|---|
+| [Third-Party Integrations](docs/integrations.md) | MPRIS2 `sonata:motionArtUrl`, structured `$XDG_RUNTIME_DIR/sonata/now_playing.json` (`schema_version = 2`) &amp; `lyrics.json` for Waybar / Quickshell / widgets |
 | [Local &amp; Cloud Sources](docs/local-and-cloud-sources.md) | Folder structure, Personal Only Mode, Jellyfin / Subsonic / WebDAV / SMB metadata, `artist.json`/`artist.nfo`, artwork, `.lrc` lyrics &amp; FLAC `kbps` / `itag` badges |
 | [Flatpak &amp; Flathub](docs/flathub.md) | `dev.sonata.Desktop` sandbox permissions, offline `cargo-sources.json` generation &amp; Flathub validation |
 | [Cross-Platform Feature Guide](docs/cross-platform.md) | Feature matrix across Android, Linux Desktop (`sonata-desktop`), and Terminal (`sonata`) |

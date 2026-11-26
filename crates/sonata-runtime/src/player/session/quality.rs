@@ -22,6 +22,7 @@ pub(super) struct AudioQualityTracker {
     pub local_file_bytes: Option<u64>,
     pub codec: Option<String>,
     pub live_bitrate_bps: Option<u64>,
+    pub stabilized_live_kbps: Option<u32>,
     pub sample_rate_hz: Option<u32>,
     pub bit_depth: Option<u8>,
     pub last_emitted_badge: Option<String>,
@@ -78,16 +79,37 @@ impl SessionActor {
         if self.audio_quality.track_id.is_empty() || self.playback.loading_track {
             return;
         }
-        let live_kbps = self.audio_quality.live_bitrate_bps.and_then(|bps| {
-            let kbps = ((bps as f64) / 1000.0).round() as u32;
-            (kbps > 0).then_some(kbps)
-        });
+        let fallback_kbps = extract_badge_kbps(&self.audio_quality.base_badge);
+        if let Some(bps) = self.audio_quality.live_bitrate_bps {
+            let raw_kbps = ((bps as f64) / 1000.0).round() as u32;
+            if raw_kbps > 0 {
+                match self.audio_quality.stabilized_live_kbps {
+                    None => {
+                        let locked = match fallback_kbps {
+                            Some(nom) if (raw_kbps as i32 - nom as i32).abs() <= 48 => nom,
+                            _ => raw_kbps,
+                        };
+                        self.audio_quality.stabilized_live_kbps = Some(locked);
+                    }
+                    Some(locked) => {
+                        if raw_kbps.abs_diff(locked) >= 128
+                            && raw_kbps.abs_diff(locked) * 100 >= locked * 35
+                        {
+                            self.audio_quality.stabilized_live_kbps = Some(raw_kbps);
+                        }
+                    }
+                }
+            }
+        }
         let local_kbps = self
             .audio_quality
             .local_file_bytes
             .and_then(|bytes| compute_bitrate_kbps_from_bytes(bytes, self.playback.duration_secs));
-        let fallback_kbps = extract_badge_kbps(&self.audio_quality.base_badge);
-        let measured_kbps = live_kbps.or(local_kbps).or(fallback_kbps);
+        let measured_kbps = self
+            .audio_quality
+            .stabilized_live_kbps
+            .or(local_kbps)
+            .or(fallback_kbps);
 
         let Some(badge) = format_measured_audio_badge(
             self.audio_quality.codec.as_deref(),

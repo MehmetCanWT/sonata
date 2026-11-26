@@ -681,17 +681,12 @@ internal fun downloadStorageDetail(loc: DownloadStorageLocation, strings: Sonata
     DownloadStorageLocation.EXTERNAL -> strings.storageExternalDesc
 }
 
-internal fun designThemeLabel(design: DesignTheme): String = when (design) {
-    DesignTheme.VIOLET -> "Violet"
-    DesignTheme.MOONFLOWER -> "Moonflower"
-    DesignTheme.BASIC -> "Basic"
-}
+internal fun designThemeLabel(@Suppress("UNUSED_PARAMETER") design: DesignTheme): String = "Basic"
 
-internal fun designThemeDescription(design: DesignTheme, strings: SonataStrings): String = when (design) {
-    DesignTheme.VIOLET -> strings.themeVioletDesc
-    DesignTheme.MOONFLOWER -> strings.themeMoonflowerDesc
-    DesignTheme.BASIC -> strings.themeBasicDesc
-}
+internal fun designThemeDescription(
+    @Suppress("UNUSED_PARAMETER") design: DesignTheme,
+    strings: SonataStrings,
+): String = strings.themeBasicDesc
 
 internal fun backdropLabel(mode: PlayerBackdropMode, strings: SonataStrings): String = when (mode) {
     PlayerBackdropMode.ARTWORK_MESH -> strings.backdropMesh

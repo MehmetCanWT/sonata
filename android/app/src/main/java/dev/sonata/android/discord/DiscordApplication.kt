@@ -5,15 +5,22 @@ package dev.sonata.android.discord
  * for Sonata's mobile Discord Rich Presence integration.
  */
 object DiscordApplication {
+    /**
+     * Immutable Sonata Discord Application ID (cannot be overridden by user preferences).
+     */
     const val DEFAULT_APP_ID = "1520387624861438002"
     const val DEFAULT_APP_NAME = "Sonata"
     const val DEFAULT_BUTTON_LABEL = "Listen on Sonata"
     const val PROJECT_URL = "https://github.com/MehmetCanWT/sonata"
     const val GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
     const val API_BASE_URL = "https://discord.com/api/v9"
+    const val CURRENT_USER_URL = "$API_BASE_URL/users/@me"
+    const val GATEWAY_USER_AGENT =
+        "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
 
     private const val MIN_SNOWFLAKE_LEN = 15
     private const val MAX_SNOWFLAKE_LEN = 22
+    private const val MIN_TOKEN_LEN = 20
 
     /**
      * Validates whether [raw] looks like a Discord numeric snowflake Application ID.
@@ -24,26 +31,59 @@ object DiscordApplication {
     }
 
     /**
-     * Returns [overrideAppId] when it is a valid Discord snowflake, otherwise [DEFAULT_APP_ID].
+     * Always returns Sonata's immutable [DEFAULT_APP_ID], ignoring any custom override.
      */
-    fun resolveAppId(overrideAppId: String?): String {
-        val trimmed = overrideAppId?.trim().orEmpty()
-        return if (isValidSnowflakeAppId(trimmed)) trimmed else DEFAULT_APP_ID
-    }
+    @Suppress("UNUSED_PARAMETER")
+    fun resolveAppId(overrideAppId: String? = null): String = DEFAULT_APP_ID
 
     /**
      * Returns the Discord REST endpoint used to proxy external track artwork URLs.
      */
-    fun externalAssetsUrl(appId: String): String =
-        "$API_BASE_URL/applications/${resolveAppId(appId)}/external-assets"
+    @Suppress("UNUSED_PARAMETER")
+    fun externalAssetsUrl(appId: String = DEFAULT_APP_ID): String =
+        "$API_BASE_URL/applications/$DEFAULT_APP_ID/external-assets"
 
     /**
-     * Normalizes an `external_asset_path` returned by `/external-assets` for Gateway `large_image`.
+     * Normalizes a Discord user token by trimming whitespace, unwrapping JSON/string quotes,
+     * and rejecting empty, placeholder, bot/bearer-prefixed, or whitespace-containing values.
+     */
+    fun sanitizeToken(raw: String?): String? {
+        if (raw.isNullOrBlank()) return null
+        var candidate = raw.trim()
+        while (candidate.length >= 2 &&
+            ((candidate.startsWith("\"") && candidate.endsWith("\"")) ||
+                (candidate.startsWith("'") && candidate.endsWith("'")))
+        ) {
+            candidate = candidate.substring(1, candidate.length - 1).trim()
+        }
+        if (candidate.isBlank() ||
+            candidate.equals("null", ignoreCase = true) ||
+            candidate.equals("undefined", ignoreCase = true) ||
+            candidate.startsWith("Bot ", ignoreCase = true) ||
+            candidate.startsWith("Bearer ", ignoreCase = true) ||
+            candidate.length < MIN_TOKEN_LEN ||
+            candidate.any { it.isWhitespace() || it.isISOControl() }
+        ) {
+            return null
+        }
+        return candidate
+    }
+
+    /**
+     * Normalizes an `external_asset_path` returned by `/external-assets` (or an existing
+     * `media.discordapp.net` / `mp:` reference) for Gateway `large_image`.
      */
     fun normalizeExternalAssetImage(externalAssetPath: String): String {
         val trimmed = externalAssetPath.trim()
         if (trimmed.isEmpty()) return ""
-        return if (trimmed.startsWith("mp:")) trimmed else "mp:$trimmed"
+        return when {
+            trimmed.startsWith("mp:") -> trimmed
+            trimmed.startsWith("https://media.discordapp.net/") ->
+                "mp:${trimmed.removePrefix("https://media.discordapp.net/")}"
+            trimmed.startsWith("http://media.discordapp.net/") ->
+                "mp:${trimmed.removePrefix("http://media.discordapp.net/")}"
+            else -> "mp:$trimmed"
+        }
     }
 
     /**

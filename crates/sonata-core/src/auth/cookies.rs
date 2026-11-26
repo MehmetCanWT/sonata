@@ -18,9 +18,16 @@ use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Creates `path` and enforces `0o700` permissions on Unix.
+/// Creates `path` and enforces `0o700` permissions on Unix at directory creation time.
 pub fn ensure_private_dir(path: &Path) -> std::io::Result<()> {
-    fs::create_dir_all(path)?;
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        builder.mode(0o700);
+    }
+    builder.create(path)?;
     #[cfg(unix)]
     {
         fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
@@ -227,13 +234,40 @@ pub fn build_from_rows(
     let mut spotify_sp_dc = None;
     let mut yt_netscape_lines = vec!["# Netscape HTTP Cookie File".to_string()];
 
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    // Prioritize `.youtube.com` and `music.youtube.com` over other subdomains (`www.`, `m.`),
+    // and prefer longer-lived non-expired cookies so stale subdomain entries cannot overwrite active ones.
+    let mut ytm_cookie_priority: HashMap<String, (u8, i64)> = HashMap::new();
+
     for row in rows {
+        if row.expiry > 0 && now_secs > 0 && row.expiry < now_secs {
+            continue;
+        }
         let host = row.host.to_ascii_lowercase();
         let is_yt = domain_matches(&host, "youtube.com");
         let is_google = domain_matches(&host, "google.com");
 
         if is_yt {
-            ytm_cookies.insert(row.name.clone(), row.value.clone());
+            let prio = if host == "music.youtube.com" {
+                3
+            } else if host == ".youtube.com" || host == "youtube.com" {
+                2
+            } else {
+                1
+            };
+            let take = match ytm_cookie_priority.get(&row.name) {
+                Some(&(prev_prio, prev_exp)) => {
+                    prio > prev_prio || (prio == prev_prio && row.expiry >= prev_exp)
+                }
+                None => true,
+            };
+            if take {
+                ytm_cookie_priority.insert(row.name.clone(), (prio, row.expiry));
+                ytm_cookies.insert(row.name.clone(), row.value.clone());
+            }
         }
         if is_yt || is_google {
             let flag = if row.is_subdomain { "TRUE" } else { "FALSE" };

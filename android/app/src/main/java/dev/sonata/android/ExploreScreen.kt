@@ -396,7 +396,7 @@ internal fun ExploreTabContent(
     }
 
     val mergedSourceShelves = remember(state.exploreShelves, state.shelves) {
-        state.exploreShelves + state.shelves
+        if (state.exploreShelves.isNotEmpty()) state.exploreShelves else state.shelves
     }
     if (state.personalOnlyMode) {
         LazyColumn(
@@ -484,8 +484,10 @@ internal fun ExploreTabContent(
 
     val preferredArtistWeights = remember(state.lastPlayedTracks, state.likedTrackIds, mergedSourceShelves) {
         val weights = HashMap<String, Int>()
+        fun primaryArtist(raw: String): String =
+            raw.substringBefore(",").substringBefore("&").substringBefore(" feat.").trim().lowercase()
         state.lastPlayedTracks.take(25).forEachIndexed { idx, track ->
-            val artist = track.artist.trim().lowercase()
+            val artist = primaryArtist(track.artist)
             if (artist.isNotBlank()) {
                 weights[artist] = (weights[artist] ?: 0) + (25 - idx).coerceAtLeast(2)
             }
@@ -493,7 +495,7 @@ internal fun ExploreTabContent(
         mergedSourceShelves.flatMap { it.tracks }
             .filter { it.id in state.likedTrackIds }
             .forEach { track ->
-                val artist = track.artist.trim().lowercase()
+                val artist = primaryArtist(track.artist)
                 if (artist.isNotBlank()) {
                     weights[artist] = (weights[artist] ?: 0) + 10
                 }
@@ -521,15 +523,13 @@ internal fun ExploreTabContent(
         primary
     }
 
-    // Trending / Viral Hits 4-row horizontal paging song columns (tailored to listener taste)
-    val viralHitsTracks = remember(mergedSourceShelves, state.tracks, state.lastPlayedTracks, preferredArtistWeights) {
+    // Trending / Viral Hits 4-row horizontal paging song columns (strictly from Explore charts/shelves)
+    val viralHitsTracks = remember(mergedSourceShelves, state.lastPlayedTracks, preferredArtistWeights) {
         val recentPlayedIds = state.lastPlayedTracks.take(4).map { it.id }.toSet()
         val trendShelves = mergedSourceShelves.filter { shelf ->
             val t = shelf.title.lowercase()
-            ("trend" in t || "chart" in t || "hit" in t || "quick" in t || "new" in t || "pop" in t ||
-                "hızlı seçimler" in t || "yeni çıkan" in t || "listeler" in t ||
-                "быстрый выбор" in t || "новинк" in t || "чарт" in t) &&
-                "forgotten" !in t && "unutulan" !in t && "забыт" !in t
+            "trend" in t || "chart" in t || "hit" in t || "top" in t || "new" in t || "pop" in t ||
+                "yeni çıkan" in t || "listeler" in t || "новинк" in t || "чарт" in t
         }
         val fromTrend = trendShelves.flatMap { shelf ->
             shelf.tracks + shelf.cards.mapNotNull { it.track }
@@ -537,14 +537,10 @@ internal fun ExploreTabContent(
         val fromAll = mergedSourceShelves.flatMap { shelf ->
             shelf.tracks + shelf.cards.mapNotNull { it.track }
         }
-        val pool = (fromTrend + fromAll + state.tracks).distinctBy { it.id }
+        val pool = (fromTrend + fromAll).distinctBy { it.id }
         val nonRecent = pool.filter { it.id !in recentPlayedIds }
         val candidatePool = if (nonRecent.size >= 12) nonRecent else pool
-        candidatePool
-            .sortedByDescending { tr ->
-                preferredArtistWeights[tr.artist.trim().lowercase()] ?: 0
-            }
-            .take(24)
+        candidatePool.take(24)
     }
     val viralColumns = remember(viralHitsTracks) { viralHitsTracks.chunked(4) }
 
@@ -561,10 +557,15 @@ internal fun ExploreTabContent(
             onOpenMoodCategory = onOpenMoodCategory,
             contentPadding = contentPadding,
             personalizedHeroCards = editorialHeroes.map { it.first },
+            viralHitsTracks = viralHitsTracks,
+            exploreShelves = topReleaseAndChartShelves + lowerExploreShelves,
             onOpenCard = { card ->
-                val shelfTracks = editorialHeroes.firstOrNull { it.first.id == card.id }?.second?.tracks.orEmpty()
+                val shelfTracks = (editorialHeroes.firstOrNull { it.first.id == card.id }?.second?.tracks)
+                    ?: (orderedExploreShelves.firstOrNull { s -> s.cards.any { it.id == card.id } }?.tracks)
+                    ?: emptyList()
                 onOpenCard(card, shelfTracks)
             },
+            onPlayTrack = onPlayTrack,
             onStartDiscoveryStation = onStartDiscoveryStation,
             modifier = modifier,
         )
@@ -1004,7 +1005,7 @@ internal fun ExploreViralHitRow(
         if (isLiked) {
             Icon(
                 imageVector = SonataIcons.StarFilled,
-                contentDescription = "Liked",
+                contentDescription = dev.sonata.android.ui.i18n.LocalSonataStrings.current.favorite,
                 tint = themeAccent,
                 modifier = Modifier
                     .padding(end = 5.dp)
@@ -1094,7 +1095,7 @@ internal fun ExploreViralHitRow(
                 if (isDownloaded) {
                     Icon(
                         imageVector = SonataIcons.Download,
-                        contentDescription = "Downloaded",
+                        contentDescription = dev.sonata.android.ui.i18n.LocalSonataStrings.current.downloaded,
                         tint = themeAccent,
                         modifier = Modifier.size(12.dp),
                     )
@@ -1119,7 +1120,7 @@ internal fun ExploreViralHitRow(
         ) {
             Icon(
                 imageVector = SonataIcons.MoreHoriz,
-                contentDescription = "Track options",
+                contentDescription = dev.sonata.android.ui.i18n.LocalSonataStrings.current.trackOptions,
                 tint = tokens.onSurfaceSecondary,
                 modifier = Modifier.size(18.dp),
             )

@@ -58,45 +58,129 @@ pub fn sanitize_playback_speed(speed: f64) -> f64 {
     speed.clamp(MIN_PLAYBACK_SPEED, MAX_PLAYBACK_SPEED)
 }
 
-/// Resolves an external CLI dependency across standard Linux, NixOS, Flatpak, and Snap binary paths.
+/// Configures a blocking `std::process::Command` so background child processes do not pop up a console window on Windows.
+pub fn configure_background_std_command(cmd: &mut std::process::Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = cmd;
+    }
+}
+
+/// Configures a `tokio::process::Command` so background child processes do not pop up a console window on Windows.
+pub fn configure_background_tokio_command(cmd: &mut tokio::process::Command) {
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = cmd;
+    }
+}
+
+fn find_binary_in_dir(dir: &Path, bin_name: &str) -> Option<PathBuf> {
+    let direct = dir.join(bin_name);
+    if direct.is_file() {
+        return Some(direct);
+    }
+    #[cfg(windows)]
+    if !bin_name.to_ascii_lowercase().ends_with(".exe") {
+        let with_exe = dir.join(format!("{bin_name}.exe"));
+        if with_exe.is_file() {
+            return Some(with_exe);
+        }
+    }
+    None
+}
+
+/// Resolves an external CLI dependency across bundled sidecars, `PATH`, and platform package directories.
 pub fn resolve_distro_binary(bin_name: &str) -> String {
-    if bin_name.is_empty() || bin_name.contains('/') {
+    if bin_name.is_empty() || bin_name.contains('/') || bin_name.contains('\\') {
         return bin_name.to_string();
+    }
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            if let Some(found) = find_binary_in_dir(exe_dir, bin_name) {
+                return found.to_string_lossy().into_owned();
+            }
+            let binaries_dir = exe_dir.join("binaries");
+            if let Some(found) = find_binary_in_dir(&binaries_dir, bin_name) {
+                return found.to_string_lossy().into_owned();
+            }
+        }
     }
 
     if let Some(path_var) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&path_var) {
-            let candidate = dir.join(bin_name);
-            if candidate.is_file() {
-                return candidate.to_string_lossy().into_owned();
+            if let Some(found) = find_binary_in_dir(&dir, bin_name) {
+                return found.to_string_lossy().into_owned();
             }
         }
     }
 
     let mut fallback_dirs: Vec<PathBuf> = Vec::new();
-    if let Some(home) = dirs::home_dir() {
-        fallback_dirs.push(home.join(".local/bin"));
-        fallback_dirs.push(home.join(".nix-profile/bin"));
-        fallback_dirs.push(home.join(".local/state/nix/profiles/profile/bin"));
-        fallback_dirs.push(home.join(".local/share/flatpak/exports/bin"));
-    }
-    if let Ok(user) = std::env::var("USER") {
-        if !user.is_empty() && !user.contains('/') {
-            fallback_dirs.push(PathBuf::from(format!("/etc/profiles/per-user/{user}/bin")));
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(home) = dirs::home_dir() {
+            fallback_dirs.push(home.join(".local/bin"));
+            fallback_dirs.push(home.join(".nix-profile/bin"));
+            fallback_dirs.push(home.join(".local/state/nix/profiles/profile/bin"));
+            fallback_dirs.push(home.join(".local/share/flatpak/exports/bin"));
         }
+        if let Ok(user) = std::env::var("USER") {
+            if !user.is_empty() && !user.contains('/') {
+                fallback_dirs.push(PathBuf::from(format!("/etc/profiles/per-user/{user}/bin")));
+            }
+        }
+        fallback_dirs.push(PathBuf::from("/run/current-system/sw/bin"));
+        fallback_dirs.push(PathBuf::from("/nix/var/nix/profiles/default/bin"));
+        fallback_dirs.push(PathBuf::from("/usr/local/bin"));
+        fallback_dirs.push(PathBuf::from("/usr/bin"));
+        fallback_dirs.push(PathBuf::from("/bin"));
+        fallback_dirs.push(PathBuf::from("/var/lib/flatpak/exports/bin"));
+        fallback_dirs.push(PathBuf::from("/snap/bin"));
     }
-    fallback_dirs.push(PathBuf::from("/run/current-system/sw/bin"));
-    fallback_dirs.push(PathBuf::from("/nix/var/nix/profiles/default/bin"));
-    fallback_dirs.push(PathBuf::from("/usr/local/bin"));
-    fallback_dirs.push(PathBuf::from("/usr/bin"));
-    fallback_dirs.push(PathBuf::from("/bin"));
-    fallback_dirs.push(PathBuf::from("/var/lib/flatpak/exports/bin"));
-    fallback_dirs.push(PathBuf::from("/snap/bin"));
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = dirs::home_dir() {
+            fallback_dirs.push(home.join(".local/bin"));
+        }
+        fallback_dirs.push(PathBuf::from("/opt/homebrew/bin"));
+        fallback_dirs.push(PathBuf::from("/usr/local/bin"));
+        fallback_dirs.push(PathBuf::from("/opt/local/bin"));
+        fallback_dirs.push(PathBuf::from("/usr/bin"));
+        fallback_dirs.push(PathBuf::from("/bin"));
+    }
+    #[cfg(windows)]
+    {
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            let base = PathBuf::from(local_app_data);
+            fallback_dirs.push(base.join("Programs").join("mpv"));
+            fallback_dirs.push(base.join("Programs").join("yt-dlp"));
+            fallback_dirs.push(base.join("Microsoft").join("WinGet").join("Links"));
+        }
+        if let Some(program_files) = std::env::var_os("ProgramFiles") {
+            let base = PathBuf::from(program_files);
+            fallback_dirs.push(base.join("mpv"));
+            fallback_dirs.push(base.join("ffmpeg").join("bin"));
+        }
+        if let Some(home) = dirs::home_dir() {
+            fallback_dirs.push(home.join("scoop").join("shims"));
+        }
+        fallback_dirs.push(PathBuf::from(r"C:\ProgramData\chocolatey\bin"));
+    }
 
     for dir in fallback_dirs {
-        let candidate = dir.join(bin_name);
-        if candidate.is_file() {
-            return candidate.to_string_lossy().into_owned();
+        if let Some(found) = find_binary_in_dir(&dir, bin_name) {
+            return found.to_string_lossy().into_owned();
         }
     }
 
@@ -130,10 +214,15 @@ impl ProviderMode {
     }
 
     pub fn label(self) -> &'static str {
+        self.label_for(AppLanguage::En)
+    }
+
+    pub fn label_for(self, lang: AppLanguage) -> &'static str {
+        let s = crate::i18n::strings(lang);
         match self {
-            Self::Both => "Both (YTM + Spotify)",
-            Self::YouTubeMusic => "YouTube Music Only",
-            Self::Spotify => "Spotify Only",
+            Self::Both => s.provider_both,
+            Self::YouTubeMusic => s.provider_ytm_only,
+            Self::Spotify => s.provider_spotify_only,
         }
     }
 
@@ -187,7 +276,8 @@ pub struct AppConfig {
     /// Whether Discord Rich Presence IPC updates are enabled on Linux clients.
     #[serde(default = "default_true")]
     pub discord_rpc_enabled: bool,
-    /// Optional custom Discord application client ID overriding the built-in Sonata app ID.
+    /// Legacy Discord application ID field retained for TOML compatibility; always ignored in favor
+    /// of [`crate::discord::DEFAULT_SONATA_DISCORD_APP_ID`].
     #[serde(default)]
     pub discord_app_id: Option<String>,
     /// Playback speed multiplier (`0.5..=2.0`, default `1.0`).
@@ -333,8 +423,13 @@ impl AppConfig {
 
     /// Returns a human-readable label for a downloads quota in GiB.
     pub fn downloads_limit_label(gigabytes: u8) -> String {
+        Self::downloads_limit_label_for(AppLanguage::En, gigabytes)
+    }
+
+    /// Returns a localized label for a downloads quota in GiB.
+    pub fn downloads_limit_label_for(lang: AppLanguage, gigabytes: u8) -> String {
         match gigabytes {
-            0 => "Unlimited".to_string(),
+            0 => crate::i18n::strings(lang).unlimited.to_string(),
             value => format!("{value} GB"),
         }
     }
@@ -365,13 +460,10 @@ impl AppConfig {
         Self::default_downloads_dir()
     }
 
-    /// Returns the configured Discord application ID or `default_app_id` when unset/blank.
-    pub fn effective_discord_app_id<'a>(&'a self, default_app_id: &'a str) -> &'a str {
-        self.discord_app_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-            .unwrap_or(default_app_id)
+    /// Always returns Sonata's immutable Discord Application ID
+    /// ([`crate::discord::DEFAULT_SONATA_DISCORD_APP_ID`]).
+    pub fn effective_discord_app_id<'a>(&'a self, _default_app_id: &'a str) -> &'a str {
+        crate::discord::DEFAULT_SONATA_DISCORD_APP_ID
     }
 
     /// Returns the default XDG-derived [`CorePaths`] for Linux desktop/TUI clients.
@@ -380,8 +472,14 @@ impl AppConfig {
     }
 
     pub fn cache_limit_label(gigabytes: u8) -> String {
+        Self::cache_limit_label_for(AppLanguage::En, gigabytes)
+    }
+
+    pub fn cache_limit_label_for(lang: AppLanguage, gigabytes: u8) -> String {
         match gigabytes.min(MAX_CACHE_LIMIT_GB) {
-            0 => "Off (not recommended)".to_string(),
+            0 => crate::i18n::strings(lang)
+                .cache_off_not_recommended
+                .to_string(),
             value => format!("{value} GB"),
         }
     }
@@ -559,7 +657,7 @@ mod tests {
         assert!(default_cfg.discord_app_id.is_none());
         assert_eq!(
             default_cfg.effective_discord_app_id("1346240000000000000"),
-            "1346240000000000000"
+            crate::discord::DEFAULT_SONATA_DISCORD_APP_ID
         );
 
         let legacy: AppConfig = toml::from_str("").expect("legacy empty config should parse");
@@ -593,7 +691,7 @@ mod tests {
         );
         assert_eq!(
             reloaded.effective_discord_app_id("1346240000000000000"),
-            "987654321098765432"
+            crate::discord::DEFAULT_SONATA_DISCORD_APP_ID
         );
 
         let unlimited: AppConfig = toml::from_str(
@@ -609,7 +707,7 @@ mod tests {
         );
         assert_eq!(
             unlimited.effective_discord_app_id("1346240000000000000"),
-            "1346240000000000000"
+            crate::discord::DEFAULT_SONATA_DISCORD_APP_ID
         );
     }
 

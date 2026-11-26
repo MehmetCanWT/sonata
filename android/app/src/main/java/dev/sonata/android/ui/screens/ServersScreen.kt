@@ -481,7 +481,7 @@ private fun ServersListContent(
                                         color = primaryText,
                                     )
                                     Text(
-                                        text = serverKindSubtitle(protoKind),
+                                        text = serverKindSubtitle(protoKind, s),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = secondaryText,
                                     )
@@ -1847,7 +1847,7 @@ private fun ServerEditorScreen(
                             label = src.smbShareLabel,
                             value = smbShare,
                             onValueChange = { smbShare = it },
-                            placeholder = "Music",
+                            placeholder = s.smbSharePlaceholder,
                             primaryText = primaryText,
                             secondaryText = secondaryText,
                             accent = accent,
@@ -2226,11 +2226,11 @@ private fun serverKindShortTag(kind: AndroidServerKind): String = when (kind) {
     AndroidServerKind.SMB -> "SMB"
 }
 
-private fun serverKindSubtitle(kind: AndroidServerKind): String = when (kind) {
-    AndroidServerKind.JELLYFIN -> "Media Server"
-    AndroidServerKind.SUBSONIC -> "Navidrome / OpenSubsonic"
-    AndroidServerKind.WEB_DAV -> "HTTPS Web Directory"
-    AndroidServerKind.SMB -> "Samba / LAN Share"
+private fun serverKindSubtitle(kind: AndroidServerKind, s: ServerStrings): String = when (kind) {
+    AndroidServerKind.JELLYFIN -> s.subtitleJellyfin
+    AndroidServerKind.SUBSONIC -> s.subtitleSubsonic
+    AndroidServerKind.WEB_DAV -> s.subtitleWebDav
+    AndroidServerKind.SMB -> s.subtitleSmb
 }
 
 private fun serverKindLabel(kind: AndroidServerKind, s: ServerStrings, src: SourcesStrings): String = when (kind) {

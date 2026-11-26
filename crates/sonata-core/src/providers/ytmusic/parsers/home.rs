@@ -12,13 +12,8 @@ use crate::providers::ytmusic::{HomeCard, HomeCardKind, HomeShelf};
 use crate::providers::{ProviderSource, Track};
 use serde_json::Value;
 
-pub(in crate::providers::ytmusic) fn is_excluded_shelf_title(title: &str) -> bool {
-    let lower = title.trim().to_lowercase();
-    lower.contains("forgotten favorite")
-        || lower.contains("unutulan favori")
-        || lower.contains("забытые хиты")
-        || lower.contains("забытое любимое")
-        || lower.contains("давно забытое")
+pub(in crate::providers::ytmusic) fn is_excluded_shelf_title(_title: &str) -> bool {
+    false
 }
 
 pub(in crate::providers::ytmusic) fn merge_home_shelves(
@@ -172,19 +167,47 @@ fn parse_mood_button(r: &Value) -> Option<HomeCard> {
 }
 
 fn parse_shelf_node(node: &Value, is_carousel: bool) -> Option<HomeShelf> {
-    let title = if is_carousel {
-        node.pointer("/header/musicCarouselShelfBasicHeaderRenderer/title")
-            .and_then(extract_runs_text)
-            .or_else(|| {
-                node.pointer("/header/musicImmersiveCarouselShelfBasicHeaderRenderer/title")
-                    .and_then(extract_runs_text)
-            })
+    let (strapline, raw_title) = if is_carousel {
+        let header = node
+            .pointer("/header/musicCarouselShelfBasicHeaderRenderer")
+            .or_else(|| node.pointer("/header/musicImmersiveCarouselShelfBasicHeaderRenderer"));
+        (
+            header
+                .and_then(|h| h.get("strapline"))
+                .and_then(extract_runs_text),
+            header
+                .and_then(|h| h.get("title"))
+                .and_then(extract_runs_text),
+        )
     } else {
-        node.pointer("/header/musicShelfBasicHeaderRenderer/title")
-            .and_then(extract_runs_text)
-            .or_else(|| node.get("title").and_then(extract_runs_text))
-    }
-    .unwrap_or_else(|| "Featured".to_string());
+        let header = node.pointer("/header/musicShelfBasicHeaderRenderer");
+        (
+            header
+                .and_then(|h| h.get("strapline"))
+                .and_then(extract_runs_text),
+            header
+                .and_then(|h| h.get("title"))
+                .and_then(extract_runs_text)
+                .or_else(|| node.get("title").and_then(extract_runs_text)),
+        )
+    };
+    let title = match (
+        strapline
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty()),
+        raw_title
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty()),
+    ) {
+        (Some(strap), Some(main)) if !main.eq_ignore_ascii_case(strap) => {
+            format!("{strap} · {main}")
+        }
+        (_, Some(main)) => main.to_string(),
+        (Some(strap), None) => strap.to_string(),
+        (None, None) => "Featured".to_string(),
+    };
 
     let contents = node.get("contents").and_then(|v| v.as_array())?;
     let mut tracks = Vec::new();
@@ -225,7 +248,14 @@ pub(super) fn parse_home_two_row(r: &Value) -> Option<HomeCard> {
         .unwrap_or_default();
     let thumbnail_url = extract_last_thumbnail(r.get("thumbnailRenderer"));
 
-    let nav = r.get("navigationEndpoint")?;
+    let nav = r
+        .get("navigationEndpoint")
+        .or_else(|| {
+            r.pointer(
+                "/thumbnailOverlay/musicItemThumbnailOverlayRenderer/content/musicPlayButtonRenderer/playNavigationEndpoint",
+            )
+        })
+        .or_else(|| r.pointer("/title/runs/0/navigationEndpoint"))?;
     if let Some(browse_id) = nav
         .pointer("/browseEndpoint/browseId")
         .and_then(|v| v.as_str())
@@ -485,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn drops_forgotten_favorites_home_shelf() {
+    fn keeps_forgotten_favorites_home_shelf() {
         let forgotten = json!({
             "contents": [{
                 "musicCarouselShelfRenderer": {
@@ -504,6 +534,9 @@ mod tests {
                 }
             }]
         });
-        assert!(parse_home_shelves_json(&forgotten).is_empty());
+        let shelves = parse_home_shelves_json(&forgotten);
+        assert_eq!(shelves.len(), 1);
+        assert_eq!(shelves[0].title, "Forgotten favorites");
+        assert_eq!(shelves[0].cards.len(), 1);
     }
 }

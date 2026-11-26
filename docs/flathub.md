@@ -1,6 +1,6 @@
 # Flatpak & Flathub Packaging Guide
 
-Sonata provides an official Wayland GPUI desktop + Ratatui TUI Flatpak definition (`dev.sonata.Desktop`) under `packaging/flatpak/`.
+Sonata provides an official Tauri v2 desktop + Ratatui TUI Flatpak definition (`dev.sonata.Desktop`) under `packaging/flatpak/`.
 
 ---
 
@@ -8,7 +8,7 @@ Sonata provides an official Wayland GPUI desktop + Ratatui TUI Flatpak definitio
 
 | Path | Purpose |
 |---|---|
-| `packaging/flatpak/dev.sonata.Desktop.yml` | `flatpak-builder` manifest targeting `org.freedesktop.Platform//24.08` + `org.freedesktop.Sdk.Extension.rust-stable` + bundled `mpv` (with LuaJIT + `libass`), `ffmpeg-full`, and `yt-dlp` |
+| `packaging/flatpak/dev.sonata.Desktop.yml` | `flatpak-builder` manifest targeting `org.gnome.Platform//47` + `org.freedesktop.Sdk.Extension.rust-stable` + `org.freedesktop.Sdk.Extension.node22` + bundled `mpv` (with LuaJIT + `libass`), `ffmpeg-full`, and `yt-dlp` |
 | `packaging/flatpak/dev.sonata.Desktop.metainfo.xml` | AppStream metadata (`dev.sonata.Desktop`), screenshots, OARS `1.1` content rating, brand colors, and release changelog |
 | `packaging/flatpak/flathub.json` | Flathub architecture configuration (`only-arches: ["x86_64"]`) |
 | `scripts/generate-flatpak-cargo-sources.sh` | Generates `cargo-sources.json` from `Cargo.lock` for fully offline Flathub build workers |
@@ -19,7 +19,7 @@ Sonata provides an official Wayland GPUI desktop + Ratatui TUI Flatpak definitio
 
 | Flag | Purpose |
 |---|---|
-| `--share=ipc`, `--socket=wayland`, `--socket=fallback-x11`, `--device=dri` | Native GPUI Wayland/Vulkan/EGL hardware-accelerated rendering |
+| `--share=ipc`, `--socket=wayland`, `--socket=fallback-x11`, `--device=dri` | Hardware-accelerated WebKitGTK / Tauri v2 rendering on Wayland and X11 |
 | `--socket=pulseaudio`, `--filesystem=xdg-run/pipewire-0:ro` | Low-latency audio output via PipeWire / PulseAudio |
 | `--share=network` | YouTube Music, self-hosted Jellyfin/Subsonic/WebDAV/SMB, lyrics, scrobbling, and Sonata Connect LAN handoff |
 | `--own-name=org.mpris.MediaPlayer2.sonata` | MPRIS2 lockscreen & media-key controls |

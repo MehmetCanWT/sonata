@@ -66,7 +66,7 @@ internal fun AppearanceCategoryContent(
         Spacer(Modifier.height(14.dp))
     }
 
-    if (search.matches("Theme", "Tema", "Violet", "Moonflower", "Basic", "Dark", "Light", "AMOLED", "Appearance", "Görünüm")) {
+    if (search.matches("Theme", "Tema", "Basic", "Dark", "Light", "Appearance", "Görünüm")) {
         SettingsGroup(
             cardBg = cardBg,
             dividerColor = dividerColor,
@@ -74,16 +74,6 @@ internal fun AppearanceCategoryContent(
             footer = strings.footerAppearanceTheme,
             secondaryText = secondaryText,
         ) {
-            SettingsRow(
-                icon = SonataIcons.Sparkles,
-                title = strings.designTheme,
-                subtitle = designThemeDescription(activeDesign, strings),
-                value = designThemeLabel(activeDesign),
-                primaryText = primaryText,
-                secondaryText = secondaryText,
-                onClick = { onOpenChoice(SettingsChoiceKind.DESIGN_THEME) },
-            )
-
             addRow(dividerStart = ROW_INSET) {
                 Column(
                     modifier = Modifier
@@ -96,13 +86,11 @@ internal fun AppearanceCategoryContent(
                         strings.themeModeSystem,
                         strings.themeModeLight,
                         strings.themeModeDark,
-                        strings.themeModeAmoled,
                     )
                     val selectedIdx = when (settings.themeMode) {
                         ThemeMode.SYSTEM -> 0
-                        ThemeMode.VIOLET_LIGHT, ThemeMode.MOONFLOWER_LIGHT, ThemeMode.BASIC_LIGHT -> 1
-                        ThemeMode.VIOLET_DARK, ThemeMode.MOONFLOWER_DARK, ThemeMode.BASIC_DARK -> 2
-                        ThemeMode.AMOLED -> 3
+                        ThemeMode.LIGHT -> 1
+                        ThemeMode.DARK -> 2
                     }
                     PillSegmentedControl(
                         options = modes,
@@ -110,19 +98,10 @@ internal fun AppearanceCategoryContent(
                         onSelect = { idx ->
                             val nextMode = when (idx) {
                                 0 -> ThemeMode.SYSTEM
-                                1 -> when (activeDesign) {
-                                    DesignTheme.VIOLET -> ThemeMode.VIOLET_LIGHT
-                                    DesignTheme.MOONFLOWER -> ThemeMode.MOONFLOWER_LIGHT
-                                    DesignTheme.BASIC -> ThemeMode.BASIC_LIGHT
-                                }
-                                2 -> when (activeDesign) {
-                                    DesignTheme.VIOLET -> ThemeMode.VIOLET_DARK
-                                    DesignTheme.MOONFLOWER -> ThemeMode.MOONFLOWER_DARK
-                                    DesignTheme.BASIC -> ThemeMode.BASIC_DARK
-                                }
-                                else -> ThemeMode.AMOLED
+                                1 -> ThemeMode.LIGHT
+                                else -> ThemeMode.DARK
                             }
-                            onUpdateSettings { it.copy(designTheme = activeDesign, themeMode = nextMode) }
+                            onUpdateSettings { it.copy(designTheme = DesignTheme.BASIC, themeMode = nextMode) }
                         },
                         modifier = Modifier.fillMaxWidth(),
                     )
@@ -330,8 +309,7 @@ internal fun AppearanceCategoryContent(
                     onCheckedChange = { enabled -> onUpdateSettings { it.copy(lyricsTranslationEnabled = enabled) } },
                 )
                 if (settings.lyricsTranslationEnabled) {
-                    val langName = TranslationLangs.firstOrNull { it.first == settings.lyricsTranslationLang }?.second
-                        ?: settings.lyricsTranslationLang.uppercase(Locale.US)
+                    val langName = strings.translationLangName(settings.lyricsTranslationLang)
                     SettingsRow(
                         icon = SonataIcons.Translate,
                         title = strings.translationLanguage,

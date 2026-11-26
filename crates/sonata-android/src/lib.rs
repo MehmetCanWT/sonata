@@ -2066,6 +2066,23 @@ impl SonataAndroidEngine {
         Ok(tracks.into_iter().map(AndroidTrack::from).collect())
     }
 
+    /// Removes `video_id` from the signed-in user's YouTube Music listening history (`FEmusic_history`).
+    pub async fn remove_from_listening_history(
+        &self,
+        video_id: String,
+    ) -> Result<bool, SonataAndroidError> {
+        let trimmed = video_id.trim();
+        if trimmed.is_empty()
+            || trimmed.starts_with("local:")
+            || trimmed.starts_with("jiosaavn:")
+            || parse_server_item_id(trimmed).is_some()
+        {
+            return Ok(false);
+        }
+        let ytm = self.current_ytm();
+        Ok(ytm.remove_from_listening_history(trimmed).await?)
+    }
+
     /// Finds an explicit counterpart track when `track` is unbadged or clean/edited.
     pub async fn resolve_explicit_counterpart(&self, track: AndroidTrack) -> Option<AndroidTrack> {
         if parse_server_item_id(&track.id).is_some() {

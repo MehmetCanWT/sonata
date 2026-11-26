@@ -1,7 +1,7 @@
 //! Portable Sonata Connect LAN discovery, pairing, state snapshot, and command signing types.
 //!
-//! 1. **Discovery & Pairing (`ConnectBeacon`, `PairRequest`, `PairAck`)**: Defines UDP port `45389`
-//!    broadcast payloads and 6-digit PIN generation/verification for local LAN pairing.
+//! 1. **Discovery & Pairing (`ConnectBeacon`, `PairRequest`, `PairAck`, `PendingPairRequest`)**: Defines UDP port `45389`
+//!    broadcast payloads, default TCP control port `45390`, 6-digit PIN generation/verification, and interactive host-approval pairing.
 //! 2. **Remote State & Commands (`ConnectStateSnapshot`, `ConnectCommand`)**: Portable models for
 //!    mirroring playback state and sending transport or queue-transfer commands.
 //! 3. **HMAC-SHA1 Signing (`sign_payload`, `verify_signature`)**: Authenticates control requests
@@ -22,6 +22,9 @@ type HmacSha1 = Hmac<Sha1>;
 /// UDP LAN broadcast discovery port for Sonata Connect.
 pub const DISCOVERY_PORT: u16 = 45389;
 
+/// Default TCP HTTP/JSON control port for Sonata Connect (falls back to an ephemeral port if busy).
+pub const DEFAULT_CONNECT_HTTP_PORT: u16 = 45390;
+
 /// Current Sonata Connect wire protocol version.
 pub const CONNECT_PROTOCOL_VERSION: u16 = 1;
 
@@ -41,7 +44,9 @@ pub struct ConnectBeacon {
 /// Request sent to `/connect/pair` with the user-entered 6-digit PIN.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PairRequest {
+    #[serde(alias = "client_device_id")]
     pub device_id: String,
+    #[serde(alias = "client_device_name")]
     pub device_name: String,
     pub pin: String,
 }
@@ -54,6 +59,52 @@ pub struct PairAck {
     pub device_name: String,
     pub token: Option<String>,
     pub message: Option<String>,
+}
+
+/// Request sent to `POST /connect/pair/request` to trigger interactive host approval.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairApprovalRequest {
+    #[serde(alias = "client_device_id")]
+    pub device_id: String,
+    #[serde(alias = "client_device_name")]
+    pub device_name: String,
+}
+
+/// Pending interactive pairing request surfaced to the host UI for approval or rejection.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PendingPairRequest {
+    pub request_id: String,
+    pub device_id: String,
+    pub device_name: String,
+    pub created_at_unix: u64,
+}
+
+/// Immediate `202 Accepted` response returned by `POST /connect/pair/request`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairApprovalQueued {
+    pub request_id: String,
+    pub status: String,
+    pub device_id: String,
+    pub device_name: String,
+}
+
+/// Polling response returned by `GET /connect/pair/status?request_id=<id>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairApprovalStatus {
+    pub status: String,
+    pub accepted: bool,
+    pub device_id: String,
+    pub device_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// Response returned by `GET /connect/trust`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrustCheckResponse {
+    pub trusted: bool,
 }
 
 /// Serialized playback snapshot served by `/connect/state`.
@@ -121,6 +172,13 @@ pub fn generate_pairing_pin() -> String {
 /// Generates a random 32-byte (64-char hex) device pairing token.
 pub fn generate_device_token() -> String {
     let mut bytes = [0u8; 32];
+    fill_entropy(&mut bytes);
+    encode_hex(&bytes)
+}
+
+/// Generates a random 16-byte (32-char hex) interactive pairing request identifier.
+pub fn generate_request_id() -> String {
+    let mut bytes = [0u8; 16];
     fill_entropy(&mut bytes);
     encode_hex(&bytes)
 }
@@ -197,6 +255,10 @@ mod tests {
         let tok_b = generate_device_token();
         assert_eq!(tok_a.len(), 64);
         assert_ne!(tok_a, tok_b);
+        let req_a = generate_request_id();
+        let req_b = generate_request_id();
+        assert_eq!(req_a.len(), 32);
+        assert_ne!(req_a, req_b);
     }
 
     #[test]
@@ -257,6 +319,50 @@ mod tests {
                 start_index: 0,
                 position_secs,
             } if tracks.len() == 1 && tracks[0].id == "t1" && (position_secs - 14.5).abs() < 1e-6
+        ));
+    }
+
+    #[test]
+    fn deserializes_canonical_and_legacy_pair_requests_and_minimal_transfer_tracks() {
+        assert_eq!(DEFAULT_CONNECT_HTTP_PORT, 45390);
+        let canonical = r#"{"device_id":"android-1","device_name":"Test Phone","pin":"123456"}"#;
+        let parsed_canonical: PairRequest = serde_json::from_str(canonical).unwrap();
+        assert_eq!(parsed_canonical.device_id, "android-1");
+        assert_eq!(parsed_canonical.device_name, "Test Phone");
+
+        let legacy = r#"{"client_device_id":"android-2","client_device_name":"Legacy Phone","pin":"654321"}"#;
+        let parsed_legacy: PairRequest = serde_json::from_str(legacy).unwrap();
+        assert_eq!(parsed_legacy.device_id, "android-2");
+        assert_eq!(parsed_legacy.device_name, "Legacy Phone");
+        assert_eq!(parsed_legacy.pin, "654321");
+
+        let minimal_transfer = r#"{
+            "command": "transfer_queue",
+            "tracks": [
+                {
+                    "id": "test-track-1",
+                    "title": "Test Track",
+                    "artist": "Test Artist",
+                    "album": "Test Album",
+                    "duration_secs": 210,
+                    "thumbnail_url": "https://example.invalid/cover.jpg"
+                }
+            ],
+            "start_index": 0,
+            "position_secs": 12.5
+        }"#;
+        let cmd: ConnectCommand = serde_json::from_str(minimal_transfer).unwrap();
+        assert!(matches!(
+            cmd,
+            ConnectCommand::TransferQueue {
+                ref tracks,
+                start_index: 0,
+                position_secs,
+            } if tracks.len() == 1
+                && tracks[0].id == "test-track-1"
+                && tracks[0].source == ProviderSource::YouTubeMusic
+                && tracks[0].audio_badge.is_none()
+                && (position_secs - 12.5).abs() < 1e-6
         ));
     }
 }

@@ -293,10 +293,10 @@ private const val PALETTE_SOURCE_PX = 128
 private const val PALETTE_FADE_MS = 260
 
 private val DefaultFallbackColors = listOf(
-    Color(0xFF3A1C71),
-    Color(0xFFD76D77),
-    Color(0xFF2B5876),
-    Color(0xFFFFAF7B),
+    Color(0xFF1C1C1E),
+    Color(0xFF2C2C2E),
+    Color(0xFF0D0D0F),
+    Color(0xFF141416),
 )
 
 private val BasicFallbackColors = listOf(

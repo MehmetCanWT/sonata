@@ -68,6 +68,14 @@ data class ServerStrings(
     val smbHostPlaceholder: String = "192.168.1.20",
     val smbPortLabel: String = "Port",
     val smbSubpathLabel: String = "Subfolder (optional)",
+    val smbSharePlaceholder: String = "Music",
+    val subtitleJellyfin: String = "Media Server",
+    val subtitleSubsonic: String = "Navidrome / OpenSubsonic",
+    val subtitleWebDav: String = "HTTPS Web Directory",
+    val subtitleSmb: String = "Samba / LAN Share",
+    val healthCheckFailed: String = "Health check failed",
+    val speedTestFailed: String = "Speed test failed",
+    val rescanFailed: String = "Rescan failed",
 )
 
 val EnglishServerStrings = ServerStrings(
@@ -138,6 +146,14 @@ val EnglishServerStrings = ServerStrings(
     smbHostPlaceholder = "192.168.1.20",
     smbPortLabel = "Port",
     smbSubpathLabel = "Subfolder (optional)",
+    smbSharePlaceholder = "Music",
+    subtitleJellyfin = "Media Server",
+    subtitleSubsonic = "Navidrome / OpenSubsonic",
+    subtitleWebDav = "HTTPS Web Directory",
+    subtitleSmb = "Samba / LAN Share",
+    healthCheckFailed = "Health check failed",
+    speedTestFailed = "Speed test failed",
+    rescanFailed = "Rescan failed",
 )
 
 val TurkishServerStrings = ServerStrings(
@@ -208,6 +224,14 @@ val TurkishServerStrings = ServerStrings(
     smbHostPlaceholder = "192.168.1.20",
     smbPortLabel = "Port",
     smbSubpathLabel = "Alt Klasör (isteğe bağlı)",
+    smbSharePlaceholder = "Müzik",
+    subtitleJellyfin = "Medya Sunucusu",
+    subtitleSubsonic = "Navidrome / OpenSubsonic",
+    subtitleWebDav = "HTTPS Web Dizini",
+    subtitleSmb = "Samba / Yerel Ağ Paylaşımı",
+    healthCheckFailed = "Sağlık kontrolü başarısız",
+    speedTestFailed = "Hız testi başarısız",
+    rescanFailed = "Yeniden tarama başarısız",
 )
 
 val RussianServerStrings = ServerStrings(
@@ -278,4 +302,12 @@ val RussianServerStrings = ServerStrings(
     smbHostPlaceholder = "192.168.1.20",
     smbPortLabel = "Порт",
     smbSubpathLabel = "Подпапка (необязательно)",
+    smbSharePlaceholder = "Музыка",
+    subtitleJellyfin = "Медиасервер",
+    subtitleSubsonic = "Navidrome / OpenSubsonic",
+    subtitleWebDav = "Веб-каталог HTTPS",
+    subtitleSmb = "Samba / Сетевая папка LAN",
+    healthCheckFailed = "Проверка состояния не удалась",
+    speedTestFailed = "Тест скорости не удался",
+    rescanFailed = "Повторное сканирование не удалось",
 )

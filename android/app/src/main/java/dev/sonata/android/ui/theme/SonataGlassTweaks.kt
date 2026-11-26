@@ -37,31 +37,30 @@ import dev.sonata.android.LocalLiquidGlassEnabled
 import dev.sonata.android.LocalReduceDynamicBlur
 import dev.sonata.android.isGlassSupported
 import dev.sonata.android.liquidGlass
-import dev.sonata.android.ui.SonataAccent
 
-/** Sonata's warm obsidian tint for dark frosted glass surfaces. */
-val SonataObsidianGlass = Color(0xFF141318)
+/** Neutral obsidian tint for dark frosted glass surfaces. */
+val SonataObsidianGlass = Color(0xFF121212)
 
-/** Sonata's soft alabaster tint for light frosted glass surfaces. */
-val SonataPearlGlass = Color(0xFFF6F6FA)
+/** Neutral alabaster tint for light frosted glass surfaces. */
+val SonataPearlGlass = Color(0xFFFAFAFA)
 
 /** Subtle crimson-tinted halo used sparingly on active Sonata pills. */
-val SonataAccentHalo = SonataAccent.copy(alpha = 0.20f)
+val SonataAccentHalo = BasicPalette.AccentRed.copy(alpha = 0.20f)
 
 /** Standard uniform size for bottom navigation tab icons (equal across all 5 tabs). */
 val SonataTabIconSize: Dp = 22.dp
 
-/** Lunaria moon-tinted dark obsidian-indigo palette for flat modal menus (no Liquid Glass). */
+/** Neutral dark obsidian palette for flat modal menus (zero Liquid Glass). */
 object SonataLunariaTokens {
-    val SheetTop = Color(0xFF141221)
-    val SheetMid = Color(0xFF0E0D17)
-    val SheetBottom = Color(0xFF09090D)
-    val CardSurface = Color(0xFF1A1926)
-    val CardSurfaceElevated = Color(0xFF211F30)
-    val HairlineBorder = Color(0xFF2B293C)
-    val MoonAccent = Color(0xFFC5BDF5)
-    val TextPrimary = Color(0xFFF4F3FA)
-    val TextSecondary = Color(0xFFA7A4BC)
+    val SheetTop = Color(0xFF161618)
+    val SheetMid = Color(0xFF101012)
+    val SheetBottom = Color(0xFF0A0A0C)
+    val CardSurface = Color(0xFF1C1C1E)
+    val CardSurfaceElevated = Color(0xFF242428)
+    val HairlineBorder = Color(0xFF2C2C2E)
+    val MoonAccent = Color.White
+    val TextPrimary = Color.White
+    val TextSecondary = Color(0xFF8E8E93)
 
     val SheetGradient: Brush
         get() = Brush.verticalGradient(
@@ -78,7 +77,7 @@ object SonataSettingsTokens {
     val Hairline = Color(0xFF262629)
     val TextPrimary = Color(0xFFFFFFFF)
     val TextSecondary = Color(0xFF8E8E93)
-    val ToggleActive = LunariaColors.PetalLavender
+    val ToggleActive = Color(0xFF34C759)
     val ToggleInactive = Color(0xFF39393D)
 }
 

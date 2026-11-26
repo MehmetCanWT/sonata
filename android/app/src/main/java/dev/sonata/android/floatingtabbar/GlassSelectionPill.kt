@@ -502,7 +502,7 @@ internal fun Modifier.pillPlacement(center: () -> Offset, size: () -> Size): Mod
         }
     }
 
-/** The flat pill: a translucent pinkish Liquid Glass capsule with a lens specular dome and rim. */
+/** The flat pill: a translucent neutral Liquid Glass capsule with a lens specular dome and rim. */
 @Composable
 internal fun FlatSelectionPill(
     color: Color,
@@ -511,15 +511,14 @@ internal fun FlatSelectionPill(
     borderColor: Color = Color.White.copy(alpha = 0.25f),
 ) {
     val bodyBrush = Brush.verticalGradient(
-        0.0f to Color.White.copy(alpha = 0.30f),
-        0.35f to color.copy(alpha = (color.alpha * 0.62f).coerceIn(0.14f, 0.30f)),
-        0.78f to color.copy(alpha = (color.alpha * 0.92f).coerceIn(0.20f, 0.38f)),
-        1.0f to Color(0xFFF482C8).copy(alpha = (color.alpha * 1.15f).coerceIn(0.24f, 0.44f)),
+        0.0f to Color.White.copy(alpha = 0.26f),
+        0.45f to color.copy(alpha = (color.alpha * 0.72f).coerceIn(0.14f, 0.34f)),
+        1.0f to color.copy(alpha = (color.alpha * 0.96f).coerceIn(0.18f, 0.42f)),
     )
     val rimBrush = Brush.linearGradient(
         listOf(
             borderColor,
-            Color(0xFFF9B2DD).copy(alpha = 0.48f),
+            Color.White.copy(alpha = 0.36f),
             borderColor.copy(alpha = 0.72f),
         ),
     )
@@ -531,8 +530,8 @@ internal fun FlatSelectionPill(
                 drawCircle(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            Color.White.copy(alpha = 0.34f),
-                            Color(0xFFFFCBE9).copy(alpha = 0.10f),
+                            Color.White.copy(alpha = 0.28f),
+                            Color.White.copy(alpha = 0.06f),
                             Color.Transparent,
                         ),
                         center = Offset(size.width * 0.5f, size.height * 0.14f),
@@ -542,7 +541,7 @@ internal fun FlatSelectionPill(
                     center = Offset(size.width * 0.5f, size.height * 0.14f),
                 )
             }
-            .border(1.1.dp, rimBrush, shape),
+            .border(1.dp, rimBrush, shape),
     )
 }
 
@@ -584,7 +583,7 @@ internal fun GlassSelectionPill(
                 lens(
                     refractionHeight = LENS_HEIGHT.toPx() * motion.glassPresence * PILL_BACKDROP_SCALE,
                     refractionAmount = LENS_AMOUNT.toPx() * motion.material * PILL_BACKDROP_SCALE,
-                    chromaticAberration = true,
+                    chromaticAberration = false,
                 )
             }
         }

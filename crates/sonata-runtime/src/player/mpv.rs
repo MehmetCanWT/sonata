@@ -21,6 +21,9 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
+#[cfg(unix)]
 use tokio::net::UnixStream;
 use tokio::sync::{mpsc, Mutex};
 
@@ -249,13 +252,19 @@ pub fn build_mpv_spawn_args_with_gapless(
 ) -> Vec<String> {
     let clamped_speed = clamp_playback_speed(speed);
     let gapless_flag = if gapless_enabled { "yes" } else { "no" };
+    #[cfg(target_os = "macos")]
+    let ao_flag = "--ao=coreaudio";
+    #[cfg(target_os = "windows")]
+    let ao_flag = "--ao=wasapi";
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let ao_flag = "--ao=pipewire,pulse,alsa";
     let mut args = vec![
         "--no-config".to_string(),
         "--idle=yes".to_string(),
         "--no-terminal".to_string(),
         "--msg-level=all=error".to_string(),
         format!("--gapless-audio={gapless_flag}"),
-        "--ao=pipewire,pulse,alsa".to_string(),
+        ao_flag.to_string(),
         "--audio-client-name=Sonata".to_string(),
         "--aid=auto".to_string(),
         "--mute=no".to_string(),
@@ -326,7 +335,9 @@ fn mpv_supports_loadfile_insert_index() -> bool {
     static SUPPORTS_INDEX: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *SUPPORTS_INDEX.get_or_init(|| {
         let mpv_bin = crate::config::resolve_distro_binary("mpv");
-        let Ok(output) = Command::new(&mpv_bin).arg("--version").output() else {
+        let mut cmd = Command::new(&mpv_bin);
+        crate::config::configure_background_std_command(&mut cmd);
+        let Ok(output) = cmd.arg("--version").output() else {
             return false;
         };
         if !output.status.success() {
@@ -337,9 +348,14 @@ fn mpv_supports_loadfile_insert_index() -> bool {
     })
 }
 
-/// Formats HTTP headers for `mpv`'s `http-header-fields` option (`Name: Value` comma-separated with `\` and `,` escaped).
+/// Formats HTTP headers for `mpv`'s `http-header-fields` option (`Name: Value` comma-separated
+/// with `\r`/`\n` stripped and `\` and `,` escaped).
 pub fn format_mpv_http_header_fields(headers: &[(String, String)]) -> String {
-    let escape = |text: &str| text.replace('\\', "\\\\").replace(',', "\\,");
+    let escape = |text: &str| {
+        text.replace(['\r', '\n'], "")
+            .replace('\\', "\\\\")
+            .replace(',', "\\,")
+    };
     headers
         .iter()
         .map(|(name, value)| format!("{}: {}", escape(name), escape(value)))
@@ -392,6 +408,30 @@ pub struct MpvController {
     sock_path: PathBuf,
     event_tx: mpsc::Sender<MpvEvent>,
     runtime: Arc<std::sync::Mutex<MpvRuntimeState>>,
+    ipc_tasks: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+}
+
+#[cfg(unix)]
+type MpvIpcStream = UnixStream;
+#[cfg(windows)]
+type MpvIpcStream = NamedPipeClient;
+
+async fn connect_mpv_ipc(path: &Path) -> std::io::Result<MpvIpcStream> {
+    #[cfg(unix)]
+    {
+        UnixStream::connect(path).await
+    }
+    #[cfg(windows)]
+    {
+        ClientOptions::new().open(path)
+    }
+}
+
+fn remove_ipc_endpoint(path: &Path) {
+    #[cfg(unix)]
+    let _ = std::fs::remove_file(path);
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 impl MpvController {
@@ -405,9 +445,25 @@ impl MpvController {
 
     async fn spawn_inner(volume: u8, event_tx: mpsc::Sender<MpvEvent>) -> Result<Self> {
         let pid = std::process::id();
-        let sock_dir = dirs::runtime_dir().unwrap_or_else(crate::config::AppConfig::cache_dir);
-        let _ = std::fs::create_dir_all(&sock_dir);
-        let sock_path = sock_dir.join(format!("sonata-mpv-{pid}.sock"));
+        #[cfg(unix)]
+        let sock_path = {
+            let (sock_dir, is_fallback) = match dirs::runtime_dir() {
+                Some(dir) => (dir, false),
+                None => (crate::config::AppConfig::cache_dir(), true),
+            };
+            if is_fallback {
+                let _ = sonata_core::auth::ensure_private_dir(&sock_dir);
+            } else {
+                use std::os::unix::fs::DirBuilderExt as _;
+                let mut builder = std::fs::DirBuilder::new();
+                builder.recursive(true);
+                builder.mode(0o700);
+                let _ = builder.create(&sock_dir);
+            }
+            sock_dir.join(format!("sonata-mpv-{pid}.sock"))
+        };
+        #[cfg(windows)]
+        let sock_path = PathBuf::from(format!(r"\\.\pipe\sonata-mpv-{pid}"));
         let runtime = Arc::new(std::sync::Mutex::new(MpvRuntimeState {
             volume: volume.min(100),
             speed: 1.0,
@@ -420,12 +476,14 @@ impl MpvController {
             ipc_generation: 1,
         }));
         let child_slot = Arc::new(Mutex::new(None));
+        let ipc_tasks = Arc::new(std::sync::Mutex::new(Vec::new()));
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Value>();
 
         let spawned_child = Self::spawn_process_with_channel(
             &sock_path,
             &runtime,
             &child_slot,
+            &ipc_tasks,
             event_tx.clone(),
             1,
             cmd_rx,
@@ -439,6 +497,7 @@ impl MpvController {
             sock_path,
             event_tx,
             runtime,
+            ipc_tasks,
         })
     }
 
@@ -446,12 +505,13 @@ impl MpvController {
         sock_path: &Path,
         runtime: &Arc<std::sync::Mutex<MpvRuntimeState>>,
         child_slot: &Arc<Mutex<Option<Child>>>,
+        ipc_tasks: &Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
         event_tx: mpsc::Sender<MpvEvent>,
         ipc_generation: u64,
         mut cmd_rx: mpsc::UnboundedReceiver<Value>,
     ) -> Result<Child> {
         let _ = tokio::task::spawn_blocking(mpv_supports_loadfile_insert_index).await;
-        let _ = std::fs::remove_file(sock_path);
+        remove_ipc_endpoint(sock_path);
         let (volume, speed, skip_silence, gapless_enabled, video_mode) = {
             let guard = runtime.lock().expect("mpv runtime lock");
             (
@@ -473,6 +533,7 @@ impl MpvController {
             sock_path,
         );
         let mut cmd = Command::new(&mpv_bin);
+        crate::config::configure_background_std_command(&mut cmd);
         cmd.args(&args);
         cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -513,7 +574,7 @@ impl MpvController {
 
         let mut stream_opt = None;
         for _ in 0..40 {
-            if let Ok(s) = UnixStream::connect(sock_path).await {
+            if let Ok(s) = connect_mpv_ipc(sock_path).await {
                 stream_opt = Some(s);
                 break;
             }
@@ -525,10 +586,10 @@ impl MpvController {
                 let _ = child.wait();
             })
             .await;
-            let _ = std::fs::remove_file(sock_path);
+            remove_ipc_endpoint(sock_path);
             return Err(anyhow!("Timed out waiting for mpv IPC socket"));
         };
-        let (read_half, mut write_half) = stream.into_split();
+        let (read_half, mut write_half) = tokio::io::split(stream);
 
         // Observe playback and audio quality properties before draining queued commands.
         let mut req_id: u64 = 1;
@@ -550,7 +611,7 @@ impl MpvController {
         }
         let _ = write_half.flush().await;
 
-        tokio::spawn(async move {
+        let writer_handle = tokio::spawn(async move {
             while let Some(command) = cmd_rx.recv().await {
                 let id = req_id;
                 req_id = req_id.wrapping_add(1);
@@ -580,7 +641,7 @@ impl MpvController {
 
         let runtime_reader = Arc::clone(runtime);
         let child_reader = Arc::clone(child_slot);
-        tokio::spawn(async move {
+        let reader_handle = tokio::spawn(async move {
             run_ipc_reader(
                 read_half,
                 runtime_reader,
@@ -590,6 +651,14 @@ impl MpvController {
             )
             .await;
         });
+
+        if let Ok(mut guard) = ipc_tasks.lock() {
+            for handle in guard.drain(..) {
+                handle.abort();
+            }
+            guard.push(writer_handle);
+            guard.push(reader_handle);
+        }
 
         Ok(child)
     }
@@ -640,6 +709,7 @@ impl MpvController {
                 let sock_path = self.sock_path.clone();
                 let runtime = Arc::clone(&self.runtime);
                 let child_slot = Arc::clone(&self.child);
+                let ipc_tasks = Arc::clone(&self.ipc_tasks);
                 let event_tx = self.event_tx.clone();
                 handle.spawn(async move {
                     let mut child_guard = child_slot.lock().await;
@@ -654,6 +724,7 @@ impl MpvController {
                         &sock_path,
                         &runtime,
                         &child_slot,
+                        &ipc_tasks,
                         event_tx.clone(),
                         next_gen,
                         new_rx,
@@ -796,16 +867,23 @@ impl MpvController {
 
         self.send(json!(["quit"]));
         tokio::time::sleep(Duration::from_millis(40)).await;
+        if let Ok(mut guard) = self.ipc_tasks.lock() {
+            for handle in guard.drain(..) {
+                handle.abort();
+            }
+        }
         if let Some(old_child) = child_guard.take() {
             let _ = tokio::task::spawn_blocking(move || reap_child_process(old_child)).await;
         }
-        let _ = std::fs::remove_file(&self.sock_path);
+        #[cfg(unix)]
+        let _ = tokio::fs::remove_file(&self.sock_path).await;
 
         let (new_tx, new_rx) = mpsc::unbounded_channel();
         let spawned_child = match Self::spawn_process_with_channel(
             &self.sock_path,
             &self.runtime,
             &self.child,
+            &self.ipc_tasks,
             self.event_tx.clone(),
             next_gen,
             new_rx,
@@ -842,14 +920,23 @@ impl MpvController {
         }
         self.send(json!(["quit"]));
         tokio::time::sleep(Duration::from_millis(40)).await;
-        let mut guard = self.child.lock().await;
-        if let Some(mut c) = guard.take() {
-            if c.try_wait().ok().flatten().is_none() {
-                let _ = c.kill();
-                let _ = c.wait();
+        if let Ok(mut guard) = self.ipc_tasks.lock() {
+            for handle in guard.drain(..) {
+                handle.abort();
             }
         }
-        let _ = std::fs::remove_file(&self.sock_path);
+        let child = self.child.lock().await.take();
+        let sock_path = self.sock_path.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Some(mut c) = child {
+                if c.try_wait().ok().flatten().is_none() {
+                    let _ = c.kill();
+                    let _ = c.wait();
+                }
+            }
+            remove_ipc_endpoint(&sock_path);
+        })
+        .await;
     }
 }
 
@@ -1043,13 +1130,18 @@ async fn run_ipc_reader<R: tokio::io::AsyncRead + Unpin>(
 
 impl Drop for MpvController {
     fn drop(&mut self) {
+        if let Ok(mut guard) = self.ipc_tasks.lock() {
+            for handle in guard.drain(..) {
+                handle.abort();
+            }
+        }
         if let Ok(mut guard) = self.child.try_lock() {
             if let Some(mut c) = guard.take() {
                 let _ = c.kill();
                 let _ = c.wait();
             }
         }
-        let _ = std::fs::remove_file(&self.sock_path);
+        remove_ipc_endpoint(&self.sock_path);
     }
 }
 
@@ -1220,6 +1312,21 @@ mod tests {
             r"User-Agent: Sonata/1.0\, Linux,X-Custom: a\\b"
         );
 
+        let crlf_headers = vec![
+            (
+                "X-Emby-Token\r\nEvil".to_string(),
+                "abc\r\nX-Injected: 1".to_string(),
+            ),
+            ("Referer".to_string(), "https://example.com/\n".to_string()),
+        ];
+        let formatted_crlf = format_mpv_http_header_fields(&crlf_headers);
+        assert!(!formatted_crlf.contains('\r'));
+        assert!(!formatted_crlf.contains('\n'));
+        assert_eq!(
+            formatted_crlf,
+            "X-Emby-TokenEvil: abcX-Injected: 1,Referer: https://example.com/"
+        );
+
         assert_eq!(
             parse_mpv_version("mpv 0.38.0 Copyright © 2000-2024"),
             Some((0, 38))
@@ -1276,6 +1383,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn unexpected_ipc_eof_marks_dead_reaps_child_and_emits_playback_error() {
         use super::{run_ipc_reader, MpvEvent, MpvRuntimeState};

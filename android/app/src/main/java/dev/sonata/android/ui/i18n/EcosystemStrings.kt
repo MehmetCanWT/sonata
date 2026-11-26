@@ -1,5 +1,6 @@
 package dev.sonata.android.ui.i18n
 
+import dev.sonata.android.connect.ConnectError
 import dev.sonata.android.data.AppLanguage
 import java.util.Locale
 
@@ -33,6 +34,29 @@ data class EcosystemStrings(
     val connectTransferPlayback: String,
     val connectDisconnect: String,
     val connectPairFailed: String,
+    val connectDevicesTitle: String,
+    val connectThisPhone: String,
+    val connectThisPhoneSubtitle: String,
+    val connectActiveBadge: String,
+    val connectTrustedBadge: String,
+    val connectTrustedDevicesTitle: String,
+    val connectPlayingOn: (String) -> String,
+    val connectWaitingApprovalTitle: String,
+    val connectWaitingApprovalBody: (String) -> String,
+    val connectUsePinFallback: String,
+    val connectRemoteVolume: String,
+    val connectOfflineLabel: String,
+    val connectSelectDeviceHint: String,
+    val connectErrorInvalidPin: String,
+    val connectErrorPairingRejected: String,
+    val connectErrorPairingTimeout: String,
+    val connectErrorPairingFailed: String,
+    val connectErrorConnectionFailed: String,
+    val connectErrorTrustRevoked: String,
+    val connectErrorNoActiveDevice: String,
+    val connectErrorNotPaired: String,
+    val connectErrorQueueEmpty: String,
+    val connectErrorCommandFailed: String,
 
     // Scrobbling (Last.fm & ListenBrainz)
     val scrobblingTitle: String,
@@ -45,6 +69,10 @@ data class EcosystemStrings(
     val scrobbleThresholdHint: String,
     val scrobbleStatusConnected: (String) -> String,
     val scrobbleStatusNotSignedIn: String,
+    val scrobbleUsernameLabel: String,
+    val scrobbleApiKeyLabel: String,
+    val scrobbleApiSecretLabel: String,
+    val scrobbleSessionKeyLabel: String,
 
     // Listening Stats
     val listeningStatsTitle: String,
@@ -99,6 +127,29 @@ val EnglishEcosystemStrings = EcosystemStrings(
     connectTransferPlayback = "Transfer Queue",
     connectDisconnect = "Disconnect",
     connectPairFailed = "Pairing failed — verify PIN and network connection",
+    connectDevicesTitle = "Devices",
+    connectThisPhone = "This Phone",
+    connectThisPhoneSubtitle = "Play audio on this device",
+    connectActiveBadge = "Active",
+    connectTrustedBadge = "Trusted",
+    connectTrustedDevicesTitle = "Trusted Devices",
+    connectPlayingOn = { name -> "Playing on $name" },
+    connectWaitingApprovalTitle = "Waiting for Approval",
+    connectWaitingApprovalBody = { name -> "Waiting for approval on $name..." },
+    connectUsePinFallback = "Pair with 6-digit PIN instead",
+    connectRemoteVolume = "Remote Volume",
+    connectOfflineLabel = "Offline",
+    connectSelectDeviceHint = "Tap to play on this device",
+    connectErrorInvalidPin = "Invalid 6-digit PIN",
+    connectErrorPairingRejected = "Pairing request was rejected",
+    connectErrorPairingTimeout = "Approval request timed out",
+    connectErrorPairingFailed = "Pairing failed — check your network connection",
+    connectErrorConnectionFailed = "Could not connect to device",
+    connectErrorTrustRevoked = "Device trust was revoked — pair again to reconnect",
+    connectErrorNoActiveDevice = "No active Connect device",
+    connectErrorNotPaired = "Device is not paired",
+    connectErrorQueueEmpty = "Queue is empty",
+    connectErrorCommandFailed = "Remote command failed",
 
     scrobblingTitle = "Scrobbling",
     scrobblingSubtitle = "Track your listening history on Last.fm and ListenBrainz",
@@ -110,6 +161,10 @@ val EnglishEcosystemStrings = EcosystemStrings(
     scrobbleThresholdHint = "Tracks scrobble after 40 seconds or 50% playback",
     scrobbleStatusConnected = { user -> "Signed in as $user" },
     scrobbleStatusNotSignedIn = "Not connected",
+    scrobbleUsernameLabel = "Username",
+    scrobbleApiKeyLabel = "API Key",
+    scrobbleApiSecretLabel = "API Secret",
+    scrobbleSessionKeyLabel = "Session Key",
 
     listeningStatsTitle = "Listening Stats",
     listeningStatsSubtitle = "On-device playback insights stored privately on your device",
@@ -162,6 +217,29 @@ val TurkishEcosystemStrings = EcosystemStrings(
     connectTransferPlayback = "Sırayı Aktar",
     connectDisconnect = "Bağlantıyı Kes",
     connectPairFailed = "Eşleştirme başarısız — PIN kodunu ve ağ bağlantısını kontrol edin",
+    connectDevicesTitle = "Cihazlar",
+    connectThisPhone = "Bu Telefon",
+    connectThisPhoneSubtitle = "Sesi bu cihazda çal",
+    connectActiveBadge = "Aktif",
+    connectTrustedBadge = "Güvenilir",
+    connectTrustedDevicesTitle = "Güvenilir Cihazlar",
+    connectPlayingOn = { name -> "$name üzerinde çalınıyor" },
+    connectWaitingApprovalTitle = "Onay Bekleniyor",
+    connectWaitingApprovalBody = { name -> "$name üzerinde onay bekleniyor..." },
+    connectUsePinFallback = "Bunun yerine 6 haneli PIN ile eşleştir",
+    connectRemoteVolume = "Uzak Ses Düzeyi",
+    connectOfflineLabel = "Çevrimdışı",
+    connectSelectDeviceHint = "Bu cihazda çalmak için dokunun",
+    connectErrorInvalidPin = "Geçersiz 6 haneli PIN",
+    connectErrorPairingRejected = "Eşleştirme isteği reddedildi",
+    connectErrorPairingTimeout = "Onay isteği zaman aşımına uğradı",
+    connectErrorPairingFailed = "Eşleştirme başarısız — ağ bağlantınızı kontrol edin",
+    connectErrorConnectionFailed = "Cihaza bağlanılamadı",
+    connectErrorTrustRevoked = "Cihaz güveni kaldırıldı — yeniden bağlanmak için tekrar eşleştirin",
+    connectErrorNoActiveDevice = "Aktif Connect cihazı yok",
+    connectErrorNotPaired = "Cihaz eşleştirilmemiş",
+    connectErrorQueueEmpty = "Çalma sırası boş",
+    connectErrorCommandFailed = "Uzak komut başarısız oldu",
 
     scrobblingTitle = "Skroplama (Scrobbling)",
     scrobblingSubtitle = "Dinleme geçmişini Last.fm ve ListenBrainz ile eşitle",
@@ -173,6 +251,10 @@ val TurkishEcosystemStrings = EcosystemStrings(
     scrobbleThresholdHint = "Parçalar 40 saniye veya %50 oynatma sonrasında kaydedilir",
     scrobbleStatusConnected = { user -> "$user olarak bağlı" },
     scrobbleStatusNotSignedIn = "Bağlı değil",
+    scrobbleUsernameLabel = "Kullanıcı Adı",
+    scrobbleApiKeyLabel = "API Anahtarı",
+    scrobbleApiSecretLabel = "API Gizli Anahtarı",
+    scrobbleSessionKeyLabel = "Oturum Anahtarı",
 
     listeningStatsTitle = "Dinleme İstatistikleri",
     listeningStatsSubtitle = "Yalnızca cihazında saklanan yerel dinleme özeti",
@@ -225,6 +307,29 @@ val RussianEcosystemStrings = EcosystemStrings(
     connectTransferPlayback = "Передать очередь",
     connectDisconnect = "Отключить",
     connectPairFailed = "Ошибка сопряжения — проверьте PIN и сеть",
+    connectDevicesTitle = "Устройства",
+    connectThisPhone = "Этот телефон",
+    connectThisPhoneSubtitle = "Воспроизводить звук на этом устройстве",
+    connectActiveBadge = "Активно",
+    connectTrustedBadge = "Доверенное",
+    connectTrustedDevicesTitle = "Доверенные устройства",
+    connectPlayingOn = { name -> "Воспроизводится на $name" },
+    connectWaitingApprovalTitle = "Ожидание подтверждения",
+    connectWaitingApprovalBody = { name -> "Ожидание подтверждения на $name..." },
+    connectUsePinFallback = "Связать по 6-значному PIN-коду",
+    connectRemoteVolume = "Громкость устройства",
+    connectOfflineLabel = "Не в сети",
+    connectSelectDeviceHint = "Нажмите, чтобы воспроизвести на этом устройстве",
+    connectErrorInvalidPin = "Неверный 6-значный PIN-код",
+    connectErrorPairingRejected = "Запрос на сопряжение отклонён",
+    connectErrorPairingTimeout = "Время ожидания подтверждения истекло",
+    connectErrorPairingFailed = "Ошибка сопряжения — проверьте подключение к сети",
+    connectErrorConnectionFailed = "Не удалось подключиться к устройству",
+    connectErrorTrustRevoked = "Доверие устройства отозвано — выполните сопряжение снова",
+    connectErrorNoActiveDevice = "Нет активного устройства Connect",
+    connectErrorNotPaired = "Устройство не сопряжено",
+    connectErrorQueueEmpty = "Очередь пуста",
+    connectErrorCommandFailed = "Не удалось выполнить удалённую команду",
 
     scrobblingTitle = "Скробблинг",
     scrobblingSubtitle = "Отправка истории прослушиваний в Last.fm и ListenBrainz",
@@ -236,6 +341,10 @@ val RussianEcosystemStrings = EcosystemStrings(
     scrobbleThresholdHint = "Трек засчитывается после 40 секунд или 50% длительности",
     scrobbleStatusConnected = { user -> "Вход выполнен: $user" },
     scrobbleStatusNotSignedIn = "Не подключено",
+    scrobbleUsernameLabel = "Имя пользователя",
+    scrobbleApiKeyLabel = "API-ключ",
+    scrobbleApiSecretLabel = "Секретный ключ API",
+    scrobbleSessionKeyLabel = "Ключ сессии",
 
     listeningStatsTitle = "Статистика прослушиваний",
     listeningStatsSubtitle = "Локальная аналитика, хранящаяся только на вашем устройстве",
@@ -279,4 +388,20 @@ fun ecosystemStrings(
         "ru" -> RussianEcosystemStrings
         else -> EnglishEcosystemStrings
     }
+}
+
+/**
+ * Resolves a typed [ConnectError] to a localized message in the active [EcosystemStrings].
+ */
+fun EcosystemStrings.connectErrorMessage(error: ConnectError): String = when (error) {
+    ConnectError.INVALID_PIN -> connectErrorInvalidPin
+    ConnectError.PAIRING_REJECTED -> connectErrorPairingRejected
+    ConnectError.PAIRING_TIMEOUT -> connectErrorPairingTimeout
+    ConnectError.PAIRING_FAILED -> connectErrorPairingFailed
+    ConnectError.CONNECTION_FAILED -> connectErrorConnectionFailed
+    ConnectError.TRUST_REVOKED -> connectErrorTrustRevoked
+    ConnectError.NO_ACTIVE_DEVICE -> connectErrorNoActiveDevice
+    ConnectError.DEVICE_NOT_PAIRED -> connectErrorNotPaired
+    ConnectError.QUEUE_EMPTY -> connectErrorQueueEmpty
+    ConnectError.COMMAND_FAILED -> connectErrorCommandFailed
 }

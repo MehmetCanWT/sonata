@@ -54,7 +54,7 @@ sonata-android ─────────────────────�
 | `mpv`, `yt-dlp`, `ffmpeg`, Node/Bun/Deno runner, browser DB cookie extraction, image/motion decode, Hyprland, TOML/XDG `AppConfig`, Linux telemetry, shared `PlaybackSession` | `sonata-runtime` |
 | UniFFI `0.29.5` records/errors, cancellable async API, Android `ResolverProfile`, WebView cipher adapter, app-private `CorePaths` adapter | `sonata-android` |
 | Ratatui UI, terminal input, terminal artwork upload, terminal theme model & TOML loading | `sonata-tui` |
-| GPUI UI, CSS themes, MPRIS2, StatusNotifierItem tray, desktop visual effects | `sonata-desktop` |
+| Tauri v2 host & React/Tailwind UI (`desktop-ui/`), IPC bridge, MPRIS2 / `souvlaki` media controls, Tauri tray | `sonata-desktop` |
 | Compose UI, Media3/ExoPlayer, foreground `PlaybackService`, downloads, preferences, WebView auth/cipher execution, notifications/widgets | `android/` |
 
 ## Milestone A Completion Boundary (Phases 0–3)

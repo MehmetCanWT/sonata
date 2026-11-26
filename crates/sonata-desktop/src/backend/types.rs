@@ -1,13 +1,13 @@
 //! Shared command, event, handle, and immutable snapshot types for the desktop backend.
 //!
 //! 1. **Commands & Navigation**: `NavTarget`, `UiWindowCmd`, and `BackendCmd` define UI-to-backend and window-lifecycle messages.
-//! 2. **Snapshot**: `DesktopSnapshot` holds immutable state published via `tokio::sync::watch` for GPUI views and MPRIS.
+//! 2. **Snapshot**: `DesktopSnapshot` holds immutable state published via `tokio::sync::watch` for Tauri IPC and OS media controls.
 //! 3. **Handle**: `BackendHandle` sends commands and shuts down synchronously via a bounded `sync_channel` timeout.
 //! 4. **Internal Events**: `InternalEvent` and `ExportFingerprint` carry async task completions and deduplicate now-playing exports.
 
 use sonata_core::auth::ExtractedCookies;
 use sonata_core::connect::ConnectStateSnapshot;
-use sonata_core::lyrics::{active_line_index, LyricsState};
+use sonata_core::lyrics::LyricsState;
 use sonata_core::player::{PlaybackState, RepeatMode};
 use sonata_core::playlists::{is_personal_track_id, PersonalPlaylist};
 use sonata_core::providers::hifi::{ResolvedMusicVideo, VideoQualityStream};
@@ -24,11 +24,10 @@ use sonata_core::stats::{StatsSummary, StatsWindow};
 use sonata_core::updater::UpdateCheckResult;
 use sonata_runtime::auth::BrowserOption;
 use sonata_runtime::config::AppConfig;
-use sonata_runtime::connect::PairedDeviceInfo;
+use sonata_runtime::connect::{PairedDeviceInfo, PendingPairRequest};
 use sonata_runtime::discord::DiscordRpcStatus;
 use sonata_runtime::downloads::{DownloadCollectionRef, DownloadedCollection, DownloadedTrack};
 use sonata_runtime::i18n::AppLanguage;
-use sonata_runtime::motion::MotionCover;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -202,7 +201,6 @@ pub enum BackendCmd {
     StepDownloadsLimit(bool),
     ClearAllDownloads,
     ToggleDiscordRpc,
-    SetDiscordAppId(Option<String>),
     RefreshServers,
     SaveServerProfile {
         id: Option<String>,
@@ -262,6 +260,8 @@ pub enum BackendCmd {
     SetConnectDeviceName(String),
     RegenerateConnectPin,
     UnpairConnectDevice(String),
+    ApproveConnectPair(String),
+    RejectConnectPair(String),
     Shutdown(std::sync::mpsc::SyncSender<()>),
 }
 
@@ -355,7 +355,7 @@ pub struct DesktopSnapshot {
     pub translated_lyrics: Option<Vec<String>>,
     pub romanized_lyrics: Option<Vec<String>>,
     pub art_path: Option<PathBuf>,
-    pub motion_cover: Option<Arc<MotionCover>>,
+    pub motion_cover_path: Option<PathBuf>,
     pub ambient_rgb: (u8, u8, u8),
     pub spotify_notice: Option<String>,
     pub update_info: Option<UpdateCheckResult>,
@@ -392,10 +392,12 @@ pub struct DesktopSnapshot {
     pub connect_http_port: Option<u16>,
     pub connect_pin: Option<String>,
     pub connect_paired_devices: Vec<PairedDeviceInfo>,
+    pub connect_pending_pair: Option<PendingPairRequest>,
     pub connect_error: Option<String>,
 }
 
 /// Active source tab shown in the Desktop Library view.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LibrarySource {
     YouTube,
@@ -407,6 +409,7 @@ pub enum LibrarySource {
     Downloads,
 }
 
+#[cfg(test)]
 impl LibrarySource {
     pub fn from_server_kind(kind: ServerKind) -> Self {
         match kind {
@@ -416,19 +419,10 @@ impl LibrarySource {
             ServerKind::WebDav => Self::WebDav,
         }
     }
-
-    pub fn as_server_kind(self) -> Option<ServerKind> {
-        match self {
-            Self::Jellyfin => Some(ServerKind::Jellyfin),
-            Self::Subsonic => Some(ServerKind::Subsonic),
-            Self::Smb => Some(ServerKind::Smb),
-            Self::WebDav => Some(ServerKind::WebDav),
-            Self::YouTube | Self::Local | Self::Downloads => None,
-        }
-    }
 }
 
 /// Computes the ordered list of active Library source tabs for the current config and servers.
+#[cfg(test)]
 pub fn compute_active_library_sources(
     streaming_enabled: bool,
     local_music_enabled: bool,
@@ -455,16 +449,123 @@ pub fn compute_active_library_sources(
     tabs
 }
 
+fn percent_decode_lossy(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (
+                (bytes[i + 1] as char).to_digit(16),
+                (bytes[i + 2] as char).to_digit(16),
+            ) {
+                out.push(((hi << 4) | lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn has_parent_traversal(path_str: &str) -> bool {
+    path_str
+        .split(['/', '\\'])
+        .any(|seg| seg == ".." || seg.contains('\0'))
+}
+
+fn is_malformed_local_or_smb_id(track_id: &str) -> bool {
+    if track_id.contains('\0')
+        || track_id.starts_with("file://")
+        || track_id.starts_with('/')
+        || track_id.starts_with('\\')
+    {
+        return true;
+    }
+    if let Some(rest) = track_id.strip_prefix("local:") {
+        let decoded = percent_decode_lossy(rest);
+        return rest.starts_with("file://")
+            || decoded.starts_with("file://")
+            || has_parent_traversal(rest)
+            || has_parent_traversal(&decoded);
+    }
+    if let Some(rest) = track_id.strip_prefix("smb:") {
+        if rest.starts_with("file://") || rest.starts_with('/') || rest.starts_with('\\') {
+            return true;
+        }
+        let Some((server_id, rel_path)) = rest.split_once(':') else {
+            return true;
+        };
+        if server_id.is_empty() || rel_path.is_empty() {
+            return true;
+        }
+        let decoded = percent_decode_lossy(rel_path);
+        return rel_path.starts_with("file://")
+            || decoded.starts_with("file://")
+            || rel_path.starts_with('/')
+            || decoded.starts_with('/')
+            || rel_path.starts_with('\\')
+            || decoded.starts_with('\\')
+            || has_parent_traversal(rel_path)
+            || has_parent_traversal(&decoded);
+    }
+    false
+}
+
+/// Validates a track ID received from a remote Sonata Connect `TransferQueue` request.
+pub fn is_safe_transfer_track_id(
+    track_id: &str,
+    personal_only_mode: bool,
+    local_roots: &[PathBuf],
+    server_profiles: &[ServerProfile],
+) -> bool {
+    if track_id.is_empty() || is_malformed_local_or_smb_id(track_id) {
+        return false;
+    }
+    if let Some(rest) = track_id.strip_prefix("local:") {
+        if personal_only_mode || local_roots.is_empty() {
+            return false;
+        }
+        let decoded = percent_decode_lossy(rest);
+        let Ok(canon_target) = std::fs::canonicalize(&decoded) else {
+            return false;
+        };
+        return local_roots.iter().any(|root| {
+            std::fs::canonicalize(root)
+                .map(|canon_root| canon_target.starts_with(&canon_root))
+                .unwrap_or(false)
+        });
+    }
+    if let Some(rest) = track_id.strip_prefix("smb:") {
+        if personal_only_mode {
+            return false;
+        }
+        let Some((server_id, _rel_path)) = rest.split_once(':') else {
+            return false;
+        };
+        return server_profiles
+            .iter()
+            .any(|p| p.enabled && p.kind == ServerKind::Smb && p.id == server_id);
+    }
+    true
+}
+
 /// Returns `true` when `track` is permitted for playback under the active Personal Only setting.
 pub fn can_play_track_in_mode(
     track: &Track,
     personal_only_mode: bool,
     is_downloaded: bool,
 ) -> bool {
+    if is_malformed_local_or_smb_id(&track.id) {
+        return false;
+    }
     !personal_only_mode || is_personal_track_id(&track.id) || is_downloaded
 }
 
 /// Separated playlist destinations for the Add-to-Playlist modal.
+#[cfg(test)]
 #[derive(Debug, Clone, Default)]
 pub struct PlaylistAddTargets {
     pub personal: Vec<PersonalPlaylist>,
@@ -473,6 +574,7 @@ pub struct PlaylistAddTargets {
 
 /// Routes personal/local/server tracks strictly to Personal Playlists while allowing YTM tracks
 /// into both Personal Playlists and YouTube Music playlists (when streaming and signed in).
+#[cfg(test)]
 pub fn resolve_playlist_add_targets(
     track: &Track,
     personal_playlists: &[PersonalPlaylist],
@@ -493,90 +595,43 @@ pub fn resolve_playlist_add_targets(
     PlaylistAddTargets { personal, ytm }
 }
 
-/// Formats a compact health indicator string from a [`ServerHealthReport`].
-pub fn format_server_health_badge(report: &ServerHealthReport) -> String {
-    if report.alive {
-        match report.latency_ms {
-            Some(ms) => format!("Alive • {ms} ms"),
-            None => "Alive".to_string(),
-        }
-    } else {
-        "Offline".to_string()
-    }
+/// Formats a localized compact health indicator string from a [`ServerHealthReport`].
+pub fn format_server_health_badge_for(
+    report: &ServerHealthReport,
+    lang: sonata_runtime::i18n::AppLanguage,
+) -> String {
+    sonata_runtime::i18n::format_health_badge(lang, report.alive, report.latency_ms, true)
 }
 
-/// Formats a compact download speed string from a [`ServerSpeedTestReport`].
+/// Formats a compact English health indicator string from a [`ServerHealthReport`].
+#[cfg(test)]
+pub fn format_server_health_badge(report: &ServerHealthReport) -> String {
+    format_server_health_badge_for(report, sonata_runtime::i18n::AppLanguage::En)
+}
+
+/// Formats a localized compact download speed string from a [`ServerSpeedTestReport`].
+pub fn format_server_speed_badge_for(
+    report: &ServerSpeedTestReport,
+    lang: sonata_runtime::i18n::AppLanguage,
+) -> String {
+    sonata_runtime::i18n::format_speed_badge(
+        lang,
+        report.alive,
+        report.latency_ms,
+        report.download_mbps,
+        true,
+    )
+}
+
+/// Formats a compact English download speed string from a [`ServerSpeedTestReport`].
+#[cfg(test)]
 pub fn format_server_speed_badge(report: &ServerSpeedTestReport) -> String {
-    if !report.alive {
-        return "Offline".to_string();
-    }
-    match report.download_mbps {
-        Some(mbps) if mbps >= 100.0 => format!("{mbps:.0} Mbps • {} ms", report.latency_ms),
-        Some(mbps) => format!("{mbps:.1} Mbps • {} ms", report.latency_ms),
-        None => format!("{} ms (no sample)", report.latency_ms),
-    }
+    format_server_speed_badge_for(report, sonata_runtime::i18n::AppLanguage::En)
 }
 
 impl DesktopSnapshot {
-    pub fn is_track_downloaded(&self, track_id: &str) -> bool {
-        self.downloaded_track_ids.contains(track_id)
-    }
-
-    pub fn is_track_downloading(&self, track_id: &str) -> bool {
-        self.downloading_track_ids.contains(track_id)
-    }
-
-    pub fn is_collection_downloaded(&self, collection_id: &str) -> bool {
-        self.downloaded_collections
-            .iter()
-            .any(|c| c.collection_id == collection_id)
-    }
-    pub fn is_track_liked(&self, track: &Track) -> bool {
-        track.liked || self.liked_track_ids.contains(&track.id)
-    }
-
     pub fn current_track(&self) -> Option<&Track> {
         self.current_index.and_then(|idx| self.queue.get(idx))
-    }
-
-    pub fn is_signed_in(&self) -> bool {
-        self.signed_in_browser.is_some()
-    }
-
-    pub fn lyrics_position_secs(&self, raw_pos_secs: f64) -> f64 {
-        if !self.video_mode {
-            return raw_pos_secs;
-        }
-        let Some(ref cand) = self.music_video_candidate else {
-            return raw_pos_secs;
-        };
-        super::playback::map_video_to_music_secs(raw_pos_secs, &cand.sync_segments)
-    }
-
-    pub fn active_lyric_index_at(&self, position_secs: f64) -> Option<usize> {
-        let mapped = self.lyrics_position_secs(position_secs);
-        match &self.lyrics {
-            LyricsState::Synced(lines) => active_line_index(lines, mapped),
-            _ => None,
-        }
-    }
-
-    pub fn active_library_sources(&self) -> Vec<LibrarySource> {
-        compute_active_library_sources(
-            self.config.streaming_enabled(),
-            self.config.local_music_enabled,
-            &self.server_profiles,
-        )
-    }
-
-    pub fn playlist_add_targets(&self, track: &Track) -> PlaylistAddTargets {
-        resolve_playlist_add_targets(
-            track,
-            &self.personal_playlists,
-            &self.ytm_playlists,
-            self.config.personal_only_mode,
-            self.is_signed_in(),
-        )
     }
 }
 
@@ -744,7 +799,7 @@ pub(super) enum InternalEvent {
     AnimatedArtworkReady {
         play_seq: u64,
         track_id: String,
-        cover: Arc<MotionCover>,
+        path: PathBuf,
     },
     ThumbnailsReady,
     PlaylistCreated(Playlist),
@@ -863,24 +918,29 @@ pub fn build_connect_snapshot(
     }
 }
 
-/// Filters a Connect `TransferQueue` track list according to Personal Only Mode and clamps `start_index`.
+/// Filters a Connect `TransferQueue` track list for safety, configured roots, and Personal Only Mode.
 pub fn filter_transfer_tracks(
     tracks: Vec<Track>,
     start_index: usize,
     personal_only_mode: bool,
     downloaded_track_ids: &HashSet<String>,
+    local_roots: &[PathBuf],
+    server_profiles: &[ServerProfile],
 ) -> Option<(Vec<Track>, usize)> {
     if tracks.is_empty() {
         return None;
     }
-    if !personal_only_mode {
-        let clamped = start_index.min(tracks.len() - 1);
-        return Some((tracks, clamped));
-    }
     let target_id = tracks.get(start_index).map(|t| t.id.clone());
     let filtered: Vec<Track> = tracks
         .into_iter()
-        .filter(|t| can_play_track_in_mode(t, true, downloaded_track_ids.contains(&t.id)))
+        .filter(|t| {
+            is_safe_transfer_track_id(&t.id, personal_only_mode, local_roots, server_profiles)
+                && can_play_track_in_mode(
+                    t,
+                    personal_only_mode,
+                    downloaded_track_ids.contains(&t.id),
+                )
+        })
         .collect();
     if filtered.is_empty() {
         return None;
@@ -896,7 +956,13 @@ pub(super) struct ExportFingerprint {
     pub(super) track_id: String,
     pub(super) status: String,
     pub(super) lyric: Option<String>,
+    pub(super) lyric_index: Option<usize>,
+    pub(super) lyric_word_index: Option<usize>,
+    pub(super) lyrics_state: String,
+    pub(super) has_translation: bool,
+    pub(super) has_romanization: bool,
     pub(super) art_path: Option<String>,
+    pub(super) motion_art_path: Option<String>,
     pub(super) pos_secs: u64,
     pub(super) dur_secs: u64,
 }
@@ -1124,20 +1190,65 @@ mod tests {
         assert_eq!(muted_snap.volume, 0);
 
         let dl_ids = HashSet::new();
-        let (filtered, idx) =
-            filter_transfer_tracks(vec![t1, t2.clone(), t3], 2, true, &dl_ids).expect("filtered");
-        assert_eq!(filtered.len(), 2);
-        assert_eq!(idx, 1);
-        assert_eq!(filtered[idx].id, "smb:nas:b.flac");
+        let smb_profiles = vec![dummy_server("nas", ServerKind::Smb, true)];
+        let jfn = dummy_track("jellyfin:s:1", ProviderSource::YouTubeMusic);
+        // Remote TransferQueue rejects local:/smb: tracks in Personal Only Mode, keeping server tracks.
+        let (filtered, idx) = filter_transfer_tracks(
+            vec![t1.clone(), t2.clone(), t3.clone(), jfn.clone()],
+            3,
+            true,
+            &dl_ids,
+            &[],
+            &smb_profiles,
+        )
+        .expect("filtered");
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(idx, 0);
+        assert_eq!(filtered[idx].id, "jellyfin:s:1");
 
-        assert!(filter_transfer_tracks(vec![t2], 0, true, &dl_ids).is_none());
-        assert_eq!(
-            track_source_tag(&dummy_track("jellyfin:s:1", ProviderSource::YouTubeMusic)),
-            "JFN"
-        );
+        // In normal mode, configured SMB server relative paths are allowed while unconfigured/local are filtered.
+        let (normal_filtered, normal_idx) = filter_transfer_tracks(
+            vec![t1, t2.clone(), t3],
+            2,
+            false,
+            &dl_ids,
+            &[],
+            &smb_profiles,
+        )
+        .expect("normal mode filtered");
+        assert_eq!(normal_filtered.len(), 2);
+        assert_eq!(normal_idx, 1);
+        assert_eq!(normal_filtered[normal_idx].id, "smb:nas:b.flac");
+
+        assert!(filter_transfer_tracks(vec![t2], 0, true, &dl_ids, &[], &smb_profiles).is_none());
+        assert_eq!(track_source_tag(&jfn), "JFN");
         assert_eq!(
             track_source_tag(&dummy_track("spf1", ProviderSource::Spotify)),
             "SPF"
         );
+    }
+
+    #[test]
+    fn transfer_queue_rejects_untrusted_local_and_smb_paths() {
+        let dl_ids = HashSet::new();
+        let smb_profiles = vec![dummy_server("nas", ServerKind::Smb, true)];
+        let malicious = vec![
+            dummy_track("file:///etc/passwd", ProviderSource::YouTubeMusic),
+            dummy_track("/etc/passwd", ProviderSource::YouTubeMusic),
+            dummy_track("local:file:///etc/passwd", ProviderSource::YouTubeMusic),
+            dummy_track("local:/etc/passwd", ProviderSource::YouTubeMusic),
+            dummy_track("local:../etc/passwd", ProviderSource::YouTubeMusic),
+            dummy_track("smb:file:///etc/passwd", ProviderSource::YouTubeMusic),
+            dummy_track("smb:/etc/passwd", ProviderSource::YouTubeMusic),
+            dummy_track("smb:nas:/etc/passwd", ProviderSource::YouTubeMusic),
+            dummy_track("smb:nas:../etc/passwd", ProviderSource::YouTubeMusic),
+            dummy_track("smb:nas:%2e%2e/etc/passwd", ProviderSource::YouTubeMusic),
+            dummy_track("smb:unknown:song.flac", ProviderSource::YouTubeMusic),
+        ];
+        assert!(
+            filter_transfer_tracks(malicious.clone(), 0, false, &dl_ids, &[], &smb_profiles)
+                .is_none()
+        );
+        assert!(filter_transfer_tracks(malicious, 0, true, &dl_ids, &[], &smb_profiles).is_none());
     }
 }

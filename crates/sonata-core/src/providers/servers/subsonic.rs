@@ -8,8 +8,9 @@
 //!    mapping Subsonic error codes into typed `CoreError` variants.
 
 use super::{
-    default_http_timeout, encode_server_item_id, format_audio_badge, map_http_status, ServerKind,
-    ServerLibrary, ServerProfile, ServerSearchResult, ServerStream,
+    default_http_timeout, encode_server_item_id, format_audio_badge, map_http_status,
+    no_redirect_http_client, ServerKind, ServerLibrary, ServerProfile, ServerSearchResult,
+    ServerStream,
 };
 use crate::error::CoreError;
 use crate::providers::ytmusic::{AlbumDetail, HomeCard, HomeCardKind};
@@ -158,14 +159,14 @@ pub fn build_auth_url(
 }
 
 async fn call_subsonic(
-    http: &Client,
+    _http: &Client,
     profile: &ServerProfile,
     endpoint: &str,
     extra_params: &[(&str, &str)],
 ) -> Result<Value, CoreError> {
     let salt = generate_salt();
     let url = build_auth_url(profile, endpoint, &salt, extra_params)?;
-    let resp = http
+    let resp = no_redirect_http_client()
         .get(&url)
         .timeout(default_http_timeout())
         .send()
@@ -861,5 +862,64 @@ mod tests {
         assert_eq!(pls.len(), 1);
         assert_eq!(pls[0].id, "subsonic:navi-1:pl-1");
         assert_eq!(pls[0].track_count, Some(12));
+    }
+
+    #[tokio::test]
+    async fn authenticated_requests_do_not_follow_cross_origin_redirects() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let trap_listener = TcpListener::bind("127.0.0.1:0").await.expect("bind trap");
+        let trap_addr = trap_listener.local_addr().expect("trap addr");
+        let trap_hit = Arc::new(AtomicBool::new(false));
+        let trap_flag = Arc::clone(&trap_hit);
+        let trap_task = tokio::spawn(async move {
+            if let Ok((mut sock, _)) = trap_listener.accept().await {
+                trap_flag.store(true, Ordering::SeqCst);
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let _ = sock
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                    )
+                    .await;
+            }
+        });
+
+        let redirect_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind redirect");
+        let redirect_addr = redirect_listener.local_addr().expect("redirect addr");
+        let redirect_task = tokio::spawn(async move {
+            if let Ok((mut sock, _)) = redirect_listener.accept().await {
+                let mut buf = [0u8; 2048];
+                let _ = sock.read(&mut buf).await;
+                let resp = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: http://{trap_addr}/steal\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+            }
+        });
+
+        let mut profile = ServerProfile::new(
+            "sub-redir",
+            "Redirect Subsonic",
+            ServerKind::Subsonic,
+            format!("http://{redirect_addr}"),
+        );
+        profile.username = Some("alice".to_string());
+        profile.password = Some("sesame".to_string());
+
+        let http = crate::providers::build_http_client();
+        let err = ping(&http, &profile)
+            .await
+            .expect_err("302 redirect must not be followed");
+        assert!(err.to_string().contains("302"));
+        assert!(!trap_hit.load(Ordering::SeqCst));
+
+        redirect_task.abort();
+        trap_task.abort();
     }
 }

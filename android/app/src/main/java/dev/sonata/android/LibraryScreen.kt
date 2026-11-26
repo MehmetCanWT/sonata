@@ -461,7 +461,7 @@ internal fun LibraryTabContent(
         visibleTracksForTab.firstOrNull { !it.thumbnailUrl.isNullOrBlank() }?.thumbnailUrl
             ?: state.playlists.firstOrNull { !it.thumbnailUrl.isNullOrBlank() }?.thumbnailUrl
     }
-    val holderName = state.accountProfile?.name?.takeIf { it.isNotBlank() } ?: "SONATA LISTENER"
+    val holderName = state.accountProfile?.name?.takeIf { it.isNotBlank() } ?: strings.sonataListenerPlaceholder
     val downloadsPlaylist = remember(latestDownloadCoverUrl, strings) {
         AndroidPlaylist(
             id = SonataViewModel.DOWNLOADS_PLAYLIST_ID,
@@ -678,7 +678,11 @@ internal fun LibraryTabContent(
                     .fillMaxWidth()
                     .padding(bottom = 8.dp),
             ) {
-                items(visibleTabs, key = { "src_tab_${it.name}" }) { tab ->
+                items(
+                    items = visibleTabs,
+                    key = { "src_tab_${it.name}" },
+                    contentType = { "source_tab_chip" },
+                ) { tab ->
                     val label = when (tab) {
                         LibrarySourceTab.ALL -> srcStrings.tabAll
                         LibrarySourceTab.YOUTUBE -> srcStrings.tabYouTube
@@ -825,7 +829,11 @@ internal fun LibraryTabContent(
                             contentPadding = PaddingValues(horizontal = PAGE_GUTTER, vertical = 4.dp),
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
                         ) {
-                            items(enabledServers, key = { "lib_srv_${it.id}" }) { srv ->
+                            items(
+                                items = enabledServers,
+                                key = { "lib_srv_${it.id}" },
+                                contentType = { "server_chip" },
+                            ) { srv ->
                                 val tag = serverTagForKind(srv.kind)
                                 Row(
                                     modifier = Modifier
@@ -945,7 +953,7 @@ internal fun LibraryTabContent(
             }
         } else if (selectedTab == LibrarySourceTab.LOCAL) {
             val localLib = state.localMusicLibrary
-            item(key = "local_header_controls") {
+            item(key = "local_header_controls", contentType = "local_header_controls") {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1009,7 +1017,7 @@ internal fun LibraryTabContent(
 
             if (localLib.permissionGranted) {
                 if (state.localMusicLoading) {
-                    item(key = "local_loading") {
+                    item(key = "local_loading", contentType = "loading_indicator") {
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1020,7 +1028,7 @@ internal fun LibraryTabContent(
                         }
                     }
                 } else if (localLib.tracks.isEmpty()) {
-                    item(key = "local_empty") {
+                    item(key = "local_empty", contentType = "empty_message") {
                         Text(
                             text = srcStrings.emptyLocalMusic,
                             style = MaterialTheme.typography.bodyMedium,
@@ -1031,10 +1039,10 @@ internal fun LibraryTabContent(
                 } else {
                     when (localSubTabIndex) {
                         0 -> {
-                            val localAndroidTracks = localLib.tracks.map { it.toAndroidTrack() }
                             items(
-                                items = localAndroidTracks,
+                                items = personalLocalQueue,
                                 key = { "loc_trk_${it.id}" },
+                                contentType = { "local_track_row" },
                             ) { track ->
                                 val activeId = state.activeTrack?.id
                                 val isCurrent = activeId != null && track.id == activeId
@@ -1043,7 +1051,7 @@ internal fun LibraryTabContent(
                                         track = track,
                                         isCurrent = isCurrent,
                                         isPlaying = isCurrent && state.isPlaying,
-                                        onClick = { onPlayTrack(track, localAndroidTracks) },
+                                        onClick = { onPlayTrack(track, personalLocalQueue) },
                                         onOptionsClick = { bounds -> onTrackOptions(track, bounds) },
                                         onLongClick = { bounds -> onTrackLongClick(track, bounds) },
                                     )
@@ -1054,8 +1062,9 @@ internal fun LibraryTabContent(
                             items(
                                 items = localLib.albums,
                                 key = { "loc_alb_${it.title}_${it.artist}" },
+                                contentType = { "local_album_row" },
                             ) { album ->
-                                val albumQueue = album.tracks.map { it.toAndroidTrack() }
+                                val albumQueue = remember(album.tracks) { album.tracks.map { it.toAndroidTrack() } }
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -1114,8 +1123,9 @@ internal fun LibraryTabContent(
                             items(
                                 items = localLib.folders,
                                 key = { "loc_fld_${it.relativePath}" },
+                                contentType = { "local_folder_row" },
                             ) { folder ->
-                                val folderQueue = folder.tracks.map { it.toAndroidTrack() }
+                                val folderQueue = remember(folder.tracks) { folder.tracks.map { it.toAndroidTrack() } }
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -1157,7 +1167,7 @@ internal fun LibraryTabContent(
                 }
             }
 
-            item(key = "local_personal_playlists_hdr") {
+            item(key = "local_personal_playlists_hdr", contentType = "section_header") {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1177,6 +1187,7 @@ internal fun LibraryTabContent(
             items(
                 items = playlistRows,
                 key = { row -> "loc_pl_row_${row.joinToString("_") { it.id }}" },
+                contentType = { "playlist_grid_row" },
             ) { rowPlaylists ->
                 Row(
                     modifier = Modifier
@@ -1206,7 +1217,11 @@ internal fun LibraryTabContent(
             }
         } else {
             // Specific Self-Hosted Server protocol tab (Jellyfin / Subsonic / SMB / WebDAV)
-            items(activeTabServers, key = { "tab_srv_hdr_${it.id}" }) { srv ->
+            items(
+                items = activeTabServers,
+                key = { "tab_srv_hdr_${it.id}" },
+                contentType = { "server_card" },
+            ) { srv ->
                 val diag: ServerDiagnosticState? = state.serverDiagnostics[srv.id]
                 val snap = state.serverSourceSnapshots[srv.id]
                 Column(
@@ -1394,8 +1409,6 @@ internal fun LibraryNavRow(
     }
 }
 
-internal val LikedPlaylistBrush = Brush.linearGradient(listOf(Color(0xFF7B52FF), Color(0xFFB79CED)))
-internal val DownloadsPlaylistBrush = Brush.linearGradient(listOf(Color(0xFF1D1A2B), Color(0xFF8F96D9)))
 internal val BasicLikedPlaylistBrush = Brush.linearGradient(listOf(Color(0xFF2C2C2E), Color(0xFF1C1C1E)))
 internal val BasicDownloadsPlaylistBrush = Brush.linearGradient(listOf(Color(0xFF2C2C2E), Color(0xFF161618)))
 
@@ -1440,12 +1453,8 @@ internal fun PlaylistGridCard(
                 .then(
                     when {
                         coverRequest != null -> Modifier.background(tokens.eclipseCard)
-                        isDownloadsPlaylist -> Modifier.background(
-                            if (tokens.isBasic) BasicDownloadsPlaylistBrush else DownloadsPlaylistBrush,
-                        )
-                        else -> Modifier.background(
-                            if (tokens.isBasic) BasicLikedPlaylistBrush else LikedPlaylistBrush,
-                        )
+                        isDownloadsPlaylist -> Modifier.background(BasicDownloadsPlaylistBrush)
+                        else -> Modifier.background(BasicLikedPlaylistBrush)
                     }
                 )
                 .border(0.75.dp, tokens.cardStroke, tokens.cardShape),

@@ -70,13 +70,34 @@ impl CacheDb {
             .map(|parent| parent.join("lyrics"))
             .unwrap_or_else(|| PathBuf::from("lyrics"));
         if let Some(parent) = path.parent() {
-            if let Err(error) = std::fs::create_dir_all(parent) {
+            let mut builder = std::fs::DirBuilder::new();
+            builder.recursive(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt as _;
+                builder.mode(0o700);
+            }
+            if let Err(error) = builder.create(parent) {
                 tracing::warn!(
                     "[sonata:cache] create-directory failed path={} error={error}",
                     parent.display()
                 );
                 return None;
             }
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+            let mut opts = std::fs::OpenOptions::new();
+            opts.read(true).write(true).create(true).mode(0o600);
+            if let Err(error) = opts.open(path) {
+                tracing::warn!(
+                    "[sonata:cache] precreate failed path={} error={error}",
+                    path.display()
+                );
+                return None;
+            }
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
         }
         let conn = match Connection::open(path) {
             Ok(conn) => conn,
@@ -240,10 +261,9 @@ impl CacheDb {
         }
     }
 
-    /// Clears all persisted synced/plain lyrics from SQLite enrichment and on-disk `.lrc`/`.txt` files.
-    pub fn clear_lyrics_cache(&self) {
+    fn clear_lyrics_records(conn: &Mutex<Connection>, lyrics_cache_dir: &Path) {
         {
-            let guard = self.lock_conn();
+            let guard = Self::lock_mutex(conn);
             if let Err(error) = guard.execute(
                 "UPDATE track_enrichment SET synced_lyrics = NULL, plain_lyrics = NULL, lyrics_status = 'NONE'",
                 [],
@@ -251,7 +271,18 @@ impl CacheDb {
                 tracing::warn!("[sonata:cache] lyrics-clear failed error={error}");
             }
         }
-        let _ = std::fs::remove_dir_all(&self.lyrics_cache_dir);
+        let _ = std::fs::remove_dir_all(lyrics_cache_dir);
+    }
+
+    /// Clears all persisted synced/plain lyrics from SQLite enrichment and on-disk `.lrc`/`.txt` files.
+    pub fn clear_lyrics_cache(&self) {
+        let conn = Arc::clone(&self.conn);
+        let lyrics_cache_dir = self.lyrics_cache_dir.clone();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn_blocking(move || Self::clear_lyrics_records(&conn, &lyrics_cache_dir));
+        } else {
+            Self::clear_lyrics_records(&conn, &lyrics_cache_dir);
+        }
     }
 
     pub fn invalidate_stream(&self, track_id: &str) {
@@ -753,5 +784,33 @@ mod tests {
         assert_eq!(got.0, "https://example.com/a.m4a");
         assert_eq!(got.1, "AAC 256kbps");
         cleanup_test_db(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn creates_private_cache_directory_and_database_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let seq = TEST_DB_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("sonata_cache_priv_{}_{}", std::process::id(), seq));
+        let _ = std::fs::remove_dir_all(&dir);
+        let db_path = dir.join("sonata_cache.db");
+
+        let _db = CacheDb::open_at(&db_path).expect("open private sqlite cache");
+        let dir_mode = std::fs::metadata(&dir)
+            .expect("dir metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        let db_mode = std::fs::metadata(&db_path)
+            .expect("db metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(dir_mode, 0o700);
+        assert_eq!(db_mode, 0o600);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

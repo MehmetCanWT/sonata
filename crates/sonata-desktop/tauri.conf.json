@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Sonata",
+  "version": "1.0.10",
+  "identifier": "dev.sonata.Desktop",
+  "build": {
+    "beforeDevCommand": "npm --prefix ../../desktop-ui run dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm --prefix ../../desktop-ui run build",
+    "frontendDist": "../../desktop-ui/dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Sonata",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 780,
+        "minHeight": 540,
+        "center": true,
+        "decorations": false,
+        "transparent": false,
+        "backgroundColor": "#09090B"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' asset: http://asset.localhost https://asset.localhost; img-src 'self' data: blob: asset: http://asset.localhost https://asset.localhost https:; media-src 'self' blob: asset: http://asset.localhost https://asset.localhost https:; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost asset: http://asset.localhost https://asset.localhost https: http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$CACHE/**", "$APPCACHE/**", "$DATA/**", "$APPDATA/**", "$HOME/.cache/sonata/**"]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

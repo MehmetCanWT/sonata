@@ -1,13 +1,14 @@
 app-id: dev.sonata.Desktop
-runtime: org.freedesktop.Platform
-runtime-version: '24.08'
-sdk: org.freedesktop.Sdk
+runtime: org.gnome.Platform
+runtime-version: '47'
+sdk: org.gnome.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
+  - org.freedesktop.Sdk.Extension.node22
 command: sonata-desktop
 
 finish-args:
-  # Display & GPU rendering (GPUI Wayland + X11 fallback + Vulkan/OpenGL)
+  # Display & GPU rendering (Tauri WebKitGTK Wayland + X11 fallback + DRI)
   - --share=ipc
   - --socket=wayland
   - --socket=fallback-x11
@@ -91,10 +92,12 @@ modules:
   - name: sonata
     buildsystem: simple
     build-options:
-      append-path: /usr/lib/sdk/rust-stable/bin
+      append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/node22/bin
       env:
         CARGO_HOME: /run/build/sonata/cargo
     build-commands:
+      - npm --prefix desktop-ui ci --offline || npm --prefix desktop-ui run build
+      - npm --prefix desktop-ui run build
       - cargo --offline build --release --locked -p sonata-desktop -p sonata-tui
       - install -Dm755 target/release/sonata-desktop /app/bin/sonata-desktop
       - install -Dm755 target/release/sonata /app/bin/sonata

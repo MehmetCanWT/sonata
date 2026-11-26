@@ -421,12 +421,7 @@ internal fun HomeTabContent(
     onOpenServers: (String?) -> Unit = {},
 ) {
     val haptics = LocalHapticFeedback.current
-    val visibleShelves = remember(state.shelves) {
-        state.shelves.filterNot { shelf ->
-            val t = shelf.title.lowercase()
-            "forgotten" in t || "unutulan" in t || "забыт" in t
-        }
-    }
+    val visibleShelves = remember(state.shelves) { state.shelves }
     val recentsShelf = remember(visibleShelves) {
         visibleShelves.firstOrNull { shelf ->
             shelf.tracks.isNotEmpty() || (
@@ -438,9 +433,11 @@ internal fun HomeTabContent(
     }
     val fallbackHomeTracks = state.tracks.takeIf { state.shelves.isEmpty() }.orEmpty()
     val topPicks = remember(state.shelves, state.lastPlayedTracks, state.likedTrackIds, fallbackHomeTracks) {
+        fun primaryArtist(raw: String): String =
+            raw.substringBefore(",").substringBefore("&").substringBefore(" feat.").trim().lowercase()
         val artistAffinity = HashMap<String, Int>()
         state.lastPlayedTracks.take(25).forEachIndexed { idx, track ->
-            val key = track.artist.trim().lowercase()
+            val key = primaryArtist(track.artist)
             if (key.isNotBlank()) {
                 artistAffinity[key] = (artistAffinity[key] ?: 0) + (25 - idx).coerceAtLeast(2)
             }
@@ -448,7 +445,7 @@ internal fun HomeTabContent(
         state.shelves.flatMap { it.tracks }
             .filter { it.id in state.likedTrackIds }
             .forEach { track ->
-                val key = track.artist.trim().lowercase()
+                val key = primaryArtist(track.artist)
                 if (key.isNotBlank()) {
                     artistAffinity[key] = (artistAffinity[key] ?: 0) + 10
                 }
@@ -456,7 +453,7 @@ internal fun HomeTabContent(
         fun cardAffinityScore(artistOrSubtitle: String): Int {
             val norm = artistOrSubtitle.trim().lowercase()
             if (norm.isBlank()) return 0
-            return artistAffinity[norm]
+            return artistAffinity[primaryArtist(artistOrSubtitle)]
                 ?: artistAffinity.entries.firstOrNull { (k, _) -> norm.contains(k) || k.contains(norm) }?.value
                 ?: 0
         }
@@ -551,13 +548,15 @@ internal fun HomeTabContent(
         entries
     }
     val remainingShelves = remember(visibleShelves, recentsShelf) {
-        val rawRemaining = visibleShelves
-            .filter { shelf ->
-                shelf !== recentsShelf && shelf.cards.any { it.kind != AndroidHomeCardKind.MOOD }
-            }
-            .sortedBy { homeShelfSortOrder(it.title) }
+        // Preserve YouTube Music's own personalized Home shelf order and keep track-only shelves too.
+        val rawRemaining = visibleShelves.filter { shelf ->
+            shelf !== recentsShelf && (
+                shelf.cards.any { it.kind != AndroidHomeCardKind.MOOD } ||
+                    shelf.tracks.isNotEmpty()
+                )
+        }
         mergeNewReleaseShelves(rawRemaining)
-            .filter { it.cards.isNotEmpty() }
+            .filter { it.cards.isNotEmpty() || it.tracks.isNotEmpty() }
             .distinctBy { it.title.trim().lowercase() }
     }
 
@@ -576,14 +575,15 @@ internal fun HomeTabContent(
             state.lastPlayedTracks
                 .filter { isPersonalTrackId(it.id) }
                 .distinctBy { it.id }
-                .take(14)
+                .take(20)
         } else {
             state.lastPlayedTracks
                 .ifEmpty { recentsTracks.ifEmpty { fallbackHomeTracks } }
                 .distinctBy { it.id }
-                .take(14)
+                .take(20)
         }
     }
+    val lastPlayedColumns = remember(lastPlayedTracks) { lastPlayedTracks.chunked(4) }
     val showSkeleton = state.loading && state.shelves.isEmpty()
     val tokens = LocalLunariaColors.current
     val screenWidthDp = LocalConfiguration.current.screenWidthDp
@@ -1025,7 +1025,7 @@ internal fun HomeTabContent(
                                                                 .padding(horizontal = 9.dp, vertical = 3.dp),
                                                         ) {
                                                             Text(
-                                                                text = "PERSONALIZED STATION",
+                                                                text = dev.sonata.android.ui.i18n.LocalSonataStrings.current.personalizedStationEyebrow,
                                                                 style = MaterialTheme.typography.labelSmall.copy(
                                                                     fontSize = 10.sp,
                                                                     fontWeight = FontWeight.Bold,
@@ -1036,7 +1036,7 @@ internal fun HomeTabContent(
                                                         }
                                                     } else {
                                                         Text(
-                                                            text = "PERSONALIZED STATION",
+                                                            text = dev.sonata.android.ui.i18n.LocalSonataStrings.current.personalizedStationEyebrow,
                                                             style = MaterialTheme.typography.labelSmall.copy(
                                                                 fontWeight = FontWeight.Bold,
                                                                 letterSpacing = 1.1.sp,
@@ -1154,28 +1154,43 @@ internal fun HomeTabContent(
                     }
                     }
 
-                    // Shelf 2a: Last Played (156.dp square cover + title strip, ZERO glass)
-                    if (!settings.hideRecents && lastPlayedTracks.isNotEmpty()) {
+                    // Shelf 2a: Last Played (4-row column pager matching Recently Played)
+                    if (!settings.hideRecents && lastPlayedColumns.isNotEmpty()) {
                         item(key = "last_played_square_strip", contentType = "last_played_strip") {
+                            val tokens = LocalLunariaColors.current
                             val activeId = state.activeTrack?.id
-                            Column(Modifier.padding(bottom = 24.dp)) {
+                            val colWidth = trackColumnWidth(LocalConfiguration.current.screenWidthDp.dp)
+                            Column(Modifier.padding(bottom = 26.dp)) {
                                 SectionHeader(title = dev.sonata.android.ui.i18n.LocalSonataStrings.current.lastPlayed)
                                 LazyRow(
                                     contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
                                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                                 ) {
                                     items(
-                                        items = lastPlayedTracks,
-                                        key = { t -> "lp_${t.id}" },
-                                        contentType = { "last_played" },
-                                    ) { track ->
-                                        SonataLastPlayedSquareCard(
-                                            title = track.title,
-                                            artworkUrl = track.thumbnailUrl,
-                                            isCurrent = activeId != null && track.id == activeId,
-                                            onClick = { onPlayTrack(track, lastPlayedTracks) },
-                                            onLongClick = { bounds -> onLastPlayedTrackLongClick(track, bounds) },
-                                        )
+                                        items = lastPlayedColumns,
+                                        key = { col -> "lp_col_${col.joinToString("_") { it.id }}" },
+                                        contentType = { "last_played_col" },
+                                    ) { column ->
+                                        Column(Modifier.width(colWidth)) {
+                                            column.forEachIndexed { rowIdx, track ->
+                                                val current = activeId != null && track.id == activeId
+                                                CompactTrackRow(
+                                                    track = track,
+                                                    isCurrent = current,
+                                                    isPlaying = current && state.isPlaying,
+                                                    onClick = { onPlayTrack(track, lastPlayedTracks) },
+                                                    onOptionsClick = { bounds -> onLastPlayedTrackLongClick(track, bounds) },
+                                                    onLongClick = { bounds -> onLastPlayedTrackLongClick(track, bounds) },
+                                                )
+                                                if (tokens.showTrackDividers && rowIdx < column.lastIndex) {
+                                                    HorizontalDivider(
+                                                        color = tokens.cardStroke.copy(alpha = 0.55f),
+                                                        thickness = 0.5.dp,
+                                                        modifier = Modifier.padding(start = 60.dp),
+                                                    )
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1413,13 +1428,27 @@ internal fun HomeTabContent(
                         key = { shelf -> "shelf_${shelf.title}" },
                         contentType = { "home_shelf" },
                     ) { shelf ->
-                        val cards = remember(shelf.cards, settings.hideHomeVideos) {
-                            shelf.cards
+                        val cards = remember(shelf.cards, shelf.tracks, settings.hideHomeVideos) {
+                            val fromCards = shelf.cards
                                 .filter { card ->
                                     card.kind != AndroidHomeCardKind.MOOD &&
                                         (!settings.hideHomeVideos || card.kind != AndroidHomeCardKind.VIDEO)
                                 }
                                 .distinctBy { "${it.kind}_${it.id}_${it.title}" }
+                            if (fromCards.isNotEmpty()) {
+                                fromCards
+                            } else {
+                                shelf.tracks.map { tr ->
+                                    AndroidHomeCard(
+                                        kind = AndroidHomeCardKind.SONG,
+                                        id = tr.id,
+                                        title = tr.title,
+                                        subtitle = tr.artist,
+                                        thumbnailUrl = tr.thumbnailUrl,
+                                        track = tr,
+                                    )
+                                }
+                            }
                         }
                         if (cards.isNotEmpty()) {
                             val isVideoShelf = remember(cards) {
@@ -1600,10 +1629,10 @@ internal fun SignInBanner(
     val palette = remember {
         MeshPalette(
             listOf(
-                Color(0xFF9E1B3A),
-                Color(0xFF42216B),
-                Color(0xFF1D2E6B),
-                Color(0xFFD63858),
+                Color(0xFF1C1C1E),
+                Color(0xFF2C2C2E),
+                Color(0xFF0D0D0F),
+                Color(0xFF242426),
             )
         )
     }

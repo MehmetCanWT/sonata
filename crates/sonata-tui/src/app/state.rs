@@ -13,7 +13,7 @@ use ratatui_image::protocol::StatefulProtocol;
 use sonata_core::auth::ExtractedCookies;
 use sonata_core::connect::ConnectStateSnapshot;
 use sonata_core::lyrics::LyricsState;
-use sonata_core::player::PlaybackState;
+use sonata_core::player::{PlaybackState, RepeatMode};
 use sonata_core::playlists::{is_personal_track_id, PersonalPlaylist};
 use sonata_core::providers::local::LocalScanResult;
 use sonata_core::providers::servers::{
@@ -157,27 +157,37 @@ pub fn resolve_tui_playlist_add_targets(
 }
 
 /// Formats a compact server reachability badge from [`ServerHealthReport`].
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn format_tui_health_badge(report: &ServerHealthReport) -> String {
-    if report.alive {
-        match report.latency_ms {
-            Some(ms) => format!("Alive {ms}ms"),
-            None => "Alive".to_string(),
-        }
-    } else {
-        "Offline".to_string()
-    }
+    format_tui_health_badge_for(sonata_runtime::i18n::AppLanguage::En, report)
+}
+
+/// Formats a localized server reachability badge from [`ServerHealthReport`].
+pub fn format_tui_health_badge_for(
+    lang: sonata_runtime::i18n::AppLanguage,
+    report: &ServerHealthReport,
+) -> String {
+    sonata_runtime::i18n::format_health_badge(lang, report.alive, report.latency_ms, false)
 }
 
 /// Formats a compact speed test badge from [`ServerSpeedTestReport`].
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn format_tui_speed_badge(report: &ServerSpeedTestReport) -> String {
-    if !report.alive {
-        return "Offline".to_string();
-    }
-    match report.download_mbps {
-        Some(mbps) if mbps >= 100.0 => format!("{mbps:.0} Mbps ({}ms)", report.latency_ms),
-        Some(mbps) => format!("{mbps:.1} Mbps ({}ms)", report.latency_ms),
-        None => format!("{}ms", report.latency_ms),
-    }
+    format_tui_speed_badge_for(sonata_runtime::i18n::AppLanguage::En, report)
+}
+
+/// Formats a localized speed test badge from [`ServerSpeedTestReport`].
+pub fn format_tui_speed_badge_for(
+    lang: sonata_runtime::i18n::AppLanguage,
+    report: &ServerSpeedTestReport,
+) -> String {
+    sonata_runtime::i18n::format_speed_badge(
+        lang,
+        report.alive,
+        report.latency_ms,
+        report.download_mbps,
+        false,
+    )
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -198,7 +208,6 @@ pub enum SidebarEntry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextInputTarget {
     DownloadsDir,
-    DiscordAppId,
     LocalMusicDir,
     ConnectDeviceName,
 }
@@ -512,6 +521,20 @@ pub enum ActiveModal {
     Help,
 }
 
+pub enum MprisCmd {
+    SetPaused(bool),
+    TogglePause,
+    Stop,
+    NextTrack,
+    PrevTrack,
+    SeekRelative(f64),
+    SeekAbsolute(f64),
+    SetVolume(u8),
+    SetShuffle(bool),
+    SetRepeat(RepeatMode),
+    Quit,
+}
+
 pub enum AppEvent {
     AuthReady {
         cookies: ExtractedCookies,
@@ -565,8 +588,15 @@ pub enum AppEvent {
         play_seq: u64,
         track_id: String,
         fps: f32,
+        motion_path: std::path::PathBuf,
         frames: Vec<(Option<StatefulProtocol>, Vec<u8>)>,
     },
+    MotionPathReady {
+        play_seq: u64,
+        track_id: String,
+        motion_path: std::path::PathBuf,
+    },
+    Mpris(MprisCmd),
     PlaylistCreated(Playlist),
     AutoplayTracksReady {
         play_seq: u64,
@@ -622,6 +652,7 @@ pub enum AppEvent {
         req_id: u64,
         scan: LocalScanResult,
     },
+    PersonalPlaylistsLoaded(Vec<PersonalPlaylist>),
     StatsDbOpened(Option<StatsDb>),
     StatsLoaded {
         window: StatsWindow,
@@ -682,23 +713,129 @@ pub fn build_tui_connect_snapshot(
     }
 }
 
-/// Filters Connect `TransferQueue` tracks for Personal Only Mode and clamps `start_index`.
+fn percent_decode_lossy(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (
+                (bytes[i + 1] as char).to_digit(16),
+                (bytes[i + 2] as char).to_digit(16),
+            ) {
+                out.push(((hi << 4) | lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn has_parent_traversal(path_str: &str) -> bool {
+    path_str
+        .split(['/', '\\'])
+        .any(|seg| seg == ".." || seg.contains('\0'))
+}
+
+/// Validates a track ID received from a remote Sonata Connect `TransferQueue` request.
+pub fn is_safe_tui_transfer_track_id(
+    track_id: &str,
+    personal_only_mode: bool,
+    local_roots: &[std::path::PathBuf],
+    server_profiles: &[ServerProfile],
+) -> bool {
+    if track_id.is_empty()
+        || track_id.contains('\0')
+        || track_id.starts_with("file://")
+        || track_id.starts_with('/')
+        || track_id.starts_with('\\')
+    {
+        return false;
+    }
+    if let Some(rest) = track_id.strip_prefix("local:") {
+        if personal_only_mode {
+            return false;
+        }
+        let decoded = percent_decode_lossy(rest);
+        if rest.starts_with("file://")
+            || decoded.starts_with("file://")
+            || rest.contains('\0')
+            || decoded.contains('\0')
+            || has_parent_traversal(rest)
+            || has_parent_traversal(&decoded)
+        {
+            return false;
+        }
+        if local_roots.is_empty() {
+            return false;
+        }
+        let Ok(canon_target) = std::fs::canonicalize(&decoded) else {
+            return false;
+        };
+        return local_roots.iter().any(|root| {
+            std::fs::canonicalize(root)
+                .map(|canon_root| canon_target.starts_with(&canon_root))
+                .unwrap_or(false)
+        });
+    }
+    if let Some(rest) = track_id.strip_prefix("smb:") {
+        if personal_only_mode {
+            return false;
+        }
+        if rest.starts_with("file://")
+            || rest.starts_with('/')
+            || rest.starts_with('\\')
+            || rest.contains('\0')
+        {
+            return false;
+        }
+        let Some((server_id, rel_path)) = rest.split_once(':') else {
+            return false;
+        };
+        if server_id.is_empty() || rel_path.is_empty() {
+            return false;
+        }
+        let decoded = percent_decode_lossy(rel_path);
+        if rel_path.starts_with("file://")
+            || decoded.starts_with("file://")
+            || rel_path.starts_with('/')
+            || decoded.starts_with('/')
+            || rel_path.starts_with('\\')
+            || decoded.starts_with('\\')
+            || has_parent_traversal(rel_path)
+            || has_parent_traversal(&decoded)
+        {
+            return false;
+        }
+        return server_profiles
+            .iter()
+            .any(|p| p.enabled && p.kind == ServerKind::Smb && p.id == server_id);
+    }
+    true
+}
+
+/// Filters Connect `TransferQueue` tracks for safety, configured roots, and Personal Only Mode.
 pub fn filter_tui_transfer_tracks(
     tracks: Vec<Track>,
     start_index: usize,
     personal_only_mode: bool,
     downloaded_track_ids: &HashSet<String>,
+    local_roots: &[std::path::PathBuf],
+    server_profiles: &[ServerProfile],
 ) -> Option<(Vec<Track>, usize)> {
     if tracks.is_empty() {
         return None;
     }
-    if !personal_only_mode {
-        return Some((tracks.clone(), start_index.min(tracks.len() - 1)));
-    }
     let target_id = tracks.get(start_index).map(|t| t.id.clone());
     let filtered: Vec<Track> = tracks
         .into_iter()
-        .filter(|t| can_play_tui_track(t, true, downloaded_track_ids.contains(&t.id)))
+        .filter(|t| {
+            is_safe_tui_transfer_track_id(&t.id, personal_only_mode, local_roots, server_profiles)
+                && can_play_tui_track(t, personal_only_mode, downloaded_track_ids.contains(&t.id))
+        })
         .collect();
     if filtered.is_empty() {
         return None;
@@ -714,7 +851,13 @@ pub struct ExportFingerprint {
     pub(super) track_id: String,
     pub(super) status: String,
     pub(super) lyric: Option<String>,
+    pub(super) lyric_index: Option<usize>,
+    pub(super) lyric_word_index: Option<usize>,
+    pub(super) lyrics_state: String,
+    pub(super) has_translation: bool,
+    pub(super) has_romanization: bool,
     pub(super) art_path: Option<String>,
+    pub(super) motion_art_path: Option<String>,
     pub(super) pos_secs: u64,
     pub(super) dur_secs: u64,
 }
@@ -830,12 +973,13 @@ impl App {
     }
 
     pub fn toggle_mini_mode(&mut self) {
+        let s = sonata_runtime::i18n::strings(self.config.language);
         self.mini_mode = !self.mini_mode;
         self.clear_kitty_images();
         self.status_line = if self.mini_mode {
-            "Mini Mode (double-click Album Art or press m to restore)".to_string()
+            s.mini_mode_hint.to_string()
         } else {
-            "Full Mode".to_string()
+            s.full_mode.to_string()
         };
     }
 
@@ -879,9 +1023,13 @@ impl App {
         }
     }
 
-    pub fn restore_hyprland_opacity(&mut self) {
+    pub async fn restore_hyprland_opacity(&mut self) {
         if let Some(addr) = self.ensure_hyprland_window() {
-            hyprland::set_window_opacity_sync(&addr, 1.0);
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                hyprland::set_window_opacity(&addr, 1.0),
+            )
+            .await;
         }
     }
 
@@ -890,19 +1038,21 @@ impl App {
         let effective = self.config.effective_jiosaavn_enabled();
         self.resolver
             .update_profile(|profile| profile.jiosaavn_enabled = effective);
-        let _ = self.config.save();
+        self.save_config_async();
         self.enqueue_session_cmd(SessionCommand::UpdatePolicy {
             policy: self.session_policy(),
             trigger_upgrade: effective,
         });
+        let i18n = sonata_runtime::i18n::strings(self.config.language);
         self.status_line = format!(
-            "JioSaavn 320kbps Module: {}",
+            "{}: {}",
+            i18n.jiosaavn_module,
             if self.config.personal_only_mode && self.config.jiosaavn_enabled {
-                "Saved On (Paused in Personal Only)"
+                i18n.disabled
             } else if self.config.jiosaavn_enabled {
-                "Enabled"
+                i18n.enabled
             } else {
-                "Disabled"
+                i18n.disabled
             }
         );
     }
@@ -912,7 +1062,7 @@ impl App {
         let effective_jio = self.config.effective_jiosaavn_enabled();
         self.resolver
             .update_profile(|profile| profile.jiosaavn_enabled = effective_jio);
-        let _ = self.config.save();
+        self.save_config_async();
         self.enqueue_session_cmd(SessionCommand::UpdatePolicy {
             policy: self.session_policy(),
             trigger_upgrade: false,
@@ -926,10 +1076,11 @@ impl App {
                     self.enqueue_session_cmd(SessionCommand::Stop);
                 }
             }
-            self.status_line =
-                "Personal Only Mode enabled (streaming preferences preserved)".to_string();
+            let s = sonata_runtime::i18n::strings(self.config.language);
+            self.status_line = s.personal_only_enabled_preserved.to_string();
         } else {
-            self.status_line = "Streaming restored".to_string();
+            let s = sonata_runtime::i18n::strings(self.config.language);
+            self.status_line = s.streaming_restored.to_string();
             self.start_background_init();
         }
         self.rebuild_sidebar();
@@ -937,27 +1088,30 @@ impl App {
 
     pub fn toggle_attribute_personal_to_ytm(&mut self) {
         self.config.scrobble_servers_to_ytm = !self.config.scrobble_servers_to_ytm;
-        let _ = self.config.save();
+        self.save_config_async();
+        let i18n = sonata_runtime::i18n::strings(self.config.language);
         self.status_line = format!(
-            "Report local/server plays to YTM: {}",
+            "{}: {}",
+            i18n.attribute_personal_to_ytm,
             if self.config.scrobble_servers_to_ytm {
-                "Enabled"
+                i18n.enabled
             } else {
-                "Disabled"
+                i18n.disabled
             }
         );
     }
 
     pub fn toggle_local_music_enabled(&mut self) {
         self.config.local_music_enabled = !self.config.local_music_enabled;
-        let _ = self.config.save();
+        self.save_config_async();
         if self.config.local_music_enabled {
             self.scan_local_music();
         } else {
             self.local_scan_req_id = self.local_scan_req_id.wrapping_add(1);
             self.local_scanning = false;
             self.local_scan = LocalScanResult::default();
-            self.status_line = "Local Music disabled".to_string();
+            let s = sonata_runtime::i18n::strings(self.config.language);
+            self.status_line = s.local_music_disabled.to_string();
         }
         self.rebuild_sidebar();
     }
@@ -970,7 +1124,7 @@ impl App {
         let clean = std::path::PathBuf::from(trimmed);
         if !self.config.local_music_dirs.contains(&clean) {
             self.config.local_music_dirs.push(clean);
-            let _ = self.config.save();
+            self.save_config_async();
         }
         self.scan_local_music();
     }
@@ -978,7 +1132,7 @@ impl App {
     pub fn remove_local_music_dir(&mut self, idx: usize) {
         if idx < self.config.local_music_dirs.len() {
             self.config.local_music_dirs.remove(idx);
-            let _ = self.config.save();
+            self.save_config_async();
             if self.config.local_music_enabled {
                 self.scan_local_music();
             }
@@ -987,17 +1141,20 @@ impl App {
 
     pub fn toggle_motion_covers(&mut self) {
         self.config.motion_covers = !self.config.motion_covers;
-        let _ = self.config.save();
+        self.save_config_async();
         if !self.config.motion_covers {
             self.anim_art_frames.clear();
+            self.motion_cover_path = None;
             self.clear_kitty_images();
         }
+        let i18n = sonata_runtime::i18n::strings(self.config.language);
         self.status_line = format!(
-            "Animated Album Artwork: {}",
+            "{}: {}",
+            i18n.motion_covers,
             if self.config.motion_covers {
-                "Enabled"
+                i18n.enabled
             } else {
-                "Disabled"
+                i18n.disabled
             }
         );
     }
@@ -1005,22 +1162,24 @@ impl App {
     pub fn toggle_transparent_bg(&mut self) {
         self.config.transparent_bg = !self.config.transparent_bg;
         self.base_theme.transparent_bg = None;
-        let _ = self.config.save();
+        self.save_config_async();
         self.sync_appearance();
+        let i18n = sonata_runtime::i18n::strings(self.config.language);
         self.status_line = format!(
-            "Transparent TUI Background: {}",
+            "{}: {}",
+            i18n.tui_transparent_bg,
             if self.config.transparent_bg {
-                "Enabled"
+                i18n.enabled
             } else {
-                "Disabled"
+                i18n.disabled
             }
         );
     }
 
     pub fn cycle_hyprland_opacity(&mut self, forward: bool) {
+        let s = sonata_runtime::i18n::strings(self.config.language);
         if !hyprland::is_hyprland() {
-            self.status_line =
-                "Hyprland Opacity is locked to Solid (100%) outside Hyprland".to_string();
+            self.status_line = s.hyprland_opacity_locked_msg.to_string();
             return;
         }
         const STEPS: &[f32] = &[0.50, 0.60, 0.70, 0.80, 0.90, 1.00];
@@ -1042,11 +1201,12 @@ impl App {
         };
         self.config.hyprland_opacity = STEPS[next];
         self.base_theme.hyprland_opacity = None;
-        let _ = self.config.save();
+        self.save_config_async();
         let _ = self.ensure_hyprland_window();
         self.sync_appearance();
         self.status_line = format!(
-            "Hyprland Window Opacity: {:.0}%",
+            "{}: {:.0}%",
+            s.tui_hypr_opacity,
             self.config.hyprland_opacity * 100.0
         );
     }
@@ -1067,8 +1227,13 @@ impl App {
         };
         self.apply_theme_by_index(next);
         self.config.theme = self.base_theme.name.clone();
-        let _ = self.config.save();
-        self.status_line = format!("Theme: {}", self.base_theme.name);
+        self.save_config_async();
+        let s = sonata_runtime::i18n::strings(self.config.language);
+        self.status_line = format!(
+            "{}: {}",
+            s.theme_label,
+            sonata_runtime::i18n::display_theme_name(self.config.language, &self.base_theme.name)
+        );
     }
 
     pub fn apply_theme_by_index(&mut self, idx: usize) {
@@ -1084,14 +1249,14 @@ impl App {
                 let next = (self.config.right_pane_pct as i16 + delta_pct).clamp(14, 48) as u16;
                 if 100u16.saturating_sub(self.config.left_pane_pct + next) >= 20 {
                     self.config.right_pane_pct = next;
-                    let _ = self.config.save();
+                    self.save_config_async();
                 }
             }
             FocusPane::Tracks | FocusPane::SearchInput => {
                 let next = (self.config.left_pane_pct as i16 + delta_pct).clamp(18, 52) as u16;
                 if 100u16.saturating_sub(next + self.config.right_pane_pct) >= 20 {
                     self.config.left_pane_pct = next;
-                    let _ = self.config.save();
+                    self.save_config_async();
                 }
             }
         }
@@ -1100,7 +1265,7 @@ impl App {
     pub fn flush_config(&mut self) {
         if self.config_dirty {
             self.config_dirty = false;
-            let _ = self.config.save();
+            self.save_config_async();
         }
     }
 
@@ -1337,11 +1502,26 @@ mod tests {
 
         let dl = HashSet::new();
         let (filtered, idx) =
-            filter_tui_transfer_tracks(vec![t1, t2.clone(), t3], 2, true, &dl).expect("filtered");
-        assert_eq!(filtered.len(), 2);
-        assert_eq!(idx, 1);
+            filter_tui_transfer_tracks(vec![t1, t2.clone(), t3], 2, true, &dl, &[], &[])
+                .expect("filtered");
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(idx, 0);
         assert_eq!(filtered[idx].id, "subsonic:s1:9");
-        assert!(filter_tui_transfer_tracks(vec![t2], 0, true, &dl).is_none());
+        assert!(filter_tui_transfer_tracks(vec![t2], 0, true, &dl, &[], &[]).is_none());
+        assert!(filter_tui_transfer_tracks(
+            vec![
+                dummy_track("smb:file:///etc/passwd"),
+                dummy_track("smb:/etc/passwd"),
+                dummy_track("smb:nas:../etc/passwd"),
+                dummy_track("local:/etc/passwd"),
+            ],
+            0,
+            false,
+            &dl,
+            &[],
+            &[],
+        )
+        .is_none());
 
         assert_eq!(tui_track_source_tag(&dummy_track("smb:nas:1")), "SMB");
         assert_eq!(tui_track_source_tag(&dummy_track("webdav:d:1")), "DAV");

@@ -26,6 +26,7 @@ use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 pub const JELLYFIN_ID_PREFIX: &str = "jellyfin:";
@@ -422,6 +423,24 @@ pub(crate) fn default_http_timeout() -> Duration {
     DEFAULT_HTTP_TIMEOUT
 }
 
+/// Shared HTTP client for authenticated self-hosted server requests with redirects disabled so
+/// auth headers (`X-Emby-Token`, `Authorization`) and Subsonic query tokens never leak on 30x redirects.
+pub(crate) fn no_redirect_http_client() -> &'static Client {
+    static CLIENT: OnceLock<Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(DEFAULT_HTTP_TIMEOUT)
+            .connect_timeout(Duration::from_secs(6))
+            .pool_max_idle_per_host(8)
+            .pool_idle_timeout(Duration::from_secs(60))
+            .tcp_keepalive(Duration::from_secs(30))
+            .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36")
+            .build()
+            .expect("failed to build no-redirect HTTP client")
+    })
+}
+
 /// Unified async facade over Jellyfin, Subsonic, WebDAV, and SMB self-hosted servers.
 #[derive(Clone)]
 pub struct ServerClient {
@@ -617,8 +636,7 @@ impl ServerClient {
         &self,
         stream: &ServerStream,
     ) -> Result<(u64, Duration), CoreError> {
-        let mut req = self
-            .http
+        let mut req = no_redirect_http_client()
             .get(&stream.url)
             .timeout(default_http_timeout())
             .header(

@@ -4,10 +4,25 @@ set -eu
 repo_url="${SONATA_REPO_URL:-https://github.com/MehmetCanWT/sonata.git}"
 install_root="${HOME}/.local"
 tmp_dir=""
+ytdlp_tmp_dir=""
+
+validate_repo_url() {
+    case "${repo_url}" in
+        https://*)
+            ;;
+        *)
+            echo "Invalid SONATA_REPO_URL '${repo_url}': must start with https://" >&2
+            exit 1
+            ;;
+    esac
+}
 
 cleanup() {
     if [ -n "${tmp_dir}" ] && [ -d "${tmp_dir}" ]; then
         rm -rf "${tmp_dir}"
+    fi
+    if [ -n "${ytdlp_tmp_dir}" ] && [ -d "${ytdlp_tmp_dir}" ]; then
+        rm -rf "${ytdlp_tmp_dir}"
     fi
 }
 trap cleanup EXIT INT TERM
@@ -34,10 +49,37 @@ calc_build_jobs() {
     fi
 }
 
+verify_sha256() {
+    expected_hash="$1"
+    target_file="$2"
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf '%s  %s\n' "${expected_hash}" "${target_file}" | sha256sum -c - >/dev/null
+    elif command -v shasum >/dev/null 2>&1; then
+        printf '%s  %s\n' "${expected_hash}" "${target_file}" | shasum -a 256 -c - >/dev/null
+    else
+        echo "Neither sha256sum nor shasum is available to verify yt-dlp." >&2
+        exit 1
+    fi
+}
+
 install_standalone_ytdlp() {
     mkdir -p "${install_root}/bin"
-    curl -fsSL "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp" -o "${install_root}/bin/yt-dlp"
-    chmod 0755 "${install_root}/bin/yt-dlp"
+    ytdlp_tmp_dir="$(mktemp -d)"
+    curl --proto '=https' --tlsv1.2 -fsSL \
+        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp" \
+        -o "${ytdlp_tmp_dir}/yt-dlp"
+    curl --proto '=https' --tlsv1.2 -fsSL \
+        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS" \
+        -o "${ytdlp_tmp_dir}/SHA2-256SUMS"
+    expected_sha="$(awk '$2 == "yt-dlp" { print $1; exit }' "${ytdlp_tmp_dir}/SHA2-256SUMS")"
+    if ! printf '%s\n' "${expected_sha}" | grep -Eq '^[0-9a-fA-F]{64}$'; then
+        echo "Failed to parse valid SHA-256 checksum for yt-dlp from SHA2-256SUMS." >&2
+        exit 1
+    fi
+    verify_sha256 "${expected_sha}" "${ytdlp_tmp_dir}/yt-dlp"
+    install -m 0755 "${ytdlp_tmp_dir}/yt-dlp" "${install_root}/bin/yt-dlp"
+    rm -rf "${ytdlp_tmp_dir}"
+    ytdlp_tmp_dir=""
 }
 
 install_system_deps() {
@@ -48,8 +90,11 @@ install_system_deps() {
                 echo "Installed sonata-desktop via Nix Flakes."
                 exit 0
             fi
+            echo "Nix profile install failed; falling back to system package manager..." >&2
         fi
-    elif command -v pacman >/dev/null 2>&1; then
+    fi
+
+    if command -v pacman >/dev/null 2>&1; then
         run_as_root pacman -S --needed --noconfirm \
             base-devel pkgconf openssl sqlite ca-certificates curl ffmpeg git mpv nodejs yt-dlp \
             wayland vulkan-icd-loader libxkbcommon libxkbcommon-x11 libxcb fontconfig alsa-lib dbus
@@ -163,6 +208,7 @@ ensure_profile_path() {
     fi
 }
 
+validate_repo_url
 install_system_deps
 verify_runtime_tools
 ensure_rust

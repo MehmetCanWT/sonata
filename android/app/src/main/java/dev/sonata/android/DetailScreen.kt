@@ -372,7 +372,7 @@ internal fun CompactTrackRow(
         if (isCurrent) {
             Icon(
                 imageVector = SonataIcons.GraphicEq,
-                contentDescription = if (isPlaying) "Playing" else "Paused",
+                contentDescription = if (isPlaying) dev.sonata.android.ui.i18n.LocalSonataStrings.current.playing else dev.sonata.android.ui.i18n.LocalSonataStrings.current.paused,
                 tint = accentColor,
                 modifier = Modifier.size(18.dp),
             )
@@ -396,7 +396,7 @@ internal fun CompactTrackRow(
                 if (track.id in LocalDownloadedTrackIds.current) {
                     Icon(
                         imageVector = SonataIcons.Download,
-                        contentDescription = "Downloaded",
+                        contentDescription = dev.sonata.android.ui.i18n.LocalSonataStrings.current.downloaded,
                         tint = accentColor,
                         modifier = Modifier.size(13.dp),
                     )
@@ -423,7 +423,7 @@ internal fun CompactTrackRow(
         ) {
             Icon(
                 imageVector = SonataIcons.MoreVert,
-                contentDescription = "Track options",
+                contentDescription = dev.sonata.android.ui.i18n.LocalSonataStrings.current.trackOptions,
                 tint = secondaryInk,
                 modifier = Modifier.size(18.dp),
             )
@@ -814,9 +814,9 @@ internal fun DetailScreen(
                                 val totalSecs = state.collectionTracks.sumOf { it.durationSecs?.toLong() ?: 0L }
                                 ((totalSecs + 30L) / 60L).coerceAtLeast(0L)
                             }
-                            val summaryLine = remember(state.collectionTracks.size, totalMinutes) {
-                                val countLabel = if (state.collectionTracks.size == 1) "1 song" else "${state.collectionTracks.size} songs"
-                                if (totalMinutes > 0L) "$countLabel, $totalMinutes minutes" else countLabel
+                            val detailStrings = dev.sonata.android.ui.i18n.LocalSonataStrings.current
+                            val summaryLine = remember(state.collectionTracks.size, totalMinutes, detailStrings) {
+                                detailStrings.tracksCountWithDuration(state.collectionTracks.size, totalMinutes)
                             }
                             Column(
                                 modifier = Modifier

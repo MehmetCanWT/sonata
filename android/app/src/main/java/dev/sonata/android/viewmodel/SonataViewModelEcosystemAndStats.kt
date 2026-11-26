@@ -12,6 +12,8 @@ import dev.sonata.android.ApkUpdater
 import dev.sonata.android.SonataViewModel
 import dev.sonata.android.connect.ConnectBeacon
 import dev.sonata.android.connect.ConnectCommand
+import dev.sonata.android.connect.ConnectStateSnapshot
+import dev.sonata.android.connect.ConnectTrackSnapshot
 import dev.sonata.android.data.runSuspendCatching
 import dev.sonata.android.discord.DiscordPresenceConfig
 import dev.sonata.android.discord.DiscordPresenceTrack
@@ -217,6 +219,15 @@ internal fun SonataViewModel.downloadAndInstallUpdateImpl() {
             ApkInstallLaunchResult.FILE_MISSING -> {
                 _uiState.update { it.copy(downloadedUpdateApkPath = null) }
             }
+            ApkInstallLaunchResult.SIGNATURE_MISMATCH -> {
+                _uiState.update {
+                    it.copy(
+                        downloadedUpdateApkPath = null,
+                        updateError = s.updateSignatureMismatch,
+                    )
+                }
+                return
+            }
         }
     }
 
@@ -265,13 +276,16 @@ internal fun SonataViewModel.downloadAndInstallUpdateImpl() {
                 ApkInstallLaunchResult.LAUNCHED -> curStrings.updateInstallingVersion(info.latestVersion)
                 ApkInstallLaunchResult.PERMISSION_REQUIRED -> curStrings.updatePermissionRequired
                 ApkInstallLaunchResult.FILE_MISSING -> curStrings.updateApkMissingRetry
+                ApkInstallLaunchResult.SIGNATURE_MISMATCH -> curStrings.updateSignatureMismatch
             }
+            val launchError = if (launchResult == ApkInstallLaunchResult.SIGNATURE_MISMATCH) detailMsg else null
             _uiState.update {
                 it.copy(
                     updateDownloading = false,
-                    updateDownloadProgress = 1f,
-                    updateDownloadDetail = detailMsg,
-                    downloadedUpdateApkPath = apkFile.absolutePath,
+                    updateDownloadProgress = if (launchError == null) 1f else null,
+                    updateDownloadDetail = if (launchError == null) detailMsg else "",
+                    updateError = launchError,
+                    downloadedUpdateApkPath = if (launchError == null) apkFile.absolutePath else null,
                     status = detailMsg,
                 )
             }
@@ -391,10 +405,198 @@ internal fun SonataViewModel.dispatchRecordListeningStatImpl(
     }
 }
 
+internal fun SonataViewModel.observeConnectRemoteStateImpl() {
+    viewModelScope.launch {
+        var wasRemoteConnected = false
+        connectController.state.collect { connectState ->
+            val peer = connectState.activePeer
+            if (peer != null) {
+                if (!wasRemoteConnected) {
+                    wasRemoteConnected = true
+                    val current = _uiState.value
+                    savedLocalPlaybackForConnect = SonataViewModel.SavedLocalPlaybackState(
+                        activeTrack = current.activeTrack,
+                        queue = current.queue,
+                        queueIndex = current.queueIndex,
+                        streamBadge = current.streamBadge,
+                        positionMs = playbackClock.positionMs.coerceAtLeast(0L),
+                        durationMs = playbackClock.durationMs.coerceAtLeast(0L),
+                    )
+                    pauseLocalPlaybackForConnect()
+                    _uiState.update {
+                        it.copy(
+                            isRemoteConnectActive = true,
+                            isBuffering = false,
+                            isUpgradingQuality = false,
+                        )
+                    }
+                }
+                connectState.remoteState?.let { remote ->
+                    mirrorRemoteConnectSnapshot(peer, remote)
+                }
+            } else if (wasRemoteConnected) {
+                wasRemoteConnected = false
+                pendingRemoteTransferTrackId = null
+                pendingRemoteTransferUntilMs = 0L
+                pendingRemoteQueueIds = null
+                pendingRemoteQueueUntilMs = 0L
+                lastMirroredConnectTrackId = null
+                val saved = savedLocalPlaybackForConnect
+                savedLocalPlaybackForConnect = null
+                if (saved != null) {
+                    _uiState.update {
+                        it.copy(
+                            isRemoteConnectActive = false,
+                            activeTrack = saved.activeTrack,
+                            queue = saved.queue,
+                            queueIndex = saved.queueIndex,
+                            streamBadge = saved.streamBadge,
+                            isPlaying = false,
+                            isBuffering = false,
+                            isUpgradingQuality = false,
+                        )
+                    }
+                    val localPos = runCatching { controller?.currentPosition?.coerceAtLeast(0L) }.getOrNull()
+                        ?: saved.positionMs
+                    val localDur = runCatching { controller?.duration?.coerceAtLeast(0L) }.getOrNull()
+                        ?.takeIf { it > 0L }
+                        ?: saved.durationMs
+                    playbackClock.sync(positionMs = localPos, durationMs = localDur)
+                    saved.activeTrack?.let { fetchLyricsInBackground(it) }
+                } else {
+                    _uiState.update {
+                        it.copy(
+                            isRemoteConnectActive = false,
+                            isPlaying = false,
+                            isBuffering = false,
+                            isUpgradingQuality = false,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun SonataViewModel.mirrorRemoteConnectSnapshot(
+    peer: ConnectBeacon,
+    remote: ConnectStateSnapshot,
+) {
+    val nowMs = System.currentTimeMillis()
+    val pendingId = pendingRemoteTransferTrackId
+    val remoteTrackSnap = remote.activeTrack
+    if (pendingId != null && nowMs < pendingRemoteTransferUntilMs) {
+        if (remoteTrackSnap?.id == pendingId) {
+            pendingRemoteTransferTrackId = null
+            pendingRemoteTransferUntilMs = 0L
+        } else {
+            // Wait briefly for Desktop to apply the newly transferred track without snapping back.
+            return
+        }
+    } else if (pendingId != null) {
+        pendingRemoteTransferTrackId = null
+        pendingRemoteTransferUntilMs = 0L
+    }
+
+    val currentUi = _uiState.value
+    val likedIds = currentUi.likedTrackIds
+    val pendingQueueIds = pendingRemoteQueueIds
+    val keepLocalPendingQueue = if (pendingQueueIds != null && nowMs < pendingRemoteQueueUntilMs) {
+        if (remote.queue.map { it.id } == pendingQueueIds) {
+            pendingRemoteQueueIds = null
+            pendingRemoteQueueUntilMs = 0L
+            false
+        } else {
+            true
+        }
+    } else {
+        if (pendingQueueIds != null) {
+            pendingRemoteQueueIds = null
+            pendingRemoteQueueUntilMs = 0L
+        }
+        false
+    }
+    if (remoteTrackSnap != null) {
+        val existingMatch = currentUi.queue.firstOrNull { it.id == remoteTrackSnap.id }
+            ?: currentUi.activeTrack?.takeIf { it.id == remoteTrackSnap.id }
+        val remoteTrack = remoteTrackSnap.toAndroidTrack(likedIds, existingMatch)
+        val mappedQueue = if (keepLocalPendingQueue && currentUi.queue.isNotEmpty()) {
+            currentUi.queue
+        } else if (remote.queue.isNotEmpty()) {
+            remote.queue.map { snap ->
+                val match = currentUi.queue.firstOrNull { it.id == snap.id }
+                snap.toAndroidTrack(likedIds, match)
+            }
+        } else if (currentUi.queue.any { it.id == remoteTrack.id }) {
+            currentUi.queue
+        } else {
+            listOf(remoteTrack)
+        }
+        val resolvedIndex = if (keepLocalPendingQueue && currentUi.queue.isNotEmpty()) {
+            currentUi.queueIndex.coerceIn(0, (mappedQueue.size - 1).coerceAtLeast(0))
+        } else if (remote.queue.isNotEmpty()) {
+            remote.queueIndex.coerceIn(0, (mappedQueue.size - 1).coerceAtLeast(0))
+        } else {
+            mappedQueue.indexOfFirst { it.id == remoteTrack.id }.coerceAtLeast(0)
+        }
+        val trackChanged = lastMirroredConnectTrackId != remoteTrack.id
+        lastMirroredConnectTrackId = remoteTrack.id
+        val durationMs = remote.durationMs.takeIf { it > 0L }
+            ?: ((remoteTrack.durationSecs?.toLong() ?: 0L) * 1000L)
+        if (trackChanged) {
+            playbackClock.resetForTrack(durationMs)
+            playbackClock.onSeek(remote.positionMs.coerceAtLeast(0L))
+            fetchLyricsInBackground(remoteTrack)
+        } else {
+            playbackClock.sync(
+                positionMs = remote.positionMs.coerceAtLeast(0L),
+                durationMs = durationMs,
+            )
+        }
+        _uiState.update {
+            it.copy(
+                isRemoteConnectActive = true,
+                activeTrack = remoteTrack,
+                queue = mappedQueue,
+                queueIndex = resolvedIndex,
+                isPlaying = remote.isPlaying,
+                isBuffering = false,
+                isUpgradingQuality = false,
+                streamBadge = peer.deviceName,
+            )
+        }
+    } else {
+        _uiState.update {
+            it.copy(
+                isRemoteConnectActive = true,
+                isPlaying = false,
+                isBuffering = false,
+                isUpgradingQuality = false,
+                streamBadge = peer.deviceName,
+            )
+        }
+    }
+}
+
+private fun ConnectTrackSnapshot.toAndroidTrack(
+    likedIds: Set<String>,
+    existing: AndroidTrack?,
+): AndroidTrack = AndroidTrack(
+    id = id,
+    title = title.ifBlank { existing?.title.orEmpty() },
+    artist = artist.ifBlank { existing?.artist.orEmpty() },
+    album = album.ifBlank { existing?.album.orEmpty() },
+    durationSecs = durationSecs.takeIf { it > 0L }?.toULong() ?: existing?.durationSecs,
+    thumbnailUrl = thumbnailUrl?.takeIf { it.isNotBlank() } ?: existing?.thumbnailUrl,
+    liked = id in likedIds || existing?.liked == true,
+    albumId = existing?.albumId,
+    isExplicit = existing?.isExplicit ?: false,
+)
+
 internal fun SonataViewModel.openConnectSheetImpl() {
     _uiState.update { it.copy(showConnectSheet = true) }
     if (preferences.state.value.connectEnabled) {
-        connectController.refreshDiscovery()
+        connectController.ensureDiscoveryRunning()
     }
 }
 
@@ -419,20 +621,40 @@ internal fun SonataViewModel.refreshConnectDiscoveryImpl() {
     connectController.refreshDiscovery()
 }
 
+internal fun SonataViewModel.requestPairConnectDeviceImpl(beacon: ConnectBeacon) {
+    connectController.startInteractivePairing(beacon)
+}
+
+internal fun SonataViewModel.cancelConnectPairingImpl() {
+    connectController.cancelPairing()
+}
+
+internal fun SonataViewModel.clearConnectErrorImpl() {
+    connectController.clearPairingError()
+}
+
 internal fun SonataViewModel.pairConnectDeviceImpl(beacon: ConnectBeacon, pin: String) {
     viewModelScope.launch(Dispatchers.IO) {
-        connectController.pairAndConnect(beacon, pin)
+        if (connectController.pairAndConnect(beacon, pin)) {
+            withContext(Dispatchers.Main) {
+                pauseLocalPlaybackForConnect()
+            }
+        }
     }
 }
 
 internal fun SonataViewModel.connectPairedDeviceImpl(beacon: ConnectBeacon) {
     viewModelScope.launch(Dispatchers.IO) {
-        connectController.connectToPaired(beacon)
+        connectPlaybackRouter.connectToDevice(beacon) {
+            viewModelScope.launch(Dispatchers.Main) {
+                pauseLocalPlaybackForConnect()
+            }
+        }
     }
 }
 
 internal fun SonataViewModel.disconnectConnectDeviceImpl() {
-    connectController.disconnect()
+    connectPlaybackRouter.disconnectToLocal()
 }
 
 internal fun SonataViewModel.forgetConnectDeviceImpl(deviceId: String) {
@@ -442,6 +664,32 @@ internal fun SonataViewModel.forgetConnectDeviceImpl(deviceId: String) {
 internal fun SonataViewModel.sendConnectCommandImpl(command: ConnectCommand) {
     viewModelScope.launch(Dispatchers.IO) {
         connectController.sendCommand(command)
+    }
+}
+
+internal fun SonataViewModel.setConnectRemoteVolumeImpl(volume: Float) {
+    viewModelScope.launch(Dispatchers.IO) {
+        connectPlaybackRouter.setVolume(volume)
+    }
+}
+
+internal fun SonataViewModel.syncRemoteQueueIfConnectedImpl(
+    updatedQueue: List<AndroidTrack>,
+    queueIndex: Int,
+    playWhenReady: Boolean,
+) {
+    if (!isRemoteConnectActive() || updatedQueue.isEmpty()) return
+    val clampedIndex = queueIndex.coerceIn(0, updatedQueue.lastIndex)
+    val posMs = playbackClock.positionMs.coerceAtLeast(0L)
+    pendingRemoteQueueIds = updatedQueue.map { it.id }
+    pendingRemoteQueueUntilMs = System.currentTimeMillis() + 3_500L
+    viewModelScope.launch(Dispatchers.IO) {
+        connectPlaybackRouter.syncUpdatedQueue(
+            tracks = updatedQueue,
+            currentIndex = clampedIndex,
+            positionMs = posMs,
+            playWhenReady = playWhenReady,
+        )
     }
 }
 

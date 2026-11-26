@@ -12,6 +12,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -29,6 +30,8 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -68,9 +71,12 @@ import dev.sonata.android.ui.SonataIcons
 import dev.sonata.android.ui.SweptKaraokeLyricText
 import dev.sonata.android.ui.ThinSlider
 import dev.sonata.android.ui.i18n.LocalSonataStrings
+import dev.sonata.android.ui.i18n.ecosystemStrings
 import dev.sonata.android.ui.sonataThemeAccent
 import kotlinx.coroutines.delay
 import uniffi.sonata_android.AndroidLyricLine
+
+private val ConnectPillGreen = Color(0xFF34C759)
 
 @Composable
 internal fun NowPlayingTopHandleAndModeBar(
@@ -78,10 +84,16 @@ internal fun NowPlayingTopHandleAndModeBar(
     showModePill: Boolean,
     videoModeEnabled: Boolean,
     videoLoading: Boolean,
+    connectDeviceName: String? = null,
+    onOpenConnectDevices: () -> Unit = {},
     onDismiss: () -> Unit,
     onSelectMusic: () -> Unit,
     onSelectVideo: () -> Unit,
 ) {
+    val extras = LocalNowPlayingExtras.current
+    val eco = remember(extras.settings.appLanguage) {
+        ecosystemStrings(extras.settings.appLanguage)
+    }
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -97,6 +109,40 @@ internal fun NowPlayingTopHandleAndModeBar(
                 .background(Color.White.copy(alpha = 0.45f))
                 .clickable(onClick = onDismiss),
         )
+    }
+
+    if (!connectDeviceName.isNullOrBlank()) {
+        Spacer(Modifier.height(4.dp))
+        Row(
+            modifier = Modifier
+                .clip(CircleShape)
+                .background(ConnectPillGreen.copy(alpha = 0.20f))
+                .border(0.75.dp, ConnectPillGreen.copy(alpha = 0.55f), CircleShape)
+                .clickable(onClick = onOpenConnectDevices)
+                .padding(horizontal = 12.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(ConnectPillGreen),
+            )
+            Icon(
+                imageVector = SonataIcons.Wifi,
+                contentDescription = eco.connectDevicesTitle,
+                tint = ConnectPillGreen,
+                modifier = Modifier.size(14.dp),
+            )
+            Text(
+                text = eco.connectPlayingOn(connectDeviceName),
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = Color.White,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 
     if (showModePill) {
@@ -122,6 +168,10 @@ internal fun NowPlayingActionRowBlock(
     onOpenSettings: () -> Unit,
 ) {
     val extras = LocalNowPlayingExtras.current
+    val eco = remember(extras.settings.appLanguage) {
+        ecosystemStrings(extras.settings.appLanguage)
+    }
+    val remoteConnected = !extras.connectDeviceName.isNullOrBlank()
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -208,6 +258,18 @@ internal fun NowPlayingActionRowBlock(
                     modifier = Modifier.size(23.dp),
                 )
             }
+        }
+
+        ActionCutoutTile(
+            active = remoteConnected,
+            onClick = extras.onOpenConnectDevices,
+        ) {
+            Icon(
+                imageVector = SonataIcons.Wifi,
+                contentDescription = eco.connectDevicesTitle,
+                tint = if (remoteConnected) ConnectPillGreen else Color.White,
+                modifier = Modifier.size(22.dp),
+            )
         }
 
         ActionCutoutTile(
@@ -298,11 +360,12 @@ internal fun NowPlayingProgressSection(
         }
         val showStatusPulse = isBuffering || isUpgradingQuality
         if (showStatusPulse || !hideSongStatus) {
+            val badgeStrings = LocalSonataStrings.current
             LosslessLabel(
                 label = if (isUpgradingQuality) {
-                    "Upgrading Quality"
+                    badgeStrings.upgradingQuality
                 } else {
-                    streamBadge.ifBlank { "Lossless" }
+                    streamBadge.ifBlank { badgeStrings.losslessLabel }
                 },
                 pulsing = showStatusPulse,
                 modifier = Modifier
@@ -313,14 +376,15 @@ internal fun NowPlayingProgressSection(
     }
     if (showNerdStats) {
         val pipelineInfo by AudioPipelineBus.info.collectAsStateWithLifecycle()
-        val statsText = remember(pipelineInfo, streamBadge) {
+        val offlineText = LocalSonataStrings.current.offlineLabel
+        val statsText = remember(pipelineInfo, streamBadge, offlineText) {
             val parts = buildList {
                 if (pipelineInfo.codec.isNotBlank() && pipelineInfo.codec != "—") add(pipelineInfo.codec)
                 if (pipelineInfo.bitrateKbps > 0) add("${pipelineInfo.bitrateKbps} kbps")
                 if (pipelineInfo.sampleRateHz > 0) add(pipelineInfo.sampleRateLabel)
                 if (pipelineInfo.channelCount > 0) add(pipelineInfo.channelLabel)
-                if (pipelineInfo.fromOfflineDownload) add("Offline")
-                else if (pipelineInfo.fromCache) add("Cached")
+                if (pipelineInfo.fromOfflineDownload) add(offlineText)
+                else if (pipelineInfo.fromCache) add(offlineText)
             }
             if (parts.isNotEmpty()) parts.joinToString(" · ") else streamBadge.ifBlank { pipelineInfo.sourceLabel }
         }
@@ -453,6 +517,43 @@ internal fun NowPlayingScrubberAndTransportBlock(
         }
     }
 
+    val extras = LocalNowPlayingExtras.current
+    val remoteVolume = extras.connectRemoteVolume
+    if (!extras.connectDeviceName.isNullOrBlank() && remoteVolume != null) {
+        val eco = remember(extras.settings.appLanguage) {
+            ecosystemStrings(extras.settings.appLanguage)
+        }
+        var volumeDraft by remember(remoteVolume) {
+            mutableFloatStateOf(remoteVolume.coerceIn(0f, 1f))
+        }
+        Spacer(Modifier.height(if (compactTransport) 4.dp else 8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(
+                imageVector = SonataIcons.GraphicEq,
+                contentDescription = eco.connectRemoteVolume,
+                tint = ConnectPillGreen,
+                modifier = Modifier.size(16.dp),
+            )
+            Slider(
+                value = volumeDraft,
+                onValueChange = { volumeDraft = it },
+                onValueChangeFinished = { extras.onSetConnectVolume(volumeDraft) },
+                modifier = Modifier
+                    .weight(1f)
+                    .height(28.dp),
+                colors = SliderDefaults.colors(
+                    thumbColor = Color.White,
+                    activeTrackColor = ConnectPillGreen,
+                    inactiveTrackColor = Color.White.copy(alpha = 0.24f),
+                ),
+            )
+        }
+    }
+
     if (includeActions) {
         if (transportBottomGap > 0.dp) {
             Spacer(Modifier.height(transportBottomGap))
@@ -514,9 +615,19 @@ internal fun CurrentLyricStrip(
         }
     }
 
-    val activeIndex by remember(lyrics) {
+    val extras = LocalNowPlayingExtras.current
+    val effectiveOffsetMs = extras.settings.lyricsOffsetMs + extras.trackLyricOffsetMs
+    val isSyncedLyrics = remember(lyrics) {
+        lyrics.isNotEmpty() &&
+            lyrics.none { it.timeSecs < 0.0 } &&
+            lyrics.any { it.timeSecs > 0.0 || it.words.any { w -> w.startSecs > 0.0 } } &&
+            (lyrics.size < 2 || lyrics.map { (it.timeSecs * 100.0).toLong() }.distinct().size >= 2)
+    }
+
+    val activeIndex by remember(lyrics, clockMs, effectiveOffsetMs, isSyncedLyrics) {
         derivedStateOf {
-            val pos = clockMs.value + LYRIC_SYNC_LEAD_MS
+            if (!isSyncedLyrics) return@derivedStateOf 0
+            val pos = (clockMs.value - effectiveOffsetMs).coerceAtLeast(0L) + LYRIC_SYNC_LEAD_MS
             lyrics.indexOfLast { (it.timeSecs * 1000.0).toLong() <= pos }.coerceAtLeast(0)
         }
     }

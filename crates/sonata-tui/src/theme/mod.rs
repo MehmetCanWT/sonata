@@ -83,6 +83,9 @@ struct RawColors {
 pub fn parse_color(input: &str) -> Option<RgbColor> {
     let s = input.trim();
     if let Some(hex) = s.strip_prefix('#') {
+        if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
         if hex.len() == 6 {
             let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
             let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
@@ -221,6 +224,13 @@ mod tests {
         assert_eq!(parse_color("#abc"), Some(RgbColor::Rgb(0xaa, 0xbb, 0xcc)));
         assert_eq!(parse_color("cyan"), Some(RgbColor::Ansi(AnsiColor::Cyan)));
         assert_eq!(parse_color("invalid"), None);
+    }
+
+    #[test]
+    fn rejects_non_ascii_multibyte_hex_without_panicking() {
+        assert_eq!(parse_color("#éa"), None);
+        assert_eq!(parse_color("#a€ü"), None);
+        assert_eq!(parse_color("#ééé"), None);
     }
 
     #[test]

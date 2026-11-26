@@ -361,26 +361,21 @@ fun UserMenuSheet(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             QuickTogglePill(
-                                label = "Glass",
+                                label = strings.quickToggleGlass,
                                 active = settings.liquidGlassEnabled,
                                 onClick = onToggleLiquidGlass,
                                 modifier = Modifier.weight(1f),
                             )
                             QuickTogglePill(
-                                label = "Motion Art",
+                                label = strings.quickToggleMotionArt,
                                 active = settings.animatedArtwork,
                                 onClick = onToggleAnimatedArt,
                                 modifier = Modifier.weight(1f),
                             )
                             val themeLabel = when (settings.themeMode) {
-                                ThemeMode.VIOLET_LIGHT -> "Violet Light"
-                                ThemeMode.VIOLET_DARK -> "Violet Dark"
-                                ThemeMode.MOONFLOWER_LIGHT -> "Moonflower Light"
-                                ThemeMode.MOONFLOWER_DARK -> "Moonflower Dark"
-                                ThemeMode.BASIC_LIGHT -> "Basic Light"
-                                ThemeMode.BASIC_DARK -> "Basic Dark"
-                                ThemeMode.SYSTEM -> "Auto"
-                                ThemeMode.AMOLED -> "AMOLED"
+                                ThemeMode.LIGHT -> strings.quickToggleLight
+                                ThemeMode.DARK -> strings.quickToggleDark
+                                ThemeMode.SYSTEM -> strings.quickToggleAuto
                             }
                             QuickTogglePill(
                                 label = themeLabel,

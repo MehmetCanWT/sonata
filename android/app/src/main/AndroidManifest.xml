@@ -18,8 +18,7 @@
         android:label="Sonata"
         android:networkSecurityConfig="@xml/network_security_config"
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.Material.NoActionBar"
-        android:usesCleartextTraffic="true">
+        android:theme="@android:style/Theme.Material.NoActionBar">
 
         <activity
             android:name=".MainActivity"
@@ -52,19 +51,8 @@
             android:resource="@xml/automotive_app_desc" />
 
         <receiver
-            android:name=".widget.SonataWidgetProvider"
-            android:exported="true"
-            android:label="@string/widget_sonata_player_label">
-            <intent-filter>
-                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-                <action android:name="dev.sonata.android.widget.ACTION_PLAY_PAUSE" />
-                <action android:name="dev.sonata.android.widget.ACTION_NEXT" />
-                <action android:name="dev.sonata.android.widget.ACTION_PREV" />
-            </intent-filter>
-            <meta-data
-                android:name="android.appwidget.provider"
-                android:resource="@xml/sonata_player_widget_info" />
-        </receiver>
+            android:name=".widget.SonataWidgetControlReceiver"
+            android:exported="false" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

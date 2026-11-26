@@ -344,6 +344,7 @@ class PlaybackOrchestrationController(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val mainDispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val randomInt: (Int) -> Int = { bound -> Random.nextInt(bound) },
+    private val stringsProvider: () -> dev.sonata.android.ui.i18n.SonataStrings = { dev.sonata.android.ui.i18n.EnglishSonataStrings },
 ) {
     val generationCounter = PlaybackGenerationCounter()
     val recoveryBudget = RecoveryBudget()
@@ -392,17 +393,18 @@ class PlaybackOrchestrationController(
         }
         val updatedIndex = updatedQueue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
 
+        val s = stringsProvider()
         _state.update {
             it.copy(
                 generation = generation,
                 queue = updatedQueue,
                 queueIndex = updatedIndex,
                 activeTrack = track,
-                streamBadge = "Resolving...",
+                streamBadge = s.resolving,
                 isBuffering = true,
                 isUpgradingQuality = false,
                 lyrics = emptyList(),
-                status = "Resolving ${track.title}...",
+                status = s.resolvingTrackStatus(track.title),
             )
         }
 
@@ -468,7 +470,7 @@ class PlaybackOrchestrationController(
                                         streamBadge = resolved.badge,
                                         isPlaying = playIntent,
                                         isBuffering = false,
-                                        status = "Playing ${effectiveTrack.title}",
+                                        status = stringsProvider().playingTrackStatus(effectiveTrack.title),
                                     )
                                 }
                             },
@@ -481,13 +483,14 @@ class PlaybackOrchestrationController(
                 .onFailure { err ->
                     if (!isActive || !generationCounter.isCurrent(generation)) return@onFailure
                     endedGuard.clear()
+                    val errStrings = stringsProvider()
                     _state.update {
                         it.copy(
                             isPlaying = false,
                             isBuffering = false,
                             isUpgradingQuality = false,
-                            streamBadge = "Error",
-                            status = "Play failed: ${err.message}",
+                            streamBadge = errStrings.streamBadgeError,
+                            status = errStrings.playFailedStatus(err.message.orEmpty()),
                         )
                     }
                 }
@@ -558,19 +561,20 @@ class PlaybackOrchestrationController(
         }
     }
 
-    fun onPlaybackError(reason: String = "Playback error"): Boolean {
+    fun onPlaybackError(reason: String = stringsProvider().streamBadgeError): Boolean {
         val snapshot = _state.value
         val active = snapshot.activeTrack ?: return false
         val generation = snapshot.generation
         val attempt = recoveryBudget.consumeAttempt(generation)
         if (attempt == null) {
             endedGuard.clear()
+            val stopStrings = stringsProvider()
             _state.update {
                 if (it.generation == generation) {
                     it.copy(
                         isPlaying = false,
                         isBuffering = false,
-                        status = "Playback stopped: $reason",
+                        status = stopStrings.playbackStoppedStatus(reason),
                     )
                 } else {
                     it
@@ -584,9 +588,10 @@ class PlaybackOrchestrationController(
         recoveryJob?.cancel()
         upgradeJob?.cancel()
         recoveryJob = scope.launch(ioDispatcher) {
+            val recStrings = stringsProvider()
             _state.update {
                 if (it.generation == generation && it.activeTrack?.id == active.id) {
-                    it.copy(isBuffering = true, status = "Recovering stream...")
+                    it.copy(isBuffering = true, status = recStrings.recoveringStreamStatus)
                 } else {
                     it
                 }
@@ -616,7 +621,7 @@ class PlaybackOrchestrationController(
                                         streamBadge = recovered.badge,
                                         isPlaying = playIntent,
                                         isBuffering = false,
-                                        status = "Playing ${active.title}",
+                                        status = stringsProvider().playingTrackStatus(active.title),
                                     )
                                 }
                             },
@@ -630,7 +635,7 @@ class PlaybackOrchestrationController(
                         it.copy(
                             isPlaying = false,
                             isBuffering = false,
-                            status = "Playback error: ${err.message}",
+                            status = stringsProvider().playbackErrorStatus(err.message.orEmpty()),
                         )
                     }
                 }

@@ -72,6 +72,7 @@ import dev.sonata.android.ui.i18n.ecosystemStrings
 import dev.sonata.android.ui.i18n.sourcesStrings
 import dev.sonata.android.ui.rememberSafeTopInset
 import dev.sonata.android.ui.screens.settings.AccountCategoryContent
+import dev.sonata.android.data.ThemeMode
 import dev.sonata.android.ui.screens.settings.AppearanceCategoryContent
 import dev.sonata.android.ui.screens.settings.ConnectCategoryContent
 import dev.sonata.android.ui.screens.settings.ContentPreferencesCategoryContent
@@ -526,8 +527,14 @@ fun SonataSettingsScreen(
                                                     if (activeCount > 0) ecoStrings.scrobbleThresholdHint else ecoStrings.scrobblingSubtitle
                                                 }
                                                 SettingsCategory.CONTENT -> strings.contentSummary
-                                                SettingsCategory.APPEARANCE ->
-                                                    "${designThemeLabel(settings.resolvedDesignTheme())} · ${appLanguageLabel(settings.appLanguage, strings)}"
+                                                SettingsCategory.APPEARANCE -> {
+                                                    val modeLabel = when (settings.themeMode) {
+                                                        ThemeMode.SYSTEM -> strings.themeModeSystem
+                                                        ThemeMode.LIGHT -> strings.themeModeLight
+                                                        ThemeMode.DARK -> strings.themeModeDark
+                                                    }
+                                                    "$modeLabel · ${appLanguageLabel(settings.appLanguage, strings)}"
+                                                }
                                                 SettingsCategory.PERFORMANCE -> strings.performanceSummary
                                                 SettingsCategory.STORAGE -> strings.storageSummary
                                                 SettingsCategory.YOUR_DATA -> strings.yourDataSummary
@@ -783,12 +790,9 @@ fun SonataSettingsScreen(
                                             "English",
                                             "Theme",
                                             "Tema",
-                                            "Violet",
-                                            "Moonflower",
                                             "Basic",
                                             "Dark",
                                             "Light",
-                                            "AMOLED",
                                             "Liquid Glass",
                                             "Dynamic Blur",
                                             "Blur",

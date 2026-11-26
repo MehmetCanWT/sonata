@@ -183,12 +183,13 @@ impl BackendEngine {
     pub(super) fn start_sign_in(&mut self, browser_id: String) {
         self.signing_in = true;
         self.sign_in_error = None;
-        self.status_line = format!("Signing in via {browser_id}...");
+        let lang = self.ytm_language;
+        self.status_line = sonata_runtime::i18n::fmt_signing_in_via(lang, &browser_id);
 
         let http = self.http.clone();
         let paths = self.paths.clone();
         let cache_limit = self.config.cache_limit_bytes();
-        let lang_code = self.ytm_language.code();
+        let lang_code = lang.code();
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
             let bid = browser_id.clone();
@@ -208,8 +209,8 @@ impl BackendEngine {
                     profile: None,
                     avatar_path: None,
                     ytm_playlists: Vec::new(),
-                    error: Some(format!(
-                        "No active YouTube Music login found in {label}. Sign in on music.youtube.com in your browser and try again."
+                    error: Some(sonata_runtime::i18n::fmt_no_ytm_login_in_browser(
+                        lang, &label,
                     )),
                 });
                 return;
@@ -255,7 +256,8 @@ impl BackendEngine {
         if let Some(db) = &self.cache_db {
             db.invalidate_playlist(None);
         }
-        self.status_line = "Refreshing YouTube Music library...".to_string();
+        let s = sonata_runtime::i18n::strings(self.ytm_language);
+        self.status_line = s.refreshing_ytm_library.to_string();
 
         tokio::spawn(async move {
             ytm.invalidate_cache(None).await;
@@ -285,7 +287,7 @@ impl BackendEngine {
 
     pub(super) async fn sign_out(&mut self) {
         self.config.desktop_ytm_browser = None;
-        let _ = self.config.save();
+        self.save_config_async();
         self.cookies = ExtractedCookies::default();
         self.ytm = YtMusicClient::new(self.http.clone(), self.cookies.clone())
             .with_language(self.ytm_language.code());
@@ -314,14 +316,17 @@ impl BackendEngine {
         self.library_artists.clear();
         self.history_tracks.clear();
         self.sign_in_error = None;
-        if let Some(db) = &self.cache_db {
-            db.put_library("ytm", &[]);
-            db.invalidate_playlist(Some("YTM:VLLM"));
+        if let Some(db) = self.cache_db.clone() {
+            tokio::task::spawn_blocking(move || {
+                db.put_library("ytm", &[]);
+                db.invalidate_playlist(Some("YTM:VLLM"));
+            });
         }
         if matches!(self.active_nav, NavTarget::Playlist(_)) {
             self.active_nav = NavTarget::Home;
         }
-        self.status_line = "Signed out of YouTube Music".to_string();
+        let s = sonata_runtime::i18n::strings(self.ytm_language);
+        self.status_line = s.signed_out_ytm.to_string();
         self.last_played_tracks.clear();
         self.load_home_feed();
         self.load_explore();
@@ -386,8 +391,10 @@ impl BackendEngine {
     }
 
     pub(super) fn open_mood_category(&mut self, title: String, browse_id: String, params: String) {
+        let lang = self.ytm_language;
+        let s = sonata_runtime::i18n::strings(lang);
         if self.config.personal_only_mode {
-            self.status_line = "Personal Only Mode is active".to_string();
+            self.status_line = s.personal_only_short.to_string();
             return;
         }
         self.mood_req_id = self.mood_req_id.wrapping_add(1);
@@ -400,7 +407,7 @@ impl BackendEngine {
         self.mood_page_title = title.clone();
         self.mood_page_shelves.clear();
         self.mood_page_loading = true;
-        self.status_line = format!("Loading {title}...");
+        self.status_line = sonata_runtime::i18n::fmt_loading_item(lang, &title);
         let ytm = self.ytm.clone();
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
@@ -418,16 +425,17 @@ impl BackendEngine {
             }
             if shelves.is_empty() && !title.trim().is_empty() {
                 if let Ok(rich) = ytm.search_rich(&title).await {
+                    let s = sonata_runtime::i18n::strings(lang);
                     if !rich.playlists.is_empty() {
                         shelves.push(HomeShelf {
-                            title: "Playlists".to_string(),
+                            title: s.playlists.to_string(),
                             tracks: Vec::new(),
                             cards: rich.playlists,
                         });
                     }
                     if !rich.songs.is_empty() {
                         shelves.push(HomeShelf {
-                            title: "Songs".to_string(),
+                            title: s.songs.to_string(),
                             tracks: rich.songs,
                             cards: Vec::new(),
                         });
@@ -576,7 +584,8 @@ impl BackendEngine {
         self.artist_error = None;
         self.artist_page = None;
         self.artist_banner_url = None;
-        self.status_line = "Loading artist...".to_string();
+        let s = sonata_runtime::i18n::strings(self.ytm_language);
+        self.status_line = s.loading_artist_generic.to_string();
 
         if let Some(item_ref) = parse_server_item_id(&browse_id) {
             if let Some(profile) = self
@@ -644,15 +653,33 @@ impl BackendEngine {
             }
         }
 
+        let fallback_thumb = self
+            .library_artists
+            .iter()
+            .find(|a| a.id == browse_id)
+            .and_then(|a| a.thumbnail_url.clone())
+            .map(|u| media::upscale_artwork_url(&u));
+
         let ytm = self.ytm.clone();
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
-            let (artist_res, banner_url) = tokio::join!(
+            let (artist_res, mut banner_url) = tokio::join!(
                 ytm.fetch_artist_page(&browse_id),
                 ytm.fetch_artist_banner(&browse_id),
             );
             match artist_res {
-                Ok(artist) => {
+                Ok(mut artist) => {
+                    if artist.thumbnail_url.is_none() {
+                        artist.thumbnail_url = fallback_thumb.clone();
+                    }
+                    if banner_url.is_none() && !artist.name.trim().is_empty() {
+                        if let Ok(Some(uc_id)) = ytm.resolve_artist_browse_id(&artist.name).await {
+                            banner_url = ytm.fetch_artist_banner(&uc_id).await;
+                        }
+                    }
+                    if artist.thumbnail_url.is_none() {
+                        artist.thumbnail_url = banner_url.clone();
+                    }
                     let _ = int_tx.send(InternalEvent::ArtistLoaded {
                         req_id,
                         artist: Some(artist),
@@ -683,8 +710,10 @@ impl BackendEngine {
         }
         // Extract primary artist name (avoid passing "Artist A, Artist B" or play-count noise).
         let clean = extract_primary_artist_name(raw);
+        let lang = self.ytm_language;
+        let s = sonata_runtime::i18n::strings(lang);
         if clean.is_empty() || clean.eq_ignore_ascii_case("unknown artist") {
-            self.status_line = "Artist information not available for this track".to_string();
+            self.status_line = s.artist_info_unavailable.to_string();
             return;
         }
         self.artist_req_id = self.artist_req_id.wrapping_add(1);
@@ -694,7 +723,7 @@ impl BackendEngine {
         self.artist_error = None;
         self.artist_page = None;
         self.artist_banner_url = None;
-        self.status_line = format!("Loading artist {clean}...");
+        self.status_line = sonata_runtime::i18n::fmt_loading_artist(lang, &clean);
         let ytm = self.ytm.clone();
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
@@ -724,7 +753,7 @@ impl BackendEngine {
                         req_id,
                         artist: None,
                         banner_url: None,
-                        error: Some(format!("Could not find artist page for \"{clean}\"")),
+                        error: Some(sonata_runtime::i18n::fmt_artist_not_found(lang, &clean)),
                     });
                 }
             }
@@ -738,6 +767,8 @@ impl BackendEngine {
         artist: String,
         thumbnail_url: Option<String>,
     ) {
+        let lang = self.ytm_language;
+        let s = sonata_runtime::i18n::strings(lang);
         if let Some(id) = album_id
             .as_deref()
             .map(str::trim)
@@ -749,7 +780,7 @@ impl BackendEngine {
                 self.album_error = None;
                 self.album_detail = Some(local_alb.to_album_detail());
                 self.active_nav = NavTarget::Album(local_alb.id.clone());
-                self.status_line = format!("Loaded {}", local_alb.name);
+                self.status_line = sonata_runtime::i18n::fmt_loaded_item(lang, &local_alb.name);
                 return;
             }
         }
@@ -772,14 +803,12 @@ impl BackendEngine {
                     self.album_loading = true;
                     self.album_error = None;
                     self.album_detail = None;
-                    self.status_line = format!(
-                        "Loading {}...",
-                        if title.trim().is_empty() {
-                            "album"
-                        } else {
-                            title.trim()
-                        }
-                    );
+                    let label = if title.trim().is_empty() {
+                        s.album
+                    } else {
+                        title.trim()
+                    };
+                    self.status_line = sonata_runtime::i18n::fmt_loading_item(lang, label);
                     let client = self.server_client.clone();
                     let int_tx = self.int_tx.clone();
                     tokio::spawn(async move {
@@ -812,7 +841,7 @@ impl BackendEngine {
             .map(str::to_string)
         {
             if self.config.personal_only_mode {
-                self.status_line = "Personal Only Mode is active".to_string();
+                self.status_line = s.personal_only_short.to_string();
                 return;
             }
             self.album_req_id = self.album_req_id.wrapping_add(1);
@@ -821,14 +850,12 @@ impl BackendEngine {
             self.album_loading = true;
             self.album_error = None;
             self.album_detail = None;
-            self.status_line = format!(
-                "Loading {}...",
-                if title.trim().is_empty() {
-                    "album"
-                } else {
-                    title.trim()
-                }
-            );
+            let label = if title.trim().is_empty() {
+                s.album
+            } else {
+                title.trim()
+            };
+            self.status_line = sonata_runtime::i18n::fmt_loading_item(lang, label);
             let ytm = self.ytm.clone();
             let int_tx = self.int_tx.clone();
             tokio::spawn(async move {
@@ -857,7 +884,7 @@ impl BackendEngine {
             .filter(|id| id.starts_with("OLAK") || id.starts_with("VL") || id.starts_with("PL"))
         {
             let heading = if title.trim().is_empty() {
-                "Album".to_string()
+                s.album.to_string()
             } else {
                 title
             };
@@ -882,17 +909,17 @@ impl BackendEngine {
             self.album_error = None;
             self.album_detail = Some(local_alb.to_album_detail());
             self.active_nav = NavTarget::Album(local_alb.id.clone());
-            self.status_line = format!("Loaded {}", local_alb.name);
+            self.status_line = sonata_runtime::i18n::fmt_loaded_item(lang, &local_alb.name);
             return;
         }
         if self.config.personal_only_mode {
-            self.status_line = "Personal Only Mode is active".to_string();
+            self.status_line = s.personal_only_short.to_string();
             return;
         }
 
         self.album_req_id = self.album_req_id.wrapping_add(1);
         let req_id = self.album_req_id;
-        self.status_line = format!("Opening album {clean_title}...");
+        self.status_line = sonata_runtime::i18n::fmt_opening_album(lang, &clean_title);
         let ytm = self.ytm.clone();
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
@@ -928,16 +955,17 @@ impl BackendEngine {
     }
 
     pub(super) fn start_track_radio(&mut self, seed: Track) {
+        let lang = self.ytm_language;
+        let s = sonata_runtime::i18n::strings(lang);
         if self.config.personal_only_mode {
-            self.status_line =
-                "Personal Only Mode is active — streaming radio is disabled".to_string();
+            self.status_line = s.personal_only_radio_disabled.to_string();
             return;
         }
-        self.status_line = format!("Starting {} radio...", seed.artist);
+        self.status_line = sonata_runtime::i18n::fmt_starting_artist_radio(lang, &seed.artist);
         self.active_queue_playlist_id = None;
         let ytm = self.ytm.clone();
         let int_tx = self.int_tx.clone();
-        let label = format!("{} Radio", seed.artist);
+        let label = sonata_runtime::i18n::fmt_artist_radio_label(lang, &seed.artist);
         let excludes: Vec<String> = self
             .last_played_tracks
             .iter()
@@ -987,9 +1015,9 @@ impl BackendEngine {
     }
 
     pub(super) fn start_quick_radio(&mut self) {
+        let s = sonata_runtime::i18n::strings(self.ytm_language);
         if self.config.personal_only_mode {
-            self.status_line =
-                "Personal Only Mode is active — streaming radio is disabled".to_string();
+            self.status_line = s.personal_only_radio_disabled.to_string();
             return;
         }
         if let Some(cur) = self.playback.current_track().cloned() {
@@ -1012,16 +1040,14 @@ impl BackendEngine {
         }
         let ytm = self.ytm.clone();
         let int_tx = self.int_tx.clone();
-        self.status_line = "Starting Quick Radio...".to_string();
+        let label = s.quick_radio.to_string();
+        self.status_line = s.starting_quick_radio.to_string();
         tokio::spawn(async move {
             let tracks = ytm
                 .search_songs("top hits radio mix")
                 .await
                 .unwrap_or_default();
-            let _ = int_tx.send(InternalEvent::RadioQueueReady {
-                tracks,
-                label: "Quick Radio".to_string(),
-            });
+            let _ = int_tx.send(InternalEvent::RadioQueueReady { tracks, label });
         });
     }
 
@@ -1080,6 +1106,7 @@ impl BackendEngine {
                 self.playlist_loading = true;
                 let client = self.server_client.clone();
                 let int_tx = self.int_tx.clone();
+                let lang = self.ytm_language;
                 tokio::spawn(async move {
                     match client.get_playlist_tracks(&profile, &id).await {
                         Ok(tracks) => {
@@ -1099,8 +1126,10 @@ impl BackendEngine {
                                 tracks: Vec::new(),
                                 silent_replace: false,
                             });
+                            let s = sonata_runtime::i18n::strings(lang);
                             let _ = int_tx.send(InternalEvent::StatusMessage(format!(
-                                "Failed to load server tracks: {err}"
+                                "{}: {err}",
+                                s.failed_load_server_tracks
                             )));
                         }
                     }
@@ -1112,7 +1141,8 @@ impl BackendEngine {
         if self.config.personal_only_mode {
             self.playlist_tracks.clear();
             self.playlist_loading = false;
-            self.status_line = "Personal Only Mode is active".to_string();
+            let s = sonata_runtime::i18n::strings(self.ytm_language);
+            self.status_line = s.personal_only_short.to_string();
             return;
         }
 
@@ -1147,6 +1177,7 @@ impl BackendEngine {
         let ytm = self.ytm.clone();
         let cache_db = self.cache_db.clone();
         let int_tx = self.int_tx.clone();
+        let lang = self.ytm_language;
         let silent_replace = had_cached && !force_refresh;
 
         tokio::spawn(async move {
@@ -1205,8 +1236,10 @@ impl BackendEngine {
                         tracks: Vec::new(),
                         silent_replace: false,
                     });
+                    let s = sonata_runtime::i18n::strings(lang);
                     let _ = int_tx.send(InternalEvent::StatusMessage(format!(
-                        "Failed to load tracks: {e}"
+                        "{}: {e}",
+                        s.failed_load_tracks
                     )));
                 }
                 Err(_) => {}
@@ -1253,11 +1286,11 @@ impl BackendEngine {
         let personal_only = self.config.personal_only_mode;
         let jiosaavn_enabled = self.config.effective_jiosaavn_enabled();
         self.status_line = if personal_only {
-            format!("Searching local & personal servers for \"{q}\"...")
+            sonata_runtime::i18n::fmt_searching_personal(self.ytm_language, &q)
         } else if jiosaavn_enabled {
-            format!("Searching YouTube Music & JioSaavn for \"{q}\"...")
+            sonata_runtime::i18n::fmt_searching_ytm_jiosaavn(self.ytm_language, &q)
         } else {
-            format!("Searching YouTube Music for \"{q}\"...")
+            sonata_runtime::i18n::fmt_searching_ytm(self.ytm_language, &q)
         };
 
         let ytm = self.ytm.clone();
@@ -1348,15 +1381,11 @@ impl BackendEngine {
                 Ok(mut tracks) => {
                     tracks.extend(jio_tracks);
                     tracks.extend(server_tracks);
-                    if rich.songs.is_empty() {
-                        rich.songs = tracks.clone();
-                    } else {
-                        for st in &tracks {
-                            if (st.is_jiosaavn() || st.is_self_hosted() || st.is_local())
-                                && !rich.songs.iter().any(|existing| existing.id == st.id)
-                            {
-                                rich.songs.push(st.clone());
-                            }
+                    // Preserve Top Result / unfiltered ATV songs from `rich.songs`, then merge all
+                    // hybrid/filtered YTM songs and secondary providers without dropping them.
+                    for st in &tracks {
+                        if !rich.songs.iter().any(|existing| existing.id == st.id) {
+                            rich.songs.push(st.clone());
                         }
                     }
                     let _ = int_tx.send(InternalEvent::SearchLoaded {
@@ -1393,8 +1422,10 @@ impl BackendEngine {
     }
 
     pub(super) fn dislike_track(&mut self, track: Track) {
+        let lang = self.ytm_language;
+        let s = sonata_runtime::i18n::strings(lang);
         if !self.ytm.is_authenticated() {
-            self.status_line = "Sign in to YouTube Music to rate songs".to_string();
+            self.status_line = s.sign_in_ytm_rate_songs.to_string();
             return;
         }
         let ytm = self.ytm.clone();
@@ -1404,28 +1435,33 @@ impl BackendEngine {
         tokio::spawn(async move {
             match ytm.set_dislike_status(&id).await {
                 Ok(()) => {
-                    let _ = int_tx.send(InternalEvent::StatusMessage(format!(
-                        "Marked \"{title}\" as disliked"
-                    )));
+                    let _ = int_tx.send(InternalEvent::StatusMessage(
+                        sonata_runtime::i18n::fmt_disliked_track(lang, &title),
+                    ));
                 }
                 Err(e) => {
-                    let _ =
-                        int_tx.send(InternalEvent::StatusMessage(format!("Dislike failed: {e}")));
+                    let s = sonata_runtime::i18n::strings(lang);
+                    let _ = int_tx.send(InternalEvent::StatusMessage(format!(
+                        "{}: {e}",
+                        s.dislike_failed
+                    )));
                 }
             }
         });
     }
 
     pub(super) fn toggle_save_album(&mut self) {
+        let lang = self.ytm_language;
+        let s = sonata_runtime::i18n::strings(lang);
         if !self.ytm.is_authenticated() {
-            self.status_line = "Sign in to YouTube Music to save albums".to_string();
+            self.status_line = s.sign_in_ytm_save_albums.to_string();
             return;
         }
         let Some(ref mut album) = self.album_detail else {
             return;
         };
         let Some(pl_id) = album.playlist_id.clone() else {
-            self.status_line = "This release cannot be saved directly".to_string();
+            self.status_line = s.release_cannot_be_saved.to_string();
             return;
         };
         let target_save = !album.saved;
@@ -1437,15 +1473,17 @@ impl BackendEngine {
             match ytm.set_playlist_saved(&pl_id, target_save).await {
                 Ok(()) => {
                     let msg = if target_save {
-                        format!("Saved \"{title}\" to Library")
+                        sonata_runtime::i18n::fmt_saved_to_library(lang, &title)
                     } else {
-                        format!("Removed \"{title}\" from Library")
+                        sonata_runtime::i18n::fmt_removed_from_library(lang, &title)
                     };
                     let _ = int_tx.send(InternalEvent::StatusMessage(msg));
                 }
                 Err(e) => {
+                    let s = sonata_runtime::i18n::strings(lang);
                     let _ = int_tx.send(InternalEvent::StatusMessage(format!(
-                        "Library save failed: {e}"
+                        "{}: {e}",
+                        s.library_save_failed
                     )));
                 }
             }
@@ -1459,6 +1497,7 @@ impl BackendEngine {
         thumbnail_url: Option<String>,
         save: bool,
     ) {
+        let lang = self.ytm_language;
         let norm_target = crate::settings::normalize_collection_id(&id);
         if save {
             if !self
@@ -1475,16 +1514,14 @@ impl BackendEngine {
                     is_owned: false,
                 });
             }
-            self.status_line = format!("Saved \"{title}\" to Library");
+            self.status_line = sonata_runtime::i18n::fmt_saved_to_library(lang, &title);
         } else {
             self.ytm_playlists.retain(|p| {
                 p.is_owned || crate::settings::normalize_collection_id(&p.id) != norm_target
             });
-            self.status_line = format!("Removed \"{title}\" from Library");
+            self.status_line = sonata_runtime::i18n::fmt_removed_from_library(lang, &title);
         }
-        if let Some(db) = &self.cache_db {
-            db.put_library("ytm", &self.ytm_playlists);
-        }
+        self.put_library_async("ytm", self.ytm_playlists.clone());
         if !self.ytm.is_authenticated() {
             return;
         }
@@ -1492,8 +1529,10 @@ impl BackendEngine {
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
             if let Err(e) = ytm.set_playlist_saved(&id, save).await {
+                let s = sonata_runtime::i18n::strings(lang);
                 let _ = int_tx.send(InternalEvent::StatusMessage(format!(
-                    "Library sync failed: {e}"
+                    "{}: {e}",
+                    s.library_sync_failed
                 )));
             }
         });
@@ -1517,8 +1556,10 @@ impl BackendEngine {
     }
 
     pub(super) fn toggle_like_track(&mut self, track: Track) {
+        let lang = self.ytm_language;
+        let s = sonata_runtime::i18n::strings(lang);
         if !self.ytm.is_authenticated() {
-            self.status_line = "Sign in to YouTube Music to like songs".to_string();
+            self.status_line = s.sign_in_ytm_like_songs.to_string();
             return;
         }
         let currently_liked = track.liked || self.liked_track_ids.contains(&track.id);
@@ -1573,8 +1614,9 @@ impl BackendEngine {
                     .map(|t| t.id)
             };
             let Some(vid) = vid else {
+                let s = sonata_runtime::i18n::strings(lang);
                 let _ = int_tx.send(InternalEvent::StatusMessage(
-                    "Could not match track on YouTube Music".to_string(),
+                    s.could_not_match_ytm.to_string(),
                 ));
                 return;
             };
@@ -1584,15 +1626,17 @@ impl BackendEngine {
                         db.invalidate_playlist(Some("YTM:VLLM"));
                     }
                     let msg = if target_liked {
-                        format!("Liked \"{title}\"")
+                        sonata_runtime::i18n::fmt_liked_track(lang, &title)
                     } else {
-                        format!("Removed like on \"{title}\"")
+                        sonata_runtime::i18n::fmt_removed_like(lang, &title)
                     };
                     let _ = int_tx.send(InternalEvent::StatusMessage(msg));
                 }
                 Err(e) => {
+                    let s = sonata_runtime::i18n::strings(lang);
                     let _ = int_tx.send(InternalEvent::StatusMessage(format!(
-                        "Like update failed: {e}"
+                        "{}: {e}",
+                        s.like_update_failed
                     )));
                 }
             }
@@ -1604,13 +1648,15 @@ impl BackendEngine {
         if trimmed.is_empty() {
             return;
         }
+        let lang = self.ytm_language;
+        let s = sonata_runtime::i18n::strings(lang);
         if !self.ytm.is_authenticated() {
-            self.status_line = "Sign in to YouTube Music first".to_string();
+            self.status_line = s.sign_in_ytm_first.to_string();
             return;
         }
         let ytm = self.ytm.clone();
         let int_tx = self.int_tx.clone();
-        self.status_line = format!("Creating playlist \"{trimmed}\"...");
+        self.status_line = sonata_runtime::i18n::fmt_creating_playlist(lang, &trimmed);
         tokio::spawn(async move {
             match ytm.create_playlist(&trimmed).await {
                 Ok(pid) => {
@@ -1625,8 +1671,10 @@ impl BackendEngine {
                     let _ = int_tx.send(InternalEvent::PlaylistCreated(pl));
                 }
                 Err(e) => {
+                    let s = sonata_runtime::i18n::strings(lang);
                     let _ = int_tx.send(InternalEvent::StatusMessage(format!(
-                        "Create playlist failed: {e}"
+                        "{}: {e}",
+                        s.create_playlist_failed
                     )));
                 }
             }
@@ -1648,8 +1696,10 @@ impl BackendEngine {
             }
             return;
         }
+        let lang = self.ytm_language;
+        let s = sonata_runtime::i18n::strings(lang);
         if !self.ytm.is_authenticated() {
-            self.status_line = "Sign in to YouTube Music first".to_string();
+            self.status_line = s.sign_in_ytm_first.to_string();
             return;
         }
         let clean_title = title
@@ -1660,15 +1710,17 @@ impl BackendEngine {
         }
         let ytm = self.ytm.clone();
         let int_tx = self.int_tx.clone();
-        self.status_line = "Updating playlist on YouTube Music...".to_string();
+        self.status_line = s.updating_playlist_ytm.to_string();
         tokio::spawn(async move {
             if let Some(ref new_title) = clean_title {
                 if let Err(e) = ytm
                     .edit_playlist_metadata(&playlist_id, Some(new_title), None, None)
                     .await
                 {
+                    let s = sonata_runtime::i18n::strings(lang);
                     let _ = int_tx.send(InternalEvent::StatusMessage(format!(
-                        "Rename playlist failed: {e}"
+                        "{}: {e}",
+                        s.rename_playlist_failed
                     )));
                     return;
                 }
@@ -1689,16 +1741,20 @@ impl BackendEngine {
                     Ok(bytes) => {
                         if let Err(e) = ytm.upload_playlist_cover(&playlist_id, &bytes, mime).await
                         {
+                            let s = sonata_runtime::i18n::strings(lang);
                             let _ = int_tx.send(InternalEvent::StatusMessage(format!(
-                                "Cover upload failed: {e}"
+                                "{}: {e}",
+                                s.cover_upload_failed
                             )));
                             return;
                         }
                         cover_updated = true;
                     }
                     Err(e) => {
+                        let s = sonata_runtime::i18n::strings(lang);
                         let _ = int_tx.send(InternalEvent::StatusMessage(format!(
-                            "Could not read cover image: {e}"
+                            "{}: {e}",
+                            s.cover_read_failed
                         )));
                         return;
                     }
@@ -1722,19 +1778,21 @@ impl BackendEngine {
             self.add_track_to_personal_playlist(track, playlist_id);
             return;
         }
+        let lang = self.ytm_language;
+        let s = sonata_runtime::i18n::strings(lang);
         if is_personal_track_id(&track.id) {
-            self.status_line =
-                "Local and server tracks can only be added to Personal Playlists".to_string();
+            self.status_line = s.personal_tracks_only_personal_playlists.to_string();
             return;
         }
         if !self.ytm.is_authenticated() {
-            self.status_line = "Sign in to YouTube Music to edit playlists".to_string();
+            self.status_line = s.sign_in_ytm_edit_playlists.to_string();
             return;
         }
         let ytm = self.ytm.clone();
         let cache_db = self.cache_db.clone();
         let int_tx = self.int_tx.clone();
-        self.status_line = format!("Adding \"{}\" to {}...", track.title, playlist_name);
+        self.status_line =
+            sonata_runtime::i18n::fmt_adding_to_playlist(lang, &track.title, &playlist_name);
         tokio::spawn(async move {
             let vid = if track.source == ProviderSource::YouTubeMusic
                 && !track.is_jiosaavn()
@@ -1750,8 +1808,9 @@ impl BackendEngine {
                     .map(|t| t.id)
             };
             let Some(vid) = vid else {
+                let s = sonata_runtime::i18n::strings(lang);
                 let _ = int_tx.send(InternalEvent::StatusMessage(
-                    "Could not match track on YouTube Music".to_string(),
+                    s.could_not_match_ytm.to_string(),
                 ));
                 return;
             };
@@ -1760,13 +1819,20 @@ impl BackendEngine {
                     if let Some(db) = &cache_db {
                         db.invalidate_playlist(Some(&format!("YTM:{playlist_id}")));
                     }
-                    let _ = int_tx.send(InternalEvent::StatusMessage(format!(
-                        "Added \"{}\" to {playlist_name}",
-                        track.title
-                    )));
+                    let _ = int_tx.send(InternalEvent::StatusMessage(
+                        sonata_runtime::i18n::fmt_added_to_playlist(
+                            lang,
+                            &track.title,
+                            &playlist_name,
+                        ),
+                    ));
                 }
                 Err(e) => {
-                    let _ = int_tx.send(InternalEvent::StatusMessage(format!("Add failed: {e}")));
+                    let s = sonata_runtime::i18n::strings(lang);
+                    let _ = int_tx.send(InternalEvent::StatusMessage(format!(
+                        "{}: {e}",
+                        s.add_failed
+                    )));
                 }
             }
         });
@@ -1787,8 +1853,10 @@ impl BackendEngine {
             self.toggle_like_track(track);
             return;
         }
+        let lang = self.ytm_language;
+        let s = sonata_runtime::i18n::strings(lang);
         let Some(set_vid) = track.set_video_id.clone() else {
-            self.status_line = "Track missing playlist item ID; refresh playlist first".to_string();
+            self.status_line = s.track_missing_set_video_id_desktop.to_string();
             return;
         };
         self.playlist_tracks.remove(idx);
@@ -1796,21 +1864,23 @@ impl BackendEngine {
         let ytm = self.ytm.clone();
         let cache_db = self.cache_db.clone();
         let int_tx = self.int_tx.clone();
-        self.status_line = format!("Removing \"{}\" from playlist...", track.title);
+        self.status_line = sonata_runtime::i18n::fmt_removing_from_playlist(lang, &track.title);
         tokio::spawn(async move {
             match ytm.remove_from_playlist(&pl_id, &track.id, &set_vid).await {
                 Ok(()) => {
                     if let Some(db) = &cache_db {
                         db.invalidate_playlist(Some(&format!("YTM:{pl_id}")));
                     }
-                    let _ = int_tx.send(InternalEvent::StatusMessage(format!(
-                        "Removed \"{}\" from playlist",
-                        track.title
-                    )));
+                    let _ = int_tx.send(InternalEvent::StatusMessage(
+                        sonata_runtime::i18n::fmt_removed_from_playlist(lang, &track.title),
+                    ));
                 }
                 Err(e) => {
-                    let _ =
-                        int_tx.send(InternalEvent::StatusMessage(format!("Remove failed: {e}")));
+                    let s = sonata_runtime::i18n::strings(lang);
+                    let _ = int_tx.send(InternalEvent::StatusMessage(format!(
+                        "{}: {e}",
+                        s.remove_failed
+                    )));
                 }
             }
         });
@@ -1850,14 +1920,16 @@ impl BackendEngine {
         track: Track,
         collection: Option<DownloadCollectionRef>,
     ) {
+        let lang = self.ytm_language;
         let Some(store) = self.ensure_download_store() else {
-            self.status_line = "Failed to open offline downloads store".to_string();
+            let s = sonata_runtime::i18n::strings(lang);
+            self.status_line = s.downloads_store_open_failed.to_string();
             return;
         };
         let track_id = track.id.clone();
         let title = track.title.clone();
         self.downloading_track_ids.insert(track_id.clone());
-        self.status_line = format!("Downloading \"{title}\"...");
+        self.status_line = sonata_runtime::i18n::fmt_downloading_item(lang, &title);
 
         let resolver = self.resolver.clone();
         let http = self.http.clone();
@@ -1891,17 +1963,21 @@ impl BackendEngine {
             return;
         };
         let int_tx = self.int_tx.clone();
+        let lang = self.ytm_language;
         tokio::spawn(async move {
             match store.delete_track_async(track_id).await {
                 Ok(true) => {
+                    let s = sonata_runtime::i18n::strings(lang);
                     let _ = int_tx.send(InternalEvent::StatusMessage(
-                        "Removed track from offline downloads".to_string(),
+                        s.removed_track_from_downloads.to_string(),
                     ));
                 }
                 Ok(false) => {}
                 Err(err) => {
+                    let s = sonata_runtime::i18n::strings(lang);
                     let _ = int_tx.send(InternalEvent::StatusMessage(format!(
-                        "Failed to remove download: {err}"
+                        "{}: {err}",
+                        s.failed_remove_download
                     )));
                 }
             }
@@ -1929,14 +2005,17 @@ impl BackendEngine {
         if tracks.is_empty() {
             return;
         }
+        let lang = self.ytm_language;
         let Some(store) = self.ensure_download_store() else {
-            self.status_line = "Failed to open offline downloads store".to_string();
+            let s = sonata_runtime::i18n::strings(lang);
+            self.status_line = s.downloads_store_open_failed.to_string();
             return;
         };
         for t in &tracks {
             self.downloading_track_ids.insert(t.id.clone());
         }
-        self.status_line = format!("Downloading {} tracks from \"{title}\"...", tracks.len());
+        self.status_line =
+            sonata_runtime::i18n::fmt_downloading_collection(lang, tracks.len(), &title);
 
         let resolver = self.resolver.clone();
         let http = self.http.clone();
@@ -1992,14 +2071,15 @@ impl BackendEngine {
             return;
         };
         let int_tx = self.int_tx.clone();
+        let lang = self.ytm_language;
         tokio::spawn(async move {
             let removed = store
                 .delete_collection_async(collection_id, true)
                 .await
                 .unwrap_or(0);
-            let _ = int_tx.send(InternalEvent::StatusMessage(format!(
-                "Removed collection ({removed} tracks freed)"
-            )));
+            let _ = int_tx.send(InternalEvent::StatusMessage(
+                sonata_runtime::i18n::fmt_removed_collection_freed(lang, removed),
+            ));
             let (tracks_res, cols_res, bytes_res) = tokio::join!(
                 store.list_tracks_async(),
                 store.list_collections_async(),
@@ -2018,13 +2098,14 @@ impl BackendEngine {
             return;
         };
         let int_tx = self.int_tx.clone();
-        self.status_line = "Clearing offline downloads...".to_string();
+        let lang = self.ytm_language;
+        let s = sonata_runtime::i18n::strings(lang);
+        self.status_line = s.clearing_offline_downloads.to_string();
         tokio::spawn(async move {
             let report = store.prune_to_limit_async(0).await.unwrap_or_default();
-            let _ = int_tx.send(InternalEvent::StatusMessage(format!(
-                "Cleared {} offline tracks",
-                report.removed_tracks
-            )));
+            let _ = int_tx.send(InternalEvent::StatusMessage(
+                sonata_runtime::i18n::fmt_cleared_offline_tracks(lang, report.removed_tracks),
+            ));
             let (tracks_res, cols_res, bytes_res) = tokio::join!(
                 store.list_tracks_async(),
                 store.list_collections_async(),
@@ -2048,17 +2129,18 @@ impl BackendEngine {
             }
         });
         self.config.downloads_dir = normalized;
-        let _ = self.config.save();
+        self.save_config_async();
         let target_dir = self.config.effective_downloads_dir();
+        let s = sonata_runtime::i18n::strings(self.ytm_language);
         match DownloadStore::open(&target_dir) {
             Ok(store) => {
                 self.resolver.set_downloads_store(Some(store.clone()));
                 self.download_store = Some(store);
-                self.status_line = format!("Downloads folder: {}", target_dir.display());
+                self.status_line = format!("{}: {}", s.downloads_dir, target_dir.display());
                 self.refresh_downloads();
             }
             Err(err) => {
-                self.status_line = format!("Invalid downloads folder: {err}");
+                self.status_line = format!("{}: {err}", s.invalid_downloads_folder);
             }
         }
     }
@@ -2078,7 +2160,7 @@ impl BackendEngine {
             (idx + STEPS.len() - 1) % STEPS.len()
         };
         self.config.downloads_limit_gb = STEPS[next];
-        let _ = self.config.save();
+        self.save_config_async();
         if let (Some(limit), Some(store)) = (
             self.config.downloads_limit_bytes(),
             self.download_store.clone(),
@@ -2098,9 +2180,11 @@ impl BackendEngine {
                 });
             });
         }
+        let s = sonata_runtime::i18n::strings(self.ytm_language);
         self.status_line = format!(
-            "Offline downloads limit: {}",
-            AppConfig::downloads_limit_label(self.config.downloads_limit_gb)
+            "{}: {}",
+            s.downloads_limit,
+            AppConfig::downloads_limit_label_for(self.ytm_language, self.config.downloads_limit_gb)
         );
     }
 
@@ -2114,7 +2198,8 @@ impl BackendEngine {
         let req_id = self.local_scan_req_id;
         let dirs = self.config.effective_local_music_dirs();
         self.local_scanning = true;
-        self.status_line = "Scanning local music folders...".to_string();
+        let s = sonata_runtime::i18n::strings(self.ytm_language);
+        self.status_line = s.scanning_local_folders.to_string();
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
             let scan = tokio::task::spawn_blocking(move || scan_directories(&dirs))
@@ -2131,7 +2216,8 @@ impl BackendEngine {
         }
         let paths = self.paths.clone();
         let int_tx = self.int_tx.clone();
-        self.status_line = format!("Creating personal playlist \"{clean}\"...");
+        let lang = self.ytm_language;
+        self.status_line = sonata_runtime::i18n::fmt_creating_personal_playlist(lang, &clean);
         tokio::spawn(async move {
             let res = tokio::task::spawn_blocking(move || {
                 let store = PersonalPlaylistStore::new(&paths);
@@ -2143,19 +2229,22 @@ impl BackendEngine {
             match res {
                 Ok(Ok((created, all))) => {
                     let _ = int_tx.send(InternalEvent::PersonalPlaylistsLoaded(all));
-                    let _ = int_tx.send(InternalEvent::StatusMessage(format!(
-                        "Created personal playlist \"{}\"",
-                        created.name
-                    )));
+                    let _ = int_tx.send(InternalEvent::StatusMessage(
+                        sonata_runtime::i18n::fmt_created_personal_playlist(lang, &created.name),
+                    ));
                 }
                 Ok(Err(e)) => {
+                    let s = sonata_runtime::i18n::strings(lang);
                     let _ = int_tx.send(InternalEvent::StatusMessage(format!(
-                        "Personal playlist failed: {e}"
+                        "{}: {e}",
+                        s.personal_playlist_failed
                     )));
                 }
                 Err(e) => {
+                    let s = sonata_runtime::i18n::strings(lang);
                     let _ = int_tx.send(InternalEvent::StatusMessage(format!(
-                        "Personal playlist task failed: {e}"
+                        "{}: {e}",
+                        s.personal_playlist_task_failed
                     )));
                 }
             }
@@ -2170,6 +2259,7 @@ impl BackendEngine {
         let paths = self.paths.clone();
         let pid = playlist_id.to_string();
         let int_tx = self.int_tx.clone();
+        let lang = self.ytm_language;
         tokio::spawn(async move {
             let res = tokio::task::spawn_blocking(move || {
                 let store = PersonalPlaylistStore::new(&paths);
@@ -2180,10 +2270,9 @@ impl BackendEngine {
             .await;
             if let Ok(Ok((updated, all))) = res {
                 let _ = int_tx.send(InternalEvent::PersonalPlaylistsLoaded(all));
-                let _ = int_tx.send(InternalEvent::StatusMessage(format!(
-                    "Renamed personal playlist to \"{}\"",
-                    updated.name
-                )));
+                let _ = int_tx.send(InternalEvent::StatusMessage(
+                    sonata_runtime::i18n::fmt_renamed_personal_playlist(lang, &updated.name),
+                ));
             }
         });
     }
@@ -2192,6 +2281,7 @@ impl BackendEngine {
         let paths = self.paths.clone();
         let pid = playlist_id.to_string();
         let int_tx = self.int_tx.clone();
+        let lang = self.ytm_language;
         if self.playlist_id.as_deref() == Some(playlist_id) {
             self.active_nav = NavTarget::Library;
             self.playlist_id = None;
@@ -2208,8 +2298,9 @@ impl BackendEngine {
             if let Ok(Ok((removed, all))) = res {
                 let _ = int_tx.send(InternalEvent::PersonalPlaylistsLoaded(all));
                 if removed {
+                    let s = sonata_runtime::i18n::strings(lang);
                     let _ = int_tx.send(InternalEvent::StatusMessage(
-                        "Deleted personal playlist".to_string(),
+                        s.deleted_personal_playlist.to_string(),
                     ));
                 }
             }
@@ -2220,6 +2311,7 @@ impl BackendEngine {
         let paths = self.paths.clone();
         let int_tx = self.int_tx.clone();
         let title = track.title.clone();
+        let lang = self.ytm_language;
         tokio::spawn(async move {
             let res = tokio::task::spawn_blocking(move || {
                 let store = PersonalPlaylistStore::new(&paths);
@@ -2231,19 +2323,22 @@ impl BackendEngine {
             match res {
                 Ok(Ok((updated, all))) => {
                     let _ = int_tx.send(InternalEvent::PersonalPlaylistsLoaded(all));
-                    let _ = int_tx.send(InternalEvent::StatusMessage(format!(
-                        "Added \"{title}\" to {}",
-                        updated.name
-                    )));
+                    let _ = int_tx.send(InternalEvent::StatusMessage(
+                        sonata_runtime::i18n::fmt_added_to_playlist(lang, &title, &updated.name),
+                    ));
                 }
                 Ok(Err(e)) => {
+                    let s = sonata_runtime::i18n::strings(lang);
                     let _ = int_tx.send(InternalEvent::StatusMessage(format!(
-                        "Could not add to personal playlist: {e}"
+                        "{}: {e}",
+                        s.personal_playlist_add_failed
                     )));
                 }
                 Err(e) => {
+                    let s = sonata_runtime::i18n::strings(lang);
                     let _ = int_tx.send(InternalEvent::StatusMessage(format!(
-                        "Personal playlist task failed: {e}"
+                        "{}: {e}",
+                        s.personal_playlist_task_failed
                     )));
                 }
             }
@@ -2310,7 +2405,8 @@ impl BackendEngine {
             return;
         };
         self.server_speed_testing.insert(server_id.clone());
-        self.status_line = format!("Running speed test for {}...", profile.name);
+        self.status_line =
+            sonata_runtime::i18n::fmt_speed_test_for(self.ytm_language, &profile.name);
         let client = self.server_client.clone();
         let int_tx = self.int_tx.clone();
         tokio::spawn(async move {
@@ -2336,6 +2432,7 @@ impl BackendEngine {
         self.server_test_result = None;
         let http = self.http.clone();
         let int_tx = self.int_tx.clone();
+        let lang = self.ytm_language;
         tokio::spawn(async move {
             let mut profile = build_server_profile(
                 None,
@@ -2350,7 +2447,7 @@ impl BackendEngine {
                 domain,
                 local_mount_path,
             );
-            let res = prepare_and_ping_server(&http, &mut profile).await;
+            let res = prepare_and_ping_server(&http, &mut profile, lang).await;
             let _ = int_tx.send(InternalEvent::ServerTested {
                 server_id: None,
                 result: res,
@@ -2375,6 +2472,7 @@ impl BackendEngine {
     ) {
         let http = self.http.clone();
         let int_tx = self.int_tx.clone();
+        let lang = self.ytm_language;
         tokio::spawn(async move {
             let mut profile = build_server_profile(
                 id.as_deref(),
@@ -2389,10 +2487,12 @@ impl BackendEngine {
                 domain,
                 local_mount_path,
             );
-            let ping_res = prepare_and_ping_server(&http, &mut profile).await;
+            let ping_res = prepare_and_ping_server(&http, &mut profile, lang).await;
             let message = match ping_res {
-                Ok(msg) => format!("Saved {} ({msg})", profile.name),
-                Err(err) => format!("Saved {} (warning: {err})", profile.name),
+                Ok(msg) => sonata_runtime::i18n::fmt_saved_server(lang, &profile.name, &msg),
+                Err(err) => {
+                    sonata_runtime::i18n::fmt_saved_server_warning(lang, &profile.name, &err)
+                }
             };
             let _ = int_tx.send(InternalEvent::ServerSaved { profile, message });
         });
@@ -2433,7 +2533,8 @@ impl BackendEngine {
             let _ =
                 tokio::task::spawn_blocking(move || save_server_profiles(&paths, &profiles)).await;
         });
-        self.status_line = "Removed server profile".to_string();
+        let s = sonata_runtime::i18n::strings(self.ytm_language);
+        self.status_line = s.removed_server_profile.to_string();
     }
 
     pub(super) fn load_server_browse(
@@ -2611,11 +2712,14 @@ fn build_server_profile(
 async fn prepare_and_ping_server(
     http: &reqwest::Client,
     profile: &mut ServerProfile,
+    lang: sonata_runtime::i18n::AppLanguage,
 ) -> Result<String, String> {
     if profile.normalized_base_url().is_empty()
         && !(profile.kind == ServerKind::Smb && profile.local_mount_path.is_some())
     {
-        return Err("Server URL is required".to_string());
+        return Err(sonata_runtime::i18n::strings(lang)
+            .server_url_required
+            .to_string());
     }
     if profile.kind == ServerKind::Jellyfin
         && profile
@@ -2743,7 +2847,9 @@ async fn download_one_track_into_store(
             }
         }
         match req.send().await {
-            Ok(resp) if resp.status().is_success() => resp.bytes().await.ok().map(|b| b.to_vec()),
+            Ok(resp) if resp.status().is_success() => {
+                read_bounded_bytes(resp, MAX_DOWNLOAD_ARTWORK_BYTES).await
+            }
             _ => None,
         }
     } else {
@@ -2785,7 +2891,9 @@ async fn download_one_track_into_store(
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
         let container = infer_container(&resolved.url, content_type.as_deref(), &badge);
-        let audio_bytes = resp.bytes().await?.to_vec();
+        let staging_dir = store.root().join("audio");
+        let staged =
+            stream_response_to_staging_file(resp, &staging_dir, MAX_DOWNLOAD_AUDIO_BYTES).await?;
         let input = DownloadTrackInput {
             track: track.clone(),
             audio_badge: badge,
@@ -2795,8 +2903,9 @@ async fn download_one_track_into_store(
             collection,
         };
         store
-            .save_track_bytes_async(input, audio_bytes, artwork_bytes)
+            .save_track_from_file_async(input, staged.0.clone(), artwork_bytes)
             .await?;
+        drop(staged);
     } else {
         let source_path = PathBuf::from(&resolved.url);
         let container = infer_container(&resolved.url, None, &badge);
@@ -2817,6 +2926,95 @@ async fn download_one_track_into_store(
         let _ = store.prune_to_limit_async(limit).await;
     }
     Ok(())
+}
+
+const MAX_DOWNLOAD_AUDIO_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_DOWNLOAD_ARTWORK_BYTES: usize = 16 * 1024 * 1024;
+
+struct StagingFileGuard(PathBuf);
+
+impl Drop for StagingFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+async fn read_bounded_bytes(mut resp: reqwest::Response, max_bytes: usize) -> Option<Vec<u8>> {
+    if resp
+        .content_length()
+        .is_some_and(|len| len > max_bytes as u64)
+    {
+        return None;
+    }
+    let mut out = Vec::new();
+    while let Ok(Some(chunk)) = resp.chunk().await {
+        if out.len().saturating_add(chunk.len()) > max_bytes {
+            return None;
+        }
+        out.extend_from_slice(&chunk);
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+async fn stream_response_to_staging_file(
+    mut resp: reqwest::Response,
+    staging_dir: &std::path::Path,
+    max_bytes: u64,
+) -> anyhow::Result<StagingFileGuard> {
+    use tokio::io::AsyncWriteExt as _;
+
+    if let Some(len) = resp.content_length() {
+        if len > max_bytes {
+            anyhow::bail!(
+                "download size ({len} bytes) exceeds {} MiB limit",
+                max_bytes / (1024 * 1024)
+            );
+        }
+    }
+
+    let dir_owned = staging_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || sonata_core::auth::ensure_private_dir(&dir_owned))
+        .await
+        .map_err(|e| anyhow::anyhow!("staging dir task failed: {e}"))??;
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp_path = staging_dir.join(format!("stream.{}.{nanos}.{seq}.tmp", std::process::id()));
+    let guard = StagingFileGuard(tmp_path.clone());
+
+    let mut opts = tokio::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    opts.mode(0o600);
+    let mut file = opts.open(&tmp_path).await?;
+
+    let mut written: u64 = 0;
+    while let Some(chunk) = resp.chunk().await? {
+        written = written.saturating_add(chunk.len() as u64);
+        if written > max_bytes {
+            drop(file);
+            anyhow::bail!(
+                "download exceeded {} MiB safety limit",
+                max_bytes / (1024 * 1024)
+            );
+        }
+        file.write_all(&chunk).await?;
+    }
+    file.flush().await?;
+    drop(file);
+
+    if written == 0 {
+        anyhow::bail!("downloaded audio payload is empty");
+    }
+    Ok(guard)
 }
 
 pub(crate) fn urls_same_origin(a: &str, b: &str) -> bool {

@@ -163,7 +163,15 @@ class FakeSonataEngineGateway : SonataEngineGateway {
 
     override suspend fun fetchRadioMixes(): List<AndroidHomeShelf> = emptyList()
 
-    override suspend fun fetchListeningHistory(): List<AndroidTrack> = emptyList()
+    var listeningHistoryHandler: suspend () -> List<AndroidTrack> = { emptyList() }
+    val removedListeningHistoryIds = mutableListOf<String>()
+
+    override suspend fun fetchListeningHistory(): List<AndroidTrack> = listeningHistoryHandler()
+
+    override suspend fun removeFromListeningHistory(videoId: String): Boolean {
+        removedListeningHistoryIds.add(videoId)
+        return true
+    }
 
     override suspend fun resolveExplicitCounterpart(track: AndroidTrack): AndroidTrack? =
         resolveExplicitCounterpartHandler(track)

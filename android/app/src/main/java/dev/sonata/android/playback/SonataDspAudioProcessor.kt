@@ -25,20 +25,15 @@ import kotlin.math.sin
 @OptIn(UnstableApi::class)
 class SonataDspAudioProcessor : BaseAudioProcessor() {
 
-    @Volatile
     private var eqEnabled: Boolean = false
-
-    @Volatile
     private var eqBandsDb: FloatArray = FloatArray(BAND_COUNT)
+    private var coefficientsDirty: Boolean = true
 
     @Volatile
     private var targetSleepFadeMultiplier: Float = 1.0f
 
     @Volatile
     private var targetCrossfadeMultiplier: Float = 1.0f
-
-    @Volatile
-    private var coefficientsDirty: Boolean = true
 
     private val paramLock = Any()
 
@@ -106,7 +101,9 @@ class SonataDspAudioProcessor : BaseAudioProcessor() {
         channelCount = inputAudioFormat.channelCount
         ensureChannelState(channelCount)
         clearFilterState()
-        coefficientsDirty = true
+        synchronized(paramLock) {
+            coefficientsDirty = true
+        }
         return inputAudioFormat
     }
 
@@ -126,14 +123,24 @@ class SonataDspAudioProcessor : BaseAudioProcessor() {
             return
         }
 
-        val eqOn = eqEnabled
+        val eqOn: Boolean
+        val bandsToRecompute: FloatArray?
+        synchronized(paramLock) {
+            eqOn = eqEnabled
+            if (eqOn && coefficientsDirty) {
+                bandsToRecompute = eqBandsDb.copyOf()
+                coefficientsDirty = false
+            } else {
+                bandsToRecompute = null
+            }
+        }
         if (eqOn != wasEqActive) {
             // Clear delay lines on enable/disable transition to prevent residual filter thumps.
             clearFilterState()
             wasEqActive = eqOn
         }
-        if (eqOn && coefficientsDirty) {
-            recomputeCoefficients(rate)
+        if (bandsToRecompute != null) {
+            recomputeCoefficients(rate, bandsToRecompute)
         }
 
         val targetGain = (targetSleepFadeMultiplier * targetCrossfadeMultiplier)
@@ -216,7 +223,9 @@ class SonataDspAudioProcessor : BaseAudioProcessor() {
         currentGain = (targetSleepFadeMultiplier * targetCrossfadeMultiplier)
             .coerceIn(0f, 1f)
             .toDouble()
-        coefficientsDirty = true
+        synchronized(paramLock) {
+            coefficientsDirty = true
+        }
     }
 
     private fun ensureChannelState(channels: Int) {
@@ -236,13 +245,7 @@ class SonataDspAudioProcessor : BaseAudioProcessor() {
         y2.fill(0.0)
     }
 
-    private fun recomputeCoefficients(rate: Int) {
-        val bandsSnapshot: FloatArray
-        synchronized(paramLock) {
-            bandsSnapshot = eqBandsDb.copyOf()
-            coefficientsDirty = false
-        }
-
+    private fun recomputeCoefficients(rate: Int, bandsSnapshot: FloatArray) {
         var maxPositiveDb = 0f
         val nyquistLimit = (rate / 2.0) - 1.0
 

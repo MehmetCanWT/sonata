@@ -4,11 +4,16 @@ import dev.sonata.android.connect.ConnectBeacon
 import dev.sonata.android.connect.ConnectCommand
 import dev.sonata.android.connect.ConnectController
 import dev.sonata.android.connect.ConnectDeviceInfo
+import dev.sonata.android.connect.ConnectError
+import dev.sonata.android.connect.ConnectPlaybackRouter
 import dev.sonata.android.connect.ConnectStateSnapshot
 import dev.sonata.android.connect.ConnectTrackSnapshot
 import dev.sonata.android.connect.InMemoryConnectSecretStore
 import dev.sonata.android.connect.PairAck
+import dev.sonata.android.connect.PairApprovalInitAck
+import dev.sonata.android.connect.PairApprovalStatus
 import dev.sonata.android.connect.PairRequest
+import dev.sonata.android.connect.PairStatusAck
 import dev.sonata.android.connect.SonataConnectClient
 import dev.sonata.android.connect.SonataConnectCrypto
 import dev.sonata.android.playback.LiveAutoDataProvider
@@ -350,6 +355,390 @@ class Faz4UiIntegrationTest {
             assertEquals(45_000L, handoff.positionMs)
             assertTrue(handoff.playWhenReady)
 
+            controller.close()
+        } finally {
+            controllerScope.cancel()
+            runCatching { server.close() }
+            serverThread.join(2_000L)
+        }
+    }
+
+    @Test
+    fun `connect interactive approval polls into trusted devices without auto-connecting on passive discovery`() = runTest {
+        val secret = "trusted-approval-token-64hex-0123456789abcdef0123456789abcdef0123"
+        var statusPolls = 0
+        val server = ServerSocket(0)
+        val port = server.localPort
+
+        val serverThread = thread(isDaemon = true) {
+            // 1x POST /connect/pair/request + 3x GET /connect/pair/status (pending, pending, approved)
+            repeat(4) {
+                val sock = runCatching { server.accept() }.getOrNull() ?: return@thread
+                sock.use { s ->
+                    val reader = BufferedReader(InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8))
+                    val reqLine = reader.readLine().orEmpty()
+                    var contentLen = 0
+                    while (true) {
+                        val line = reader.readLine() ?: break
+                        if (line.isEmpty()) break
+                        val idx = line.indexOf(':')
+                        if (idx > 0 && line.substring(0, idx).trim().equals("content-length", ignoreCase = true)) {
+                            contentLen = line.substring(idx + 1).trim().toIntOrNull() ?: 0
+                        }
+                    }
+                    if (contentLen > 0) {
+                        val buf = CharArray(contentLen)
+                        var read = 0
+                        while (read < contentLen) {
+                            val n = reader.read(buf, read, contentLen - read)
+                            if (n < 0) break
+                            read += n
+                        }
+                    }
+
+                    val (statusLine, resp) = when {
+                        reqLine.startsWith("POST /connect/pair/request") -> {
+                            "HTTP/1.1 202 Accepted" to PairApprovalInitAck(
+                                requestId = "pair-req-1",
+                                status = "pending",
+                                deviceId = "desktop-linux",
+                                deviceName = "Sonata Linux",
+                            ).toJson()
+                        }
+                        reqLine.startsWith("GET /connect/pair/status?request_id=pair-req-1") -> {
+                            statusPolls++
+                            if (statusPolls < 3) {
+                                "HTTP/1.1 200 OK" to PairStatusAck(
+                                    status = PairApprovalStatus.PENDING,
+                                    accepted = false,
+                                    deviceId = "desktop-linux",
+                                    deviceName = "Sonata Linux",
+                                ).toJson()
+                            } else {
+                                "HTTP/1.1 200 OK" to PairStatusAck(
+                                    status = PairApprovalStatus.APPROVED,
+                                    accepted = true,
+                                    deviceId = "desktop-linux",
+                                    deviceName = "Sonata Linux",
+                                    sharedSecret = secret,
+                                ).toJson()
+                            }
+                        }
+                        else -> "HTTP/1.1 404 Not Found" to "{}"
+                    }
+
+                    val bytes = resp.toByteArray(StandardCharsets.UTF_8)
+                    val out = s.getOutputStream()
+                    out.write(
+                        (
+                            "$statusLine\r\n" +
+                                "Content-Type: application/json\r\n" +
+                                "Content-Length: ${bytes.size}\r\n" +
+                                "Connection: close\r\n\r\n"
+                            ).toByteArray(StandardCharsets.US_ASCII),
+                    )
+                    out.write(bytes)
+                    out.flush()
+                }
+            }
+        }
+
+        val controllerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val secretStore = InMemoryConnectSecretStore()
+        try {
+            val client = SonataConnectClient(localDeviceId = "android-peer-2")
+            val controller = ConnectController(
+                client = client,
+                secretStore = secretStore,
+                scope = controllerScope,
+                deviceNameProvider = { "Test Phone" },
+                pairPollIntervalMs = 20L,
+                pairTimeoutMs = 2_000L,
+            )
+
+            val beacon = ConnectBeacon(
+                deviceId = "desktop-linux",
+                deviceName = "Sonata Linux",
+                platform = "linux",
+                httpPort = port,
+                protocolVersion = 1,
+                hostAddress = "127.0.0.1",
+            )
+            client.ingestBeaconPacket(beacon.toJson(), "127.0.0.1")
+
+            assertTrue(controller.requestPairApproval(beacon))
+            assertEquals(3, statusPolls)
+            assertTrue("desktop-linux" in controller.state.value.pairedDeviceIds)
+            assertEquals("Sonata Linux", controller.state.value.trustedDeviceNames["desktop-linux"])
+            assertEquals(secret, secretStore.getSecret("desktop-linux"))
+            assertNull(controller.state.value.pendingPair)
+            assertNull(controller.state.value.pairingError)
+            // Must NOT auto-connect on approval or passive discovery.
+            assertNull(controller.state.value.activePeer)
+            controller.close()
+
+            // Re-discover the same trusted host on a fresh controller: recognized as trusted, NEVER auto-connected.
+            val freshClient = SonataConnectClient(localDeviceId = "android-peer-2")
+            val freshController = ConnectController(
+                client = freshClient,
+                secretStore = secretStore,
+                scope = controllerScope,
+                deviceNameProvider = { "Test Phone" },
+            )
+            freshClient.ingestBeaconPacket(beacon.toJson(), "127.0.0.1")
+            // Give init/observer coroutines a brief moment to settle
+            kotlinx.coroutines.delay(50L)
+            assertTrue("desktop-linux" in freshController.state.value.pairedDeviceIds)
+            assertEquals(1, freshController.state.value.discoveredDevices.size)
+            assertNull(freshController.state.value.activePeer)
+            freshController.close()
+        } finally {
+            controllerScope.cancel()
+            runCatching { server.close() }
+            serverThread.join(2_000L)
+        }
+    }
+
+    @Test
+    fun `connect handles interactive rejection and clears stale local trust on host 401`() = runTest {
+        val server = ServerSocket(0)
+        val port = server.localPort
+        val serverThread = thread(isDaemon = true) {
+            // 1x pair/request + 1x pair/status (rejected) + 1x trust (401)
+            repeat(3) {
+                val sock = runCatching { server.accept() }.getOrNull() ?: return@thread
+                sock.use { s ->
+                    val reader = BufferedReader(InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8))
+                    val reqLine = reader.readLine().orEmpty()
+                    var contentLen = 0
+                    while (true) {
+                        val line = reader.readLine() ?: break
+                        if (line.isEmpty()) break
+                        val idx = line.indexOf(':')
+                        if (idx > 0 && line.substring(0, idx).trim().equals("content-length", ignoreCase = true)) {
+                            contentLen = line.substring(idx + 1).trim().toIntOrNull() ?: 0
+                        }
+                    }
+                    if (contentLen > 0) {
+                        val buf = CharArray(contentLen)
+                        var read = 0
+                        while (read < contentLen) {
+                            val n = reader.read(buf, read, contentLen - read)
+                            if (n < 0) break
+                            read += n
+                        }
+                    }
+                    val (statusLine, resp) = when {
+                        reqLine.startsWith("POST /connect/pair/request") ->
+                            "HTTP/1.1 202 Accepted" to PairApprovalInitAck("req-rej", "pending", "desktop-2", "Sonata Linux").toJson()
+                        reqLine.startsWith("GET /connect/pair/status") ->
+                            "HTTP/1.1 200 OK" to PairStatusAck(PairApprovalStatus.REJECTED, false, "desktop-2", "Sonata Linux").toJson()
+                        reqLine.startsWith("GET /connect/trust") ->
+                            "HTTP/1.1 401 Unauthorized" to """{"trusted":false}"""
+                        else -> "HTTP/1.1 404 Not Found" to "{}"
+                    }
+                    val bytes = resp.toByteArray(StandardCharsets.UTF_8)
+                    val out = s.getOutputStream()
+                    out.write(
+                        (
+                            "$statusLine\r\n" +
+                                "Content-Type: application/json\r\n" +
+                                "Content-Length: ${bytes.size}\r\n" +
+                                "Connection: close\r\n\r\n"
+                            ).toByteArray(StandardCharsets.US_ASCII),
+                    )
+                    out.write(bytes)
+                    out.flush()
+                }
+            }
+        }
+
+        val controllerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val secretStore = InMemoryConnectSecretStore()
+        try {
+            val client = SonataConnectClient(localDeviceId = "android-peer-3")
+            val controller = ConnectController(
+                client = client,
+                secretStore = secretStore,
+                scope = controllerScope,
+                deviceNameProvider = { "Test Phone" },
+                pairPollIntervalMs = 20L,
+                pairTimeoutMs = 1_000L,
+            )
+            val beacon = ConnectBeacon("desktop-2", "Sonata Linux", "linux", port, 1, "127.0.0.1")
+
+            assertFalse(controller.requestPairApproval(beacon))
+            assertEquals(ConnectError.PAIRING_REJECTED, controller.state.value.pairingError)
+            assertFalse("desktop-2" in controller.state.value.pairedDeviceIds)
+
+            // Simulate previously trusted device revoked on host (401)
+            secretStore.saveSecret("desktop-2", "stale-secret")
+            secretStore.saveDeviceName("desktop-2", "Sonata Linux")
+            assertFalse(controller.connectToPaired(beacon))
+            assertEquals(ConnectError.TRUST_REVOKED, controller.state.value.pairingError)
+            assertNull(secretStore.getSecret("desktop-2"))
+            assertFalse("desktop-2" in controller.state.value.pairedDeviceIds)
+            assertNull(controller.state.value.activePeer)
+            controller.close()
+        } finally {
+            controllerScope.cancel()
+            runCatching { server.close() }
+            serverThread.join(2_000L)
+        }
+    }
+
+    @Test
+    fun `connect playback router pauses local player, routes all controls until disconnect, and restores local`() = runTest {
+        val secret = "router-secret-0123456789abcdef"
+        val receivedCommands = mutableListOf<ConnectCommand>()
+        val server = ServerSocket(0)
+        val port = server.localPort
+
+        val serverThread = thread(isDaemon = true) {
+            // trust + state + 7 commands * (command + state) = 16 requests
+            repeat(16) {
+                val sock = runCatching { server.accept() }.getOrNull() ?: return@thread
+                sock.use { s ->
+                    val reader = BufferedReader(InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8))
+                    val reqLine = reader.readLine().orEmpty()
+                    val headers = HashMap<String, String>()
+                    var contentLen = 0
+                    while (true) {
+                        val line = reader.readLine() ?: break
+                        if (line.isEmpty()) break
+                        val idx = line.indexOf(':')
+                        if (idx > 0) {
+                            val name = line.substring(0, idx).trim().lowercase(Locale.ROOT)
+                            val value = line.substring(idx + 1).trim()
+                            headers[name] = value
+                            if (name == "content-length") contentLen = value.toIntOrNull() ?: 0
+                        }
+                    }
+                    val body = if (contentLen > 0) {
+                        val buf = CharArray(contentLen)
+                        var read = 0
+                        while (read < contentLen) {
+                            val n = reader.read(buf, read, contentLen - read)
+                            if (n < 0) break
+                            read += n
+                        }
+                        String(buf, 0, read)
+                    } else {
+                        ""
+                    }
+                    val resp = when {
+                        reqLine.startsWith("GET /connect/trust") -> """{"trusted":true}"""
+                        reqLine.startsWith("GET /connect/state") -> ConnectStateSnapshot(
+                            deviceId = "desktop-router",
+                            deviceName = "Sonata Linux",
+                            isPlaying = true,
+                            positionMs = 15_000L,
+                            durationMs = 210_000L,
+                            volume = 0.8f,
+                            activeTrack = ConnectTrackSnapshot("test-track-1", "Test Track", "Test Artist", "Test Album", 210L),
+                        ).toJson()
+                        reqLine.startsWith("POST /connect/command") -> {
+                            val sig = headers[SonataConnectClient.HEADER_SIGNATURE.lowercase(Locale.ROOT)].orEmpty()
+                            assertTrue(SonataConnectCrypto.verifySignature(secret, body, sig))
+                            ConnectCommand.fromJson(body)?.let(receivedCommands::add)
+                            """{"ok":true}"""
+                        }
+                        else -> "{}"
+                    }
+                    val bytes = resp.toByteArray(StandardCharsets.UTF_8)
+                    val out = s.getOutputStream()
+                    out.write(
+                        (
+                            "HTTP/1.1 200 OK\r\n" +
+                                "Content-Type: application/json\r\n" +
+                                "Content-Length: ${bytes.size}\r\n" +
+                                "Connection: close\r\n\r\n"
+                            ).toByteArray(StandardCharsets.US_ASCII),
+                    )
+                    out.write(bytes)
+                    out.flush()
+                }
+            }
+        }
+
+        val controllerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val secretStore = InMemoryConnectSecretStore().apply {
+            saveSecret("desktop-router", secret)
+            saveDeviceName("desktop-router", "Sonata Linux")
+        }
+        try {
+            val client = SonataConnectClient(localDeviceId = "android-router-1")
+            val controller = ConnectController(
+                client = client,
+                secretStore = secretStore,
+                scope = controllerScope,
+                deviceNameProvider = { "Test Phone" },
+                statePollIntervalMs = 60_000L,
+            )
+            val router = ConnectPlaybackRouter(controller)
+            val beacon = ConnectBeacon("desktop-router", "Sonata Linux", "linux", port, 1, "127.0.0.1")
+
+            var localCalls = 0
+            val t1 = track("test-track-1", "Track One", "Test Artist")
+            val t2 = track("test-track-2", "Track Two", "Test Artist")
+            val t3 = track("test-track-3", "Track Three", "Test Artist")
+
+            // Before connecting: everything stays local
+            assertFalse(router.playTrack(t1, listOf(t1, t2)) { _, _ -> localCalls++ })
+            assertFalse(router.syncUpdatedQueue(listOf(t1, t3, t2), currentIndex = 0, positionMs = 12_000L, playWhenReady = true))
+            assertEquals(1, localCalls)
+            assertTrue(receivedCommands.isEmpty())
+
+            // Connect to trusted PC -> pauses local player
+            var localPaused = false
+            assertTrue(router.connectToDevice(beacon) { localPaused = true })
+            assertTrue(localPaused)
+            assertTrue(router.isRemoteActive)
+            assertEquals("Sonata Linux", router.activeDeviceName)
+
+            // All playback and queue-enqueue actions route to Desktop until disconnect
+            assertTrue(router.playTrack(t2, listOf(t1, t2)) { _, _ -> localCalls++ })
+            assertTrue(router.togglePlayPause(fallbackIsPlaying = true) { localCalls++ })
+            assertTrue(router.nextTrack { localCalls++ })
+            assertTrue(router.prevTrack { localCalls++ })
+            assertTrue(router.seekTo(55_000L) { localCalls++ })
+            assertTrue(router.setVolume(0.65f).isSuccess)
+            assertTrue(
+                router.syncUpdatedQueue(
+                    tracks = listOf(t1, t3, t2),
+                    currentIndex = 0,
+                    positionMs = 32_000L,
+                    playWhenReady = true,
+                ),
+            )
+            assertEquals(1, localCalls)
+
+            assertEquals(7, receivedCommands.size)
+            val transfer = receivedCommands[0] as ConnectCommand.TransferQueue
+            assertEquals(listOf("test-track-1", "test-track-2"), transfer.tracks.map { it.id })
+            assertEquals(1, transfer.startIndex)
+            assertEquals(0L, transfer.positionMs)
+            assertTrue(transfer.playWhenReady)
+            assertEquals(ConnectCommand.Pause, receivedCommands[1])
+            assertEquals(ConnectCommand.Next, receivedCommands[2])
+            assertEquals(ConnectCommand.Prev, receivedCommands[3])
+            assertEquals(ConnectCommand.SeekAbsolute(55_000L), receivedCommands[4])
+            assertEquals(ConnectCommand.SetVolume(0.65f), receivedCommands[5])
+            val enqueuedSync = receivedCommands[6] as ConnectCommand.TransferQueue
+            assertEquals(listOf("test-track-1", "test-track-3", "test-track-2"), enqueuedSync.tracks.map { it.id })
+            assertEquals(0, enqueuedSync.startIndex)
+            assertEquals(32_000L, enqueuedSync.positionMs)
+            assertTrue(enqueuedSync.playWhenReady)
+
+            // Disconnect ("This Phone") -> restores local routing
+            var localRestored = false
+            router.disconnectToLocal { localRestored = true }
+            assertTrue(localRestored)
+            assertFalse(router.isRemoteActive)
+            assertNull(router.activeDeviceName)
+
+            assertFalse(router.togglePlayPause(fallbackIsPlaying = false) { localCalls++ })
+            assertEquals(2, localCalls)
             controller.close()
         } finally {
             controllerScope.cancel()
