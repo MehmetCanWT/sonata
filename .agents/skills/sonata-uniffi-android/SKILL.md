@@ -65,6 +65,12 @@ Preserve all five contracts in `android/app/src/main/java/dev/sonata/android/pla
 4. `EndedStateTransitionGuard`: Report `Player.STATE_BUFFERING` on `Player.STATE_ENDED` only while a next-track transition is pending; clear on `STATE_READY`, `STATE_IDLE`, pause (`playWhenReady == false`), stop, or end-of-queue.
 5. `performAtomicStreamSwap`: Verify `isStillCurrent()`, snapshot position and play intent, execute `replaceMediaItem` -> `prepare()` -> `play()`/`pause()`, and invoke `onCommitted` only after the swap succeeds.
 
+## Android WebView, Coroutine Test & Connect Invariants
+
+- **Compose `Dialog` WebView (`DiscordLoginScreen.kt`)**: Never force `View.LAYER_TYPE_HARDWARE` on a `WebView` hosted inside a Compose `Dialog` (causes blank white rendering). Set explicit `MATCH_PARENT` layout params, dark background (`#0A0B10`), `domStorageEnabled = true`, and `databaseEnabled = true` (do not remove `databaseEnabled`), allow `about:`/`blob:`/`data:` subframes, and show a loading indicator plus localized error/SSL retry UI.
+- **`runTest` vs. real I/O threads**: Inside `kotlinx.coroutines.test.runTest`, `delay(...)` skips virtual time (`0 ms` wall time) and races against real `Dispatchers.IO` / `ServerSocket` tests. Wait for real background I/O using a bounded wall-clock deadline (`System.currentTimeMillis() < deadline`) with short `Thread.sleep(10)` polls, and name mock tokens neutrally (`mockPairToken = "test-connect-token-1"`, never `secret` with 64-hex literals).
+- **Sonata Connect & Discord RPC**: Keep official Discord App ID (`1520387624861438002`) immutable. Persist approved Connect hosts as trusted devices without auto-connecting on passive discovery; route play/pause/seek/queue/volume controls to the remote host only while selected in Now Playing Devices until Disconnect, and render localized `"Playing on <DeviceName>"` indicator on Now Playing and above the mini player bar.
+
 ## Verification Commands
 
 Gradle 9.6.0 + AGP 9.5.3 (built-in Kotlin 2.2.10, `sdklib 32.5.3` with native SDK XML v4 support) requires JDK 21 on hosts defaulting to newer JDKs (e.g. Java 27). Ensure `JAVA_HOME` points to JDK 21 before running Gradle:

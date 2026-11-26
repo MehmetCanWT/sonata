@@ -29,9 +29,16 @@ For Android version bumps, also update `appVersionName` fallback in `android/app
 
 - Triggers on `push` to `main` and `workflow_dispatch`.
 - Reads `DV` from `Cargo.toml` (`^version = `) and `AV` from `android/app/build.gradle.kts` (`appVersionName`), deriving `AV_CODE`.
-- **Asset-skip guard**: Checks GitHub Release `v${DV}` for `Sonata-v${DV}-x86_64.AppImage` and `v${AV}` for `Sonata-v${AV}-arm64.apk`. If an asset already exists on that tag, that platform job is skipped—bump the version before pushing to `main` if you expect new release artifacts.
-- **Release notes & artifact publishing**: `publish` extracts `CHANGELOG.md` lines between `## [VER]` and the next `## [` via `awk` (falling back to `--generate-notes`), uploads and hashes both `Sonata-v${VER}-*` and `sonata-v${VER}-*` (`.AppImage`, `.zsync`, `.deb`, `.rpm`, `.tar.gz`, `.apk`) into `SHA256SUMS.txt`, and asserts expected artifacts exist.
-- **Workflow hardening**: Keep root `permissions: contents: read` (write only on `publish`), pin all `uses:` actions to 40-char commit SHAs, and pin `appimagetool` to an immutable release tag + verified `APPIMAGETOOL_SHA256` (never `continuous`).
+- **4-platform asset-skip guard**: Checks GitHub Release `v${DV}` for Linux (`Sonata-v${DV}-x86_64.AppImage`), Windows (`Sonata-v${DV}-windows-x64.exe`), and macOS (`Sonata-v${DV}-macos-arm64.dmg`), plus `v${AV}` for Android (`Sonata-v${AV}-arm64.apk`). Bump the version before pushing to `main` if you expect fresh release artifacts.
+- **Release notes & artifact publishing**: `publish` extracts `CHANGELOG.md` lines between `## [VER]` and the next `## [` via `awk` (falling back to `--generate-notes`), uploads and hashes all 11 platform binaries (`.AppImage`, `.zsync`, `.deb`, `.rpm`, `.tar.gz`, `-windows-x64.exe`, `-windows-x64-setup.exe`, `-windows-x64.msi`, `-macos-arm64.dmg`, `-macos-arm64.app.tar.gz`, `-arm64.apk`) into `SHA256SUMS.txt`, and asserts expected artifacts exist.
+- **Workflow hardening & zero-warning CI hygiene**:
+  - Keep root `permissions: contents: read` (write only on `publish`), pin all `uses:` actions to 40-char commit SHAs, and pin `appimagetool` to an immutable release tag + verified `APPIMAGETOOL_SHA256` (never `continuous`).
+  - Use `macos-latest` (never deprecated `macos-14`).
+  - Pin `actions/setup-node` to `v7.1.0`+ to avoid Node 20 deprecation warnings.
+  - On Ubuntu AppImage jobs, install `libglib2.0-dev` and WebKitGTK build dependencies directly via `apt-get` (avoid `awalsh128/cache-apt-pkgs-action`, which can leave `glib-2.0.pc` missing).
+  - On Android NDK jobs, export both `ANDROID_NDK_HOME` and `ANDROID_NDK_ROOT`, and never pass root-owned absolute paths like `/usr/local/lib/android/sdk` to `actions/cache` (`tar` permission/leading-slash warnings).
+  - Keep Vite `manualChunks` configured in `desktop-ui/vite.config.ts` so every JS bundle stays under Vite's 500 kB warning limit.
+  - Before pushing a release, audit Windows/macOS `#[cfg]` code paths (`mpris.rs`, `tray.rs`, `hyprland.rs`) so cross-platform `-D warnings` jobs pass cleanly; after pushing, inspect GitHub Actions logs for both errors and warnings.
 
 ## Desktop-ID & Icon Divergence Across Linux Packages
 

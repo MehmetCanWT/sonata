@@ -111,7 +111,8 @@ For fast single-client iteration during development, use `.cargo/config.toml` al
 ## Cross-Client Parity, i18n & External Telemetry
 
 - **Cross-client parity**: Propagate user-facing features, lyrics/sync improvements, Discord RPC policy, and MPRIS/telemetry contracts across all applicable clients (`sonata-desktop`, `sonata-tui`, `android/`) and shared `sonata-core`/`sonata-runtime` layers rather than fixing only one client.
-- **Zero hardcoded UI strings**: Never hardcode user-facing labels in UI components or status lines; route all visible text through modular per-language i18n catalogs (`desktop-ui/src/i18n/{types,en,tr,ru,index}.ts`, `crates/sonata-runtime/src/i18n/{mod,en,tr,ru}.rs`, `SonataStrings.kt`).
+- **Zero hardcoded user-facing strings (UI + Backend/Runtime)**: Never hardcode user-visible text anywhere — including UI views, dialogs, notifications, status/Connect fallback notices, tray/IPC DTOs, and user-surfaced errors. Route all visible text through modular `en`/`tr`/`ru` catalogs (`desktop-ui/src/i18n/{types,en,tr,ru,index}.ts`, `crates/sonata-runtime/src/i18n/{mod,en,tr,ru}.rs`, `SonataStrings.kt`), emitting typed error/notice keys from Rust backends rather than raw English prose.
+- **Immutable Discord Application ID**: Always use the official Sonata Discord Application ID (`1520387624861438002`) across Android, Desktop, TUI, and Runtime; never expose a user-editable Discord App ID input or override setting.
 - **Typed external integrations**: Serialize external runtime outputs (`$XDG_RUNTIME_DIR/sonata/now_playing.json`, `lyrics.json`) via typed `Serialize` structs (never ad-hoc JSON blobs or plain text) and keep third-party contracts documented in `docs/integrations.md`.
 
 ## Commits, PRs & Changelog
