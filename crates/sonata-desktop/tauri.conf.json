@@ -4,9 +4,9 @@
   "version": "1.0.10",
   "identifier": "dev.sonata.Desktop",
   "build": {
-    "beforeDevCommand": "npm --prefix ../../desktop-ui run dev",
+    "beforeDevCommand": "npm --prefix ../desktop-ui run dev",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "npm --prefix ../../desktop-ui run build",
+    "beforeBuildCommand": "npm --prefix ../desktop-ui run build",
     "frontendDist": "../../desktop-ui/dist"
   },
   "app": {

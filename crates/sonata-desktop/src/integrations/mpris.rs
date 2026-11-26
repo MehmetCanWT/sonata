@@ -5,6 +5,7 @@
 //! 3. **macOS & Windows Backend**: publishes metadata, playback state, and media key events via `souvlaki::MediaControls`.
 
 use crate::backend::{BackendCmd, DesktopSnapshot, UiWindowCmd};
+#[cfg(target_os = "linux")]
 use sonata_core::player::RepeatMode;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
@@ -475,6 +476,7 @@ mod souvlaki_impl {
                         let _ = win_tx.send(UiWindowCmd::QuitApp);
                     }
                     MediaControlEvent::OpenUri(_) => {}
+                    _ => {}
                 }) {
                     tracing::warn!(?err, "failed to attach OS media controls callback");
                     while rx.blocking_recv().is_some() {}

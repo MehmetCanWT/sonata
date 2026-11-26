@@ -5,7 +5,9 @@
 //! 3. **Desktop Bridge (macOS / Windows)**: forwards `TrayHandle` updates to Tauri's `TrayIconBuilder` sink.
 
 use crate::backend::{BackendCmd, UiWindowCmd};
-use sonata_runtime::i18n::{strings, AppLanguage};
+#[cfg(target_os = "linux")]
+use sonata_runtime::i18n::strings;
+use sonata_runtime::i18n::AppLanguage;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc::UnboundedSender;
 

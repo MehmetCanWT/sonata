@@ -56,6 +56,7 @@ fn is_valid_hex_addr(addr: &str) -> bool {
     !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn is_terminal_class(class: &str) -> bool {
     let lower = class.trim().to_ascii_lowercase();
     if lower.is_empty() {
@@ -139,6 +140,7 @@ pub fn find_terminal_window_address() -> Option<String> {
     None
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn match_app_client_address(
     arr: &[serde_json::Value],
     self_pid: u32,

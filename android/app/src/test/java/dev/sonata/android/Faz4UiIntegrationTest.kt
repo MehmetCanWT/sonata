@@ -365,7 +365,7 @@ class Faz4UiIntegrationTest {
 
     @Test
     fun `connect interactive approval polls into trusted devices without auto-connecting on passive discovery`() = runTest {
-        val secret = "trusted-approval-token-64hex-0123456789abcdef0123456789abcdef0123"
+        val mockPairToken = "test-connect-token-1"
         var statusPolls = 0
         val server = ServerSocket(0)
         val port = server.localPort
@@ -420,7 +420,7 @@ class Faz4UiIntegrationTest {
                                     accepted = true,
                                     deviceId = "desktop-linux",
                                     deviceName = "Sonata Linux",
-                                    sharedSecret = secret,
+                                    sharedSecret = mockPairToken,
                                 ).toJson()
                             }
                         }
@@ -470,7 +470,7 @@ class Faz4UiIntegrationTest {
             assertEquals(3, statusPolls)
             assertTrue("desktop-linux" in controller.state.value.pairedDeviceIds)
             assertEquals("Sonata Linux", controller.state.value.trustedDeviceNames["desktop-linux"])
-            assertEquals(secret, secretStore.getSecret("desktop-linux"))
+            assertEquals(mockPairToken, secretStore.getSecret("desktop-linux"))
             assertNull(controller.state.value.pendingPair)
             assertNull(controller.state.value.pairingError)
             // Must NOT auto-connect on approval or passive discovery.
@@ -486,8 +486,15 @@ class Faz4UiIntegrationTest {
                 deviceNameProvider = { "Test Phone" },
             )
             freshClient.ingestBeaconPacket(beacon.toJson(), "127.0.0.1")
-            // Give init/observer coroutines a brief moment to settle
-            kotlinx.coroutines.delay(50L)
+            // Poll in wall-clock time because freshController dispatches on real Dispatchers.IO
+            val deadlineMs = System.currentTimeMillis() + 2_000L
+            while (System.currentTimeMillis() < deadlineMs) {
+                val snap = freshController.state.value
+                if ("desktop-linux" in snap.pairedDeviceIds && snap.discoveredDevices.size == 1) {
+                    break
+                }
+                Thread.sleep(10L)
+            }
             assertTrue("desktop-linux" in freshController.state.value.pairedDeviceIds)
             assertEquals(1, freshController.state.value.discoveredDevices.size)
             assertNull(freshController.state.value.activePeer)
