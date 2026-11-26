@@ -23,7 +23,7 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: "npm"
@@ -98,7 +98,10 @@ jobs:
       - name: Install Android NDK 27.2.12479018
         run: |
           yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018" >/dev/null
-          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          {
+            echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/27.2.12479018"
+            echo "ANDROID_NDK_ROOT=${ANDROID_HOME}/ndk/27.2.12479018"
+          } >> "$GITHUB_ENV"
       - name: Build arm64-v8a libsonata_android.so
         run: |
           cargo ndk -t arm64-v8a -P 31 -o android/app/src/main/jniLibs build -p sonata-android --release --locked
@@ -128,7 +131,7 @@ jobs:
       - name: Build arm64-v8a native library
         run: |
           yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018" >/dev/null
-          ANDROID_NDK_HOME="${ANDROID_HOME}/ndk/27.2.12479018" cargo ndk -t arm64-v8a -P 31 -o android/app/src/main/jniLibs build -p sonata-android --release --locked
+          ANDROID_NDK_HOME="${ANDROID_HOME}/ndk/27.2.12479018" ANDROID_NDK_ROOT="${ANDROID_HOME}/ndk/27.2.12479018" cargo ndk -t arm64-v8a -P 31 -o android/app/src/main/jniLibs build -p sonata-android --release --locked
       - name: Run instrumented Android tests on arm64 emulator
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
         with:
@@ -150,7 +153,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: cross-${{ matrix.os }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: "npm"

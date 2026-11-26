@@ -116,7 +116,7 @@ jobs:
             rpm \
             zsync
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: "npm"
@@ -330,7 +330,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: "desktop-${{ matrix.target }}"
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: "npm"
@@ -402,17 +402,7 @@ jobs:
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6
 
-      - name: Cache Android NDK & SDK 35
-        id: cache-android-sdk
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            /usr/local/lib/android/sdk/ndk/${{ env.NDK_VERSION }}
-            /usr/local/lib/android/sdk/platforms/android-35
-            /usr/local/lib/android/sdk/build-tools/35.0.0
-          key: android-sdk-35-ndk-${{ env.NDK_VERSION }}
-
-      - name: Install Android NDK & SDK 35 on cache miss
+      - name: Ensure Android NDK & SDK 35
         run: |
           set -euo pipefail
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
@@ -431,6 +421,7 @@ jobs:
             echo "ANDROID_HOME=${SDK_ROOT}"
             echo "ANDROID_SDK_ROOT=${SDK_ROOT}"
             echo "ANDROID_NDK_HOME=${SDK_ROOT}/ndk/${NDK_VERSION}"
+            echo "ANDROID_NDK_ROOT=${SDK_ROOT}/ndk/${NDK_VERSION}"
           } >> "${GITHUB_ENV}"
 
       - name: Install Rust toolchain (aarch64-linux-android)

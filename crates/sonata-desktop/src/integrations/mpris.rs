@@ -16,11 +16,11 @@ pub enum MprisUpdate {
     Seeked(f64),
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 static WINDOWS_MEDIA_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
 /// Registers the main window HWND on Windows so SMTC can bind cleanly when media controls start.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 pub fn set_media_window_hwnd(hwnd: isize) {
     WINDOWS_MEDIA_HWND.store(hwnd, std::sync::atomic::Ordering::Relaxed);
 }
@@ -389,12 +389,16 @@ mod linux_impl {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod souvlaki_impl {
-    use super::{BackendCmd, MprisUpdate, UiWindowCmd, WINDOWS_MEDIA_HWND};
+    #[cfg(target_os = "windows")]
+    use super::WINDOWS_MEDIA_HWND;
+    use super::{BackendCmd, MprisUpdate, UiWindowCmd};
     use souvlaki::{
         MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition,
         PlatformConfig, SeekDirection,
     };
+    #[cfg(target_os = "windows")]
     use std::ffi::c_void;
+    #[cfg(target_os = "windows")]
     use std::sync::atomic::Ordering;
     use std::time::Duration;
     use tokio::sync::mpsc::{self, UnboundedSender};
@@ -408,12 +412,17 @@ mod souvlaki_impl {
         if let Err(err) = std::thread::Builder::new()
             .name("sonata-media-controls".into())
             .spawn(move || {
-                let raw_hwnd = WINDOWS_MEDIA_HWND.load(Ordering::Relaxed);
-                let hwnd = if raw_hwnd != 0 {
-                    Some(raw_hwnd as *mut c_void)
-                } else {
-                    None
+                #[cfg(target_os = "windows")]
+                let hwnd = {
+                    let raw_hwnd = WINDOWS_MEDIA_HWND.load(Ordering::Relaxed);
+                    if raw_hwnd != 0 {
+                        Some(raw_hwnd as *mut c_void)
+                    } else {
+                        None
+                    }
                 };
+                #[cfg(not(target_os = "windows"))]
+                let hwnd = None;
                 let config = PlatformConfig {
                     display_name: "Sonata",
                     dbus_name: "dev.sonata.Desktop",
@@ -484,44 +493,62 @@ mod souvlaki_impl {
                 }
 
                 let mut last_track_key = String::new();
+                let mut last_has_track = false;
+                let mut last_paused = true;
                 while let Some(ev) = rx.blocking_recv() {
-                    if let MprisUpdate::Sync(snap) = ev {
-                        let track = snap.current_track();
-                        let track_key = track
-                            .map(|t| format!("{}|{}|{}", t.id, t.title, t.artist))
-                            .unwrap_or_default();
-                        if track_key != last_track_key {
-                            last_track_key = track_key;
-                            if let Some(t) = track {
-                                let cover_url = snap
-                                    .art_path
-                                    .as_deref()
-                                    .and_then(|p| {
-                                        reqwest::Url::from_file_path(p).ok().map(String::from)
-                                    })
-                                    .or_else(|| t.thumbnail_url.clone());
-                                let dur = (snap.duration_secs > 0.5)
-                                    .then(|| Duration::from_secs_f64(snap.duration_secs));
-                                let _ = controls.set_metadata(MediaMetadata {
-                                    title: Some(&t.title),
-                                    album: (!t.album.is_empty()).then_some(t.album.as_str()),
-                                    artist: (!t.artist.is_empty()).then_some(t.artist.as_str()),
-                                    cover_url: cover_url.as_deref(),
-                                    duration: dur,
-                                });
-                            } else {
-                                let _ = controls.set_metadata(MediaMetadata::default());
+                    match ev {
+                        MprisUpdate::Seeked(secs) => {
+                            if last_has_track {
+                                let progress =
+                                    Some(MediaPosition(Duration::from_secs_f64(secs.max(0.0))));
+                                let playback = if last_paused {
+                                    MediaPlayback::Paused { progress }
+                                } else {
+                                    MediaPlayback::Playing { progress }
+                                };
+                                let _ = controls.set_playback(playback);
                             }
                         }
-                        let progress = Some(MediaPosition(Duration::from_secs_f64(
-                            snap.position_secs.max(0.0),
-                        )));
-                        let playback = match track {
-                            None => MediaPlayback::Stopped,
-                            Some(_) if snap.paused => MediaPlayback::Paused { progress },
-                            Some(_) => MediaPlayback::Playing { progress },
-                        };
-                        let _ = controls.set_playback(playback);
+                        MprisUpdate::Sync(snap) => {
+                            let track = snap.current_track();
+                            last_has_track = track.is_some();
+                            last_paused = snap.paused;
+                            let track_key = track
+                                .map(|t| format!("{}|{}|{}", t.id, t.title, t.artist))
+                                .unwrap_or_default();
+                            if track_key != last_track_key {
+                                last_track_key = track_key;
+                                if let Some(t) = track {
+                                    let cover_url = snap
+                                        .art_path
+                                        .as_deref()
+                                        .and_then(|p| {
+                                            reqwest::Url::from_file_path(p).ok().map(String::from)
+                                        })
+                                        .or_else(|| t.thumbnail_url.clone());
+                                    let dur = (snap.duration_secs > 0.5)
+                                        .then(|| Duration::from_secs_f64(snap.duration_secs));
+                                    let _ = controls.set_metadata(MediaMetadata {
+                                        title: Some(&t.title),
+                                        album: (!t.album.is_empty()).then_some(t.album.as_str()),
+                                        artist: (!t.artist.is_empty()).then_some(t.artist.as_str()),
+                                        cover_url: cover_url.as_deref(),
+                                        duration: dur,
+                                    });
+                                } else {
+                                    let _ = controls.set_metadata(MediaMetadata::default());
+                                }
+                            }
+                            let progress = Some(MediaPosition(Duration::from_secs_f64(
+                                snap.position_secs.max(0.0),
+                            )));
+                            let playback = match track {
+                                None => MediaPlayback::Stopped,
+                                Some(_) if snap.paused => MediaPlayback::Paused { progress },
+                                Some(_) => MediaPlayback::Playing { progress },
+                            };
+                            let _ = controls.set_playback(playback);
+                        }
                     }
                 }
             })
