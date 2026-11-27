@@ -58,12 +58,13 @@ pub enum NavTarget {
     Settings,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiWindowCmd {
     ShowWindow,
     HideWindow,
     ToggleWindow,
     QuitApp,
+    AllowAssetDir(PathBuf),
 }
 
 #[derive(Debug)]

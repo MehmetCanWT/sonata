@@ -1,13 +1,16 @@
-//! Local CLI JavaScript runtime bridge (`node`, `bun`, `deno`) for YouTube cipher solving.
+//! Local CLI JavaScript runtime bridge (`deno` or sandboxed `node --permission`) for YouTube cipher solving.
 //!
-//! 1. **Runtime Discovery**: Probes `node`, `bun`, and `deno` once via cross-distro binary lookup.
+//! 1. **Sandboxed Runtime Discovery**: Prefers `deno` (`--no-prompt --no-remote --allow-read=...`)
+//!    and falls back only to Node.js permission-model sandboxing (`--permission` / `--experimental-permission`),
+//!    refusing unsandboxed `node` or `bun` execution.
 //! 2. **Atomic Script Cache**: Persists hooked `base.js` scripts with `0o600` file permissions
 //!    inside `CorePaths::cipher_script_cache_path(...)` before evaluation.
-//! 3. **Bounded Subprocess Execution**: Evaluates `globalThis._yt_solve(sig, n)` with a hard
-//!    wall-clock deadline, killing and reaping hung subprocesses on timeout.
+//! 3. **Bounded Subprocess Execution**: Evaluates `globalThis._yt_solve(sig, n)` with cleared secrets
+//!    in environment variables and a hard wall-clock deadline, killing and reaping hung subprocesses on timeout.
 
 use crate::config::{configure_background_std_command, resolve_distro_binary};
 use sonata_core::auth::ensure_private_dir;
+use sonata_core::connect::generate_request_id;
 use sonata_core::paths::CorePaths;
 use sonata_core::providers::hifi::{JsCipherBridge, SolvedCipherPair};
 use std::fs::{self, OpenOptions};
@@ -25,6 +28,23 @@ const CIPHER_TIMEOUT: Duration = Duration::from_millis(3500);
 const CIPHER_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const DENO_CIPHER_RUNNER_SCRIPT: &str =
     "(0,eval)(Deno.readTextFileSync(Deno.args[0]));console.log(globalThis._yt_solve(Deno.args[1]||'',Deno.args[2]||''));\n";
+const NODE_CIPHER_RUNNER_SCRIPT: &str =
+    "const fs=require('fs');(0,eval)(fs.readFileSync(process.argv[1],'utf8'));console.log(globalThis._yt_solve(process.argv[2]||'',process.argv[3]||''));";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CipherRuntime {
+    Deno,
+    NodePermission { flag: &'static str },
+}
+
+impl CipherRuntime {
+    fn binary_name(self) -> &'static str {
+        match self {
+            Self::Deno => "deno",
+            Self::NodePermission { .. } => "node",
+        }
+    }
+}
 
 struct TempRunnerGuard(PathBuf);
 
@@ -34,13 +54,35 @@ impl Drop for TempRunnerGuard {
     }
 }
 
+fn apply_clean_subprocess_env(cmd: &mut Command) {
+    let path_var = std::env::var_os("PATH");
+    #[cfg(windows)]
+    let system_root = std::env::var_os("SystemRoot").or_else(|| std::env::var_os("SYSTEMROOT"));
+    #[cfg(windows)]
+    let comspec = std::env::var_os("COMSPEC");
+
+    cmd.env_clear();
+    if let Some(path) = path_var {
+        cmd.env("PATH", path);
+    }
+    #[cfg(windows)]
+    {
+        if let Some(root) = system_root {
+            cmd.env("SystemRoot", root);
+        }
+        if let Some(shell) = comspec {
+            cmd.env("COMSPEC", shell);
+        }
+    }
+}
+
 fn create_deno_runner_script(dir: &Path) -> std::io::Result<TempRunnerGuard> {
     ensure_private_dir(dir)?;
     let seq = CLI_CIPHER_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let rand_suffix = generate_request_id();
     let path = dir.join(format!(
-        "yt_cipher_runner_{}_{}.js",
+        "yt_cipher_runner_{}_{seq}_{rand_suffix}.js",
         std::process::id(),
-        seq
     ));
     let mut opts = OpenOptions::new();
     opts.write(true).create_new(true);
@@ -71,7 +113,38 @@ fn build_deno_run_args(runner_path: &Path, script_path: &Path, sig: &str, n: &st
     ]
 }
 
-/// Local CLI implementation of [`JsCipherBridge`] backed by `node`, `bun`, or `deno`.
+fn build_node_sandbox_args(
+    permission_flag: &str,
+    script_path: &Path,
+    sig: &str,
+    n: &str,
+) -> Vec<String> {
+    let script = script_path.to_string_lossy().into_owned();
+    vec![
+        permission_flag.to_string(),
+        format!("--allow-fs-read={script}"),
+        "-e".to_string(),
+        NODE_CIPHER_RUNNER_SCRIPT.to_string(),
+        "--".to_string(),
+        script,
+        sig.to_string(),
+        n.to_string(),
+    ]
+}
+
+fn binary_succeeds(bin: &str, args: &[&str]) -> bool {
+    let mut cmd = Command::new(bin);
+    configure_background_std_command(&mut cmd);
+    apply_clean_subprocess_env(&mut cmd);
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// Local CLI implementation of [`JsCipherBridge`] backed by sandboxed `deno` or `node --permission`.
 #[derive(Debug, Clone)]
 pub struct CliJsCipherBridge {
     paths: CorePaths,
@@ -92,19 +165,29 @@ impl CliJsCipherBridge {
     }
 }
 
-pub(crate) fn detect_cli_cipher_runtime() -> Option<&'static str> {
-    static CLI_RUNTIME: OnceLock<Option<&'static str>> = OnceLock::new();
+pub(crate) fn detect_cli_cipher_runtime() -> Option<CipherRuntime> {
+    static CLI_RUNTIME: OnceLock<Option<CipherRuntime>> = OnceLock::new();
     *CLI_RUNTIME.get_or_init(|| {
-        ["node", "bun", "deno"].into_iter().find(|&candidate| {
-            let bin = resolve_distro_binary(candidate);
-            let mut cmd = Command::new(&bin);
-            configure_background_std_command(&mut cmd);
-            cmd.arg("--version")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|s| s.success())
-        })
+        let deno_bin = resolve_distro_binary("deno");
+        if binary_succeeds(&deno_bin, &["--version"]) {
+            return Some(CipherRuntime::Deno);
+        }
+
+        let node_bin = resolve_distro_binary("node");
+        for flag in ["--permission", "--experimental-permission"] {
+            if binary_succeeds(&node_bin, &[flag, "-e", ""]) {
+                return Some(CipherRuntime::NodePermission { flag });
+            }
+        }
+
+        if binary_succeeds(&node_bin, &["--version"])
+            || binary_succeeds(&resolve_distro_binary("bun"), &["--version"])
+        {
+            tracing::warn!(
+                "Refusing unsandboxed `node`/`bun` runtime for YouTube JS cipher evaluation; install `deno` or Node.js with `--permission`"
+            );
+        }
+        None
     })
 }
 
@@ -117,10 +200,14 @@ fn write_private_cache_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         .and_then(|n| n.to_str())
         .unwrap_or("cipher_cache");
     let seq = CLI_CIPHER_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let tmp = parent.join(format!("{file_name}.{}.{}.tmp", std::process::id(), seq));
+    let rand_suffix = generate_request_id();
+    let tmp = parent.join(format!(
+        "{file_name}.{}.{seq}.{rand_suffix}.tmp",
+        std::process::id(),
+    ));
 
     let mut opts = OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
+    opts.write(true).create_new(true);
     #[cfg(unix)]
     opts.mode(0o600);
     let write_res = (|| -> std::io::Result<()> {
@@ -156,30 +243,28 @@ impl JsCipherBridge for CliJsCipherBridge {
         if !js_path.is_file() {
             return None;
         }
+        let canonical_js_path = fs::canonicalize(&js_path).unwrap_or(js_path);
 
-        let runtime_bin = resolve_distro_binary(runtime);
+        let runtime_bin = resolve_distro_binary(runtime.binary_name());
         let mut cmd = Command::new(&runtime_bin);
         configure_background_std_command(&mut cmd);
+        apply_clean_subprocess_env(&mut cmd);
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        let _runner_guard = if runtime == "deno" {
-            let runner_dir = js_path.parent().unwrap_or(&self.paths.cache_dir);
-            let runner = create_deno_runner_script(runner_dir).ok()?;
-            let args = build_deno_run_args(&runner.0, &js_path, sig, n);
-            cmd.args(&args);
-            Some(runner)
-        } else {
-            let js_path_str = js_path.to_string_lossy().to_string();
-            cmd.args([
-                "-e",
-                "const fs=require('fs');(0,eval)(fs.readFileSync(process.argv[1],'utf8'));console.log(globalThis._yt_solve(process.argv[2]||'',process.argv[3]||''));",
-                "--",
-                &js_path_str,
-                sig,
-                n,
-            ]);
-            None
+        let _runner_guard = match runtime {
+            CipherRuntime::Deno => {
+                let runner_dir = canonical_js_path.parent().unwrap_or(&self.paths.cache_dir);
+                let runner = create_deno_runner_script(runner_dir).ok()?;
+                let args = build_deno_run_args(&runner.0, &canonical_js_path, sig, n);
+                cmd.args(&args);
+                Some(runner)
+            }
+            CipherRuntime::NodePermission { flag } => {
+                let args = build_node_sandbox_args(flag, &canonical_js_path, sig, n);
+                cmd.args(&args);
+                None
+            }
         };
 
         let mut child = cmd.spawn().ok()?;
@@ -255,5 +340,45 @@ mod tests {
 
         drop(runner);
         assert!(!runner_path.exists());
+    }
+
+    #[test]
+    fn node_invocation_enforces_permission_sandbox_flags() {
+        let script = PathBuf::from("/tmp/sonata-test/yt_cipher_xyz.js");
+        let args = build_node_sandbox_args("--permission", &script, "sig_1", "n_1");
+        assert_eq!(args[0], "--permission");
+        assert_eq!(args[1], "--allow-fs-read=/tmp/sonata-test/yt_cipher_xyz.js");
+        assert!(!args.iter().any(|a| a == "--allow-fs-write"
+            || a.starts_with("--allow-fs-write=")
+            || a == "--allow-child-process"
+            || a == "--allow-worker"));
+    }
+
+    #[test]
+    fn cipher_bridge_solves_and_blocks_arbitrary_file_read() {
+        if detect_cli_cipher_runtime().is_none() {
+            return;
+        }
+        let dir = TempTestDir::new("cipher_sandbox_exec");
+        let paths = CorePaths::new(dir.path().join("cfg"), dir.path().join("cache"));
+        let bridge = CliJsCipherBridge::new(paths);
+
+        let solver_js = "globalThis._yt_solve=function(sig,n){return JSON.stringify({sig:'ok:'+sig,n:'ok:'+n});};";
+        assert!(bridge.ensure_loaded("goodhash1", solver_js));
+        let solved = bridge.solve("goodhash1", "s1", "n1").expect("solve valid");
+        assert_eq!(solved.sig.as_deref(), Some("ok:s1"));
+        assert_eq!(solved.n.as_deref(), Some("ok:n1"));
+
+        let secret_path = dir.path().join("secret.txt");
+        fs::write(&secret_path, b"do-not-read").expect("write secret");
+        let evil_js = format!(
+            "const f = {}; globalThis._yt_solve = function() {{ const data = (typeof Deno !== 'undefined') ? Deno.readTextFileSync(f) : require('fs').readFileSync(f, 'utf8'); return JSON.stringify({{sig:data,n:null}}); }};",
+            serde_json::to_string(&secret_path.to_string_lossy()).unwrap()
+        );
+        assert!(bridge.ensure_loaded("evilhash1", &evil_js));
+        assert!(
+            bridge.solve("evilhash1", "s", "n").is_none(),
+            "sandboxed JS runtime must block reading files outside the cipher script"
+        );
     }
 }

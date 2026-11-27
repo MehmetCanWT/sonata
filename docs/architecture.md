@@ -11,7 +11,7 @@ Sonata is a 5-crate Cargo workspace paired with a native Android Jetpack Compose
 | [`sonata-tui`](../crates/sonata-tui) | Binary `sonata` | Ratatui/crossterm terminal client (`src/app/{mod,state,playback,library}.rs`, `src/ui/fx.rs` `tachyonfx` transitions, `src/theme/`) with Kitty/Sixel/Halfblock artwork | stable |
 | [`sonata-desktop`](../crates/sonata-desktop) + [`desktop-ui/`](../desktop-ui) | Binary `sonata-desktop` | Cross-platform Tauri v2 desktop client (`src/backend/`, `src/ipc.rs`, `src/integrations/{mpris,tray}.rs`, `desktop-ui/` React 19 + Tailwind CSS v4 + shadcn/ui matte obsidian UI) with system tray, `sonata:motionArtUrl` MPRIS2, and `souvlaki` media controls | stable |
 | [`sonata-android`](../crates/sonata-android) | UniFFI library | Cancellable async Rust-to-Kotlin FFI bridge (`#[uniffi::export(async_runtime = "tokio")]`, zero `Runtime::block_on`) | stable |
-| [`android/`](../android) | Android app | Jetpack Compose + Media3 ExoPlayer client (`SonataEngineGateway`, `PlaybackOrchestrator`, `Basic` [default], `Violet` & `Moonflower` themes, neutral Liquid Glass chrome, `en`/`tr`/`ru` `SonataStrings`, `EditPlaylistDialog`, `ApkUpdater`, Share Sheet, Widget) | stable |
+| [`android/`](../android) | Android app | Jetpack Compose + Media3 ExoPlayer client (`SonataEngineGateway`, `PlaybackOrchestrator`, monochrome `Basic` theme [System/Light/true-black Dark], neutral Liquid Glass chrome, `en`/`tr`/`ru` `SonataStrings`, `EditPlaylistDialog`, `ApkUpdater`, Share Sheet, Widget) | stable |
 
 All five Rust crates are workspace members in [Cargo.toml](../Cargo.toml). `sonata-tui` and `sonata-desktop` are `default-members`.
 

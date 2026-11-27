@@ -4,7 +4,7 @@
 //! 2. **Feeds & Collections**: `load_home_feed`, `open_artist`, `open_collection`, and `execute_search` run stale-guarded background queries.
 //! 3. **Library Mutations & UI Sync**: handles likes, playlist edits, thumbnail prefetching, and Hyprland opacity updates.
 
-use super::types::{InternalEvent, NavTarget};
+use super::types::{InternalEvent, NavTarget, UiWindowCmd};
 use super::BackendEngine;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use sonata_core::auth::ExtractedCookies;
@@ -2136,6 +2136,9 @@ impl BackendEngine {
             Ok(store) => {
                 self.resolver.set_downloads_store(Some(store.clone()));
                 self.download_store = Some(store);
+                let _ = self
+                    .win_tx
+                    .send(UiWindowCmd::AllowAssetDir(target_dir.clone()));
                 self.status_line = format!("{}: {}", s.downloads_dir, target_dir.display());
                 self.refresh_downloads();
             }

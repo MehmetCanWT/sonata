@@ -5,6 +5,7 @@ import android.content.Intent
 import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
 import android.os.Handler
+import android.os.Process
 import android.provider.OpenableColumns
 import android.util.Log
 import android.view.TextureView
@@ -1326,6 +1327,30 @@ class PlaybackService : MediaLibraryService() {
     @OptIn(UnstableApi::class)
     private fun createLibrarySessionCallback(): MediaLibrarySession.Callback =
         object : MediaLibrarySession.Callback {
+            override fun onConnect(
+                session: MediaSession,
+                controller: MediaSession.ControllerInfo,
+            ): MediaSession.ConnectionResult {
+                val trusted = isTrustedMediaController(
+                    controllerPackage = controller.packageName,
+                    controllerUid = controller.uid,
+                    ownPackage = packageName,
+                    ownUid = Process.myUid(),
+                    isNotificationController = session.isMediaNotificationController(controller),
+                    isAutomotiveController = session.isAutomotiveController(controller),
+                    isAutoCompanionController = session.isAutoCompanionController(controller),
+                    isSystemTrustedForMediaControl = controller.isTrusted,
+                )
+                if (!trusted) {
+                    Log.w(
+                        TAG,
+                        "Rejected untrusted media controller: ${controller.packageName} (uid=${controller.uid})",
+                    )
+                    return MediaSession.ConnectionResult.reject()
+                }
+                return super.onConnect(session, controller)
+            }
+
             override fun onGetLibraryRoot(
                 session: MediaLibrarySession,
                 browser: MediaSession.ControllerInfo,
@@ -2076,4 +2101,24 @@ class PlaybackService : MediaLibraryService() {
             }
         }
     }
+}
+
+internal fun isTrustedMediaController(
+    controllerPackage: String,
+    controllerUid: Int,
+    ownPackage: String,
+    ownUid: Int,
+    isNotificationController: Boolean,
+    isAutomotiveController: Boolean,
+    isAutoCompanionController: Boolean,
+    isSystemTrustedForMediaControl: Boolean,
+): Boolean {
+    val cleanPkg = controllerPackage.trim()
+    if (cleanPkg.isEmpty()) return false
+    if (cleanPkg == ownPackage && controllerUid == ownUid) return true
+    if (controllerUid == Process.SYSTEM_UID) return true
+    return isNotificationController ||
+        isAutomotiveController ||
+        isAutoCompanionController ||
+        isSystemTrustedForMediaControl
 }

@@ -283,8 +283,20 @@ class Faz4UiIntegrationTest {
                             ).toJson()
                         }
                         reqLine.startsWith("POST /connect/command") -> {
+                            val ts = headers[SonataConnectClient.HEADER_TIMESTAMP.lowercase(Locale.ROOT)].orEmpty()
+                            val nonce = headers[SonataConnectClient.HEADER_NONCE.lowercase(Locale.ROOT)].orEmpty()
                             val sig = headers[SonataConnectClient.HEADER_SIGNATURE.lowercase(Locale.ROOT)].orEmpty()
-                            assertTrue(SonataConnectCrypto.verifySignature(secret, body, sig))
+                            assertTrue(
+                                SonataConnectCrypto.verifyRequestSignature(
+                                    secret,
+                                    "POST",
+                                    "/connect/command",
+                                    ts,
+                                    nonce,
+                                    body,
+                                    sig,
+                                ),
+                            )
                             val cmd = ConnectCommand.fromJson(body)
                             assertNotNull(cmd)
                             receivedCommands.add(cmd!!)
@@ -645,8 +657,20 @@ class Faz4UiIntegrationTest {
                             activeTrack = ConnectTrackSnapshot("test-track-1", "Test Track", "Test Artist", "Test Album", 210L),
                         ).toJson()
                         reqLine.startsWith("POST /connect/command") -> {
+                            val ts = headers[SonataConnectClient.HEADER_TIMESTAMP.lowercase(Locale.ROOT)].orEmpty()
+                            val nonce = headers[SonataConnectClient.HEADER_NONCE.lowercase(Locale.ROOT)].orEmpty()
                             val sig = headers[SonataConnectClient.HEADER_SIGNATURE.lowercase(Locale.ROOT)].orEmpty()
-                            assertTrue(SonataConnectCrypto.verifySignature(secret, body, sig))
+                            assertTrue(
+                                SonataConnectCrypto.verifyRequestSignature(
+                                    secret,
+                                    "POST",
+                                    "/connect/command",
+                                    ts,
+                                    nonce,
+                                    body,
+                                    sig,
+                                ),
+                            )
                             ConnectCommand.fromJson(body)?.let(receivedCommands::add)
                             """{"ok":true}"""
                         }

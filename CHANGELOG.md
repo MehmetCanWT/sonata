@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Project Website & Updated v1.0.10 Docs (`website`, `.github/workflows/pages.yml`, `README.md`, `PRIVACY.md`, `docs`)**: Added a fast static GitHub Pages showcase website (`Vite + React 19 + TypeScript + Tailwind CSS v4 + shadcn/ui`, `en`/`tr`/`ru` localization, Dark & Light modes) and updated documentation to reflect the unified monochrome `Basic` Android theme and shipped `v1.0.10` features.
 - **Sonata Connect Interactive Approval, Trusted Devices & Now Playing Switcher (`sonata-core`, `sonata-runtime`, `sonata-desktop`, `sonata-tui`, `android`)**:
   - Bound Sonata Connect to fixed default TCP port `45390` (with ephemeral fallback if busy) alongside UDP discovery port `45389`, aligned Android and Rust JSON wire schemas (`PairRequest`, `PairAck` token, `ConnectStateSnapshot`, `snake_case` commands), and preserved the active Connect PIN when saving settings or updating the device name.
   - Added interactive Approve/Reject pairing request endpoints (`POST /connect/pair/request`, `GET /connect/pair/status`, `GET /connect/trust`) with pop-up approval modals on Desktop and TUI, plus persistent trusted device storage without auto-connecting until explicitly chosen by the user.
@@ -36,6 +37,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Desktop & Android Lyrics, Artwork & Build Tooling (`desktop-ui`, `sonata-desktop`, `android`)**:
   - Fixed seamless looping of animated album covers (`yuv420p`, `start_time=0`), WebKitGTK NVDEC/VA-API green-frame glitches, desktop lyrics auto-follow stability during window moves, Library Artists detail layout/banner/downloads, and Android duet/parenthetical synced lyrics alignment.
   - Upgraded Android build tooling to AGP `9.5.3` and Gradle `9.6.0` with zero SDK XML or Kotlin deprecation warnings.
+
+### Security
+
+- **Sandboxed YouTube JS Cipher Solver (`sonata-runtime`, `sonata-core`)**: Switched `CliJsCipherBridge` runtime priority to prefer `deno` (`--no-prompt --no-remote --allow-read=...`) and require Node.js `--permission` / `--experimental-permission` (`--allow-fs-read=...`), refusing unsandboxed `node`/`bun` execution, clearing inherited environment secrets, canonicalizing script paths, and writing cipher cache files with `.create_new(true)` (`0o600`).
+- **Tauri Asset Protocol Scoping & Desktop Link Validation (`sonata-desktop`, `desktop-ui`, `sonata-core`)**: Restricted static `assetProtocol.scope` in `tauri.conf.json` to `$CACHE/sonata/art/**` and `$APPCACHE/art/**` (removing broad `$CACHE/**`, `$DATA/**`, and `$APPDATA/**`), dynamically scoped only configured art cache, downloads, local music, and SMB mount directories via `AppHandle::asset_protocol_scope()`, and enforced `https://github.com/MehmetCanWT/sonata` validation on updater `release_url` / asset URLs in both Rust and `SettingsView.tsx`.
+- **Sonata Connect Replay, Auth & CSRF Hardening (`sonata-core`, `sonata-runtime`, `android`)**: Replaced `/dev/urandom` fallback entropy in `sonata-core` with fail-closed OS CSPRNG (`getrandom`), bound Connect signatures to canonical `METHOD\nPATH\nTIMESTAMP\nNONCE\nBODY` with ±60s clock-skew checks and nonce replay tracking across `/connect/state`, `/connect/trust`, and `/connect/command`, removed empty-body trust fallback, enforced `X-Sonata-Device-Id` ownership on `/connect/pair/status`, rejected browser cross-origin requests (`403`) and non-JSON `POST`s (`415`), and capped pending pairing requests (`8`).
+- **WebDAV, SMB, FFmpeg & Runtime File Permissions (`sonata-core`, `sonata-runtime`, `sonata-tui`)**: Switched authenticated WebDAV requests (`send_propfind`, `fetch_url_bytes_bounded`) to `no_redirect_http_client()`, enforced canonical SMB mount containment during `walk_smb_audio` traversal, restricted local MP4 `ffmpeg` remux/decode calls with `-protocol_whitelist file,pipe -enable_drefs 0`, and enforced `0o700`/`0o600` permissions on `AppConfig` directories/saves and `sonata-tui.log`.
+- **Android Keystore Secret Encryption, Network Config & MediaSession IPC (`android`)**: Encrypted persisted Connect HMAC tokens and Discord tokens with `AndroidKeyStore` AES-256-GCM (`AndroidKeyStoreSecretCipher`) with transparent legacy plaintext migration, added missing public API/lyrics/artwork domains to HTTPS-only rules in `network_security_config.xml`, and enforced `onConnect` controller verification on exported `PlaybackService`.
 
 ## [1.0.9] - 2026-11-25
 

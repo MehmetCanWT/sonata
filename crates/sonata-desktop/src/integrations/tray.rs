@@ -205,7 +205,7 @@ mod linux_tray {
                 MenuItem::Standard(StandardItem {
                     label: toggle_label.to_string(),
                     activate: Box::new(move |tray: &mut Self| {
-                        let _ = tray.win_tx.send(toggle_cmd);
+                        let _ = tray.win_tx.send(toggle_cmd.clone());
                     }),
                     ..Default::default()
                 }),

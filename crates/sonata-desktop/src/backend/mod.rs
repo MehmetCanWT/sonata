@@ -400,6 +400,7 @@ struct BackendEngine {
     pub(super) snap_tx: watch::Sender<Arc<DesktopSnapshot>>,
     pub(super) progress_tx: watch::Sender<(f64, f64)>,
     pub(super) mpris_tx: mpsc::UnboundedSender<MprisUpdate>,
+    pub(super) win_tx: mpsc::UnboundedSender<UiWindowCmd>,
     pub(super) tray_handle: Option<TrayHandle>,
     pub(super) last_tray_state: TrayState,
     pub(super) window_visible: bool,
@@ -648,7 +649,7 @@ async fn run_backend_loop(
     );
 
     let (int_tx, mut int_rx) = mpsc::unbounded_channel();
-    let tray_handle = spawn_tray(cmd_tx, win_tx).await;
+    let tray_handle = spawn_tray(cmd_tx, win_tx.clone()).await;
     let initial_liked_ids: HashSet<String> = cache_db
         .as_ref()
         .and_then(|db| db.get_playlist("YTM:VLLM"))
@@ -692,6 +693,7 @@ async fn run_backend_loop(
         snap_tx,
         progress_tx,
         mpris_tx,
+        win_tx,
         tray_handle,
         last_tray_state: TrayState::default(),
         window_visible: true,
@@ -1536,9 +1538,10 @@ impl BackendEngine {
                 if !trimmed.is_empty() {
                     let path = PathBuf::from(trimmed);
                     if !self.config.local_music_dirs.contains(&path) {
-                        self.config.local_music_dirs.push(path);
+                        self.config.local_music_dirs.push(path.clone());
                         self.save_config_async();
                     }
+                    let _ = self.win_tx.send(UiWindowCmd::AllowAssetDir(path));
                     self.scan_local_music();
                 }
             }
@@ -2954,6 +2957,9 @@ impl BackendEngine {
             }
             InternalEvent::ServerSaved { profile, message } => {
                 let active_id = profile.id.clone();
+                if let Some(mount) = profile.local_mount_path.as_ref() {
+                    let _ = self.win_tx.send(UiWindowCmd::AllowAssetDir(mount.clone()));
+                }
                 upsert_server_profile(&mut self.server_profiles, profile);
                 let save_paths = self.paths.clone();
                 let save_list = self.server_profiles.clone();

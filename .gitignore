@@ -42,3 +42,11 @@
 /crates/sonata-desktop/binaries/
 /crates/sonata-desktop/gen/
 
+# Project website build artifacts & local taste-skill verification artifacts
+/website/node_modules/
+/website/dist/
+/website/tsconfig.tsbuildinfo
+/.taste-skill/
+/website/.taste-skill/
+/website/shots/
+

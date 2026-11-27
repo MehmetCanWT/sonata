@@ -24,6 +24,7 @@ import java.net.SocketTimeoutException
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
+import java.security.SecureRandom
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import javax.crypto.Mac
@@ -595,8 +596,91 @@ sealed class ConnectCommand {
  */
 object SonataConnectCrypto {
     private const val HMAC_ALGORITHM = "HmacSHA1"
+    private val nonceRandom = SecureRandom()
 
     fun isValidPin(pin: String): Boolean = pin.length == 6 && pin.all { it.isDigit() }
+
+    fun generateNonce(): String {
+        val bytes = ByteArray(16)
+        nonceRandom.nextBytes(bytes)
+        return bytes.joinToString("") { byte -> "%02x".format(Locale.US, byte) }
+    }
+
+    fun buildCanonicalRequestPayload(
+        method: String,
+        path: String,
+        timestamp: String,
+        nonce: String,
+        body: ByteArray,
+    ): ByteArray {
+        val header = buildString {
+            append(method.trim().uppercase(Locale.ROOT))
+            append('\n')
+            append(path.trim())
+            append('\n')
+            append(timestamp.trim())
+            append('\n')
+            append(nonce.trim())
+            append('\n')
+        }.toByteArray(StandardCharsets.UTF_8)
+        val out = ByteArray(header.size + body.size)
+        System.arraycopy(header, 0, out, 0, header.size)
+        System.arraycopy(body, 0, out, header.size, body.size)
+        return out
+    }
+
+    fun signRequest(
+        secret: String,
+        method: String,
+        path: String,
+        timestamp: String,
+        nonce: String,
+        body: String,
+    ): String = signRequest(secret, method, path, timestamp, nonce, body.toByteArray(StandardCharsets.UTF_8))
+
+    fun signRequest(
+        secret: String,
+        method: String,
+        path: String,
+        timestamp: String,
+        nonce: String,
+        body: ByteArray,
+    ): String = signPayload(secret, buildCanonicalRequestPayload(method, path, timestamp, nonce, body))
+
+    fun verifyRequestSignature(
+        secret: String,
+        method: String,
+        path: String,
+        timestamp: String,
+        nonce: String,
+        body: String,
+        signatureHex: String,
+    ): Boolean = verifyRequestSignature(
+        secret,
+        method,
+        path,
+        timestamp,
+        nonce,
+        body.toByteArray(StandardCharsets.UTF_8),
+        signatureHex,
+    )
+
+    fun verifyRequestSignature(
+        secret: String,
+        method: String,
+        path: String,
+        timestamp: String,
+        nonce: String,
+        body: ByteArray,
+        signatureHex: String,
+    ): Boolean {
+        if (timestamp.isBlank() || nonce.isBlank()) return false
+        return verifySignature(
+            secret,
+            buildCanonicalRequestPayload(method, path, timestamp, nonce, body),
+            signatureHex,
+        )
+    }
 
     fun signPayload(secret: String, payload: String): String =
         signPayload(secret, payload.toByteArray(StandardCharsets.UTF_8))
@@ -774,6 +858,7 @@ class SonataConnectClient(
             val encodedId = URLEncoder.encode(requestId.trim(), StandardCharsets.UTF_8.name())
             val request = Request.Builder()
                 .url("${normalizeBaseUrl(baseUrl)}/connect/pair/status?request_id=$encodedId")
+                .header(HEADER_DEVICE_ID, localDeviceIdProvider())
                 .get()
                 .build()
             httpClient.newCall(request).execute().use { response ->
@@ -808,12 +893,22 @@ class SonataConnectClient(
             if (sharedSecret.isBlank()) {
                 throw ConnectClientException(ConnectError.DEVICE_NOT_PAIRED)
             }
-            val timestamp = System.currentTimeMillis().toString()
+            val timestamp = (System.currentTimeMillis() / 1000L).toString()
+            val nonce = SonataConnectCrypto.generateNonce()
+            val signature = SonataConnectCrypto.signRequest(
+                secret = sharedSecret,
+                method = "GET",
+                path = "/connect/trust",
+                timestamp = timestamp,
+                nonce = nonce,
+                body = "",
+            )
             val request = Request.Builder()
                 .url("${normalizeBaseUrl(baseUrl)}/connect/trust")
                 .header(HEADER_DEVICE_ID, localDeviceIdProvider())
                 .header(HEADER_TIMESTAMP, timestamp)
-                .header(HEADER_SIGNATURE, SonataConnectCrypto.signPayload(sharedSecret, timestamp))
+                .header(HEADER_NONCE, nonce)
+                .header(HEADER_SIGNATURE, signature)
                 .get()
                 .build()
             httpClient.newCall(request).execute().use { response ->
@@ -876,9 +971,19 @@ class SonataConnectClient(
                 .header(HEADER_DEVICE_ID, localDeviceIdProvider())
                 .get()
             if (!sharedSecret.isNullOrBlank()) {
-                val timestamp = System.currentTimeMillis().toString()
+                val timestamp = (System.currentTimeMillis() / 1000L).toString()
+                val nonce = SonataConnectCrypto.generateNonce()
+                val signature = SonataConnectCrypto.signRequest(
+                    secret = sharedSecret,
+                    method = "GET",
+                    path = "/connect/state",
+                    timestamp = timestamp,
+                    nonce = nonce,
+                    body = "",
+                )
                 builder.header(HEADER_TIMESTAMP, timestamp)
-                builder.header(HEADER_SIGNATURE, SonataConnectCrypto.signPayload(sharedSecret, timestamp))
+                builder.header(HEADER_NONCE, nonce)
+                builder.header(HEADER_SIGNATURE, signature)
             }
             httpClient.newCall(builder.build()).execute().use { response ->
                 val body = response.body?.string().orEmpty()
@@ -904,12 +1009,21 @@ class SonataConnectClient(
                 throw ConnectClientException(ConnectError.DEVICE_NOT_PAIRED)
             }
             val bodyJson = command.toJson()
-            val signature = SonataConnectCrypto.signPayload(sharedSecret, bodyJson)
-            val timestamp = System.currentTimeMillis().toString()
+            val timestamp = (System.currentTimeMillis() / 1000L).toString()
+            val nonce = SonataConnectCrypto.generateNonce()
+            val signature = SonataConnectCrypto.signRequest(
+                secret = sharedSecret,
+                method = "POST",
+                path = "/connect/command",
+                timestamp = timestamp,
+                nonce = nonce,
+                body = bodyJson,
+            )
             val request = Request.Builder()
                 .url("${normalizeBaseUrl(baseUrl)}/connect/command")
                 .header(HEADER_DEVICE_ID, localDeviceIdProvider())
                 .header(HEADER_TIMESTAMP, timestamp)
+                .header(HEADER_NONCE, nonce)
                 .header(HEADER_SIGNATURE, signature)
                 .post(bodyJson.toRequestBody(JSON_MEDIA_TYPE))
                 .build()
@@ -928,6 +1042,7 @@ class SonataConnectClient(
         const val HEADER_SIGNATURE = "X-Sonata-Signature"
         const val HEADER_DEVICE_ID = "X-Sonata-Device-Id"
         const val HEADER_TIMESTAMP = "X-Sonata-Timestamp"
+        const val HEADER_NONCE = "X-Sonata-Nonce"
         const val DEFAULT_DEVICE_NAME = "Sonata Android"
 
         private const val SOCKET_TIMEOUT_MS = 1_500

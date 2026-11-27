@@ -273,7 +273,10 @@ data class SonataSettingsState(
  * Exposes a reactive [state] flow for Compose and playback services, atomic state
  * updates, per-track lyric timing offsets, and secret-free JSON backup/restore.
  */
-class SonataPreferences(context: Context) {
+class SonataPreferences(
+    context: Context,
+    private val secretCipher: SecretCipher = AndroidKeyStoreSecretCipher,
+) {
 
     private val appContext = context.applicationContext ?: context
     private val prefs: SharedPreferences by lazy {
@@ -390,7 +393,7 @@ class SonataPreferences(context: Context) {
             if (cleaned == null) {
                 editor.remove(KEY_DISCORD_AUTH_SECRET)
             } else {
-                editor.putString(KEY_DISCORD_AUTH_SECRET, cleaned)
+                editor.putString(KEY_DISCORD_AUTH_SECRET, secretCipher.encrypt(cleaned))
             }
             editor.apply()
             _discordToken.value = cleaned
@@ -403,8 +406,17 @@ class SonataPreferences(context: Context) {
 
     fun hasDiscordToken(): Boolean = !getDiscordToken().isNullOrBlank()
 
-    private fun readDiscordToken(): String? =
-        DiscordApplication.sanitizeToken(discordAuthPrefs.getString(KEY_DISCORD_AUTH_SECRET, null))
+    private fun readDiscordToken(): String? {
+        val stored = discordAuthPrefs.getString(KEY_DISCORD_AUTH_SECRET, null) ?: return null
+        val decrypted = secretCipher.decrypt(stored) ?: return null
+        val cleaned = DiscordApplication.sanitizeToken(decrypted) ?: return null
+        if (!secretCipher.isEncrypted(stored)) {
+            discordAuthPrefs.edit()
+                .putString(KEY_DISCORD_AUTH_SECRET, secretCipher.encrypt(cleaned))
+                .apply()
+        }
+        return cleaned
+    }
 
     /**
      * Applies [transform] to the current [SonataSettingsState], normalizes bounded values,

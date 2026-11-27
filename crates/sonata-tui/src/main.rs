@@ -121,24 +121,28 @@ impl Drop for InputThreadGuard {
 
 #[cfg(unix)]
 fn redirect_tui_diagnostics() -> io::Result<()> {
+    use sonata_core::auth::ensure_private_dir;
     use std::fs::{self, OpenOptions};
     use std::os::fd::AsRawFd;
+    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 
     const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024;
 
-    let log_path = AppConfig::cache_dir().join("sonata-tui.log");
-    let _ = fs::create_dir_all(AppConfig::cache_dir());
+    let cache_dir = AppConfig::cache_dir();
+    let _ = ensure_private_dir(&cache_dir);
+    let log_path = cache_dir.join("sonata-tui.log");
     let truncate = fs::metadata(&log_path).is_ok_and(|metadata| metadata.len() > MAX_LOG_BYTES);
     let mut options = OpenOptions::new();
-    options.create(true).write(true);
+    options.create(true).write(true).mode(0o600);
     if truncate {
         options.truncate(true);
     } else {
         options.append(true);
     }
     let log_file = options
-        .open(log_path)
+        .open(&log_path)
         .or_else(|_| OpenOptions::new().write(true).open("/dev/null"))?;
+    let _ = fs::set_permissions(&log_path, fs::Permissions::from_mode(0o600));
 
     // Keep async diagnostics out of the terminal's alternate screen.
     // SAFETY: both descriptors are valid for this call. `dup2` duplicates the open

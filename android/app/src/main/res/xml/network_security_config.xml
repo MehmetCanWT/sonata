@@ -13,18 +13,34 @@
         <domain includeSubdomains="true">jiosaavn.com</domain>
         <domain includeSubdomains="true">saavncdn.com</domain>
         <domain includeSubdomains="true">discord.com</domain>
+        <domain includeSubdomains="true">discord.gg</domain>
         <domain includeSubdomains="true">discordapp.com</domain>
+        <domain includeSubdomains="true">discordapp.net</domain>
         <domain includeSubdomains="true">audioscrobbler.com</domain>
+        <domain includeSubdomains="true">last.fm</domain>
         <domain includeSubdomains="true">listenbrainz.org</domain>
         <domain includeSubdomains="true">github.com</domain>
         <domain includeSubdomains="true">githubusercontent.com</domain>
         <domain includeSubdomains="true">apple.com</domain>
+        <domain includeSubdomains="true">mzstatic.com</domain>
         <domain includeSubdomains="true">deezer.com</domain>
+        <domain includeSubdomains="true">dzcdn.net</domain>
+        <domain includeSubdomains="true">googleusercontent.com</domain>
+        <domain includeSubdomains="true">ggpht.com</domain>
         <domain includeSubdomains="true">lrclib.net</domain>
         <domain includeSubdomains="true">lrc.red</domain>
+        <domain includeSubdomains="true">lyrics-api.boidu.dev</domain>
+        <domain includeSubdomains="true">lyricsplus.prjktla.my.id</domain>
+        <domain includeSubdomains="true">lyricsplus.atomix.one</domain>
+        <domain includeSubdomains="true">lyricsplus.binimum.org</domain>
+        <domain includeSubdomains="true">lyrics-api.binimum.org</domain>
         <domain includeSubdomains="true">kugou.com</domain>
+        <domain includeSubdomains="true">music.163.com</domain>
+        <domain includeSubdomains="true">qq.com</domain>
         <domain includeSubdomains="true">genius.com</domain>
         <domain includeSubdomains="true">spotify.com</domain>
+        <domain includeSubdomains="true">scdn.co</domain>
         <domain includeSubdomains="true">tidal.com</domain>
+        <domain includeSubdomains="true">workers.dev</domain>
     </domain-config>
 </network-security-config>

@@ -375,11 +375,27 @@ fn collect_mount_audio(
     subpath: Option<&str>,
     max_items: Option<usize>,
 ) -> Result<Vec<(String, LocalAudioMetadata)>, CoreError> {
+    let canonical_root = fs::canonicalize(root).map_err(|err| {
+        CoreError::offline(format!(
+            "failed to canonicalize SMB mount root {}: {err}",
+            root.display()
+        ))
+    })?;
     let scan_root = match subpath {
-        Some(sub) if !sub.trim().is_empty() => join_safe_relative(root, sub)?,
-        _ => root.to_path_buf(),
+        Some(sub) if !sub.trim().is_empty() => join_safe_relative(&canonical_root, sub)?,
+        _ => canonical_root.clone(),
     };
-    if !scan_root.is_dir() {
+    let canonical_scan = fs::canonicalize(&scan_root).map_err(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            CoreError::not_found(format!("SMB directory not found: {}", scan_root.display()))
+        } else {
+            CoreError::offline(format!(
+                "failed to resolve SMB directory {}: {err}",
+                scan_root.display()
+            ))
+        }
+    })?;
+    if !canonical_scan.starts_with(&canonical_root) || !canonical_scan.is_dir() {
         return Err(CoreError::not_found(format!(
             "SMB directory not found: {}",
             scan_root.display()
@@ -387,7 +403,14 @@ fn collect_mount_audio(
     }
     let mut visited = HashSet::new();
     let mut files = Vec::new();
-    walk_smb_audio(root, &scan_root, 0, &mut visited, &mut files, max_items);
+    walk_smb_audio(
+        &canonical_root,
+        &canonical_scan,
+        0,
+        &mut visited,
+        &mut files,
+        max_items,
+    );
     let mut items = Vec::with_capacity(files.len());
     for (rel, full) in files {
         if let Some(meta) = parse_audio_file(&full) {
@@ -398,7 +421,7 @@ fn collect_mount_audio(
 }
 
 fn walk_smb_audio(
-    mount_root: &Path,
+    canonical_root: &Path,
     dir: &Path,
     depth: usize,
     visited: &mut HashSet<PathBuf>,
@@ -411,11 +434,13 @@ fn walk_smb_audio(
     if max_items.is_some_and(|lim| out.len() >= lim) {
         return;
     }
-    let canon = fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
-    if !visited.insert(canon) {
+    let Ok(canon) = fs::canonicalize(dir) else {
+        return;
+    };
+    if !canon.starts_with(canonical_root) || !visited.insert(canon.clone()) {
         return;
     }
-    let Ok(entries) = fs::read_dir(dir) else {
+    let Ok(entries) = fs::read_dir(&canon) else {
         return;
     };
     let mut subdirs = Vec::new();
@@ -431,18 +456,24 @@ fn walk_smb_audio(
     audio.sort();
     subdirs.sort();
     for p in audio {
-        let rel = p
-            .strip_prefix(mount_root)
-            .unwrap_or(&p)
+        let Ok(canon_file) = fs::canonicalize(&p) else {
+            continue;
+        };
+        if !canon_file.starts_with(canonical_root) || !canon_file.is_file() {
+            continue;
+        }
+        let rel = canon_file
+            .strip_prefix(canonical_root)
+            .unwrap_or(&canon_file)
             .to_string_lossy()
             .replace('\\', "/");
-        out.push((rel, p));
+        out.push((rel, canon_file));
         if max_items.is_some_and(|lim| out.len() >= lim) {
             return;
         }
     }
     for sub in subdirs {
-        walk_smb_audio(mount_root, &sub, depth + 1, visited, out, max_items);
+        walk_smb_audio(canonical_root, &sub, depth + 1, visited, out, max_items);
         if max_items.is_some_and(|lim| out.len() >= lim) {
             return;
         }
@@ -1132,6 +1163,12 @@ mod tests {
             std::os::unix::fs::symlink(&outside_file, &escape_link).expect("create symlink");
             assert!(resolve_smb_file_path(&root, "Artist/escape.flac").is_err());
             assert!(resolve_smb_file_path(&root, &escape_link.to_string_lossy()).is_err());
+
+            let escape_dir_link = valid_dir.join("escape_dir");
+            std::os::unix::fs::symlink(&outside_dir, &escape_dir_link).expect("create dir symlink");
+            let scanned = collect_mount_audio(&root, None, None).expect("scan smb");
+            assert_eq!(scanned.len(), 1);
+            assert_eq!(scanned[0].0, "Artist/song.flac");
         }
 
         let _ = fs::remove_dir_all(&outside_dir);

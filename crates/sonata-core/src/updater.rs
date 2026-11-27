@@ -195,6 +195,41 @@ fn parse_releases_for_target(
         .unwrap_or_else(|| up_to_date_result(current_version))
 }
 
+fn is_trusted_release_url(raw: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(raw.trim()) else {
+        return false;
+    };
+    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if !host.eq_ignore_ascii_case("github.com") {
+        return false;
+    }
+    let path = url.path().to_ascii_lowercase();
+    path == "/mehmetcanwt/sonata" || path.starts_with("/mehmetcanwt/sonata/")
+}
+
+fn is_trusted_asset_url(raw: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(raw.trim()) else {
+        return false;
+    };
+    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case("github.com") {
+        let path = url.path().to_ascii_lowercase();
+        return path.starts_with("/mehmetcanwt/sonata/");
+    }
+    host.eq_ignore_ascii_case("objects.githubusercontent.com")
+        || host.eq_ignore_ascii_case("release-assets.githubusercontent.com")
+}
+
 fn parse_release_json(
     payload: &Value,
     normalized_version: &str,
@@ -210,7 +245,7 @@ fn parse_release_json(
         .get("html_url")
         .and_then(Value::as_str)
         .map(str::trim)
-        .filter(|url| !url.is_empty())
+        .filter(|url| !url.is_empty() && is_trusted_release_url(url))
         .unwrap_or(GITHUB_RELEASES_PAGE)
         .to_string();
 
@@ -229,7 +264,7 @@ fn parse_release_json(
                 .get("browser_download_url")
                 .and_then(Value::as_str)
                 .map(str::trim)
-                .filter(|url| !url.is_empty())
+                .filter(|url| !url.is_empty() && is_trusted_asset_url(url))
             else {
                 continue;
             };
@@ -329,7 +364,7 @@ mod tests {
                 "assets": [
                     {
                         "name": "Sonata-android-v1.0.1-arm64.apk",
-                        "browser_download_url": "https://example.com/Sonata-android-v1.0.1-arm64.apk"
+                        "browser_download_url": "https://github.com/MehmetCanWT/sonata/releases/download/android-v1.0.1/Sonata-android-v1.0.1-arm64.apk"
                     }
                 ]
             },
@@ -340,11 +375,11 @@ mod tests {
                 "assets": [
                     {
                         "name": "Sonata-v1.0.0-arm64.apk",
-                        "browser_download_url": "https://example.com/Sonata-v1.0.0-arm64.apk"
+                        "browser_download_url": "https://github.com/MehmetCanWT/sonata/releases/download/v1.0.0/Sonata-v1.0.0-arm64.apk"
                     },
                     {
                         "name": "Sonata-v1.0.0-x86_64.AppImage",
-                        "browser_download_url": "https://example.com/Sonata-v1.0.0-x86_64.AppImage"
+                        "browser_download_url": "https://github.com/MehmetCanWT/sonata/releases/download/v1.0.0/Sonata-v1.0.0-x86_64.AppImage"
                     }
                 ]
             }
@@ -356,7 +391,7 @@ mod tests {
         assert_eq!(android.latest_version, "1.0.1");
         assert_eq!(
             android.apk_download_url.as_deref(),
-            Some("https://example.com/Sonata-android-v1.0.1-arm64.apk")
+            Some("https://github.com/MehmetCanWT/sonata/releases/download/android-v1.0.1/Sonata-android-v1.0.1-arm64.apk")
         );
 
         // Desktop & TUI MUST NOT be notified for android-v1.0.1!
@@ -365,7 +400,7 @@ mod tests {
         assert_eq!(desktop.latest_version, "1.0.0");
         assert_eq!(
             desktop.appimage_download_url.as_deref(),
-            Some("https://example.com/Sonata-v1.0.0-x86_64.AppImage")
+            Some("https://github.com/MehmetCanWT/sonata/releases/download/v1.0.0/Sonata-v1.0.0-x86_64.AppImage")
         );
 
         let tui = parse_releases_for_target(&payload, UpdateTarget::Tui, "1.0.0");
@@ -383,7 +418,7 @@ mod tests {
                 "assets": [
                     {
                         "name": "Sonata-desktop-v1.0.2-x86_64.AppImage",
-                        "browser_download_url": "https://example.com/Sonata-desktop-v1.0.2-x86_64.AppImage"
+                        "browser_download_url": "https://github.com/MehmetCanWT/sonata/releases/download/desktop-v1.0.2/Sonata-desktop-v1.0.2-x86_64.AppImage"
                     }
                 ]
             },
@@ -394,11 +429,11 @@ mod tests {
                 "assets": [
                     {
                         "name": "Sonata-v1.0.0-arm64.apk",
-                        "browser_download_url": "https://example.com/Sonata-v1.0.0-arm64.apk"
+                        "browser_download_url": "https://github.com/MehmetCanWT/sonata/releases/download/v1.0.0/Sonata-v1.0.0-arm64.apk"
                     },
                     {
                         "name": "Sonata-v1.0.0-x86_64.AppImage",
-                        "browser_download_url": "https://example.com/Sonata-v1.0.0-x86_64.AppImage"
+                        "browser_download_url": "https://github.com/MehmetCanWT/sonata/releases/download/v1.0.0/Sonata-v1.0.0-x86_64.AppImage"
                     }
                 ]
             }
@@ -423,7 +458,7 @@ mod tests {
                 "assets": [
                     {
                         "name": "Sonata-v1.0.4-x86_64.AppImage",
-                        "browser_download_url": "https://example.com/Sonata-v1.0.4-x86_64.AppImage"
+                        "browser_download_url": "https://github.com/MehmetCanWT/sonata/releases/download/v1.0.4/Sonata-v1.0.4-x86_64.AppImage"
                     }
                 ]
             }
@@ -448,7 +483,7 @@ mod tests {
                 "assets": [
                     {
                         "name": "Sonata-v1.0.4-arm64.apk",
-                        "browser_download_url": "https://example.com/Sonata-v1.0.4-arm64.apk"
+                        "browser_download_url": "https://github.com/MehmetCanWT/sonata/releases/download/v1.0.4/Sonata-v1.0.4-arm64.apk"
                     }
                 ]
             }
@@ -460,5 +495,46 @@ mod tests {
         assert!(
             parse_releases_for_target(&apk_only, UpdateTarget::Android, "1.0.3").update_available
         );
+    }
+
+    #[test]
+    fn rejects_untrusted_release_and_asset_urls() {
+        let evil_payload = json!([
+            {
+                "tag_name": "v9.9.9",
+                "html_url": "javascript:alert(1)",
+                "body": "Spoofed release",
+                "assets": [
+                    {
+                        "name": "Sonata-v9.9.9-arm64.apk",
+                        "browser_download_url": "https://evil.example.invalid/Sonata.apk"
+                    },
+                    {
+                        "name": "Sonata-v9.9.9-x86_64.AppImage",
+                        "browser_download_url": "http://github.com/MehmetCanWT/sonata/releases/download/v9.9.9/Sonata.AppImage"
+                    }
+                ]
+            }
+        ]);
+        let res = parse_releases_for_target(&evil_payload, UpdateTarget::All, "1.0.0");
+        assert_eq!(res.release_url, GITHUB_RELEASES_PAGE);
+        assert!(res.apk_download_url.is_none());
+        assert!(res.appimage_download_url.is_none());
+
+        assert!(is_trusted_release_url(
+            "https://github.com/MehmetCanWT/sonata/releases/tag/v1.0.10"
+        ));
+        assert!(!is_trusted_release_url(
+            "https://user:pass@github.com/MehmetCanWT/sonata"
+        ));
+        assert!(!is_trusted_release_url(
+            "https://github.com/other/repo/releases"
+        ));
+        assert!(is_trusted_asset_url(
+            "https://objects.githubusercontent.com/github-production-release-asset-2e65be/Sonata.apk"
+        ));
+        assert!(is_trusted_asset_url(
+            "https://release-assets.githubusercontent.com/abc/Sonata.AppImage"
+        ));
     }
 }

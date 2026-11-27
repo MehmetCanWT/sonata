@@ -191,6 +191,17 @@ fn setup_tray_icon(
     Ok(())
 }
 
+fn allow_asset_dir(app: &tauri::AppHandle, dir: &std::path::Path) {
+    if dir.as_os_str().is_empty() {
+        return;
+    }
+    let scope = app.asset_protocol_scope();
+    let _ = scope.allow_directory(dir, true);
+    if let Ok(canon) = std::fs::canonicalize(dir) {
+        let _ = scope.allow_directory(canon, true);
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     if std::env::var_os("GST_PLUGIN_FEATURE_RANK").is_none() {
@@ -265,6 +276,22 @@ fn main() -> anyhow::Result<()> {
                 .map_err(|err| std::io::Error::other(err.to_string()))?;
             backend.send(BackendCmd::SetWindowVisible(true));
 
+            let startup_cfg = AppConfig::load();
+            allow_asset_dir(&handle, &AppConfig::art_cache_dir());
+            allow_asset_dir(&handle, &startup_cfg.effective_downloads_dir());
+            for dir in startup_cfg.effective_local_music_dirs() {
+                allow_asset_dir(&handle, &dir);
+            }
+            for profile in sonata_core::providers::servers::load_server_profiles(
+                &AppConfig::default_core_paths(),
+            )
+            .unwrap_or_default()
+            {
+                if let Some(mount) = profile.local_mount_path {
+                    allow_asset_dir(&handle, &mount);
+                }
+            }
+
             #[cfg(not(target_os = "linux"))]
             if let Err(err) = setup_tray_icon(
                 &handle,
@@ -326,6 +353,9 @@ fn main() -> anyhow::Result<()> {
                             app_win.exit(0);
                             break;
                         }
+                        UiWindowCmd::AllowAssetDir(dir) => {
+                            allow_asset_dir(&app_win, &dir);
+                        }
                     }
                 }
             });
@@ -357,4 +387,30 @@ fn main() -> anyhow::Result<()> {
     });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn tauri_asset_protocol_scope_excludes_broad_user_directories() {
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+            .expect("valid tauri.conf.json");
+        let scope = conf["app"]["security"]["assetProtocol"]["scope"]
+            .as_array()
+            .expect("assetProtocol.scope array");
+        let entries: Vec<&str> = scope.iter().filter_map(|v| v.as_str()).collect();
+        for forbidden in [
+            "$CACHE/**",
+            "$APPCACHE/**",
+            "$DATA/**",
+            "$APPDATA/**",
+            "$HOME/.cache/sonata/**",
+        ] {
+            assert!(
+                !entries.contains(&forbidden),
+                "broad scope entry `{forbidden}` must not be exposed"
+            );
+        }
+        assert!(entries.contains(&"$CACHE/sonata/art/**"));
+    }
 }

@@ -17,6 +17,18 @@ import { cn } from "@/lib/utils";
 import { useSonataStore } from "@/store/useSonataStore";
 import type { AppLanguage, ThemeModePref } from "@/types/sonata";
 
+export function isSafeReleaseUrl(raw?: string | null): boolean {
+  if (!raw) return false;
+  try {
+    const parsed = new URL(raw.trim());
+    if (parsed.protocol !== "https:") return false;
+    if (parsed.username || parsed.password) return false;
+    return parsed.hostname.toLowerCase() === "github.com";
+  } catch {
+    return false;
+  }
+}
+
 function SettingRow({
   label,
   description,
@@ -410,11 +422,12 @@ export function SettingsView() {
                 <RefreshCw className={cn("h-3.5 w-3.5", snapshot.checking_updates && "animate-spin")} />
                 {t.checkUpdates}
               </Button>
-              {snapshot.update_info?.update_available && (
+              {snapshot.update_info?.update_available &&
+                isSafeReleaseUrl(snapshot.update_info.release_url) && (
                 <a
                   href={snapshot.update_info.release_url}
                   target="_blank"
-                  rel="noreferrer"
+                  rel="noopener noreferrer"
                   className="inline-flex h-8 items-center gap-1 rounded-lg border border-[var(--border-hairline)] px-2.5 text-xs hover:bg-[var(--bg-hover)]"
                 >
                   <ExternalLink className="h-3.5 w-3.5" />

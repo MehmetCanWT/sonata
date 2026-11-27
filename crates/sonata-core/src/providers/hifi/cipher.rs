@@ -65,19 +65,21 @@ fn now_epoch_secs() -> u64 {
 
 fn write_private_cache_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent)?;
-    #[cfg(unix)]
-    let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+    crate::auth::ensure_private_dir(parent)?;
 
     let file_name = path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("cipher_cache");
     let seq = CIPHER_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let tmp = parent.join(format!("{file_name}.{}.{}.tmp", std::process::id(), seq));
+    let rand_suffix = crate::connect::generate_request_id();
+    let tmp = parent.join(format!(
+        "{file_name}.{}.{seq}.{rand_suffix}.tmp",
+        std::process::id()
+    ));
 
     let mut opts = OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
+    opts.write(true).create_new(true);
     #[cfg(unix)]
     opts.mode(0o600);
     let write_res = (|| -> std::io::Result<()> {

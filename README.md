@@ -51,15 +51,17 @@
     </td>
     <td width="50%" valign="top">
 
-#### Design Themes &amp; Crystal-Clear Liquid Glass
-- **Basic, Violet &amp; Moonflower Themes (Light, Dark &amp; AMOLED)** — starts cleanly on the monochrome editorial **Basic** theme (`System` appearance), with full **Violet** and **Moonflower** atmospheric themes available anytime, unified under neutral crystal-clear **Liquid Glass** floating chrome.
-- **Theme-Specific Artwork &amp; 15 Mood Animations** — duotone mood sleeves in Basic, custom moon &amp; floral artwork across Violet and Moonflower, and 15 seamlessly looping animated mood covers (*Feeling Blue*, *Heartbreak*, *Energy*, *Focus*, and more).
-- **Visual Share Cards (`SonataShareSheet`)** — artwork-palette and theme-matched preview cards tailored per Song, Album, Playlist, and Artist with one-tap **Share Link**, **Share Image**, and **Save Image** (`Pictures/Sonata`).
+#### Monochrome Basic Design &amp; Crystal-Clear Liquid Glass
+- **Monochrome Basic Theme (`System`, `Light` &amp; True-Black `Dark`)** — unified across Android under a monochrome editorial **Basic** palette (`#FFFFFF` light, `#000000` true-black dark, `#FA2D48` crimson accent) and neutral crystal-clear **Liquid Glass** floating chrome, while Desktop (`sonata-desktop`) uses a clean matte obsidian Dark &amp; Light interface.
+- **Duotone Mood Sleeves &amp; 15 Procedural Animations** — duotone mood artwork paired with 15 looping procedural animated mood covers (*Feeling Blue*, *Heartbreak*, *Energy*, *Focus*, and more) driven by a shared frame clock.
+- **Visual Share Cards (`SonataShareSheet`)** — artwork-palette-matched preview cards tailored per Song, Album, Playlist, and Artist with one-tap **Share Link**, **Share Image**, and **Save Image** (`Pictures/Sonata`).
 - **Animated Album Covers (Canvas) &amp; Word-Synced Lyrics** — Apple Music HLS / Tidal / Community Canvas motion covers plus multi-provider word-synced &amp; dual-voice karaoke lyrics (`lrc.red` TTML, BetterLyrics, LyricsPlus, LRCLIB, KuGou, NetEase, QQ Music, YTM, Genius) with live translation, romanization, and per-track timing offsets.
+- **Sonata Connect, Android Auto &amp; Music/Video Mode** — LAN device handoff (UDP `45389` / TCP `45390`) with 6-digit PIN &amp; interactive Approve/Reject pairing, Android Auto `MediaLibraryService`, optional Music/Video mode up to 1080p, and gapless + `0–12s` crossfade.
+- **Discord Rich Presence, Scrobbling &amp; Stats** — official Sonata Discord RPC across Desktop and Android, Last.fm &amp; ListenBrainz scrobbling, and on-device SQLite Listening Stats.
 
 #### Controls, Privacy &amp; Security
 - **Categorized Settings &amp; Audio Pipeline** — searchable 9-category settings menu, playback speed, silence skip, sleep timer with fade-out, 4-stage Audio Pipeline inspector, multilingual UI (`English`, `Turkish`, `Russian` — following system locale on Android), and one-tap WebView **Account Switching**.
-- **Zero Trackers &amp; 100% FOSS** — no ads, no analytics, no Firebase or Google Play Services, reproducible APKs (`dependenciesInfo` disabled; `REQUEST_INSTALL_PACKAGES` used solely for user-initiated GitHub Releases APK updates), and `0o600`/`0o700` private credential handling ([PRIVACY.md](PRIVACY.md)).
+- **Zero Trackers, Keystore Encryption &amp; Sandboxed Cipher** — no ads, no analytics, no Firebase or Google Play Services, `AndroidKeyStore` AES-256-GCM secret encryption, sandboxed JS cipher execution (`deno` / Node `--permission`), reproducible APKs (`dependenciesInfo` disabled; `REQUEST_INSTALL_PACKAGES` used solely for user-initiated GitHub Releases APK updates), and `0o600`/`0o700` private credential handling ([PRIVACY.md](PRIVACY.md)).
 - **Local &amp; Self-Hosted Sources + Personal Only Mode** — browse and stream directly from **Local Music** folders (with junk exclusion &amp; SAF folder picker), **Jellyfin**, **Subsonic / Navidrome**, **WebDAV**, and **SMB2/SMB3** (`smbj`) shares with embedded FLAC tags, `artist.json`/`artist.nfo`, folder cover art, sidecar `.lrc` lyrics, live `kbps` quality telemetry, and full offline/personal network isolation ([docs/local-and-cloud-sources.md](docs/local-and-cloud-sources.md)).
 - **Built-in Updates** — GitHub Releases update alerts across Android, Desktop, and Terminal, plus in-app arm64 APK auto-download &amp; `PackageInstaller` launch on Android.
 
@@ -104,13 +106,14 @@
 
 #### Android (Mobile &amp; Tablet, `arm64-v8a`)
 - **Obtainium (Auto-Updates):** Add `https://github.com/MehmetCanWT/sonata` with APK filter `Sonata-.*-arm64\.apk$`.
-- **Direct APK:** Grab the latest signed **`Sonata-v1.0.9-arm64.apk`** from [GitHub Releases](https://github.com/MehmetCanWT/sonata/releases/latest).
+- **Direct APK:** Grab the latest signed **`Sonata-v1.0.10-arm64.apk`** from [GitHub Releases](https://github.com/MehmetCanWT/sonata/releases/latest).
 
     </td>
     <td width="50%" valign="top">
 
 #### Desktop (Linux, macOS, Windows) &amp; Terminal
-- **Packages &amp; AppImage:** Download **`.deb`**, **`.rpm`**, **`.tar.gz`**, or **`Sonata-v1.0.9-x86_64.AppImage`** from [GitHub Releases](https://github.com/MehmetCanWT/sonata/releases/latest) (`--tui` launches the terminal client).
+- **Linux Packages &amp; AppImage:** Download **`.deb`**, **`.rpm`**, **`.tar.gz`**, or **`Sonata-v1.0.10-x86_64.AppImage`** from [GitHub Releases](https://github.com/MehmetCanWT/sonata/releases/latest) (`--tui` launches the terminal client).
+- **macOS (`arm64`) &amp; Windows (`x64`):** Download **`Sonata-v1.0.10-macos-arm64.dmg`** / **`.app.tar.gz`** or **`Sonata-v1.0.10-windows-x64-setup.exe`** / **`.msi`** / portable **`.exe`** from [GitHub Releases](https://github.com/MehmetCanWT/sonata/releases/latest).
 - **One-Line Installer:**
   ```sh
   # Terminal client (sonata)
@@ -141,7 +144,7 @@
 |---|---|
 | `crates/sonata-core` | Portable Rust engine (auth, Hi-Fi cipher &amp; stream resolution, YTM/Spotify/JioSaavn providers, multi-provider TTML/YRC/KRC/LRCLIB lyrics, SQLite WAL cache, motion media discovery, redaction, updater) |
 | `crates/sonata-runtime` | Shared desktop/TUI runtime adapter (Linux, macOS, Windows) (`mpv` IPC, `PlaybackSession`, browser cookie extraction, `yt-dlp` fast-start/recovery, `ffmpeg` motion decoding, `en`/`tr`/`ru` i18n, XDG TOML config, Hyprland IPC) |
-| `crates/sonata-android` + `android/` | Cancellable async UniFFI Rust bridge (`libsonata_android.so`) + Jetpack Compose / Media3 ExoPlayer Android app (`Basic`, `Violet` &amp; `Moonflower` themes, neutral Liquid Glass, `en`/`tr`/`ru` i18n, YTM playlist/cover editor, Share Sheet, Widget, in-app APK updater) |
+| `crates/sonata-android` + `android/` | Cancellable async UniFFI Rust bridge (`libsonata_android.so`) + Jetpack Compose / Media3 ExoPlayer Android app (monochrome `Basic` theme across `System`, `Light` &amp; true-black `Dark`, neutral Liquid Glass, `en`/`tr`/`ru` i18n, YTM playlist/cover editor, Android Auto, Sonata Connect, Discord RPC, Scrobbling &amp; Stats, Share Sheet, Widget, in-app APK updater) |
 | `crates/sonata-desktop` + `desktop-ui/` | Cross-platform Tauri v2 desktop client (Linux, macOS, Windows) with React + Tailwind CSS v4 + shadcn/ui matte obsidian UI, MPRIS2 / `souvlaki` media controls &amp; system tray |
 | `crates/sonata-tui` | Ratatui terminal client with Kitty/Sixel/Halfblock artwork, `tachyonfx` transitions &amp; 60 FPS synced lyrics |
 

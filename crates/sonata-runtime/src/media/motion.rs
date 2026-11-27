@@ -194,6 +194,7 @@ async fn download_and_cache_motion_mp4(
 }
 
 const FFMPEG_HLS_PROTOCOL_WHITELIST: &str = "https,http,tls,tcp,crypto";
+const FFMPEG_LOCAL_MP4_PROTOCOL_WHITELIST: &str = "file,pipe";
 const SONATA_LOOP_MARKER: &[u8] = b"sonata-loop-v1";
 
 fn build_ffmpeg_hls_remux_attempts(hls_url: &str, out_path: &Path) -> Vec<Vec<String>> {
@@ -397,101 +398,139 @@ async fn is_normalized_motion_mp4_file(path: &Path) -> bool {
     is_normalized_motion_mp4_header(&buf[..total])
 }
 
-async fn normalize_motion_mp4(src: &Path, dst: &Path) -> bool {
-    let tmp = dst.with_extension("remux.mp4.tmp");
-    let ffmpeg_bin = resolve_distro_binary("ffmpeg");
+fn build_ffmpeg_mp4_normalize_attempts(src: &Path, tmp: &Path) -> Vec<Vec<String>> {
     let src_str = src.to_string_lossy().into_owned();
     let tmp_str = tmp.to_string_lossy().into_owned();
     let vf = "scale='min(720,iw)':'min(720,ih)':force_original_aspect_ratio=decrease:flags=lanczos,pad=ceil(iw/2)*2:ceil(ih/2)*2";
-    let attempts = [
+    vec![
         vec![
-            "-y",
-            "-v",
-            "error",
-            "-fflags",
-            "+genpts",
-            "-i",
-            src_str.as_str(),
-            "-an",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-tune",
-            "fastdecode",
-            "-profile:v",
-            "main",
-            "-bf",
-            "0",
-            "-g",
-            "30",
-            "-crf",
-            "21",
-            "-pix_fmt",
-            "yuv420p",
-            "-vf",
-            vf,
-            "-metadata",
-            "comment=sonata-loop-v1",
-            "-movflags",
-            "+faststart",
-            "-avoid_negative_ts",
-            "make_zero",
-            "-f",
-            "mp4",
-            tmp_str.as_str(),
+            "-y".to_string(),
+            "-v".to_string(),
+            "error".to_string(),
+            "-protocol_whitelist".to_string(),
+            FFMPEG_LOCAL_MP4_PROTOCOL_WHITELIST.to_string(),
+            "-enable_drefs".to_string(),
+            "0".to_string(),
+            "-fflags".to_string(),
+            "+genpts".to_string(),
+            "-i".to_string(),
+            src_str.clone(),
+            "-an".to_string(),
+            "-c:v".to_string(),
+            "libx264".to_string(),
+            "-preset".to_string(),
+            "ultrafast".to_string(),
+            "-tune".to_string(),
+            "fastdecode".to_string(),
+            "-profile:v".to_string(),
+            "main".to_string(),
+            "-bf".to_string(),
+            "0".to_string(),
+            "-g".to_string(),
+            "30".to_string(),
+            "-crf".to_string(),
+            "21".to_string(),
+            "-pix_fmt".to_string(),
+            "yuv420p".to_string(),
+            "-vf".to_string(),
+            vf.to_string(),
+            "-metadata".to_string(),
+            "comment=sonata-loop-v1".to_string(),
+            "-movflags".to_string(),
+            "+faststart".to_string(),
+            "-avoid_negative_ts".to_string(),
+            "make_zero".to_string(),
+            "-f".to_string(),
+            "mp4".to_string(),
+            tmp_str.clone(),
         ],
         vec![
-            "-y",
-            "-v",
-            "error",
-            "-fflags",
-            "+genpts",
-            "-i",
-            src_str.as_str(),
-            "-an",
-            "-c:v",
-            "libopenh264",
-            "-bf",
-            "0",
-            "-pix_fmt",
-            "yuv420p",
-            "-metadata",
-            "comment=sonata-loop-v1",
-            "-movflags",
-            "+faststart",
-            "-avoid_negative_ts",
-            "make_zero",
-            "-f",
-            "mp4",
-            tmp_str.as_str(),
+            "-y".to_string(),
+            "-v".to_string(),
+            "error".to_string(),
+            "-protocol_whitelist".to_string(),
+            FFMPEG_LOCAL_MP4_PROTOCOL_WHITELIST.to_string(),
+            "-enable_drefs".to_string(),
+            "0".to_string(),
+            "-fflags".to_string(),
+            "+genpts".to_string(),
+            "-i".to_string(),
+            src_str.clone(),
+            "-an".to_string(),
+            "-c:v".to_string(),
+            "libopenh264".to_string(),
+            "-bf".to_string(),
+            "0".to_string(),
+            "-pix_fmt".to_string(),
+            "yuv420p".to_string(),
+            "-metadata".to_string(),
+            "comment=sonata-loop-v1".to_string(),
+            "-movflags".to_string(),
+            "+faststart".to_string(),
+            "-avoid_negative_ts".to_string(),
+            "make_zero".to_string(),
+            "-f".to_string(),
+            "mp4".to_string(),
+            tmp_str.clone(),
         ],
         vec![
-            "-y",
-            "-v",
-            "error",
-            "-fflags",
-            "+genpts",
-            "-i",
-            src_str.as_str(),
-            "-an",
-            "-c:v",
-            "copy",
-            "-movflags",
-            "+faststart",
-            "-avoid_negative_ts",
-            "make_zero",
-            "-f",
-            "mp4",
-            tmp_str.as_str(),
+            "-y".to_string(),
+            "-v".to_string(),
+            "error".to_string(),
+            "-protocol_whitelist".to_string(),
+            FFMPEG_LOCAL_MP4_PROTOCOL_WHITELIST.to_string(),
+            "-enable_drefs".to_string(),
+            "0".to_string(),
+            "-fflags".to_string(),
+            "+genpts".to_string(),
+            "-i".to_string(),
+            src_str,
+            "-an".to_string(),
+            "-c:v".to_string(),
+            "copy".to_string(),
+            "-movflags".to_string(),
+            "+faststart".to_string(),
+            "-avoid_negative_ts".to_string(),
+            "make_zero".to_string(),
+            "-f".to_string(),
+            "mp4".to_string(),
+            tmp_str,
         ],
-    ];
+    ]
+}
+
+fn build_ffmpeg_mp4_decode_args(cache_path: &Path, dur_secs: f32, vf: &str) -> Vec<String> {
+    vec![
+        "-v".to_string(),
+        "error".to_string(),
+        "-protocol_whitelist".to_string(),
+        FFMPEG_LOCAL_MP4_PROTOCOL_WHITELIST.to_string(),
+        "-enable_drefs".to_string(),
+        "0".to_string(),
+        "-i".to_string(),
+        cache_path.to_string_lossy().into_owned(),
+        "-t".to_string(),
+        format!("{dur_secs:.2}"),
+        "-vf".to_string(),
+        vf.to_string(),
+        "-f".to_string(),
+        "rawvideo".to_string(),
+        "-pix_fmt".to_string(),
+        "rgba".to_string(),
+        "pipe:1".to_string(),
+    ]
+}
+
+async fn normalize_motion_mp4(src: &Path, dst: &Path) -> bool {
+    let tmp = dst.with_extension("remux.mp4.tmp");
+    let ffmpeg_bin = resolve_distro_binary("ffmpeg");
+    let attempts = build_ffmpeg_mp4_normalize_attempts(src, &tmp);
 
     for args in attempts {
         let _ = tokio::fs::remove_file(&tmp).await;
         let mut cmd = tokio::process::Command::new(&ffmpeg_bin);
         crate::config::configure_background_tokio_command(&mut cmd);
-        cmd.args(args)
+        cmd.args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -544,29 +583,16 @@ async fn decode_mp4_via_ffmpeg_pipe(
     let vf = format!(
         "fps={fps:.2},scale={dim}:{dim}:force_original_aspect_ratio=increase:flags=lanczos,crop={dim}:{dim}"
     );
+    let args = build_ffmpeg_mp4_decode_args(cache_path, dur_secs, &vf);
 
     let ffmpeg_bin = resolve_distro_binary("ffmpeg");
     let mut cmd = tokio::process::Command::new(&ffmpeg_bin);
     crate::config::configure_background_tokio_command(&mut cmd);
-    cmd.args([
-        "-v",
-        "error",
-        "-i",
-        &cache_path.to_string_lossy(),
-        "-t",
-        &format!("{dur_secs:.2}"),
-        "-vf",
-        &vf,
-        "-f",
-        "rawvideo",
-        "-pix_fmt",
-        "rgba",
-        "pipe:1",
-    ])
-    .stdin(Stdio::null())
-    .stdout(Stdio::piped())
-    .stderr(Stdio::null())
-    .kill_on_drop(true);
+    cmd.args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
 
     let output = tokio::time::timeout(Duration::from_secs(8), cmd.output())
         .await
@@ -667,5 +693,41 @@ mod tests {
                 "expected `{bad}` to be rejected before ffmpeg"
             );
         }
+    }
+
+    #[test]
+    fn ffmpeg_local_mp4_commands_restrict_protocol_whitelist_and_disable_drefs() {
+        let src = Path::new("/tmp/raw.mp4");
+        let tmp = Path::new("/tmp/norm.mp4.tmp");
+        for args in build_ffmpeg_mp4_normalize_attempts(src, tmp) {
+            let wl_pos = args
+                .windows(2)
+                .position(|w| w == ["-protocol_whitelist", FFMPEG_LOCAL_MP4_PROTOCOL_WHITELIST])
+                .expect("protocol whitelist present");
+            let dref_pos = args
+                .windows(2)
+                .position(|w| w == ["-enable_drefs", "0"])
+                .expect("-enable_drefs 0 present");
+            let input_pos = args
+                .iter()
+                .position(|a| a == "-i")
+                .expect("-i flag present");
+            assert!(wl_pos < input_pos && dref_pos < input_pos);
+        }
+
+        let decode_args = build_ffmpeg_mp4_decode_args(src, 4.0, "fps=12.00");
+        let wl_pos = decode_args
+            .windows(2)
+            .position(|w| w == ["-protocol_whitelist", FFMPEG_LOCAL_MP4_PROTOCOL_WHITELIST])
+            .expect("decode protocol whitelist present");
+        let dref_pos = decode_args
+            .windows(2)
+            .position(|w| w == ["-enable_drefs", "0"])
+            .expect("decode -enable_drefs 0 present");
+        let input_pos = decode_args
+            .iter()
+            .position(|a| a == "-i")
+            .expect("decode -i present");
+        assert!(wl_pos < input_pos && dref_pos < input_pos);
     }
 }

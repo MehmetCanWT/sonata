@@ -403,6 +403,8 @@ class Faz4EcosystemTest {
 
         // End-to-end loopback HTTP server testing /connect/info, /connect/pair, /connect/state, /connect/command
         var receivedCommandSig: String? = null
+        var receivedCommandTs: String? = null
+        var receivedCommandNonce: String? = null
         var receivedCommandBody: String? = null
         val server = ServerSocket(0)
         val port = server.localPort
@@ -452,6 +454,8 @@ class Faz4EcosystemTest {
                         requestLine.startsWith("GET /connect/state") -> snapshot.toJson()
                         requestLine.startsWith("POST /connect/command") -> {
                             receivedCommandSig = headers[SonataConnectClient.HEADER_SIGNATURE.lowercase(Locale.ROOT)]
+                            receivedCommandTs = headers[SonataConnectClient.HEADER_TIMESTAMP.lowercase(Locale.ROOT)]
+                            receivedCommandNonce = headers[SonataConnectClient.HEADER_NONCE.lowercase(Locale.ROOT)]
                             receivedCommandBody = reqBody
                             JSONObject().put("ok", true).toString()
                         }
@@ -492,8 +496,20 @@ class Faz4EcosystemTest {
 
             client.sendCommand(baseUrl, secret, ConnectCommand.SeekAbsolute(98_000L)).getOrThrow()
             assertNotNull(receivedCommandSig)
+            assertNotNull(receivedCommandTs)
+            assertNotNull(receivedCommandNonce)
             assertNotNull(receivedCommandBody)
-            assertTrue(SonataConnectCrypto.verifySignature(secret, receivedCommandBody!!, receivedCommandSig!!))
+            assertTrue(
+                SonataConnectCrypto.verifyRequestSignature(
+                    secret,
+                    "POST",
+                    "/connect/command",
+                    receivedCommandTs!!,
+                    receivedCommandNonce!!,
+                    receivedCommandBody!!,
+                    receivedCommandSig!!,
+                ),
+            )
             assertEquals(ConnectCommand.SeekAbsolute(98_000L), ConnectCommand.fromJson(receivedCommandBody!!))
 
             // Verify canonical Rust wire format payloads emitted and parsed by Android client
@@ -741,8 +757,17 @@ class Faz4EcosystemTest {
                         requestLine.startsWith("GET /connect/trust") -> {
                             trustChecks++
                             val ts = headers[SonataConnectClient.HEADER_TIMESTAMP.lowercase(Locale.ROOT)].orEmpty()
+                            val nonce = headers[SonataConnectClient.HEADER_NONCE.lowercase(Locale.ROOT)].orEmpty()
                             val sig = headers[SonataConnectClient.HEADER_SIGNATURE.lowercase(Locale.ROOT)].orEmpty()
-                            val valid = SonataConnectCrypto.verifySignature(secret, ts, sig)
+                            val valid = SonataConnectCrypto.verifyRequestSignature(
+                                secret,
+                                "GET",
+                                "/connect/trust",
+                                ts,
+                                nonce,
+                                "",
+                                sig,
+                            )
                             if (trustChecks == 1 && valid) {
                                 "HTTP/1.1 200 OK" to """{"trusted":true}"""
                             } else {

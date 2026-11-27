@@ -4,6 +4,7 @@ import { App } from "@/App";
 import { PlayerDock } from "@/components/PlayerDock";
 import { ArtistView } from "@/views/ArtistView";
 import { ImmersiveLyricsView } from "@/views/ImmersiveLyricsView";
+import { isSafeReleaseUrl, SettingsView } from "@/views/SettingsView";
 import { getStrings } from "@/i18n";
 import { createEmptySnapshot } from "@/lib/ipc";
 import {
@@ -372,5 +373,42 @@ describe("Sonata Desktop UI", () => {
     expect(screen.getByText("Test Album")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Download All" })).toBeTruthy();
     expect(container.innerHTML).not.toContain("grid-cols-[248px_1fr]");
+  });
+
+  it("blocks unsafe release_url schemes in SettingsView update links", () => {
+    expect(isSafeReleaseUrl("javascript:alert(1)")).toBe(false);
+    expect(isSafeReleaseUrl("http://github.com/MehmetCanWT/sonata/releases")).toBe(false);
+    expect(isSafeReleaseUrl("https://github.com/MehmetCanWT/sonata/releases/tag/v1.0.10")).toBe(true);
+
+    const baseSnap = createEmptySnapshot();
+    useSonataStore.setState({
+      snapshot: {
+        ...baseSnap,
+        update_info: {
+          current_version: "1.0.10",
+          latest_version: "9.9.9",
+          update_available: true,
+          release_url: "javascript:alert(1)",
+        },
+      },
+    });
+    const { container } = render(<SettingsView />);
+    expect(container.querySelector("a")).toBeNull();
+
+    cleanup();
+    useSonataStore.setState({
+      snapshot: {
+        ...baseSnap,
+        update_info: {
+          current_version: "1.0.10",
+          latest_version: "1.0.11",
+          update_available: true,
+          release_url: "https://github.com/MehmetCanWT/sonata/releases/tag/v1.0.11",
+        },
+      },
+    });
+    const { container: validContainer } = render(<SettingsView />);
+    const link = validContainer.querySelector("a");
+    expect(link?.getAttribute("href")).toBe("https://github.com/MehmetCanWT/sonata/releases/tag/v1.0.11");
   });
 });

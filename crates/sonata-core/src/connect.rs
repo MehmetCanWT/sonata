@@ -4,18 +4,14 @@
 //!    broadcast payloads, default TCP control port `45390`, 6-digit PIN generation/verification, and interactive host-approval pairing.
 //! 2. **Remote State & Commands (`ConnectStateSnapshot`, `ConnectCommand`)**: Portable models for
 //!    mirroring playback state and sending transport or queue-transfer commands.
-//! 3. **HMAC-SHA1 Signing (`sign_payload`, `verify_signature`)**: Authenticates control requests
-//!    with constant-time comparison so forged LAN packets are rejected.
+//! 3. **HMAC-SHA1 Signing (`sign_payload`, `verify_signature`, `sign_request`)**: Authenticates control requests
+//!    with timestamp/nonce replay protection and constant-time comparison so forged or replayed LAN packets are rejected.
 
 use crate::player::RepeatMode;
 use crate::providers::Track;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
-use sha1::{Digest, Sha1};
-use std::fs::File;
-use std::io::Read as _;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use sha1::Sha1;
 
 type HmacSha1 = Hmac<Sha1>;
 
@@ -28,7 +24,8 @@ pub const DEFAULT_CONNECT_HTTP_PORT: u16 = 45390;
 /// Current Sonata Connect wire protocol version.
 pub const CONNECT_PROTOCOL_VERSION: u16 = 1;
 
-static ENTROPY_COUNTER: AtomicU64 = AtomicU64::new(1);
+/// Maximum permitted timestamp skew (in seconds) for replay-protected Sonata Connect requests.
+pub const CONNECT_MAX_CLOCK_SKEW_SECS: u64 = 60;
 
 /// UDP broadcast beacon announcing a reachable Sonata Connect instance on the LAN.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,6 +180,83 @@ pub fn generate_request_id() -> String {
     encode_hex(&bytes)
 }
 
+/// Generates a random 16-byte (32-char hex) per-request replay protection nonce.
+pub fn generate_nonce() -> String {
+    let mut bytes = [0u8; 16];
+    fill_entropy(&mut bytes);
+    encode_hex(&bytes)
+}
+
+/// Parses a Unix timestamp header expressed in either seconds or milliseconds into seconds.
+pub fn parse_timestamp_unix_secs(raw: &str) -> Option<u64> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let parsed = trimmed.parse::<u64>().ok()?;
+    if parsed == 0 {
+        return None;
+    }
+    if parsed >= 1_000_000_000_000 {
+        Some(parsed / 1_000)
+    } else {
+        Some(parsed)
+    }
+}
+
+/// Constructs the canonical signing payload `{METHOD}\n{PATH}\n{TIMESTAMP}\n{NONCE}\n{BODY}`.
+pub fn build_canonical_request_payload(
+    method: &str,
+    path: &str,
+    timestamp: &str,
+    nonce: &str,
+    body: &[u8],
+) -> Vec<u8> {
+    let clean_method = method.trim().to_ascii_uppercase();
+    let clean_path = path.trim();
+    let clean_ts = timestamp.trim();
+    let clean_nonce = nonce.trim();
+    let header_len = clean_method.len() + clean_path.len() + clean_ts.len() + clean_nonce.len() + 4;
+    let mut out = Vec::with_capacity(header_len + body.len());
+    out.extend_from_slice(clean_method.as_bytes());
+    out.push(b'\n');
+    out.extend_from_slice(clean_path.as_bytes());
+    out.push(b'\n');
+    out.extend_from_slice(clean_ts.as_bytes());
+    out.push(b'\n');
+    out.extend_from_slice(clean_nonce.as_bytes());
+    out.push(b'\n');
+    out.extend_from_slice(body);
+    out
+}
+
+/// Computes lowercase hex HMAC-SHA1 over canonical Sonata Connect request metadata and body.
+pub fn sign_request(
+    secret: &str,
+    method: &str,
+    path: &str,
+    timestamp: &str,
+    nonce: &str,
+    body: &[u8],
+) -> String {
+    let canonical = build_canonical_request_payload(method, path, timestamp, nonce, body);
+    sign_payload(secret, &canonical)
+}
+
+/// Verifies a hex-encoded HMAC-SHA1 signature over canonical Sonata Connect request metadata and body.
+pub fn verify_request_signature(
+    secret: &str,
+    method: &str,
+    path: &str,
+    timestamp: &str,
+    nonce: &str,
+    body: &[u8],
+    signature_hex: &str,
+) -> bool {
+    let canonical = build_canonical_request_payload(method, path, timestamp, nonce, body);
+    verify_signature(secret, &canonical, signature_hex)
+}
+
 /// Computes lowercase hex HMAC-SHA1 over `payload` using `secret`.
 pub fn sign_payload(secret: &str, payload: &[u8]) -> String {
     let mut mac =
@@ -212,25 +286,7 @@ fn encode_hex(bytes: &[u8]) -> String {
 }
 
 fn fill_entropy(buf: &mut [u8]) {
-    if let Ok(mut file) = File::open("/dev/urandom") {
-        if file.read_exact(buf).is_ok() {
-            return;
-        }
-    }
-    let mut filled = 0;
-    while filled < buf.len() {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let seq = ENTROPY_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let mut hasher = Sha1::new();
-        hasher.update(format!("{nanos}:{seq}:{}:{filled}", std::process::id()).as_bytes());
-        let digest = hasher.finalize();
-        let take = (buf.len() - filled).min(digest.len());
-        buf[filled..filled + take].copy_from_slice(&digest[..take]);
-        filled += take;
-    }
+    getrandom::fill(buf).expect("OS CSPRNG unavailable");
 }
 
 fn random_u64() -> u64 {
@@ -273,6 +329,77 @@ mod tests {
         assert!(!verify_signature(secret, b"tampered", &sig));
         assert!(!verify_signature(secret, payload, "not-hex"));
         assert!(!verify_signature(secret, payload, ""));
+    }
+
+    #[test]
+    fn signs_verifies_canonical_requests_and_parses_timestamps() {
+        let secret = "connect-shared-secret";
+        let nonce = generate_nonce();
+        assert_eq!(nonce.len(), 32);
+        assert!(nonce.bytes().all(|b| b.is_ascii_hexdigit()));
+
+        let body = br#"{"command":"next"}"#;
+        let sig = sign_request(
+            secret,
+            "POST",
+            "/connect/command",
+            "1700000000",
+            &nonce,
+            body,
+        );
+        assert!(verify_request_signature(
+            secret,
+            "post",
+            "/connect/command",
+            "1700000000",
+            &nonce,
+            body,
+            &sig,
+        ));
+        assert!(!verify_request_signature(
+            secret,
+            "GET",
+            "/connect/command",
+            "1700000000",
+            &nonce,
+            body,
+            &sig,
+        ));
+        assert!(!verify_request_signature(
+            secret,
+            "POST",
+            "/connect/state",
+            "1700000000",
+            &nonce,
+            body,
+            &sig,
+        ));
+        assert!(!verify_request_signature(
+            secret,
+            "POST",
+            "/connect/command",
+            "1700000001",
+            &nonce,
+            body,
+            &sig,
+        ));
+        assert!(!verify_request_signature(
+            secret,
+            "POST",
+            "/connect/command",
+            "1700000000",
+            "differentnonce000000000000000000",
+            body,
+            &sig,
+        ));
+
+        assert_eq!(parse_timestamp_unix_secs("1700000000"), Some(1_700_000_000));
+        assert_eq!(
+            parse_timestamp_unix_secs("1700000000999"),
+            Some(1_700_000_000)
+        );
+        assert_eq!(parse_timestamp_unix_secs("0"), None);
+        assert_eq!(parse_timestamp_unix_secs("abc"), None);
     }
 
     #[test]

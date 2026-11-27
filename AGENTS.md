@@ -33,7 +33,7 @@ Sonata is a 5-crate Cargo workspace (`resolver = "2"`) plus a native Jetpack Com
 - `android/app/` — Native Jetpack Compose + Media3 ExoPlayer Android client (JDK 21, `minSdk = 31`, `compileSdk = 35`, `targetSdk = 35`):
   - Top-level screens & chrome (`MainActivity.kt`, `SonataViewModel.kt`, `HomeScreen.kt`, `ExploreScreen.kt`, `LibraryScreen.kt`, `DetailScreen.kt`, `NowPlayingScreen.kt`, `SearchScreen.kt`, `SonataNavigationChrome.kt`, `YtMusicLoginSheet.kt`, `PlaybackService.kt`, `ApkUpdater.kt`)
   - `playback/PlaybackOrchestrator.kt` — Generation counter, generation-keyed recovery budget, typed rate-limit policy, atomic stream swap, and narrow ended-state transition guard
-  - `ui/theme/` (`LunariaPalette.kt`, `BasicTheme.kt`, `VioletTheme.kt`, `MoonflowerTheme.kt`, `SonataGlassTweaks.kt`) — `Basic`, `Violet` & `Moonflower` light/dark/AMOLED theme systems (default: `Basic` + `ThemeMode.SYSTEM`)
+  - `ui/theme/` (`LunariaPalette.kt`, `BasicTheme.kt`, `SonataGlassTweaks.kt`) — monochrome `Basic` theme system (`ThemeMode.SYSTEM` default, Light &amp; true-black Dark)
   - `ui/i18n/SonataStrings.kt` — `en`/`tr`/`ru` UI string catalog (`AppLanguage.SYSTEM` default)
   - `ui/components/` (`SonataShareSheet.kt`, `SonataAnimatedArtworks.kt`, `SonataCards.kt`, `HeldContextMenu.kt`, `TrackOptionsMenu.kt`, `UserMenuSheet.kt`, `AddToPlaylistSheet.kt`, `EditPlaylistDialog.kt`)
   - `ui/screens/` (`ArtistScreen.kt`, `BasicThemeOverhaul.kt`, `RadioMixesTab.kt`, `CategorizedSettingsSheet.kt`, `DownloadsScreen.kt`), `ui/player/`, `ui/lyrics/`, `floatingtabbar/`, `backdrop/`, `widget/`

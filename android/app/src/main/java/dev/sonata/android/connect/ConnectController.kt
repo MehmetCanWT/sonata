@@ -3,6 +3,8 @@ package dev.sonata.android.connect
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.compose.runtime.Immutable
+import dev.sonata.android.data.AndroidKeyStoreSecretCipher
+import dev.sonata.android.data.SecretCipher
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -73,21 +75,34 @@ class InMemoryConnectSecretStore : ConnectSecretStore {
         secrets.keys.associateWith { names[it].orEmpty() }
 }
 
-class SharedPrefsConnectSecretStore(context: Context) : ConnectSecretStore {
+class SharedPrefsConnectSecretStore(
+    context: Context,
+    private val secretCipher: SecretCipher = AndroidKeyStoreSecretCipher,
+) : ConnectSecretStore {
     private val prefs: SharedPreferences by lazy {
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
 
     @Synchronized
-    override fun getSecret(deviceId: String): String? =
-        prefs.getString(keyFor(deviceId), null)?.trim()?.takeIf { it.isNotEmpty() }
+    override fun getSecret(deviceId: String): String? {
+        val cleanId = deviceId.trim()
+        if (cleanId.isEmpty()) return null
+        val key = keyFor(cleanId)
+        val stored = prefs.getString(key, null)?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val decrypted = secretCipher.decrypt(stored)?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        if (!secretCipher.isEncrypted(stored)) {
+            prefs.edit().putString(key, secretCipher.encrypt(decrypted)).apply()
+        }
+        return decrypted
+    }
 
     @Synchronized
     override fun saveSecret(deviceId: String, secret: String) {
         val cleanId = deviceId.trim()
         val cleanSecret = secret.trim()
         if (cleanId.isEmpty() || cleanSecret.isEmpty()) return
-        prefs.edit().putString(keyFor(cleanId), cleanSecret).apply()
+        val encrypted = secretCipher.encrypt(cleanSecret)
+        prefs.edit().putString(keyFor(cleanId), encrypted).apply()
     }
 
     @Synchronized

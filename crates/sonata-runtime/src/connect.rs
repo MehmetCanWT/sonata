@@ -5,8 +5,8 @@
 //! 2. **UDP LAN Discovery (`DISCOVERY_PORT = 45389`)**: Broadcasts `ConnectBeacon` announcements
 //!    with live device-name updates so mobile and peer Sonata clients can discover this host.
 //! 3. **HTTP/JSON Control Server (`ConnectHandle`)**: Serves `/connect/info`, `/connect/pair`
-//!    (6-digit PIN), interactive `/connect/pair/request` + `/connect/pair/status`, `/connect/trust`,
-//!    `/connect/state`, and HMAC-SHA1 authenticated `/connect/command` requests.
+//!    (6-digit PIN), interactive `/connect/pair/request` + `/connect/pair/status`, authenticated
+//!    `/connect/trust`, `/connect/state`, and timestamp/nonce-replay-protected `/connect/command`.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -14,9 +14,10 @@ use sonata_core::auth::{create_private_file, ensure_private_dir};
 pub use sonata_core::connect::PendingPairRequest;
 use sonata_core::connect::{
     constant_time_eq, generate_device_token, generate_pairing_pin, generate_request_id,
-    verify_signature, ConnectBeacon, ConnectCommand, ConnectStateSnapshot, PairAck,
-    PairApprovalQueued, PairApprovalRequest, PairApprovalStatus, PairRequest, TrustCheckResponse,
-    CONNECT_PROTOCOL_VERSION, DEFAULT_CONNECT_HTTP_PORT, DISCOVERY_PORT,
+    parse_timestamp_unix_secs, verify_request_signature, ConnectBeacon, ConnectCommand,
+    ConnectStateSnapshot, PairAck, PairApprovalQueued, PairApprovalRequest, PairApprovalStatus,
+    PairRequest, TrustCheckResponse, CONNECT_MAX_CLOCK_SKEW_SECS, CONNECT_PROTOCOL_VERSION,
+    DEFAULT_CONNECT_HTTP_PORT, DISCOVERY_PORT,
 };
 use sonata_core::redaction::sensitive_text;
 use std::collections::HashMap;
@@ -42,6 +43,8 @@ const PIN_LOCKOUT_DURATION: Duration = Duration::from_secs(60);
 const PIN_BACKOFF_BASE_MS: u64 = 50;
 const PAIR_REQUEST_TTL: Duration = Duration::from_secs(60);
 const PAIR_SWEEP_INTERVAL: Duration = Duration::from_secs(5);
+const MAX_PENDING_PAIR_REQUESTS: usize = 8;
+const MAX_SEEN_NONCES: usize = 2048;
 static TEMP_FILE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Public device summary exposed by `/connect/info`.
@@ -179,6 +182,7 @@ struct ConnectServerState {
     pin_attempts: Mutex<PinAttemptState>,
     paired_devices: Mutex<HashMap<String, PairedDeviceRecord>>,
     pending_pairs: Mutex<HashMap<String, PairRequestEntry>>,
+    seen_nonces: Mutex<HashMap<(String, String), Instant>>,
     pair_requests_tx: watch::Sender<Vec<PendingPairRequest>>,
     persist_lock: tokio::sync::Mutex<()>,
     file_lock: Arc<Mutex<()>>,
@@ -287,6 +291,13 @@ impl ConnectServerState {
             let request_id = if let Some(id) = existing_id {
                 id
             } else {
+                let active_pending = map
+                    .values()
+                    .filter(|e| matches!(e.lifecycle, PairRequestLifecycle::Pending))
+                    .count();
+                if active_pending >= MAX_PENDING_PAIR_REQUESTS {
+                    return Err("too_many_pending_requests".to_string());
+                }
                 let id = generate_request_id();
                 map.insert(
                     id.clone(),
@@ -314,10 +325,11 @@ impl ConnectServerState {
         })
     }
 
-    fn poll_pair_status(&self, request_id: &str) -> PairApprovalStatus {
+    fn poll_pair_status(&self, request_id: &str, requester_device_id: &str) -> PairApprovalStatus {
         let host_id = self.config.device_id.clone();
         let host_name = self.current_device_name();
         let key = request_id.trim();
+        let clean_requester = requester_device_id.trim();
         let now = Instant::now();
 
         let (status, pending) = {
@@ -328,6 +340,22 @@ impl ConnectServerState {
             let _ = Self::purge_and_collect_pending(&mut map, now);
 
             let outcome = match map.get(key) {
+                Some(entry)
+                    if clean_requester.is_empty()
+                        || !constant_time_eq(
+                            entry.device_id.as_bytes(),
+                            clean_requester.as_bytes(),
+                        ) =>
+                {
+                    PairApprovalStatus {
+                        status: "rejected".to_string(),
+                        accepted: false,
+                        device_id: host_id,
+                        device_name: host_name,
+                        token: None,
+                        message: Some("device_mismatch".to_string()),
+                    }
+                }
                 Some(entry) if matches!(entry.lifecycle, PairRequestLifecycle::Pending) => {
                     PairApprovalStatus {
                         status: "pending".to_string(),
@@ -473,28 +501,69 @@ impl ConnectServerState {
         rejected
     }
 
-    fn check_trust(&self, headers: &HashMap<String, String>) -> bool {
+    fn verify_authenticated_request(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &HashMap<String, String>,
+        body: &[u8],
+    ) -> bool {
         let device_id = headers
             .get("x-sonata-device-id")
-            .map(String::as_str)
+            .map(|s| s.trim())
+            .unwrap_or_default();
+        let timestamp_raw = headers
+            .get("x-sonata-timestamp")
+            .map(|s| s.trim())
+            .unwrap_or_default();
+        let nonce = headers
+            .get("x-sonata-nonce")
+            .map(|s| s.trim())
             .unwrap_or_default();
         let signature = headers
             .get("x-sonata-signature")
-            .map(String::as_str)
+            .map(|s| s.trim())
             .unwrap_or_default();
+
+        if device_id.is_empty()
+            || timestamp_raw.is_empty()
+            || !(8..=128).contains(&nonce.len())
+            || !nonce.bytes().all(|b| b.is_ascii_graphic())
+        {
+            return false;
+        }
+        let Some(ts_secs) = parse_timestamp_unix_secs(timestamp_raw) else {
+            return false;
+        };
+        if now_unix_secs().abs_diff(ts_secs) > CONNECT_MAX_CLOCK_SKEW_SECS {
+            return false;
+        }
         let Some(token) = self.token_for_device(device_id) else {
             return false;
         };
-        if let Some(timestamp) = headers
-            .get("x-sonata-timestamp")
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-        {
-            verify_signature(&token, timestamp.as_bytes(), signature)
-                || verify_signature(&token, b"", signature)
-        } else {
-            verify_signature(&token, b"", signature)
+        if !verify_request_signature(&token, method, path, timestamp_raw, nonce, body, signature) {
+            return false;
         }
+
+        let now = Instant::now();
+        let ttl = Duration::from_secs(CONNECT_MAX_CLOCK_SKEW_SECS * 2);
+        let key = (device_id.to_string(), nonce.to_string());
+        let mut seen = self.seen_nonces.lock().expect("connect seen nonces lock");
+        seen.retain(|_, inserted_at| now.saturating_duration_since(*inserted_at) < ttl);
+        if seen.contains_key(&key) {
+            return false;
+        }
+        if seen.len() >= MAX_SEEN_NONCES {
+            if let Some(oldest_key) = seen
+                .iter()
+                .min_by_key(|(_, inserted_at)| *inserted_at)
+                .map(|(k, _)| k.clone())
+            {
+                seen.remove(&oldest_key);
+            }
+        }
+        seen.insert(key, now);
+        true
     }
 
     fn rotate_pin_distinct(&self) -> String {
@@ -741,6 +810,7 @@ impl ConnectHandle {
             pin_attempts: Mutex::new(PinAttemptState::default()),
             paired_devices: Mutex::new(loaded_devices),
             pending_pairs: Mutex::new(HashMap::new()),
+            seen_nonces: Mutex::new(HashMap::new()),
             pair_requests_tx,
             persist_lock: tokio::sync::Mutex::new(()),
             file_lock: Arc::new(Mutex::new(())),
@@ -1225,6 +1295,24 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|w| w == b"\r\n\r\n")
 }
 
+fn is_browser_cross_origin_request(headers: &HashMap<String, String>) -> bool {
+    headers.contains_key("origin")
+        || headers.contains_key("sec-fetch-site")
+        || headers.contains_key("sec-fetch-mode")
+}
+
+fn has_json_content_type(headers: &HashMap<String, String>) -> bool {
+    headers
+        .get("content-type")
+        .map(|ct| {
+            ct.split(';')
+                .next()
+                .map(str::trim)
+                .is_some_and(|mime| mime.eq_ignore_ascii_case("application/json"))
+        })
+        .unwrap_or(false)
+}
+
 async fn handle_http_connection(
     mut stream: TcpStream,
     state: Arc<ConnectServerState>,
@@ -1233,121 +1321,142 @@ async fn handle_http_connection(
         return Ok(());
     };
 
-    let (status_line, body_json) = match (req.method.as_str(), req.path.as_str()) {
-        ("GET", "/connect/info") => {
-            let info = ConnectInfoResponse {
-                device_id: state.config.device_id.clone(),
-                device_name: state.current_device_name(),
-                platform: std::env::consts::OS.to_string(),
-                protocol_version: CONNECT_PROTOCOL_VERSION,
-                http_port: state.http_port,
-                requires_pin: true,
-            };
-            ("200 OK", serde_json::to_vec(&info)?)
-        }
-        ("POST", "/connect/pair/request") => {
-            match serde_json::from_slice::<PairApprovalRequest>(&req.body) {
-                Ok(pair_req) => match state.enqueue_pair_request(pair_req) {
-                    Ok(queued) => ("202 Accepted", serde_json::to_vec(&queued)?),
-                    Err(msg) => (
-                        "400 Bad Request",
-                        serde_json::to_vec(&serde_json::json!({ "error": msg }))?,
-                    ),
-                },
-                Err(err) => (
-                    "400 Bad Request",
-                    serde_json::to_vec(&serde_json::json!({ "error": err.to_string() }))?,
-                ),
+    let (status_line, body_json) = if is_browser_cross_origin_request(&req.headers) {
+        (
+            "403 Forbidden",
+            serde_json::to_vec(&serde_json::json!({ "error": "cross_origin_forbidden" }))?,
+        )
+    } else if req.method == "POST" && !has_json_content_type(&req.headers) {
+        (
+            "415 Unsupported Media Type",
+            serde_json::to_vec(&serde_json::json!({ "error": "content_type_must_be_json" }))?,
+        )
+    } else {
+        match (req.method.as_str(), req.path.as_str()) {
+            ("GET", "/connect/info") => {
+                let info = ConnectInfoResponse {
+                    device_id: state.config.device_id.clone(),
+                    device_name: state.current_device_name(),
+                    platform: std::env::consts::OS.to_string(),
+                    protocol_version: CONNECT_PROTOCOL_VERSION,
+                    http_port: state.http_port,
+                    requires_pin: true,
+                };
+                ("200 OK", serde_json::to_vec(&info)?)
             }
-        }
-        ("GET", "/connect/pair/status") => {
-            let request_id = req
-                .query_params
-                .get("request_id")
-                .map(String::as_str)
-                .unwrap_or_default();
-            let status = state.poll_pair_status(request_id);
-            ("200 OK", serde_json::to_vec(&status)?)
-        }
-        ("GET", "/connect/trust") => {
-            let trusted = state.check_trust(&req.headers);
-            let status = if trusted {
-                "200 OK"
-            } else {
-                "401 Unauthorized"
-            };
-            (status, serde_json::to_vec(&TrustCheckResponse { trusted })?)
-        }
-        ("POST", "/connect/pair") => match serde_json::from_slice::<PairRequest>(&req.body) {
-            Ok(pair_req) => match state.verify_and_record_pair(pair_req).await {
-                Ok(PairOutcome::Accepted(ack)) => ("200 OK", serde_json::to_vec(&ack)?),
-                Ok(PairOutcome::Rejected(ack)) => ("403 Forbidden", serde_json::to_vec(&ack)?),
-                Ok(PairOutcome::RateLimited(ack)) => {
-                    ("429 Too Many Requests", serde_json::to_vec(&ack)?)
-                }
-                Err(err) => (
-                    "500 Internal Server Error",
-                    serde_json::to_vec(
-                        &serde_json::json!({ "error": sensitive_text(&err.to_string()) }),
-                    )?,
-                ),
-            },
-            Err(err) => (
-                "400 Bad Request",
-                serde_json::to_vec(&serde_json::json!({ "error": err.to_string() }))?,
-            ),
-        },
-        ("GET", "/connect/state") => {
-            let snapshot = sanitize_connect_state_snapshot(state.state_rx.borrow().clone());
-            ("200 OK", serde_json::to_vec(&snapshot)?)
-        }
-        ("POST", "/connect/command") => {
-            let device_id = req
-                .headers
-                .get("x-sonata-device-id")
-                .map(String::as_str)
-                .unwrap_or_default();
-            let signature = req
-                .headers
-                .get("x-sonata-signature")
-                .map(String::as_str)
-                .unwrap_or_default();
-            let authorized = state
-                .token_for_device(device_id)
-                .is_some_and(|token| verify_signature(&token, &req.body, signature));
-            if !authorized {
-                (
-                    "401 Unauthorized",
-                    serde_json::to_vec(&serde_json::json!({ "error": "unauthorized" }))?,
-                )
-            } else {
-                match serde_json::from_slice::<ConnectCommand>(&req.body) {
-                    Ok(cmd) => {
-                        if state.cmd_tx.send(cmd).await.is_err() {
-                            (
-                                "503 Service Unavailable",
-                                serde_json::to_vec(
-                                    &serde_json::json!({ "error": "command receiver closed" }),
-                                )?,
-                            )
-                        } else {
-                            (
-                                "200 OK",
-                                serde_json::to_vec(&serde_json::json!({ "ok": true }))?,
-                            )
-                        }
-                    }
+            ("POST", "/connect/pair/request") => {
+                match serde_json::from_slice::<PairApprovalRequest>(&req.body) {
+                    Ok(pair_req) => match state.enqueue_pair_request(pair_req) {
+                        Ok(queued) => ("202 Accepted", serde_json::to_vec(&queued)?),
+                        Err(msg) if msg == "too_many_pending_requests" => (
+                            "429 Too Many Requests",
+                            serde_json::to_vec(&serde_json::json!({ "error": msg }))?,
+                        ),
+                        Err(msg) => (
+                            "400 Bad Request",
+                            serde_json::to_vec(&serde_json::json!({ "error": msg }))?,
+                        ),
+                    },
                     Err(err) => (
                         "400 Bad Request",
                         serde_json::to_vec(&serde_json::json!({ "error": err.to_string() }))?,
                     ),
                 }
             }
+            ("GET", "/connect/pair/status") => {
+                let request_id = req
+                    .query_params
+                    .get("request_id")
+                    .map(String::as_str)
+                    .unwrap_or_default();
+                let requester_device_id = req
+                    .headers
+                    .get("x-sonata-device-id")
+                    .map(String::as_str)
+                    .unwrap_or_default();
+                let status = state.poll_pair_status(request_id, requester_device_id);
+                ("200 OK", serde_json::to_vec(&status)?)
+            }
+            ("GET", "/connect/trust") => {
+                let trusted =
+                    state.verify_authenticated_request("GET", "/connect/trust", &req.headers, b"");
+                let status = if trusted {
+                    "200 OK"
+                } else {
+                    "401 Unauthorized"
+                };
+                (status, serde_json::to_vec(&TrustCheckResponse { trusted })?)
+            }
+            ("POST", "/connect/pair") => match serde_json::from_slice::<PairRequest>(&req.body) {
+                Ok(pair_req) => match state.verify_and_record_pair(pair_req).await {
+                    Ok(PairOutcome::Accepted(ack)) => ("200 OK", serde_json::to_vec(&ack)?),
+                    Ok(PairOutcome::Rejected(ack)) => ("403 Forbidden", serde_json::to_vec(&ack)?),
+                    Ok(PairOutcome::RateLimited(ack)) => {
+                        ("429 Too Many Requests", serde_json::to_vec(&ack)?)
+                    }
+                    Err(err) => (
+                        "500 Internal Server Error",
+                        serde_json::to_vec(
+                            &serde_json::json!({ "error": sensitive_text(&err.to_string()) }),
+                        )?,
+                    ),
+                },
+                Err(err) => (
+                    "400 Bad Request",
+                    serde_json::to_vec(&serde_json::json!({ "error": err.to_string() }))?,
+                ),
+            },
+            ("GET", "/connect/state") => {
+                if !state.verify_authenticated_request("GET", "/connect/state", &req.headers, b"") {
+                    (
+                        "401 Unauthorized",
+                        serde_json::to_vec(&serde_json::json!({ "error": "unauthorized" }))?,
+                    )
+                } else {
+                    let snapshot = sanitize_connect_state_snapshot(state.state_rx.borrow().clone());
+                    ("200 OK", serde_json::to_vec(&snapshot)?)
+                }
+            }
+            ("POST", "/connect/command") => {
+                if !state.verify_authenticated_request(
+                    "POST",
+                    "/connect/command",
+                    &req.headers,
+                    &req.body,
+                ) {
+                    (
+                        "401 Unauthorized",
+                        serde_json::to_vec(&serde_json::json!({ "error": "unauthorized" }))?,
+                    )
+                } else {
+                    match serde_json::from_slice::<ConnectCommand>(&req.body) {
+                        Ok(cmd) => {
+                            if state.cmd_tx.send(cmd).await.is_err() {
+                                (
+                                    "503 Service Unavailable",
+                                    serde_json::to_vec(
+                                        &serde_json::json!({ "error": "command receiver closed" }),
+                                    )?,
+                                )
+                            } else {
+                                (
+                                    "200 OK",
+                                    serde_json::to_vec(&serde_json::json!({ "ok": true }))?,
+                                )
+                            }
+                        }
+                        Err(err) => (
+                            "400 Bad Request",
+                            serde_json::to_vec(&serde_json::json!({ "error": err.to_string() }))?,
+                        ),
+                    }
+                }
+            }
+            _ => (
+                "404 Not Found",
+                serde_json::to_vec(&serde_json::json!({ "error": "not found" }))?,
+            ),
         }
-        _ => (
-            "404 Not Found",
-            serde_json::to_vec(&serde_json::json!({ "error": "not found" }))?,
-        ),
     };
 
     let response_headers = format!(
@@ -1417,7 +1526,44 @@ fn now_unix_secs() -> u64 {
 mod tests {
     use super::*;
     use crate::downloads::test_support::TempTestDir;
-    use sonata_core::connect::sign_payload;
+    use sonata_core::connect::{generate_nonce, sign_payload, sign_request};
+
+    fn signed_get(
+        http: &reqwest::Client,
+        url: &str,
+        path: &str,
+        device_id: &str,
+        token: &str,
+    ) -> reqwest::RequestBuilder {
+        let ts = now_unix_secs().to_string();
+        let nonce = generate_nonce();
+        let sig = sign_request(token, "GET", path, &ts, &nonce, b"");
+        http.get(url)
+            .header("X-Sonata-Device-Id", device_id)
+            .header("X-Sonata-Timestamp", ts)
+            .header("X-Sonata-Nonce", nonce)
+            .header("X-Sonata-Signature", sig)
+    }
+
+    fn signed_post_json(
+        http: &reqwest::Client,
+        url: &str,
+        path: &str,
+        device_id: &str,
+        token: &str,
+        body: Vec<u8>,
+    ) -> reqwest::RequestBuilder {
+        let ts = now_unix_secs().to_string();
+        let nonce = generate_nonce();
+        let sig = sign_request(token, "POST", path, &ts, &nonce, &body);
+        http.post(url)
+            .header("Content-Type", "application/json")
+            .header("X-Sonata-Device-Id", device_id)
+            .header("X-Sonata-Timestamp", ts)
+            .header("X-Sonata-Nonce", nonce)
+            .header("X-Sonata-Signature", sig)
+            .body(body)
+    }
 
     #[tokio::test]
     async fn pairs_serves_state_and_verifies_hmac_commands_with_private_storage() {
@@ -1495,7 +1641,14 @@ mod tests {
             assert_eq!(mode, 0o600);
         }
 
-        // 4. Update and read /connect/state
+        // 4. Reject unauthenticated /connect/state and serve authenticated /connect/state
+        let unauth_state = http
+            .get(format!("{base}/connect/state"))
+            .send()
+            .await
+            .expect("unauth state request");
+        assert_eq!(unauth_state.status(), reqwest::StatusCode::UNAUTHORIZED);
+
         handle.update_state(ConnectStateSnapshot {
             playing: true,
             title: Some("Breathe".to_string()),
@@ -1503,14 +1656,19 @@ mod tests {
             volume: 70,
             ..ConnectStateSnapshot::default()
         });
-        let snapshot: ConnectStateSnapshot = http
-            .get(format!("{base}/connect/state"))
-            .send()
-            .await
-            .expect("state request")
-            .json()
-            .await
-            .expect("state json");
+        let snapshot: ConnectStateSnapshot = signed_get(
+            &http,
+            &format!("{base}/connect/state"),
+            "/connect/state",
+            "phone-1",
+            &token,
+        )
+        .send()
+        .await
+        .expect("state request")
+        .json()
+        .await
+        .expect("state json");
         assert!(snapshot.playing);
         assert_eq!(snapshot.title.as_deref(), Some("Breathe"));
         assert_eq!(snapshot.volume, 70);
@@ -1519,7 +1677,10 @@ mod tests {
         let cmd_body = serde_json::to_vec(&ConnectCommand::SetVolume { volume: 55 }).unwrap();
         let unauth = http
             .post(format!("{base}/connect/command"))
+            .header("Content-Type", "application/json")
             .header("X-Sonata-Device-Id", "phone-1")
+            .header("X-Sonata-Timestamp", now_unix_secs().to_string())
+            .header("X-Sonata-Nonce", generate_nonce())
             .header(
                 "X-Sonata-Signature",
                 "0000000000000000000000000000000000000000",
@@ -1530,12 +1691,17 @@ mod tests {
             .expect("forged command");
         assert_eq!(unauth.status(), reqwest::StatusCode::UNAUTHORIZED);
 
-        // 6. Accept properly HMAC-SHA1 signed /connect/command
-        let sig = sign_payload(&token, &cmd_body);
+        // 6. Accept properly signed canonical /connect/command and reject replayed nonce
+        let ts = now_unix_secs().to_string();
+        let nonce = generate_nonce();
+        let sig = sign_request(&token, "POST", "/connect/command", &ts, &nonce, &cmd_body);
         let auth_resp = http
             .post(format!("{base}/connect/command"))
+            .header("Content-Type", "application/json")
             .header("X-Sonata-Device-Id", "phone-1")
-            .header("X-Sonata-Signature", sig)
+            .header("X-Sonata-Timestamp", &ts)
+            .header("X-Sonata-Nonce", &nonce)
+            .header("X-Sonata-Signature", &sig)
             .body(cmd_body.clone())
             .send()
             .await
@@ -1544,17 +1710,32 @@ mod tests {
         let received = cmd_rx.recv().await.expect("command emitted");
         assert!(matches!(received, ConnectCommand::SetVolume { volume: 55 }));
 
-        // 7. Unpair revokes further commands
-        assert!(handle.unpair_device("phone-1").expect("unpair"));
-        let sig_after = sign_payload(&token, &cmd_body);
-        let revoked = http
+        let replay_resp = http
             .post(format!("{base}/connect/command"))
+            .header("Content-Type", "application/json")
             .header("X-Sonata-Device-Id", "phone-1")
-            .header("X-Sonata-Signature", sig_after)
-            .body(cmd_body)
+            .header("X-Sonata-Timestamp", &ts)
+            .header("X-Sonata-Nonce", &nonce)
+            .header("X-Sonata-Signature", &sig)
+            .body(cmd_body.clone())
             .send()
             .await
-            .expect("revoked command");
+            .expect("replayed command");
+        assert_eq!(replay_resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        // 7. Unpair revokes further commands
+        assert!(handle.unpair_device("phone-1").expect("unpair"));
+        let revoked = signed_post_json(
+            &http,
+            &format!("{base}/connect/command"),
+            "/connect/command",
+            "phone-1",
+            &token,
+            cmd_body,
+        )
+        .send()
+        .await
+        .expect("revoked command");
         assert_eq!(revoked.status(), reqwest::StatusCode::UNAUTHORIZED);
 
         handle.shutdown();
@@ -1739,6 +1920,21 @@ mod tests {
         let (handle, _cmd_rx) = ConnectHandle::start(cfg).await.expect("start connect");
         let base = format!("http://127.0.0.1:{}", handle.http_port());
         let http = reqwest::Client::new();
+        let pin = handle.current_pin();
+        let ok_pair: PairAck = http
+            .post(format!("{base}/connect/pair"))
+            .json(&PairRequest {
+                device_id: "phone-redact".to_string(),
+                device_name: "Pixel".to_string(),
+                pin,
+            })
+            .send()
+            .await
+            .expect("pair")
+            .json()
+            .await
+            .expect("pair ack");
+        let token = ok_pair.token.expect("token");
 
         handle.update_state(ConnectStateSnapshot {
             playing: true,
@@ -1767,14 +1963,19 @@ mod tests {
             ..ConnectStateSnapshot::default()
         });
 
-        let body = http
-            .get(format!("{base}/connect/state"))
-            .send()
-            .await
-            .expect("state request")
-            .text()
-            .await
-            .expect("state text");
+        let body = signed_get(
+            &http,
+            &format!("{base}/connect/state"),
+            "/connect/state",
+            "phone-redact",
+            &token,
+        )
+        .send()
+        .await
+        .expect("state request")
+        .text()
+        .await
+        .expect("state text");
 
         for secret in [
             "alice",
@@ -1825,6 +2026,20 @@ mod tests {
         let base = format!("http://127.0.0.1:{}", handle.http_port());
         let http = reqwest::Client::new();
         let initial_pin = handle.current_pin();
+        let pair_ack: PairAck = http
+            .post(format!("{base}/connect/pair"))
+            .json(&PairRequest {
+                device_id: "phone-rename".to_string(),
+                device_name: "Pixel".to_string(),
+                pin: initial_pin.clone(),
+            })
+            .send()
+            .await
+            .expect("pair")
+            .json()
+            .await
+            .expect("pair ack");
+        let token = pair_ack.token.expect("token");
 
         handle.set_device_name("Studio Linux".to_string());
         assert_eq!(handle.current_pin(), initial_pin);
@@ -1839,14 +2054,19 @@ mod tests {
             .expect("info json");
         assert_eq!(info.device_name, "Studio Linux");
 
-        let state: ConnectStateSnapshot = http
-            .get(format!("{base}/connect/state"))
-            .send()
-            .await
-            .expect("state")
-            .json()
-            .await
-            .expect("state json");
+        let state: ConnectStateSnapshot = signed_get(
+            &http,
+            &format!("{base}/connect/state"),
+            "/connect/state",
+            "phone-rename",
+            &token,
+        )
+        .send()
+        .await
+        .expect("state")
+        .json()
+        .await
+        .expect("state json");
         assert_eq!(state.device_name, "Studio Linux");
         assert_eq!(handle.current_pin(), initial_pin);
 
@@ -1915,6 +2135,7 @@ mod tests {
                 "{base}/connect/pair/status?request_id={}",
                 queued.request_id
             ))
+            .header("X-Sonata-Device-Id", "android-1")
             .send()
             .await
             .expect("poll pending")
@@ -1925,17 +2146,34 @@ mod tests {
         assert!(!status_pending.accepted);
         assert!(status_pending.token.is_none());
 
-        // 3. Approve on host -> persists 0o600, returns one-time token on next poll
+        // 3. Approve on host -> mismatches rejected without consuming, matching requester gets token once
         assert!(handle
             .approve_pair_request(&queued.request_id)
             .expect("approve"));
         assert!(handle.pending_pair_requests().is_empty());
+
+        let wrong_device_poll: PairApprovalStatus = http
+            .get(format!(
+                "{base}/connect/pair/status?request_id={}",
+                queued.request_id
+            ))
+            .header("X-Sonata-Device-Id", "attacker-device")
+            .send()
+            .await
+            .expect("poll wrong device")
+            .json()
+            .await
+            .expect("wrong device json");
+        assert_eq!(wrong_device_poll.status, "rejected");
+        assert!(!wrong_device_poll.accepted);
+        assert!(wrong_device_poll.token.is_none());
 
         let status_approved: PairApprovalStatus = http
             .get(format!(
                 "{base}/connect/pair/status?request_id={}",
                 queued.request_id
             ))
+            .header("X-Sonata-Device-Id", "android-1")
             .send()
             .await
             .expect("poll approved")
@@ -1953,6 +2191,7 @@ mod tests {
                 "{base}/connect/pair/status?request_id={}",
                 queued.request_id
             ))
+            .header("X-Sonata-Device-Id", "android-1")
             .send()
             .await
             .expect("poll replay")
@@ -1974,19 +2213,19 @@ mod tests {
             assert_eq!(mode, 0o600);
         }
 
-        // 4. GET /connect/trust accepts signature over X-Sonata-Timestamp and empty body
-        let ts = "1700000000";
-        let ts_sig = sign_payload(&token, ts.as_bytes());
-        let trust_ts = http
-            .get(format!("{base}/connect/trust"))
-            .header("X-Sonata-Device-Id", "android-1")
-            .header("X-Sonata-Timestamp", ts)
-            .header("X-Sonata-Signature", ts_sig)
-            .send()
-            .await
-            .expect("trust ts");
-        assert_eq!(trust_ts.status(), reqwest::StatusCode::OK);
-        let trust_body: TrustCheckResponse = trust_ts.json().await.expect("trust json");
+        // 4. GET /connect/trust requires fresh timestamp + nonce canonical signature and rejects empty fallback or stale timestamps
+        let trust_fresh = signed_get(
+            &http,
+            &format!("{base}/connect/trust"),
+            "/connect/trust",
+            "android-1",
+            &token,
+        )
+        .send()
+        .await
+        .expect("trust fresh");
+        assert_eq!(trust_fresh.status(), reqwest::StatusCode::OK);
+        let trust_body: TrustCheckResponse = trust_fresh.json().await.expect("trust json");
         assert!(trust_body.trusted);
 
         let empty_sig = sign_payload(&token, b"");
@@ -1997,17 +2236,34 @@ mod tests {
             .send()
             .await
             .expect("trust empty");
-        assert_eq!(trust_empty.status(), reqwest::StatusCode::OK);
+        assert_eq!(trust_empty.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        let stale_ts = "1700000000";
+        let stale_nonce = generate_nonce();
+        let stale_sig = sign_request(&token, "GET", "/connect/trust", stale_ts, &stale_nonce, b"");
+        let trust_stale = http
+            .get(format!("{base}/connect/trust"))
+            .header("X-Sonata-Device-Id", "android-1")
+            .header("X-Sonata-Timestamp", stale_ts)
+            .header("X-Sonata-Nonce", stale_nonce)
+            .header("X-Sonata-Signature", stale_sig)
+            .send()
+            .await
+            .expect("trust stale");
+        assert_eq!(trust_stale.status(), reqwest::StatusCode::UNAUTHORIZED);
 
         // Unpair revokes trust
         assert!(handle.unpair_device("android-1").expect("unpair"));
-        let trust_revoked = http
-            .get(format!("{base}/connect/trust"))
-            .header("X-Sonata-Device-Id", "android-1")
-            .header("X-Sonata-Signature", empty_sig)
-            .send()
-            .await
-            .expect("trust revoked");
+        let trust_revoked = signed_get(
+            &http,
+            &format!("{base}/connect/trust"),
+            "/connect/trust",
+            "android-1",
+            &token,
+        )
+        .send()
+        .await
+        .expect("trust revoked");
         assert_eq!(trust_revoked.status(), reqwest::StatusCode::UNAUTHORIZED);
 
         // 5. Reject flow
@@ -2029,6 +2285,7 @@ mod tests {
                 "{base}/connect/pair/status?request_id={}",
                 rej_queued.request_id
             ))
+            .header("X-Sonata-Device-Id", "android-2")
             .send()
             .await
             .expect("rej status")
@@ -2038,6 +2295,77 @@ mod tests {
         assert_eq!(rej_status.status, "rejected");
         assert!(!rej_status.accepted);
         assert!(rej_status.token.is_none());
+
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn blocks_cross_origin_csrf_non_json_posts_and_caps_pending_pairs() {
+        let dir = TempTestDir::new("connect_csrf_and_cap");
+        let paired_path = dir.path().join("connect_paired.json");
+
+        let cfg = ConnectServerConfig {
+            device_id: "linux-csrf-1".to_string(),
+            device_name: "Test Linux".to_string(),
+            app_version: "1.0.10".to_string(),
+            http_bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            discovery_port: DISCOVERY_PORT,
+            enable_udp_beacon: false,
+            beacon_interval: Duration::from_secs(10),
+            paired_store_path: paired_path,
+        };
+
+        let (handle, _cmd_rx) = ConnectHandle::start(cfg).await.expect("start connect");
+        let base = format!("http://127.0.0.1:{}", handle.http_port());
+        let http = reqwest::Client::new();
+
+        let csrf_resp = http
+            .post(format!("{base}/connect/pair/request"))
+            .header("Origin", "https://evil.example.invalid")
+            .json(&PairApprovalRequest {
+                device_id: "browser-csrf".to_string(),
+                device_name: "Evil Tab".to_string(),
+            })
+            .send()
+            .await
+            .expect("csrf resp");
+        assert_eq!(csrf_resp.status(), reqwest::StatusCode::FORBIDDEN);
+
+        let non_json_resp = http
+            .post(format!("{base}/connect/pair/request"))
+            .header("Content-Type", "text/plain")
+            .body(r#"{"device_id":"text-1","device_name":"Plain"}"#)
+            .send()
+            .await
+            .expect("non-json resp");
+        assert_eq!(
+            non_json_resp.status(),
+            reqwest::StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
+
+        for i in 0..MAX_PENDING_PAIR_REQUESTS {
+            let queued_resp = http
+                .post(format!("{base}/connect/pair/request"))
+                .json(&PairApprovalRequest {
+                    device_id: format!("peer-{i}"),
+                    device_name: format!("Peer {i}"),
+                })
+                .send()
+                .await
+                .expect("fill pending queue");
+            assert_eq!(queued_resp.status(), reqwest::StatusCode::ACCEPTED);
+        }
+
+        let capped_resp = http
+            .post(format!("{base}/connect/pair/request"))
+            .json(&PairApprovalRequest {
+                device_id: "peer-overflow".to_string(),
+                device_name: "Overflow".to_string(),
+            })
+            .send()
+            .await
+            .expect("overflow resp");
+        assert_eq!(capped_resp.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
 
         handle.shutdown();
     }

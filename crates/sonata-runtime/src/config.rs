@@ -8,13 +8,14 @@ use crate::downloads::default_downloads_dir;
 use crate::i18n::AppLanguage;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use sonata_core::auth::ensure_private_dir;
+use sonata_core::auth::{create_private_file, ensure_private_dir};
 pub use sonata_core::cache::{
     DEFAULT_CACHE_LIMIT_BYTES, DEFAULT_CACHE_LIMIT_GB, GIGABYTE, MAX_CACHE_LIMIT_GB,
 };
 use sonata_core::paths::CorePaths;
 use sonata_core::player::RepeatMode;
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_DOWNLOADS_LIMIT_GB: u8 = 10;
@@ -527,10 +528,11 @@ impl AppConfig {
     }
 
     pub fn ensure_dirs() -> Result<()> {
-        fs::create_dir_all(Self::config_dir())?;
-        fs::create_dir_all(Self::themes_dir())?;
-        fs::create_dir_all(Self::lyrics_cache_dir())?;
-        fs::create_dir_all(Self::art_cache_dir())?;
+        ensure_private_dir(&Self::config_dir())?;
+        ensure_private_dir(&Self::themes_dir())?;
+        ensure_private_dir(&Self::cache_dir())?;
+        ensure_private_dir(&Self::lyrics_cache_dir())?;
+        ensure_private_dir(&Self::art_cache_dir())?;
 
         let example_theme = Self::themes_dir().join("example-custom.toml");
         if !example_theme.exists() {
@@ -605,9 +607,26 @@ error = "#f38ba8"
             persisted.connect_device_name = default_connect_device_name();
         }
         let body = toml::to_string_pretty(&persisted)?;
-        let tmp = path.with_extension("toml.tmp");
-        fs::write(&tmp, body)?;
-        fs::rename(&tmp, path)?;
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("config.toml");
+        let tmp = path.with_file_name(format!(
+            ".{file_name}.{}.{}.tmp",
+            std::process::id(),
+            sonata_core::connect::generate_request_id()
+        ));
+        let write_res = (|| -> Result<()> {
+            let mut file = create_private_file(&tmp)?;
+            file.write_all(body.as_bytes())?;
+            file.sync_all()?;
+            fs::rename(&tmp, path)?;
+            Ok(())
+        })();
+        if let Err(err) = write_res {
+            let _ = fs::remove_file(&tmp);
+            return Err(err);
+        }
         Ok(())
     }
 }
@@ -905,5 +924,32 @@ mod tests {
             .expect("write blank connect_device_name");
         let fallback = AppConfig::load_from(&blank_name_path);
         assert_eq!(fallback.connect_device_name, "Sonata Linux");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_to_enforces_private_0700_dir_and_0600_config_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = TempTestDir::new("cfg_private_perms");
+        let cfg_dir = dir.path().join("nested_sonata");
+        let cfg_path = cfg_dir.join("config.toml");
+
+        AppConfig::default()
+            .save_to(&cfg_path)
+            .expect("save config privately");
+
+        let dir_mode = std::fs::metadata(&cfg_dir)
+            .expect("dir metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        let file_mode = std::fs::metadata(&cfg_path)
+            .expect("file metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(dir_mode, 0o700);
+        assert_eq!(file_mode, 0o600);
     }
 }
