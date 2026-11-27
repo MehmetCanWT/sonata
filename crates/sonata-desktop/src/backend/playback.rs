@@ -1362,7 +1362,38 @@ impl BackendEngine {
             let art_paths = self.paths.clone();
             let art_limit = self.config.cache_limit_bytes();
             let track_id = track.id.clone();
+            let server_art_ctx =
+                if track.is_self_hosted() && super::library::needs_backend_art_proxy(&url) {
+                    sonata_core::providers::servers::parse_server_item_id(&track.id).and_then(|r| {
+                        self.server_profiles
+                            .iter()
+                            .find(|p| p.id == r.server_id)
+                            .cloned()
+                            .map(|p| (self.server_client.clone(), p))
+                    })
+                } else {
+                    None
+                };
             self.media_tasks.spawn(async move {
+                if let Some((client, profile)) = server_art_ctx {
+                    if let Some((ambient, path)) = super::library::cache_self_hosted_art_url(
+                        &client, &profile, &url, &art_paths, art_limit,
+                    )
+                    .await
+                    {
+                        let _ = art_tx.send(InternalEvent::ArtworkReady {
+                            play_seq,
+                            track_id,
+                            url,
+                            art_path: path.exists().then_some(path),
+                            ambient_rgb: ambient,
+                        });
+                    }
+                    return;
+                }
+                if super::library::needs_backend_art_proxy(&url) {
+                    return;
+                }
                 if let Some((img, _)) =
                     media::fetch_and_decode_art(&art_http, &url, &art_paths, art_limit).await
                 {

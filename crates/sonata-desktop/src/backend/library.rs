@@ -8,16 +8,19 @@ use super::types::{InternalEvent, NavTarget, UiWindowCmd};
 use super::BackendEngine;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use sonata_core::auth::ExtractedCookies;
+use sonata_core::paths::CorePaths;
 use sonata_core::playlists::{
     is_personal_track_id, PersonalPlaylistStore, PERSONAL_PLAYLIST_ID_PREFIX,
 };
 use sonata_core::providers::hifi::extract_badge_kbps;
 use sonata_core::providers::local::scan_directories;
 use sonata_core::providers::servers::{
-    jellyfin, parse_server_item_id, save_server_profiles, webdav, ServerClient, ServerKind,
-    ServerProfile,
+    jellyfin, parse_server_item_id, save_server_profiles, validate_server_transport, webdav,
+    ServerClient, ServerKind, ServerProfile,
 };
-use sonata_core::providers::ytmusic::{ArtistPage, HomeShelf, MoodChip, YtMusicClient};
+use sonata_core::providers::ytmusic::{
+    AlbumDetail, ArtistPage, HomeCard, HomeShelf, MoodChip, YtMusicClient,
+};
 use sonata_core::providers::{Playlist, ProviderSource, Track};
 use sonata_runtime::auth::extract_ytm_cookies_from_browser;
 use sonata_runtime::config::AppConfig;
@@ -25,12 +28,141 @@ use sonata_runtime::downloads::{DownloadCollectionRef, DownloadStore, DownloadTr
 use sonata_runtime::hyprland;
 use sonata_runtime::media;
 use sonata_runtime::process::LinuxStreamResolver;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
-use tokio::sync::mpsc;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 
-static REPAIRED_ART_PATHS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+const MAX_SELF_HOSTED_ART_BYTES: usize = 8 * 1024 * 1024;
+const MAX_SELF_HOSTED_ART_BATCH: usize = 64;
+
+pub(super) fn needs_backend_art_proxy(url: &str) -> bool {
+    let trimmed = url.trim();
+    trimmed.starts_with("http://")
+        || (trimmed.starts_with("https://") && trimmed.contains("/rest/getCoverArt.view"))
+}
+
+pub(super) async fn cache_self_hosted_art_url(
+    client: &ServerClient,
+    profile: &ServerProfile,
+    url: &str,
+    paths: &CorePaths,
+    cache_limit_bytes: u64,
+) -> Option<((u8, u8, u8), PathBuf)> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let cache_path = media::art_cache_path_in(paths, trimmed);
+    if cache_path.exists() {
+        if let Some(ambient) = media::cached_art_ambient_rgb(cache_path.clone()).await {
+            return Some((ambient, cache_path));
+        }
+    }
+    let bytes = client
+        .fetch_artwork_bytes(profile, trimmed, MAX_SELF_HOSTED_ART_BYTES)
+        .await
+        .ok()?;
+    let (img, _png, path) = media::decode_and_cache_art_bytes(
+        bytes,
+        trimmed,
+        paths,
+        cache_limit_bytes.max(64 * 1024 * 1024),
+    )
+    .await?;
+    Some((media::extract_ambient_rgb(&img), path))
+}
+
+async fn proxy_self_hosted_art_map(
+    client: &ServerClient,
+    profile: &ServerProfile,
+    urls: Vec<String>,
+    paths: &CorePaths,
+    cache_limit_bytes: u64,
+) -> HashMap<String, String> {
+    let mut seen = HashSet::new();
+    let targets: Vec<String> = urls
+        .into_iter()
+        .filter(|u| needs_backend_art_proxy(u) && seen.insert(u.clone()))
+        .take(MAX_SELF_HOSTED_ART_BATCH)
+        .collect();
+    if targets.is_empty() {
+        return HashMap::new();
+    }
+    let sem = Arc::new(Semaphore::new(4));
+    let mut handles = Vec::with_capacity(targets.len());
+    for raw_url in targets {
+        let sem = Arc::clone(&sem);
+        let client = client.clone();
+        let profile = profile.clone();
+        let paths = paths.clone();
+        handles.push(tokio::spawn(async move {
+            let Ok(_permit) = sem.acquire().await else {
+                return None;
+            };
+            let cache_path = media::art_cache_path_in(&paths, &raw_url);
+            if cache_path.exists() {
+                return Some((raw_url, cache_path.to_string_lossy().into_owned()));
+            }
+            let bytes = client
+                .fetch_artwork_bytes(&profile, &raw_url, MAX_SELF_HOSTED_ART_BYTES)
+                .await
+                .ok()?;
+            let (_img, _png, saved) = media::decode_and_cache_art_bytes(
+                bytes,
+                &raw_url,
+                &paths,
+                cache_limit_bytes.max(64 * 1024 * 1024),
+            )
+            .await?;
+            Some((raw_url, saved.to_string_lossy().into_owned()))
+        }));
+    }
+    let mut mapped = HashMap::new();
+    for handle in handles {
+        if let Ok(Some((raw, local))) = handle.await {
+            mapped.insert(raw, local);
+        }
+    }
+    mapped
+}
+
+fn rewrite_url_opt(slot: &mut Option<String>, map: &HashMap<String, String>) {
+    if let Some(ref mut u) = slot {
+        if let Some(local) = map.get(u.as_str()) {
+            *u = local.clone();
+        } else if needs_backend_art_proxy(u) {
+            *slot = None;
+        }
+    }
+}
+
+fn rewrite_cards_thumbs(cards: &mut [HomeCard], map: &HashMap<String, String>) {
+    for c in cards {
+        rewrite_url_opt(&mut c.thumbnail_url, map);
+        if let Some(ref mut t) = c.track {
+            rewrite_url_opt(&mut t.thumbnail_url, map);
+        }
+    }
+}
+
+fn rewrite_playlists_thumbs(playlists: &mut [Playlist], map: &HashMap<String, String>) {
+    for p in playlists {
+        rewrite_url_opt(&mut p.thumbnail_url, map);
+    }
+}
+
+fn rewrite_tracks_thumbs(tracks: &mut [Track], map: &HashMap<String, String>) {
+    for t in tracks {
+        rewrite_url_opt(&mut t.thumbnail_url, map);
+    }
+}
+
+fn rewrite_album_thumbs(album: &mut AlbumDetail, map: &HashMap<String, String>) {
+    rewrite_url_opt(&mut album.cover_url, map);
+    rewrite_tracks_thumbs(&mut album.tracks, map);
+    rewrite_cards_thumbs(&mut album.other_versions, map);
+}
 
 fn extract_primary_artist_name(raw: &str) -> String {
     let trimmed = raw.trim();
@@ -63,123 +195,6 @@ fn extract_primary_artist_name(raw: &str) -> String {
 }
 
 impl BackendEngine {
-    pub(super) fn prefetch_thumbnails(&self, urls: Vec<String>) {
-        self.prefetch_thumbnails_with_priority(urls, false);
-    }
-
-    pub(super) fn prefetch_thumbnails_urgent(&self, urls: Vec<String>) {
-        self.prefetch_thumbnails_with_priority(urls, true);
-    }
-
-    fn prefetch_thumbnails_with_priority(&self, urls: Vec<String>, urgent: bool) {
-        let mut candidates = Vec::new();
-        let mut existing_to_check = Vec::new();
-        let in_flight_cap = if urgent { 256 } else { 192 };
-        let candidate_cap = if urgent { 160 } else { 96 };
-        {
-            let Ok(mut in_flight) = self.in_flight_thumbs.lock() else {
-                return;
-            };
-            let checked = REPAIRED_ART_PATHS.get_or_init(|| Mutex::new(HashSet::new()));
-            let mut seen_urls = HashSet::with_capacity(urls.len());
-            for url in urls {
-                if in_flight.len() >= in_flight_cap {
-                    break;
-                }
-                if url.is_empty() || !seen_urls.insert(url.clone()) {
-                    continue;
-                }
-                let path = media::art_cache_path(&url);
-                let stale_small_banner = url.contains("=w1600")
-                    && image::image_dimensions(&path).is_ok_and(|(w, _)| w <= 640);
-                if path.exists() && !stale_small_banner {
-                    if existing_to_check.len() < 48 {
-                        if let Ok(mut guard) = checked.lock() {
-                            if guard.insert(path.clone()) {
-                                existing_to_check.push(path);
-                            }
-                        }
-                    }
-                    continue;
-                }
-                if in_flight.contains(&url) {
-                    continue;
-                }
-                in_flight.insert(url.clone());
-                candidates.push(url);
-                if candidates.len() >= candidate_cap {
-                    break;
-                }
-            }
-        }
-        if !existing_to_check.is_empty() {
-            let int_tx = self.int_tx.clone();
-            tokio::spawn(async move {
-                let mut repaired_any = false;
-                for path in existing_to_check {
-                    if media::repair_cached_art_if_bars(path).await {
-                        repaired_any = true;
-                    }
-                }
-                if repaired_any {
-                    let _ = int_tx.send(InternalEvent::ThumbnailsReady);
-                }
-            });
-        }
-        if candidates.is_empty() {
-            return;
-        }
-
-        let http = self.http.clone();
-        let paths = self.paths.clone();
-        let cache_limit = self.config.cache_limit_bytes();
-        let int_tx = self.int_tx.clone();
-        let in_flight = self.in_flight_thumbs.clone();
-        let slots = if urgent {
-            self.urgent_thumbnail_slots.clone()
-        } else {
-            self.thumbnail_slots.clone()
-        };
-        tokio::spawn(async move {
-            let (done_tx, mut done_rx) = mpsc::channel::<()>(16);
-            for url in candidates {
-                let slots = slots.clone();
-                let http = http.clone();
-                let paths = paths.clone();
-                let in_flight = in_flight.clone();
-                let done_tx = done_tx.clone();
-                tokio::spawn(async move {
-                    let Ok(_permit) = slots.acquire().await else {
-                        if let Ok(mut guard) = in_flight.lock() {
-                            guard.remove(&url);
-                        }
-                        return;
-                    };
-                    let _ = tokio::time::timeout(
-                        std::time::Duration::from_secs(12),
-                        media::fetch_and_decode_art(&http, &url, &paths, cache_limit),
-                    )
-                    .await;
-                    if let Ok(mut guard) = in_flight.lock() {
-                        guard.remove(&url);
-                    }
-                    let _ = done_tx.send(()).await;
-                });
-            }
-            drop(done_tx);
-
-            let notify_step = if urgent { 2 } else { 4 };
-            let mut count = 0usize;
-            while done_rx.recv().await.is_some() {
-                count += 1;
-                if count == 1 || count.is_multiple_of(notify_step) {
-                    let _ = int_tx.send(InternalEvent::ThumbnailsReady);
-                }
-            }
-            let _ = int_tx.send(InternalEvent::ThumbnailsReady);
-        });
-    }
-
     pub(super) fn start_sign_in(&mut self, browser_id: String) {
         self.signing_in = true;
         self.sign_in_error = None;
@@ -811,9 +826,34 @@ impl BackendEngine {
                     self.status_line = sonata_runtime::i18n::fmt_loading_item(lang, label);
                     let client = self.server_client.clone();
                     let int_tx = self.int_tx.clone();
+                    let paths = self.paths.clone();
+                    let cache_limit = self.config.cache_limit_bytes();
                     tokio::spawn(async move {
                         match client.get_album(&profile, &id).await {
-                            Ok(album) => {
+                            Ok(mut album) => {
+                                let mut urls = Vec::new();
+                                if let Some(u) = &album.cover_url {
+                                    urls.push(u.clone());
+                                }
+                                for t in &album.tracks {
+                                    if let Some(u) = &t.thumbnail_url {
+                                        urls.push(u.clone());
+                                    }
+                                }
+                                for c in &album.other_versions {
+                                    if let Some(u) = &c.thumbnail_url {
+                                        urls.push(u.clone());
+                                    }
+                                }
+                                let map = proxy_self_hosted_art_map(
+                                    &client,
+                                    &profile,
+                                    urls,
+                                    &paths,
+                                    cache_limit,
+                                )
+                                .await;
+                                rewrite_album_thumbs(&mut album, &map);
                                 let _ = int_tx.send(InternalEvent::AlbumDetailLoaded {
                                     req_id,
                                     album: Some(album),
@@ -1107,9 +1147,24 @@ impl BackendEngine {
                 let client = self.server_client.clone();
                 let int_tx = self.int_tx.clone();
                 let lang = self.ytm_language;
+                let paths = self.paths.clone();
+                let cache_limit = self.config.cache_limit_bytes();
                 tokio::spawn(async move {
                     match client.get_playlist_tracks(&profile, &id).await {
-                        Ok(tracks) => {
+                        Ok(mut tracks) => {
+                            let urls: Vec<String> = tracks
+                                .iter()
+                                .filter_map(|t| t.thumbnail_url.clone())
+                                .collect();
+                            let map = proxy_self_hosted_art_map(
+                                &client,
+                                &profile,
+                                urls,
+                                &paths,
+                                cache_limit,
+                            )
+                            .await;
+                            rewrite_tracks_thumbs(&mut tracks, &map);
                             let _ = int_tx.send(InternalEvent::CollectionLoaded {
                                 req_id,
                                 id,
@@ -1159,11 +1214,6 @@ impl BackendEngine {
                 if !cached_name.is_empty() {
                     self.playlist_heading = cached_name;
                 }
-                let urls: Vec<String> = cached_tracks
-                    .iter()
-                    .filter_map(|t| t.thumbnail_url.clone())
-                    .collect();
-                self.prefetch_thumbnails(urls);
                 self.playlist_tracks = cached_tracks;
                 self.playlist_loading = false;
             }
@@ -2431,6 +2481,7 @@ impl BackendEngine {
         share: Option<String>,
         domain: Option<String>,
         local_mount_path: Option<PathBuf>,
+        allow_insecure_lan_http: bool,
     ) {
         self.server_test_result = None;
         let http = self.http.clone();
@@ -2449,6 +2500,7 @@ impl BackendEngine {
                 share,
                 domain,
                 local_mount_path,
+                allow_insecure_lan_http,
             );
             let res = prepare_and_ping_server(&http, &mut profile, lang).await;
             let _ = int_tx.send(InternalEvent::ServerTested {
@@ -2472,6 +2524,7 @@ impl BackendEngine {
         share: Option<String>,
         domain: Option<String>,
         local_mount_path: Option<PathBuf>,
+        allow_insecure_lan_http: bool,
     ) {
         let http = self.http.clone();
         let int_tx = self.int_tx.clone();
@@ -2489,7 +2542,15 @@ impl BackendEngine {
                 share,
                 domain,
                 local_mount_path,
+                allow_insecure_lan_http,
             );
+            if let Err(err) = validate_server_transport(&profile).await {
+                let _ = int_tx.send(InternalEvent::ServerTested {
+                    server_id: None,
+                    result: Err(err.to_string()),
+                });
+                return;
+            }
             let ping_res = prepare_and_ping_server(&http, &mut profile, lang).await;
             let message = match ping_res {
                 Ok(msg) => sonata_runtime::i18n::fmt_saved_server(lang, &profile.name, &msg),
@@ -2561,6 +2622,8 @@ impl BackendEngine {
         let client = self.server_client.clone();
         let http = self.http.clone();
         let int_tx = self.int_tx.clone();
+        let paths = self.paths.clone();
+        let cache_limit = self.config.cache_limit_bytes();
         tokio::spawn(async move {
             if profile.kind == ServerKind::WebDav {
                 let raw_folder = folder_path.as_deref().map(|raw| {
@@ -2569,7 +2632,7 @@ impl BackendEngine {
                         .unwrap_or_else(|| raw.to_string())
                 });
                 match webdav::browse_folder(&http, &profile, raw_folder.as_deref()).await {
-                    Ok(listing) => {
+                    Ok(mut listing) => {
                         let libs = listing
                             .folders
                             .into_iter()
@@ -2583,6 +2646,15 @@ impl BackendEngine {
                                 kind: "folder".to_string(),
                             })
                             .collect();
+                        let urls: Vec<String> = listing
+                            .tracks
+                            .iter()
+                            .filter_map(|t| t.thumbnail_url.clone())
+                            .collect();
+                        let map =
+                            proxy_self_hosted_art_map(&client, &profile, urls, &paths, cache_limit)
+                                .await;
+                        rewrite_tracks_thumbs(&mut listing.tracks, &map);
                         let _ = int_tx.send(InternalEvent::ServerBrowseLoaded {
                             req_id,
                             server_id,
@@ -2640,14 +2712,39 @@ impl BackendEngine {
                 .or(albums_res.as_ref().err())
                 .or(playlists_res.as_ref().err())
                 .map(|e| e.to_string());
+            let mut artists = artists_res.unwrap_or_default();
+            let mut albums = albums_res.unwrap_or_default();
+            let mut playlists = playlists_res.unwrap_or_default();
+            let mut tracks = tracks;
+            let mut urls = Vec::new();
+            for c in artists.iter().chain(albums.iter()) {
+                if let Some(u) = &c.thumbnail_url {
+                    urls.push(u.clone());
+                }
+            }
+            for p in &playlists {
+                if let Some(u) = &p.thumbnail_url {
+                    urls.push(u.clone());
+                }
+            }
+            for t in &tracks {
+                if let Some(u) = &t.thumbnail_url {
+                    urls.push(u.clone());
+                }
+            }
+            let map = proxy_self_hosted_art_map(&client, &profile, urls, &paths, cache_limit).await;
+            rewrite_cards_thumbs(&mut artists, &map);
+            rewrite_cards_thumbs(&mut albums, &map);
+            rewrite_playlists_thumbs(&mut playlists, &map);
+            rewrite_tracks_thumbs(&mut tracks, &map);
             let _ = int_tx.send(InternalEvent::ServerBrowseLoaded {
                 req_id,
                 server_id,
                 folder_path: None,
                 libraries: libs_res.unwrap_or_default(),
-                artists: artists_res.unwrap_or_default(),
-                albums: albums_res.unwrap_or_default(),
-                playlists: playlists_res.unwrap_or_default(),
+                artists,
+                albums,
+                playlists,
                 tracks,
                 error,
             });
@@ -2668,6 +2765,7 @@ fn build_server_profile(
     share: Option<String>,
     domain: Option<String>,
     local_mount_path: Option<PathBuf>,
+    allow_insecure_lan_http: bool,
 ) -> ServerProfile {
     let clean_name = if name.trim().is_empty() {
         kind.display_name().to_string()
@@ -2709,6 +2807,7 @@ fn build_server_profile(
     profile.share = opt(share);
     profile.domain = opt(domain);
     profile.local_mount_path = local_mount_path.filter(|p| !p.as_os_str().is_empty());
+    profile.allow_insecure_lan_http = allow_insecure_lan_http;
     profile
 }
 
@@ -2724,6 +2823,9 @@ async fn prepare_and_ping_server(
             .server_url_required
             .to_string());
     }
+    validate_server_transport(profile)
+        .await
+        .map_err(|err| err.to_string())?;
     if profile.kind == ServerKind::Jellyfin
         && profile
             .api_key
@@ -2737,12 +2839,13 @@ async fn prepare_and_ping_server(
         let user = profile.username.as_deref().unwrap_or("").trim();
         let pass = profile.password.as_deref().unwrap_or("");
         if !user.is_empty() {
-            let auth = jellyfin::authenticate_by_name(
+            let auth = jellyfin::authenticate_by_name_with_policy(
                 http,
                 &profile.normalized_base_url(),
                 user,
                 pass,
                 &profile.id,
+                profile.allow_insecure_lan_http,
             )
             .await
             .map_err(|err| err.to_string())?;

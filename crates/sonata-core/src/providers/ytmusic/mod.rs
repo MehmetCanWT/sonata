@@ -118,6 +118,25 @@ type ArtistCache = Arc<Mutex<HashMap<String, (Instant, ArtistPage)>>>;
 type ExplicitCache = Arc<Mutex<HashMap<String, (Instant, Option<Track>)>>>;
 type RadioContinuationCache = Arc<Mutex<HashMap<String, (Instant, String)>>>;
 
+const MAX_PLAYLIST_CACHE_ENTRIES: usize = 24;
+
+fn insert_bounded_playlist_cache(
+    cache: &mut HashMap<String, (Instant, Vec<Track>)>,
+    browse_id: String,
+    tracks: Vec<Track>,
+) {
+    if !cache.contains_key(&browse_id) && cache.len() >= MAX_PLAYLIST_CACHE_ENTRIES {
+        if let Some(oldest_key) = cache
+            .iter()
+            .min_by_key(|(_, (ts, _))| *ts)
+            .map(|(k, _)| k.clone())
+        {
+            cache.remove(&oldest_key);
+        }
+    }
+    cache.insert(browse_id, (Instant::now(), tracks));
+}
+
 #[derive(Debug, Clone, Default)]
 struct ChannelScope {
     page_id: Option<String>,
@@ -582,7 +601,7 @@ impl YtMusicClient {
         }
 
         let mut guard = self.playlist_cache.lock().await;
-        guard.insert(browse_id, (Instant::now(), all_tracks));
+        insert_bounded_playlist_cache(&mut guard, browse_id, all_tracks);
 
         Ok(())
     }
@@ -3085,11 +3104,12 @@ pub(crate) fn rank_and_diversify_recommendations(
 #[cfg(test)]
 mod tests {
     use super::{
-        accept_language_header, build_videostats_url, generate_cpn, is_manual_user_playlist_id,
-        is_mix_playlist_id, is_valid_ytm_video_id, normalize_endless_playlist_id,
-        normalize_playback_playlist_id, prefer_explicit_order, primary_artist_query,
-        rank_and_diversify_recommendations, select_best_ytm_attribution_match, ArtistPage, Client,
-        ExtractedCookies, Instant, YtMusicClient,
+        accept_language_header, build_videostats_url, generate_cpn, insert_bounded_playlist_cache,
+        is_manual_user_playlist_id, is_mix_playlist_id, is_valid_ytm_video_id,
+        normalize_endless_playlist_id, normalize_playback_playlist_id, prefer_explicit_order,
+        primary_artist_query, rank_and_diversify_recommendations,
+        select_best_ytm_attribution_match, ArtistPage, Client, ExtractedCookies, HashMap, Instant,
+        YtMusicClient, MAX_PLAYLIST_CACHE_ENTRIES,
     };
     use crate::providers::{ProviderSource, Track};
 
@@ -3240,6 +3260,16 @@ mod tests {
         // Unsupported language falls back to "en".
         client.set_language("fr").await;
         assert_eq!(client.language.read().await.as_str(), "en");
+    }
+
+    #[tokio::test]
+    async fn playlist_cache_is_bounded_by_max_entries() {
+        let mut cache = HashMap::new();
+        for idx in 0..(MAX_PLAYLIST_CACHE_ENTRIES + 8) {
+            insert_bounded_playlist_cache(&mut cache, format!("VL{idx}"), Vec::new());
+            assert!(cache.len() <= MAX_PLAYLIST_CACHE_ENTRIES);
+        }
+        assert_eq!(cache.len(), MAX_PLAYLIST_CACHE_ENTRIES);
     }
 
     #[test]

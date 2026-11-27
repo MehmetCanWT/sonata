@@ -761,6 +761,9 @@ pub struct AndroidServerProfile {
     #[serde(default)]
     #[uniffi(default = None)]
     pub local_mount_path: Option<String>,
+    #[serde(default)]
+    #[uniffi(default = false)]
+    pub allow_insecure_lan_http: bool,
 }
 
 impl std::fmt::Debug for AndroidServerProfile {
@@ -791,6 +794,7 @@ impl std::fmt::Debug for AndroidServerProfile {
             .field("share", &self.share)
             .field("domain", &self.domain)
             .field("local_mount_path", &self.local_mount_path)
+            .field("allow_insecure_lan_http", &self.allow_insecure_lan_http)
             .finish()
     }
 }
@@ -815,6 +819,7 @@ impl From<ServerProfile> for AndroidServerProfile {
             local_mount_path: p
                 .local_mount_path
                 .map(|path| path.to_string_lossy().into_owned()),
+            allow_insecure_lan_http: p.allow_insecure_lan_http,
         }
     }
 }
@@ -843,6 +848,7 @@ impl From<AndroidServerProfile> for ServerProfile {
             share: clean_opt(p.share),
             domain: clean_opt(p.domain),
             local_mount_path: clean_opt(p.local_mount_path).map(PathBuf::from),
+            allow_insecure_lan_http: p.allow_insecure_lan_http,
         }
     }
 }
@@ -1498,12 +1504,13 @@ impl SonataAndroidEngine {
             } else {
                 profile.id.clone()
             };
-            let auth = jellyfin::authenticate_by_name(
+            let auth = jellyfin::authenticate_by_name_with_policy(
                 &self.http,
                 &profile.base_url,
                 user,
                 pass,
                 &device_id,
+                profile.allow_insecure_lan_http,
             )
             .await?;
             profile.access_token = Some(auth.access_token);
@@ -2509,6 +2516,7 @@ impl SonataAndroidEngine {
         } else {
             core_profile.id = core_profile.id.trim().to_string();
         }
+        sonata_core::providers::servers::validate_server_transport(&core_profile).await?;
         core_profile = self.ensure_jellyfin_auth_if_needed(core_profile).await?;
 
         let _guard = self.server_lock.lock().await;
@@ -2587,6 +2595,7 @@ impl SonataAndroidEngine {
     ) -> Result<String, SonataAndroidError> {
         let mut core_profile: ServerProfile = profile.into();
         core_profile.base_url = core_profile.normalized_base_url();
+        sonata_core::providers::servers::validate_server_transport(&core_profile).await?;
         core_profile = self.ensure_jellyfin_auth_if_needed(core_profile).await?;
         let status = self.server_client().ping(&core_profile).await?;
         Ok(status)
@@ -2819,6 +2828,7 @@ impl SonataAndroidEngine {
         track: AndroidTrack,
     ) -> Result<AndroidServerStream, SonataAndroidError> {
         let (profile, _) = self.find_server_for_item(&track.id).await?;
+        sonata_core::providers::servers::validate_server_transport(&profile).await?;
         let core_track: Track = track.into();
         let stream = self.server_client().resolve_stream(&profile, &core_track)?;
         Ok(AndroidServerStream::from(stream))
@@ -3597,6 +3607,7 @@ mod tests {
             share: None,
             domain: None,
             local_mount_path: None,
+            allow_insecure_lan_http: false,
         };
         let dav = AndroidServerProfile {
             id: "".to_string(),
@@ -3614,7 +3625,19 @@ mod tests {
             share: None,
             domain: None,
             local_mount_path: None,
+            allow_insecure_lan_http: false,
         };
+
+        // Credentialed http:// must be rejected by default without allow_insecure_lan_http.
+        let mut rejected_http = jf.clone();
+        rejected_http.base_url = "http://192.168.1.50:8096".to_string();
+        assert!(engine.upsert_server(rejected_http).await.is_err());
+
+        // Public http:// must remain rejected even when allow_insecure_lan_http is true.
+        let mut rejected_public = jf.clone();
+        rejected_public.base_url = "http://93.184.216.34:8096".to_string();
+        rejected_public.allow_insecure_lan_http = true;
+        assert!(engine.upsert_server(rejected_public).await.is_err());
 
         let dbg_jf = format!("{jf:?}");
         assert!(!dbg_jf.contains("jf-secret-pw"));
@@ -3772,6 +3795,7 @@ mod tests {
             share: Some("Music".to_string()),
             domain: Some("WORKGROUP".to_string()),
             local_mount_path: Some(smb_mount.to_string_lossy().into_owned()),
+            allow_insecure_lan_http: false,
         };
 
         let servers = engine.upsert_server(smb).await.expect("upsert smb");

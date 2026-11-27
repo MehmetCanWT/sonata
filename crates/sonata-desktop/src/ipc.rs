@@ -804,7 +804,6 @@ pub struct UiSnapshotDto {
     pub video_loading: bool,
     pub has_music_video_candidate: bool,
     pub available_video_qualities: Vec<String>,
-    pub thumb_rev: u64,
     pub lyrics: UiLyricsDto,
     pub translated_lyrics: Option<Vec<String>>,
     pub romanized_lyrics: Option<Vec<String>>,
@@ -963,7 +962,6 @@ impl From<&DesktopSnapshot> for UiSnapshotDto {
                 .iter()
                 .map(|q: &VideoQualityStream| q.quality_label.clone())
                 .collect(),
-            thumb_rev: s.thumb_rev,
             lyrics: UiLyricsDto::from(&s.lyrics),
             translated_lyrics: s.translated_lyrics.clone(),
             romanized_lyrics: s.romanized_lyrics.clone(),
@@ -1268,6 +1266,8 @@ pub enum BackendCmdDto {
         password: Option<String>,
         api_key: Option<String>,
         bearer_token: Option<String>,
+        #[serde(default)]
+        allow_insecure_lan_http: bool,
     },
     TestServerDraft {
         name: String,
@@ -1277,6 +1277,8 @@ pub enum BackendCmdDto {
         password: Option<String>,
         api_key: Option<String>,
         bearer_token: Option<String>,
+        #[serde(default)]
+        allow_insecure_lan_http: bool,
     },
     ProbeServerHealth {
         id: String,
@@ -1533,6 +1535,7 @@ impl From<BackendCmdDto> for BackendCmd {
                 password,
                 api_key,
                 bearer_token,
+                allow_insecure_lan_http,
             } => Self::SaveServerProfile {
                 id,
                 name,
@@ -1545,6 +1548,7 @@ impl From<BackendCmdDto> for BackendCmd {
                 share: None,
                 domain: None,
                 local_mount_path: None,
+                allow_insecure_lan_http,
             },
             BackendCmdDto::TestServerDraft {
                 name,
@@ -1554,6 +1558,7 @@ impl From<BackendCmdDto> for BackendCmd {
                 password,
                 api_key,
                 bearer_token,
+                allow_insecure_lan_http,
             } => Self::TestServerDraft {
                 name,
                 kind,
@@ -1565,6 +1570,7 @@ impl From<BackendCmdDto> for BackendCmd {
                 share: None,
                 domain: None,
                 local_mount_path: None,
+                allow_insecure_lan_http,
             },
             BackendCmdDto::ProbeServerHealth { id } => Self::ProbeServerHealth(id),
             BackendCmdDto::RunServerSpeedTest { id } => Self::RunServerSpeedTest(id),
@@ -1961,6 +1967,7 @@ mod tests {
             share: None,
             domain: None,
             local_mount_path: None,
+            allow_insecure_lan_http: false,
             enabled: true,
         };
         let sanitized = sanitize_server_profile(&profile);

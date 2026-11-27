@@ -215,6 +215,7 @@ pub enum BackendCmd {
         share: Option<String>,
         domain: Option<String>,
         local_mount_path: Option<PathBuf>,
+        allow_insecure_lan_http: bool,
     },
     TestServerDraft {
         name: String,
@@ -227,6 +228,7 @@ pub enum BackendCmd {
         share: Option<String>,
         domain: Option<String>,
         local_mount_path: Option<PathBuf>,
+        allow_insecure_lan_http: bool,
     },
     ProbeServerHealth(String),
     RunServerSpeedTest(String),
@@ -361,7 +363,6 @@ pub struct DesktopSnapshot {
     pub spotify_notice: Option<String>,
     pub update_info: Option<UpdateCheckResult>,
     pub checking_updates: bool,
-    pub thumb_rev: u64,
     pub downloaded_tracks: Vec<DownloadedTrack>,
     pub downloaded_collections: Vec<DownloadedCollection>,
     pub downloaded_track_ids: HashSet<String>,
@@ -802,7 +803,6 @@ pub(super) enum InternalEvent {
         track_id: String,
         path: PathBuf,
     },
-    ThumbnailsReady,
     PlaylistCreated(Playlist),
     PlaylistUpdated {
         playlist_id: String,
@@ -1008,6 +1008,7 @@ mod tests {
             share: None,
             domain: None,
             local_mount_path: None,
+            allow_insecure_lan_http: false,
             enabled,
         }
     }

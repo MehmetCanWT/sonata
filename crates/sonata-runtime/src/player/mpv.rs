@@ -269,8 +269,14 @@ pub fn build_mpv_spawn_args_with_gapless(
         "--aid=auto".to_string(),
         "--mute=no".to_string(),
         "--cache=yes".to_string(),
-        "--cache-secs=30".to_string(),
-        "--demuxer-max-bytes=64M".to_string(),
+        "--cache-secs=20".to_string(),
+        if video_mode {
+            "--demuxer-max-bytes=32M"
+        } else {
+            "--demuxer-max-bytes=16M"
+        }
+        .to_string(),
+        "--demuxer-max-back-bytes=8M".to_string(),
         "--network-timeout=8".to_string(),
         "--force-seekable=yes".to_string(),
         "--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_delay_max=2".to_string(),
@@ -1276,12 +1282,17 @@ mod tests {
         assert!(audio_args.contains(&"--msg-level=all=error".to_string()));
         assert!(audio_args.contains(&"--no-video".to_string()));
         assert!(audio_args.contains(&"--audio-display=no".to_string()));
+        assert!(audio_args.contains(&"--cache-secs=20".to_string()));
+        assert!(audio_args.contains(&"--demuxer-max-bytes=16M".to_string()));
+        assert!(audio_args.contains(&"--demuxer-max-back-bytes=8M".to_string()));
         assert!(audio_args.contains(&"--speed=1.50".to_string()));
         assert!(audio_args.contains(&format!("--af={SKIP_SILENCE_AF_FILTER}")));
 
         let video_args = build_mpv_spawn_args(85, 1.25, true, true, Path::new("/tmp/test.sock"));
         assert!(video_args.contains(&"--vid=auto".to_string()));
         assert!(!video_args.contains(&"--no-video".to_string()));
+        assert!(video_args.contains(&"--demuxer-max-bytes=32M".to_string()));
+        assert!(video_args.contains(&"--demuxer-max-back-bytes=8M".to_string()));
         assert!(!video_args.iter().any(|arg| arg.starts_with("--af=")));
         assert!(video_args.contains(&"--gapless-audio=yes".to_string()));
 

@@ -1352,6 +1352,12 @@ impl App {
         let tx = self.tx.clone();
         self.status_line = sonata_runtime::i18n::fmt_saving_item(lang, &profile.name);
         tokio::spawn(async move {
+            if let Err(err) =
+                sonata_core::providers::servers::validate_server_transport(&profile).await
+            {
+                let _ = tx.send(AppEvent::StatusMessage(err.to_string()));
+                return;
+            }
             let ping_res = prepare_and_ping_tui_server(&http, &mut profile).await;
             let message = match ping_res {
                 Ok(msg) => sonata_runtime::i18n::fmt_saved_server(lang, &profile.name, &msg),
@@ -1762,6 +1768,7 @@ fn build_tui_server_profile(
         share: clean(&form.share),
         domain: clean(&form.domain),
         local_mount_path: clean(&form.mount_path).map(std::path::PathBuf::from),
+        allow_insecure_lan_http: form.allow_insecure_lan_http,
         enabled: true,
     }
 }
@@ -1770,18 +1777,22 @@ async fn prepare_and_ping_tui_server(
     http: &reqwest::Client,
     profile: &mut sonata_core::providers::servers::ServerProfile,
 ) -> Result<String, String> {
+    sonata_core::providers::servers::validate_server_transport(profile)
+        .await
+        .map_err(|e| e.to_string())?;
     if profile.kind == sonata_core::providers::servers::ServerKind::Jellyfin
         && profile.api_key.is_none()
         && profile.access_token.is_none()
     {
         if let (Some(user), Some(pass)) = (profile.username.as_deref(), profile.password.as_deref())
         {
-            match sonata_core::providers::servers::jellyfin::authenticate_by_name(
+            match sonata_core::providers::servers::jellyfin::authenticate_by_name_with_policy(
                 http,
                 &profile.base_url,
                 user,
                 pass,
                 "sonata-tui",
+                profile.allow_insecure_lan_http,
             )
             .await
             {
@@ -2127,6 +2138,7 @@ mod tests {
             share: None,
             domain: None,
             local_mount_path: None,
+            allow_insecure_lan_http: false,
         }
     }
 

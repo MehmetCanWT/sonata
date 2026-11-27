@@ -5721,7 +5721,8 @@ data class AndroidServerProfile (
     var `libraryIds`: List<kotlin.String>, 
     var `share`: kotlin.String? = null, 
     var `domain`: kotlin.String? = null, 
-    var `localMountPath`: kotlin.String? = null
+    var `localMountPath`: kotlin.String? = null, 
+    var `allowInsecureLanHttp`: kotlin.Boolean = false
 ) {
     
     companion object
@@ -5748,6 +5749,7 @@ public object FfiConverterTypeAndroidServerProfile: FfiConverterRustBuffer<Andro
             FfiConverterOptionalString.read(buf),
             FfiConverterOptionalString.read(buf),
             FfiConverterOptionalString.read(buf),
+            FfiConverterBoolean.read(buf),
         )
     }
 
@@ -5766,7 +5768,8 @@ public object FfiConverterTypeAndroidServerProfile: FfiConverterRustBuffer<Andro
             FfiConverterSequenceString.allocationSize(value.`libraryIds`) +
             FfiConverterOptionalString.allocationSize(value.`share`) +
             FfiConverterOptionalString.allocationSize(value.`domain`) +
-            FfiConverterOptionalString.allocationSize(value.`localMountPath`)
+            FfiConverterOptionalString.allocationSize(value.`localMountPath`) +
+            FfiConverterBoolean.allocationSize(value.`allowInsecureLanHttp`)
     )
 
     override fun write(value: AndroidServerProfile, buf: ByteBuffer) {
@@ -5785,6 +5788,7 @@ public object FfiConverterTypeAndroidServerProfile: FfiConverterRustBuffer<Andro
             FfiConverterOptionalString.write(value.`share`, buf)
             FfiConverterOptionalString.write(value.`domain`, buf)
             FfiConverterOptionalString.write(value.`localMountPath`, buf)
+            FfiConverterBoolean.write(value.`allowInsecureLanHttp`, buf)
     }
 }
 

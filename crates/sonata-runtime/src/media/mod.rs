@@ -12,8 +12,10 @@ pub mod motion;
 use crate::config::AppConfig;
 use image::DynamicImage;
 use reqwest::Client;
+use sonata_core::auth::{create_private_file, ensure_private_dir};
 use sonata_core::cache::prune_media_cache_in;
 use sonata_core::paths::CorePaths;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 pub use sonata_core::media::{
@@ -264,6 +266,81 @@ pub async fn repair_cached_art_if_bars(path: PathBuf) -> bool {
     .unwrap_or(false)
 }
 
+/// Reads an already-cached artwork file on disk and returns its ambient RGB tint, if readable.
+pub async fn cached_art_ambient_rgb(path: PathBuf) -> Option<(u8, u8, u8)> {
+    tokio::task::spawn_blocking(move || {
+        image::open(&path).ok().map(|img| extract_ambient_rgb(&img))
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// Decodes, trims, resizes, and optionally caches raw artwork bytes to `paths.art_cache_dir()`.
+pub async fn decode_and_cache_art_bytes(
+    raw_bytes: Vec<u8>,
+    url: &str,
+    paths: &CorePaths,
+    cache_limit_bytes: u64,
+) -> Option<(DynamicImage, Vec<u8>, PathBuf)> {
+    let cache_path = art_cache_path_in(paths, url);
+    let cache_enabled = cache_limit_bytes > 0;
+    let paths_for_prune = paths.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let decoded = trim_black_bars(image::load_from_memory(&raw_bytes).ok()?);
+        let is_wide_banner = (decoded.width() as f32) > (decoded.height() as f32 * 1.45);
+        let scaled = if is_wide_banner {
+            if decoded.width() > 1600 || decoded.height() > 900 {
+                decoded.resize(1600, 900, image::imageops::FilterType::Lanczos3)
+            } else {
+                decoded
+            }
+        } else if decoded.width() > 480 || decoded.height() > 480 {
+            decoded.resize(480, 480, image::imageops::FilterType::Lanczos3)
+        } else {
+            decoded
+        };
+        let mut png_bytes = Vec::new();
+        scaled
+            .write_to(
+                &mut std::io::Cursor::new(&mut png_bytes),
+                image::ImageFormat::Png,
+            )
+            .ok()?;
+        if cache_enabled {
+            if let Some(parent) = cache_path.parent() {
+                let _ = ensure_private_dir(parent);
+            }
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default();
+            let temp_path =
+                cache_path.with_extension(format!("{}.{}.tmp", std::process::id(), unique));
+            let wrote = create_private_file(&temp_path)
+                .and_then(|mut f| {
+                    f.write_all(&png_bytes)?;
+                    f.sync_all()
+                })
+                .is_ok();
+            if wrote {
+                if std::fs::rename(&temp_path, &cache_path).is_ok() {
+                    prune_media_cache_in(&paths_for_prune, cache_limit_bytes);
+                } else {
+                    let _ = std::fs::remove_file(&temp_path);
+                }
+            } else {
+                let _ = std::fs::remove_file(&temp_path);
+            }
+        }
+        Some((scaled, png_bytes, cache_path))
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 pub async fn fetch_and_decode_art(
     http: &Client,
     url: &str,
@@ -272,7 +349,6 @@ pub async fn fetch_and_decode_art(
 ) -> Option<(DynamicImage, Vec<u8>)> {
     let cache_path = art_cache_path_in(paths, url);
     let cache_enabled = cache_limit_bytes > 0;
-    let paths_for_prune = paths.clone();
 
     let expects_hd_banner = url.contains("=w1600") || url.contains("=w1440");
     if cache_enabled {
@@ -313,50 +389,9 @@ pub async fn fetch_and_decode_art(
         return None;
     }
 
-    tokio::task::spawn_blocking(move || {
-        let decoded = trim_black_bars(image::load_from_memory(&raw_bytes).ok()?);
-        let is_wide_banner = (decoded.width() as f32) > (decoded.height() as f32 * 1.45);
-        let scaled = if is_wide_banner {
-            if decoded.width() > 1600 || decoded.height() > 900 {
-                decoded.resize(1600, 900, image::imageops::FilterType::Lanczos3)
-            } else {
-                decoded
-            }
-        } else if decoded.width() > 480 || decoded.height() > 480 {
-            decoded.resize(480, 480, image::imageops::FilterType::Lanczos3)
-        } else {
-            decoded
-        };
-        let mut png_bytes = Vec::new();
-        scaled
-            .write_to(
-                &mut std::io::Cursor::new(&mut png_bytes),
-                image::ImageFormat::Png,
-            )
-            .ok()?;
-        if cache_enabled {
-            if let Some(parent) = cache_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let unique = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|duration| duration.as_nanos())
-                .unwrap_or_default();
-            let temp_path =
-                cache_path.with_extension(format!("{}.{}.tmp", std::process::id(), unique));
-            if std::fs::write(&temp_path, &png_bytes).is_ok() {
-                if std::fs::rename(&temp_path, &cache_path).is_ok() {
-                    prune_media_cache_in(&paths_for_prune, cache_limit_bytes);
-                } else {
-                    let _ = std::fs::remove_file(&temp_path);
-                }
-            }
-        }
-        Some((scaled, png_bytes))
-    })
-    .await
-    .ok()
-    .flatten()
+    decode_and_cache_art_bytes(raw_bytes, url, paths, cache_limit_bytes)
+        .await
+        .map(|(img, bytes, _)| (img, bytes))
 }
 
 /// Extracts a pleasant ambient tint color from album artwork, ignoring pure black/white pixels.

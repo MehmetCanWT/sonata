@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { create } from "zustand";
 import {
   createEmptySnapshot,
@@ -497,32 +497,117 @@ export const useSonataStore = create<SonataStore>((set, get) => ({
   },
 }));
 
+export interface InterpolatedPositionOptions {
+  intervalMs?: number;
+  enabled?: boolean;
+}
+
+function computeInterpolatedSeconds(
+  progress: ProgressTickDto & { syncedAtMs: number },
+): number {
+  if (progress.paused || progress.loading_track) {
+    return progress.position_secs;
+  }
+  const elapsedSecs =
+    ((performance.now() - progress.syncedAtMs) / 1000) *
+    (progress.playback_speed || 1);
+  return progress.duration_secs > 0
+    ? Math.min(progress.duration_secs, progress.position_secs + elapsedSecs)
+    : progress.position_secs + elapsedSecs;
+}
+
 /**
- * 60fps interpolated playback clock synchronized from 10Hz Rust `ProgressTickDto` events.
+ * Interpolated playback clock synchronized from Rust `ProgressTickDto` events.
+ * Uses 60fps `requestAnimationFrame` by default (`intervalMs = 0`) or throttled `setInterval`,
+ * and suspends ticking whenever the window/document is hidden.
  */
-export function useInterpolatedPosition(): number {
+export function useInterpolatedPosition(options?: InterpolatedPositionOptions): number {
+  const intervalMs = options?.intervalMs ?? 0;
+  const enabled = options?.enabled ?? true;
   const progress = useSonataStore((s) => s.progress);
-  const [pos, setPos] = useState(progress.position_secs);
+  const progressRef = useRef(progress);
+  progressRef.current = progress;
+
+  const [pos, setPos] = useState(() => computeInterpolatedSeconds(progress));
 
   useEffect(() => {
-    setPos(progress.position_secs);
-    if (progress.paused || progress.loading_track) {
+    if (!enabled) {
       return;
     }
+    const next = computeInterpolatedSeconds(progress);
+    setPos((prev) => {
+      if (intervalMs >= 1000 && !progress.paused && !progress.loading_track) {
+        return Math.abs(next - prev) >= 1.5 ? next : prev;
+      }
+      return next;
+    });
+  }, [enabled, intervalMs, progress]);
+
+  useEffect(() => {
+    if (!enabled || progress.paused || progress.loading_track) {
+      return;
+    }
+
     let rafId = 0;
-    const tick = () => {
-      const elapsedSecs =
-        ((performance.now() - progress.syncedAtMs) / 1000) * (progress.playback_speed || 1);
-      const next =
-        progress.duration_secs > 0
-          ? Math.min(progress.duration_secs, progress.position_secs + elapsedSecs)
-          : progress.position_secs + elapsedSecs;
-      setPos(next);
-      rafId = requestAnimationFrame(tick);
+    let timerId = 0;
+    let active = true;
+
+    const stopLoop = () => {
+      if (rafId) {
+        cancelAnimationFrame(rafId);
+        rafId = 0;
+      }
+      if (timerId) {
+        window.clearInterval(timerId);
+        timerId = 0;
+      }
     };
-    rafId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafId);
-  }, [progress]);
+
+    const tickRaf = () => {
+      if (!active) return;
+      setPos(computeInterpolatedSeconds(progressRef.current));
+      rafId = requestAnimationFrame(tickRaf);
+    };
+
+    const startLoop = () => {
+      stopLoop();
+      if (
+        !active ||
+        (typeof document !== "undefined" && document.visibilityState === "hidden")
+      ) {
+        return;
+      }
+      if (intervalMs > 0) {
+        timerId = window.setInterval(() => {
+          setPos(computeInterpolatedSeconds(progressRef.current));
+        }, intervalMs);
+      } else {
+        rafId = requestAnimationFrame(tickRaf);
+      }
+    };
+
+    const onVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        stopLoop();
+      } else {
+        setPos(computeInterpolatedSeconds(progressRef.current));
+        startLoop();
+      }
+    };
+
+    startLoop();
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVisibilityChange);
+    }
+
+    return () => {
+      active = false;
+      stopLoop();
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+      }
+    };
+  }, [enabled, intervalMs, progress.loading_track, progress.paused]);
 
   return pos;
 }

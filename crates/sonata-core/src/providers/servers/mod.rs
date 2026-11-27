@@ -19,11 +19,12 @@ use crate::error::CoreError;
 use crate::paths::CorePaths;
 use crate::providers::ytmusic::{AlbumDetail, HomeCard};
 use crate::providers::{Playlist, Track};
-use reqwest::{Client, StatusCode};
+use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs;
 use std::io::Write as _;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
@@ -114,6 +115,8 @@ pub struct ServerProfile {
     pub domain: Option<String>,
     #[serde(default)]
     pub local_mount_path: Option<PathBuf>,
+    #[serde(default)]
+    pub allow_insecure_lan_http: bool,
 }
 
 impl fmt::Debug for ServerProfile {
@@ -141,6 +144,7 @@ impl fmt::Debug for ServerProfile {
             .field("share", &self.share)
             .field("domain", &self.domain)
             .field("local_mount_path", &self.local_mount_path)
+            .field("allow_insecure_lan_http", &self.allow_insecure_lan_http)
             .finish()
     }
 }
@@ -169,13 +173,190 @@ impl ServerProfile {
             share: None,
             domain: None,
             local_mount_path: None,
+            allow_insecure_lan_http: false,
         }
+    }
+
+    /// Returns `true` when any secret/token credential is configured on this profile.
+    pub fn has_credentials(&self) -> bool {
+        let non_empty = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.trim().is_empty());
+        non_empty(&self.password)
+            || non_empty(&self.api_key)
+            || non_empty(&self.access_token)
+            || non_empty(&self.bearer_token)
     }
 
     /// Returns `base_url` trimmed of surrounding whitespace and trailing slashes.
     pub fn normalized_base_url(&self) -> String {
         self.base_url.trim().trim_end_matches('/').to_string()
     }
+}
+
+/// Returns `true` when `ip` is a loopback, RFC1918/ULA private, or link-local address.
+pub fn is_private_lan_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
+        IpAddr::V6(v6) => {
+            if v6.is_loopback() {
+                return true;
+            }
+            let seg0 = v6.segments()[0];
+            let is_ula = (seg0 & 0xfe00) == 0xfc00;
+            let is_link_local = (seg0 & 0xffc0) == 0xfe80;
+            is_ula
+                || is_link_local
+                || v6
+                    .to_ipv4_mapped()
+                    .is_some_and(|v4| v4.is_loopback() || v4.is_private() || v4.is_link_local())
+        }
+    }
+}
+
+fn is_local_lan_hostname(host: &str) -> bool {
+    let lower = host.trim_end_matches('.').to_ascii_lowercase();
+    lower == "localhost"
+        || lower.ends_with(".local")
+        || lower.ends_with(".lan")
+        || lower.ends_with(".home")
+        || lower.ends_with(".internal")
+        || lower.ends_with(".arpa")
+        || !lower.contains('.')
+}
+
+fn validate_url_transport_sync(
+    raw_url: &str,
+    allow_insecure_lan_http: bool,
+    has_credentials: bool,
+) -> Result<Url, CoreError> {
+    let trimmed = raw_url.trim();
+    if trimmed.is_empty() {
+        return Err(CoreError::invalid_response(
+            "servers",
+            "Server base URL is empty",
+        ));
+    }
+    let parsed = Url::parse(trimmed).map_err(|err| {
+        CoreError::invalid_response("servers", format!("Invalid server URL: {err}"))
+    })?;
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(CoreError::invalid_response(
+            "servers",
+            "Embedded credentials in server URL are not allowed",
+        ));
+    }
+    let host = parsed
+        .host_str()
+        .map(str::trim)
+        .filter(|h| !h.is_empty())
+        .ok_or_else(|| CoreError::invalid_response("servers", "Server URL is missing a host"))?;
+
+    match parsed.scheme().to_ascii_lowercase().as_str() {
+        "https" => Ok(parsed),
+        "http" => {
+            if has_credentials && !allow_insecure_lan_http {
+                return Err(CoreError::invalid_response(
+                    "servers",
+                    "HTTPS is required for credentialed servers; enable LAN HTTP opt-in only on private networks",
+                ));
+            }
+            let bare_host = host.trim_start_matches('[').trim_end_matches(']');
+            if let Ok(ip) = bare_host.parse::<IpAddr>() {
+                if !is_private_lan_ip(ip) {
+                    return Err(CoreError::invalid_response(
+                        "servers",
+                        "Cleartext HTTP is not permitted for public IP addresses; use HTTPS",
+                    ));
+                }
+            } else if !allow_insecure_lan_http && !is_local_lan_hostname(bare_host) {
+                return Err(CoreError::invalid_response(
+                    "servers",
+                    "Cleartext HTTP is only permitted for private LAN hosts with explicit opt-in; use HTTPS",
+                ));
+            }
+            Ok(parsed)
+        }
+        other => Err(CoreError::invalid_response(
+            "servers",
+            format!("Unsupported server URL scheme `{other}`; use HTTPS"),
+        )),
+    }
+}
+
+/// Validates a raw URL against Sonata's HTTPS-by-default transport policy, including DNS-to-private checks for HTTP.
+pub async fn validate_url_transport(
+    raw_url: &str,
+    allow_insecure_lan_http: bool,
+    has_credentials: bool,
+) -> Result<(), CoreError> {
+    let parsed = validate_url_transport_sync(raw_url, allow_insecure_lan_http, has_credentials)?;
+    if parsed.scheme().eq_ignore_ascii_case("https") {
+        return Ok(());
+    }
+    let host = parsed
+        .host_str()
+        .map(|h| h.trim_start_matches('[').trim_end_matches(']'))
+        .ok_or_else(|| CoreError::invalid_response("servers", "Server URL is missing a host"))?;
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return if is_private_lan_ip(ip) {
+            Ok(())
+        } else {
+            Err(CoreError::invalid_response(
+                "servers",
+                "Cleartext HTTP is not permitted for public IP addresses; use HTTPS",
+            ))
+        };
+    }
+
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    let mut resolved = tokio::net::lookup_host((host, port)).await.map_err(|err| {
+        CoreError::invalid_response(
+            "servers",
+            format!("Failed to resolve HTTP host `{host}` for LAN check: {err}"),
+        )
+    })?;
+    let mut saw_any = false;
+    for addr in &mut resolved {
+        saw_any = true;
+        if !is_private_lan_ip(addr.ip()) {
+            return Err(CoreError::invalid_response(
+                "servers",
+                format!("Cleartext HTTP host `{host}` resolved to non-private address; use HTTPS"),
+            ));
+        }
+    }
+    if !saw_any {
+        return Err(CoreError::invalid_response(
+            "servers",
+            format!("Host `{host}` resolved to no addresses"),
+        ));
+    }
+    Ok(())
+}
+
+/// Synchronous transport-policy validation for stream/URL builders.
+pub fn validate_server_transport_sync(profile: &ServerProfile) -> Result<(), CoreError> {
+    if profile.kind == ServerKind::Smb {
+        return Ok(());
+    }
+    validate_url_transport_sync(
+        &profile.normalized_base_url(),
+        profile.allow_insecure_lan_http,
+        profile.has_credentials(),
+    )?;
+    Ok(())
+}
+
+/// Full async transport-policy validation including DNS-to-private verification for `http://` profiles.
+pub async fn validate_server_transport(profile: &ServerProfile) -> Result<(), CoreError> {
+    if profile.kind == ServerKind::Smb {
+        return Ok(());
+    }
+    validate_url_transport(
+        &profile.normalized_base_url(),
+        profile.allow_insecure_lan_http,
+        profile.has_credentials(),
+    )
+    .await
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -462,6 +643,7 @@ impl ServerClient {
     }
 
     pub async fn ping(&self, profile: &ServerProfile) -> Result<String, CoreError> {
+        validate_server_transport(profile).await?;
         match profile.kind {
             ServerKind::Jellyfin => jellyfin::ping(&self.http, profile).await,
             ServerKind::Subsonic => subsonic::ping(&self.http, profile).await,
@@ -680,6 +862,7 @@ impl ServerClient {
         &self,
         profile: &ServerProfile,
     ) -> Result<Vec<ServerLibrary>, CoreError> {
+        validate_server_transport(profile).await?;
         match profile.kind {
             ServerKind::Jellyfin => jellyfin::get_music_libraries(&self.http, profile).await,
             ServerKind::Subsonic => subsonic::get_music_folders(&self.http, profile).await,
@@ -709,6 +892,7 @@ impl ServerClient {
         profile: &ServerProfile,
         library_id: Option<&str>,
     ) -> Result<Vec<HomeCard>, CoreError> {
+        validate_server_transport(profile).await?;
         match profile.kind {
             ServerKind::Jellyfin => jellyfin::get_artists(&self.http, profile, library_id).await,
             ServerKind::Subsonic => subsonic::get_artists(&self.http, profile, library_id).await,
@@ -732,6 +916,7 @@ impl ServerClient {
         library_id: Option<&str>,
         artist_id: Option<&str>,
     ) -> Result<Vec<HomeCard>, CoreError> {
+        validate_server_transport(profile).await?;
         match profile.kind {
             ServerKind::Jellyfin => {
                 jellyfin::get_albums(&self.http, profile, library_id, artist_id).await
@@ -766,6 +951,7 @@ impl ServerClient {
         profile: &ServerProfile,
         album_id: &str,
     ) -> Result<AlbumDetail, CoreError> {
+        validate_server_transport(profile).await?;
         let raw_id = unwrap_item_id(profile.kind, album_id);
         match profile.kind {
             ServerKind::Jellyfin => jellyfin::get_album_detail(&self.http, profile, raw_id).await,
@@ -788,6 +974,7 @@ impl ServerClient {
         &self,
         profile: &ServerProfile,
     ) -> Result<Vec<Playlist>, CoreError> {
+        validate_server_transport(profile).await?;
         match profile.kind {
             ServerKind::Jellyfin => jellyfin::get_playlists(&self.http, profile).await,
             ServerKind::Subsonic => subsonic::get_playlists(&self.http, profile).await,
@@ -806,6 +993,7 @@ impl ServerClient {
         profile: &ServerProfile,
         playlist_id: &str,
     ) -> Result<Vec<Track>, CoreError> {
+        validate_server_transport(profile).await?;
         let raw_id = unwrap_item_id(profile.kind, playlist_id);
         match profile.kind {
             ServerKind::Jellyfin => {
@@ -832,6 +1020,7 @@ impl ServerClient {
         query: &str,
         limit: usize,
     ) -> Result<ServerSearchResult, CoreError> {
+        validate_server_transport(profile).await?;
         match profile.kind {
             ServerKind::Jellyfin => jellyfin::search(&self.http, profile, query, limit).await,
             ServerKind::Subsonic => subsonic::search3(&self.http, profile, query, limit).await,
@@ -851,6 +1040,7 @@ impl ServerClient {
         profile: &ServerProfile,
         track: &Track,
     ) -> Result<ServerStream, CoreError> {
+        validate_server_transport_sync(profile)?;
         let raw_id = unwrap_item_id(profile.kind, &track.id);
         match profile.kind {
             ServerKind::Jellyfin => jellyfin::stream_request(profile, raw_id, track),
@@ -858,6 +1048,97 @@ impl ServerClient {
             ServerKind::WebDav => webdav::stream_request(profile, raw_id, track),
             ServerKind::Smb => smb::stream_request(profile, raw_id, track),
         }
+    }
+
+    /// Fetches self-hosted artwork bytes using transport-policy validation, same-origin checks,
+    /// redirect refusal, profile credentials, and a strict byte limit.
+    pub async fn fetch_artwork_bytes(
+        &self,
+        profile: &ServerProfile,
+        artwork_url: &str,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, CoreError> {
+        if profile.kind == ServerKind::Smb {
+            return Err(CoreError::invalid_response(
+                "servers",
+                "SMB artwork does not use HTTP fetch",
+            ));
+        }
+        validate_server_transport(profile).await?;
+        let base_url = Url::parse(&profile.normalized_base_url()).map_err(|err| {
+            CoreError::invalid_response("servers", format!("Invalid server base URL: {err}"))
+        })?;
+        let target_url = Url::parse(artwork_url.trim()).map_err(|err| {
+            CoreError::invalid_response("servers", format!("Invalid artwork URL: {err}"))
+        })?;
+        let same_origin = base_url.scheme().eq_ignore_ascii_case(target_url.scheme())
+            && base_url.host().is_some()
+            && base_url.host() == target_url.host()
+            && base_url.port_or_known_default() == target_url.port_or_known_default();
+        if !same_origin {
+            return Err(CoreError::invalid_response(
+                "servers",
+                "Cross-origin server artwork request rejected",
+            ));
+        }
+
+        let mut req = no_redirect_http_client()
+            .get(target_url)
+            .timeout(default_http_timeout());
+        match profile.kind {
+            ServerKind::Jellyfin => {
+                if let Ok(headers) = jellyfin::auth_headers(profile) {
+                    for (k, v) in headers {
+                        req = req.header(k, v);
+                    }
+                }
+            }
+            ServerKind::WebDav => {
+                for (k, v) in webdav::auth_headers(profile) {
+                    req = req.header(k, v);
+                }
+            }
+            ServerKind::Subsonic | ServerKind::Smb => {}
+        }
+
+        let mut resp = req
+            .send()
+            .await
+            .map_err(|err| CoreError::from_reqwest("server-artwork", &err))?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(map_http_status("server-artwork", status, ""));
+        }
+        if resp
+            .content_length()
+            .is_some_and(|len| len > max_bytes as u64)
+        {
+            return Err(CoreError::invalid_response(
+                "server-artwork",
+                "Server artwork exceeds maximum size limit",
+            ));
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = resp
+            .chunk()
+            .await
+            .map_err(|err| CoreError::from_reqwest("server-artwork", &err))?
+        {
+            if bytes.len().saturating_add(chunk.len()) > max_bytes {
+                return Err(CoreError::invalid_response(
+                    "server-artwork",
+                    "Server artwork exceeds maximum size limit",
+                ));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        if bytes.is_empty() {
+            return Err(CoreError::invalid_response(
+                "server-artwork",
+                "Server artwork response was empty",
+            ));
+        }
+        Ok(bytes)
     }
 }
 
@@ -1165,5 +1446,135 @@ mod tests {
             unwrap_item_id(ServerKind::WebDav, &artist_id),
             "artist:Daft Punk"
         );
+    }
+
+    #[tokio::test]
+    async fn transport_policy_rejects_credentialed_http_and_public_http_and_allows_opted_in_lan() {
+        let mut jf = ServerProfile::new(
+            "jf-http",
+            "LAN Jellyfin",
+            ServerKind::Jellyfin,
+            "http://192.168.1.25:8096",
+        );
+        jf.access_token = Some("test-jf-token".to_string());
+        assert!(validate_server_transport(&jf).await.is_err());
+        assert!(validate_server_transport_sync(&jf).is_err());
+
+        jf.allow_insecure_lan_http = true;
+        assert!(validate_server_transport(&jf).await.is_ok());
+        assert!(validate_server_transport_sync(&jf).is_ok());
+
+        // Public IPs must remain rejected even when opt-in is enabled.
+        jf.base_url = "http://93.184.216.34:8096".to_string();
+        assert!(validate_server_transport(&jf).await.is_err());
+        assert!(validate_server_transport_sync(&jf).is_err());
+
+        // Public domains with HTTPS succeed.
+        jf.allow_insecure_lan_http = false;
+        jf.base_url = "https://music.example.com".to_string();
+        assert!(validate_server_transport(&jf).await.is_ok());
+        assert!(validate_server_transport_sync(&jf).is_ok());
+
+        // Subsonic & WebDAV reject credentialed http:// without opt-in and allow loopback with opt-in.
+        let mut sub = ServerProfile::new(
+            "sub-http",
+            "LAN Navidrome",
+            ServerKind::Subsonic,
+            "http://127.0.0.1:4533",
+        );
+        sub.username = Some("alice".to_string());
+        sub.password = Some("test-pass".to_string());
+        assert!(validate_server_transport(&sub).await.is_err());
+        sub.allow_insecure_lan_http = true;
+        assert!(validate_server_transport(&sub).await.is_ok());
+
+        let mut dav = ServerProfile::new(
+            "dav-http",
+            "LAN WebDAV",
+            ServerKind::WebDav,
+            "http://localhost:8080/music",
+        );
+        dav.bearer_token = Some("test-bearer-token".to_string());
+        assert!(validate_server_transport(&dav).await.is_err());
+        dav.allow_insecure_lan_http = true;
+        assert!(validate_server_transport(&dav).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn fetch_artwork_bytes_enforces_same_origin_redirects_and_size_cap() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 2048];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    if req.starts_with("GET /ok.png") {
+                        let body = b"\x89PNG\r\n\x1a\nOK";
+                        let hdr = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = sock.write_all(hdr.as_bytes()).await;
+                        let _ = sock.write_all(body).await;
+                    } else if req.starts_with("GET /huge.png") {
+                        let body = vec![0xABu8; 4096];
+                        let hdr = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = sock.write_all(hdr.as_bytes()).await;
+                        let _ = sock.write_all(&body).await;
+                    } else {
+                        let _ = sock
+                            .write_all(
+                                b"HTTP/1.1 302 Found\r\nLocation: https://evil.example/art.png\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            )
+                            .await;
+                    }
+                });
+            }
+        });
+
+        let client = ServerClient::new(crate::providers::build_http_client());
+        let mut profile = ServerProfile::new(
+            "jf-art",
+            "LAN JF",
+            ServerKind::Jellyfin,
+            format!("http://{addr}"),
+        );
+        profile.access_token = Some("test-jf-token".to_string());
+        profile.allow_insecure_lan_http = true;
+
+        let bytes = client
+            .fetch_artwork_bytes(&profile, &format!("http://{addr}/ok.png"), 1024)
+            .await
+            .expect("valid same-origin art");
+        assert_eq!(bytes, b"\x89PNG\r\n\x1a\nOK");
+
+        // Cross-origin rejected
+        assert!(client
+            .fetch_artwork_bytes(&profile, "https://other.example/ok.png", 1024)
+            .await
+            .is_err());
+        // Redirect rejected
+        assert!(client
+            .fetch_artwork_bytes(&profile, &format!("http://{addr}/redir.png"), 1024)
+            .await
+            .is_err());
+        // Oversized rejected
+        assert!(client
+            .fetch_artwork_bytes(&profile, &format!("http://{addr}/huge.png"), 512)
+            .await
+            .is_err());
+
+        server.abort();
     }
 }

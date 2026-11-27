@@ -13,7 +13,8 @@
 
 use super::{
     default_http_timeout, encode_server_item_id, format_audio_badge, map_http_status,
-    no_redirect_http_client, ServerKind, ServerProfile, ServerSearchResult, ServerStream,
+    no_redirect_http_client, validate_server_transport, validate_server_transport_sync, ServerKind,
+    ServerProfile, ServerSearchResult, ServerStream,
 };
 use crate::auth::{create_private_file, ensure_private_dir};
 use crate::error::CoreError;
@@ -163,6 +164,7 @@ fn resolve_target_url(
     profile: &ServerProfile,
     folder_or_path: Option<&str>,
 ) -> Result<Url, CoreError> {
+    validate_server_transport_sync(profile)?;
     let base_str = profile.normalized_base_url();
     if base_str.is_empty() {
         return Err(CoreError::invalid_response(
@@ -195,6 +197,7 @@ async fn send_propfind(
     target_url: &Url,
     depth: &str,
 ) -> Result<(StatusCode, String), CoreError> {
+    validate_server_transport(profile).await?;
     let method = Method::from_bytes(b"PROPFIND").map_err(|err| {
         CoreError::internal(format!("failed to construct PROPFIND HTTP method: {err}"))
     })?;
@@ -229,6 +232,7 @@ async fn fetch_url_bytes_bounded(
     range_end_inclusive: Option<usize>,
     max_bytes: usize,
 ) -> Result<Vec<u8>, CoreError> {
+    validate_server_transport(profile).await?;
     let validated_url = resolve_target_url(profile, Some(url))?;
     let extra_headers = range_end_inclusive.map(|end| format!("bytes=0-{end}"));
     let extra = extra_headers
@@ -2015,6 +2019,17 @@ mod tests {
         profile.password = Some("test-password".to_string());
 
         let http = crate::providers::build_http_client();
+        assert!(fetch_url_bytes_bounded(
+            &http,
+            &profile,
+            &format!("http://{redirect_addr}/Music/track.flac"),
+            None,
+            1024,
+        )
+        .await
+        .is_err());
+
+        profile.allow_insecure_lan_http = true;
         let err = fetch_url_bytes_bounded(
             &http,
             &profile,

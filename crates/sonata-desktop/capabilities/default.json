@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default Sonata desktop window and opener capabilities",
+  "description": "Default Sonata desktop window capabilities",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -15,7 +15,6 @@
     "core:window:allow-hide",
     "core:window:allow-set-focus",
     "core:window:allow-set-fullscreen",
-    "core:window:allow-is-fullscreen",
-    "opener:default"
+    "core:window:allow-is-fullscreen"
   ]
 }

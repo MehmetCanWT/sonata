@@ -602,6 +602,8 @@ pub const RU: UiStrings = UiStrings {
     server_error: "Ошибка сервера",
     server_url_empty: "URL сервера не может быть пустым",
     server_url_required: "Требуется URL сервера",
+    field_allow_lan_http: "HTTP в LAN",
+    insecure_lan_http_warning: "Внимание: HTTP передаёт данные без шифрования в LAN. Внешние хосты запрещены.",
     removed_server_profile: "Профиль сервера удалён",
     removed_music_server_profile: "Профиль музыкального сервера удалён",
     connected_label: "Подключено",

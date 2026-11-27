@@ -22,12 +22,15 @@ export function resolveArtworkSrc(urlOrPath?: string | null): string | undefined
   const trimmed = urlOrPath.trim();
   if (!trimmed) return undefined;
   if (
-    trimmed.startsWith("http://") ||
     trimmed.startsWith("https://") ||
     trimmed.startsWith("data:") ||
-    trimmed.startsWith("asset://")
+    trimmed.startsWith("asset://") ||
+    trimmed.startsWith("http://asset.localhost/")
   ) {
     return trimmed;
+  }
+  if (trimmed.startsWith("http://")) {
+    return undefined;
   }
   if (isTauriRuntime()) {
     try {

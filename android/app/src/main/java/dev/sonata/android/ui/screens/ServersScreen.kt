@@ -1581,6 +1581,9 @@ private fun ServerEditorScreen(
     var bearerToken by rememberSaveable(initialProfile?.id) { mutableStateOf("") }
     var smbDomain by rememberSaveable(initialProfile?.id) { mutableStateOf(initialProfile?.domain.orEmpty()) }
     var enabled by rememberSaveable(initialProfile?.id) { mutableStateOf(initialProfile?.enabled ?: true) }
+    var allowInsecureLanHttp by rememberSaveable(initialProfile?.id) {
+        mutableStateOf(initialProfile?.allowInsecureLanHttp ?: false)
+    }
     var showAdvanced by rememberSaveable(initialProfile?.id) {
         mutableStateOf(
             !initialProfile?.apiKey.isNullOrBlank() ||
@@ -1660,6 +1663,9 @@ private fun ServerEditorScreen(
             resolvedShare = null
         }
 
+        val isHttpLanCandidate = kind != AndroidServerKind.SMB &&
+            resolvedBaseUrl.startsWith("http://", ignoreCase = true)
+
         validationError = null
         return AndroidServerProfile(
             id = initialProfile?.id.orEmpty(),
@@ -1677,6 +1683,7 @@ private fun ServerEditorScreen(
             share = resolvedShare,
             domain = if (kind == AndroidServerKind.SMB) smbDomain.trim().takeIf { it.isNotEmpty() } else null,
             localMountPath = null,
+            allowInsecureLanHttp = isHttpLanCandidate && allowInsecureLanHttp,
         )
     }
 
@@ -2043,6 +2050,48 @@ private fun ServerEditorScreen(
                                 checkedTrackColor = Color(0xFF34C759),
                             ),
                         )
+                    }
+                    if (kind != AndroidServerKind.SMB &&
+                        baseUrl.trim().startsWith("http://", ignoreCase = true)
+                    ) {
+                        HorizontalDivider(
+                            thickness = 0.5.dp,
+                            color = dividerColor,
+                            modifier = Modifier.padding(start = 16.dp),
+                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { allowInsecureLanHttp = !allowInsecureLanHttp }
+                                .padding(horizontal = 16.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(end = 12.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                            ) {
+                                Text(
+                                    text = s.allowInsecureLanHttpLabel,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = primaryText,
+                                )
+                                Text(
+                                    text = s.allowInsecureLanHttpWarning,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = BasicPalette.AccentRed,
+                                )
+                            }
+                            Switch(
+                                checked = allowInsecureLanHttp,
+                                onCheckedChange = { allowInsecureLanHttp = it },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color.White,
+                                    checkedTrackColor = Color(0xFF34C759),
+                                ),
+                            )
+                        }
                     }
                     HorizontalDivider(
                         thickness = 0.5.dp,

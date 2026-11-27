@@ -196,6 +196,8 @@ export interface UiStrings {
   serverUrlPlaceholder: string;
   serverUserPlaceholder: string;
   serverSecretPlaceholder: string;
+  allowInsecureLanHttpLabel: string;
+  allowInsecureLanHttpWarning: string;
 
   // Settings & Generic Actions
   desktopPrefsSubtitle: string;

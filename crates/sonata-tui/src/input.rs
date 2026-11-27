@@ -434,9 +434,16 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                 KeyCode::Left | KeyCode::Right if form.focused == ServerFormField::Kind => {
                     form.kind = cycle_kind(form.kind, key.code == KeyCode::Right);
                 }
+                KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
+                    if form.focused == ServerFormField::AllowLanHttp =>
+                {
+                    form.allow_insecure_lan_http = !form.allow_insecure_lan_http;
+                }
                 KeyCode::Enter => {
                     if form.focused == ServerFormField::Kind {
                         form.kind = cycle_kind(form.kind, true);
+                    } else if form.focused == ServerFormField::AllowLanHttp {
+                        form.allow_insecure_lan_http = !form.allow_insecure_lan_http;
                     } else {
                         let snapshot = form.clone();
                         app.modal = ActiveModal::ServerManager(0);
@@ -444,7 +451,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                     }
                 }
                 KeyCode::Backspace => match form.focused {
-                    ServerFormField::Kind => {}
+                    ServerFormField::Kind | ServerFormField::AllowLanHttp => {}
                     ServerFormField::Name => {
                         form.name.pop();
                     }
@@ -471,7 +478,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                     }
                 },
                 KeyCode::Char(c) => match form.focused {
-                    ServerFormField::Kind => {}
+                    ServerFormField::Kind | ServerFormField::AllowLanHttp => {}
                     ServerFormField::Name => form.name.push(c),
                     ServerFormField::BaseUrl => form.base_url.push(c),
                     ServerFormField::Share => form.share.push(c),

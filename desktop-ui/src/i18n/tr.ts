@@ -194,6 +194,9 @@ export const TR: UiStrings = {
   serverUrlPlaceholder: "https://muzik.ornek.com",
   serverUserPlaceholder: "Kullanıcı adı (isteğe bağlı)",
   serverSecretPlaceholder: "Parola / API anahtarı",
+  allowInsecureLanHttpLabel: "Yerel ağda (LAN) güvensiz HTTP'ye izin ver",
+  allowInsecureLanHttpWarning:
+    "HTTP kimlik bilgilerini yerel ağda şifresiz gönderir. Genel sunucular engellenmeye devam eder.",
 
   desktopPrefsSubtitle: "Masaüstü uygulama tercihleri",
   appearance: "Görünüm",

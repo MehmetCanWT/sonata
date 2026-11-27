@@ -31,8 +31,11 @@ export function Modals() {
   const [serverUrl, setServerUrl] = useState("");
   const [serverUser, setServerUser] = useState("");
   const [serverSecret, setServerSecret] = useState("");
+  const [allowInsecureLanHttp, setAllowInsecureLanHttp] = useState(false);
 
   const t = getStrings(snapshot.config.language);
+  const isHttpServerUrl =
+    serverKind !== "Smb" && serverUrl.trim().toLowerCase().startsWith("http://");
 
   if (!activeModal) return null;
 
@@ -213,11 +216,13 @@ export function Modals() {
                   base_url: serverUrl.trim(),
                   username: serverUser.trim() || null,
                   password: serverSecret || null,
+                  allow_insecure_lan_http: isHttpServerUrl && allowInsecureLanHttp,
                 });
                 setServerName("");
                 setServerUrl("");
                 setServerUser("");
                 setServerSecret("");
+                setAllowInsecureLanHttp(false);
                 setModal(null);
               }}
               className="space-y-3"
@@ -254,6 +259,20 @@ export function Modals() {
                 onChange={(e) => setServerSecret(e.target.value)}
                 placeholder={t.serverSecretPlaceholder}
               />
+              {isHttpServerUrl && (
+                <div className="space-y-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs">
+                  <p className="text-amber-200">{t.allowInsecureLanHttpWarning}</p>
+                  <label className="flex items-center gap-2 font-medium text-[var(--ink-primary)] cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={allowInsecureLanHttp}
+                      onChange={(e) => setAllowInsecureLanHttp(e.target.checked)}
+                      className="h-4 w-4 accent-[var(--accent)]"
+                    />
+                    <span>{t.allowInsecureLanHttpLabel}</span>
+                  </label>
+                </div>
+              )}
               <div className="flex justify-end gap-2 pt-1">
                 <Button type="button" variant="ghost" onClick={() => setModal(null)}>
                   {t.cancel}

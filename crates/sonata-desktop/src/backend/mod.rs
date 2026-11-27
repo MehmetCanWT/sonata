@@ -62,9 +62,9 @@ use sonata_runtime::process::LinuxStreamResolver;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, watch, Semaphore};
+use tokio::sync::{mpsc, watch};
 use types::{ExportFingerprint, InternalEvent};
 
 pub(super) fn linux_core_paths() -> CorePaths {
@@ -300,7 +300,6 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
         spotify_notice: None,
         update_info: None,
         checking_updates: false,
-        thumb_rev: 0,
         downloaded_tracks: downloaded_tracks.clone(),
         downloaded_collections: downloaded_collections.clone(),
         downloaded_track_ids: downloaded_track_ids.clone(),
@@ -348,7 +347,9 @@ pub fn spawn_backend(win_tx: mpsc::UnboundedSender<UiWindowCmd>) -> anyhow::Resu
         .name("sonata-backend".into())
         .spawn(move || {
             let Ok(rt) = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(4)
+                .worker_threads(2)
+                .max_blocking_threads(4)
+                .thread_name("sonata-bg")
                 .enable_all()
                 .build()
             else {
@@ -485,10 +486,6 @@ struct BackendEngine {
     pub(super) config_dirty: bool,
     pub(super) last_exported_state: Option<ExportFingerprint>,
     pub(super) last_lyrics_export_key: Option<String>,
-    pub(super) in_flight_thumbs: Arc<Mutex<HashSet<String>>>,
-    pub(super) thumbnail_slots: Arc<Semaphore>,
-    pub(super) urgent_thumbnail_slots: Arc<Semaphore>,
-    pub(super) thumb_rev: u64,
     pub(super) playback_speed: f64,
     pub(super) skip_silence: bool,
     pub(super) sleep_timer_deadline: Option<Instant>,
@@ -778,10 +775,6 @@ async fn run_backend_loop(
         config_dirty: false,
         last_exported_state: None,
         last_lyrics_export_key: None,
-        in_flight_thumbs: Arc::new(Mutex::new(HashSet::new())),
-        thumbnail_slots: Arc::new(Semaphore::new(8)),
-        urgent_thumbnail_slots: Arc::new(Semaphore::new(12)),
-        thumb_rev: 0,
         playback_speed: initial_speed,
         skip_silence: initial_skip_silence,
         sleep_timer_deadline: None,
@@ -848,15 +841,6 @@ async fn run_backend_loop(
     engine.probe_all_server_health();
     if engine.config.local_music_enabled {
         engine.scan_local_music();
-    }
-
-    let cached_playlist_thumbs: Vec<String> = engine
-        .ytm_playlists
-        .iter()
-        .filter_map(|p| p.thumbnail_url.clone())
-        .collect();
-    if !cached_playlist_thumbs.is_empty() {
-        engine.prefetch_thumbnails(cached_playlist_thumbs);
     }
 
     if !engine.config.personal_only_mode {
@@ -1867,6 +1851,7 @@ impl BackendEngine {
                 share,
                 domain,
                 local_mount_path,
+                allow_insecure_lan_http,
             } => {
                 self.save_server_profile(
                     id,
@@ -1880,6 +1865,7 @@ impl BackendEngine {
                     share,
                     domain,
                     local_mount_path,
+                    allow_insecure_lan_http,
                 );
             }
             BackendCmd::TestServerDraft {
@@ -1893,6 +1879,7 @@ impl BackendEngine {
                 share,
                 domain,
                 local_mount_path,
+                allow_insecure_lan_http,
             } => {
                 self.test_server_draft(
                     name,
@@ -1905,6 +1892,7 @@ impl BackendEngine {
                     share,
                     domain,
                     local_mount_path,
+                    allow_insecure_lan_http,
                 );
             }
             BackendCmd::ProbeServerHealth(server_id) => {
@@ -1935,6 +1923,11 @@ impl BackendEngine {
                 self.window_visible = vis;
                 if became_visible {
                     self.resume_deferred_media();
+                    let _ = self
+                        .progress_tx
+                        .send((self.interpolated_position(), self.playback.duration_secs));
+                } else if !vis {
+                    crate::trim_allocator_heap();
                 }
             }
             BackendCmd::SetUiCompact(compact) => {
@@ -2210,12 +2203,6 @@ impl BackendEngine {
 
                 self.put_library_async("ytm", ytm_playlists.clone());
                 self.ytm_playlists = ytm_playlists;
-                let urls: Vec<String> = self
-                    .ytm_playlists
-                    .iter()
-                    .filter_map(|p| p.thumbnail_url.clone())
-                    .collect();
-                self.prefetch_thumbnails(urls);
                 let s = sonata_runtime::i18n::strings(self.ytm_language);
                 self.status_line = s.signed_in_ytm.to_string();
                 self.load_home_feed();
@@ -2237,12 +2224,6 @@ impl BackendEngine {
                 }
                 self.put_library_async("ytm", ytm_playlists.clone());
                 self.ytm_playlists = ytm_playlists;
-                let urls: Vec<String> = self
-                    .ytm_playlists
-                    .iter()
-                    .filter_map(|p| p.thumbnail_url.clone())
-                    .collect();
-                self.prefetch_thumbnails(urls);
                 self.status_line = sonata_runtime::i18n::fmt_synced_ytm_playlists(
                     self.ytm_language,
                     self.ytm_playlists.len(),
@@ -2264,20 +2245,6 @@ impl BackendEngine {
                     self.home_chips = chips;
                 }
                 if !shelves.is_empty() {
-                    let mut urls = Vec::new();
-                    for shelf in &shelves {
-                        for t in &shelf.tracks {
-                            if let Some(u) = &t.thumbnail_url {
-                                urls.push(u.clone());
-                            }
-                        }
-                        for c in &shelf.cards {
-                            if let Some(u) = &c.thumbnail_url {
-                                urls.push(u.clone());
-                            }
-                        }
-                    }
-                    self.prefetch_thumbnails(urls);
                     self.home_shelves = shelves;
                     let s = sonata_runtime::i18n::strings(self.ytm_language);
                     self.status_line = s.home_ready.to_string();
@@ -2292,20 +2259,6 @@ impl BackendEngine {
                     return;
                 }
                 self.explore_loading = false;
-                let mut urls = Vec::new();
-                for s in &shelves {
-                    for c in &s.cards {
-                        if let Some(u) = &c.thumbnail_url {
-                            urls.push(u.clone());
-                        }
-                    }
-                    for t in &s.tracks {
-                        if let Some(u) = &t.thumbnail_url {
-                            urls.push(u.clone());
-                        }
-                    }
-                }
-                self.prefetch_thumbnails(urls);
                 self.explore_shelves = shelves;
                 self.mood_tiles = mood_tiles;
             }
@@ -2318,33 +2271,12 @@ impl BackendEngine {
                     return;
                 }
                 self.mood_page_loading = false;
-                let mut urls = Vec::new();
-                for s in &shelves {
-                    for c in &s.cards {
-                        if let Some(u) = &c.thumbnail_url {
-                            urls.push(u.clone());
-                        }
-                    }
-                    for t in &s.tracks {
-                        if let Some(u) = &t.thumbnail_url {
-                            urls.push(u.clone());
-                        }
-                    }
-                }
-                self.prefetch_thumbnails_urgent(urls);
                 self.status_line = sonata_runtime::i18n::fmt_loaded_item(self.ytm_language, &title);
                 self.mood_page_title = title;
                 self.mood_page_shelves = shelves;
             }
             InternalEvent::LibraryExtrasLoaded { albums, artists } => {
                 self.library_extras_loading = false;
-                let mut urls = Vec::new();
-                for c in albums.iter().chain(artists.iter()) {
-                    if let Some(u) = &c.thumbnail_url {
-                        urls.push(u.clone());
-                    }
-                }
-                self.prefetch_thumbnails(urls);
                 self.library_albums = albums;
                 self.library_artists = artists;
             }
@@ -2354,30 +2286,11 @@ impl BackendEngine {
                 }
                 self.radio_loading = false;
                 if !shelves.is_empty() {
-                    let mut urls = Vec::new();
-                    for shelf in &shelves {
-                        for c in &shelf.cards {
-                            if let Some(u) = &c.thumbnail_url {
-                                urls.push(u.clone());
-                            }
-                        }
-                        for t in &shelf.tracks {
-                            if let Some(u) = &t.thumbnail_url {
-                                urls.push(u.clone());
-                            }
-                        }
-                    }
-                    self.prefetch_thumbnails(urls);
                     self.radio_shelves = shelves;
                 }
             }
             InternalEvent::HistoryLoaded(tracks) => {
                 self.history_loading = false;
-                let urls: Vec<String> = tracks
-                    .iter()
-                    .filter_map(|t| t.thumbnail_url.clone())
-                    .collect();
-                self.prefetch_thumbnails(urls);
                 if !tracks.is_empty() {
                     self.history_tracks = tracks.clone();
                 }
@@ -2399,11 +2312,6 @@ impl BackendEngine {
                         sonata_runtime::i18n::fmt_could_not_start(self.ytm_language, &label);
                     return;
                 }
-                let urls: Vec<String> = tracks
-                    .iter()
-                    .filter_map(|t| t.thumbnail_url.clone())
-                    .collect();
-                self.prefetch_thumbnails(urls);
                 let _ = self
                     .session
                     .send(SessionCommand::PlayQueue {
@@ -2428,11 +2336,6 @@ impl BackendEngine {
                     self.status_line = s.queue_finished.to_string();
                     return;
                 }
-                let urls: Vec<String> = tracks
-                    .iter()
-                    .filter_map(|t| t.thumbnail_url.clone())
-                    .collect();
-                self.prefetch_thumbnails(urls);
                 let mut combined = self.playback.queue.clone();
                 let start_index = combined.len();
                 let mut seen: HashSet<String> = combined.iter().map(|t| t.id.clone()).collect();
@@ -2461,11 +2364,6 @@ impl BackendEngine {
             }
             InternalEvent::AutoplayPrefetched { seed_key, tracks } => {
                 if self.prefetched_autoplay_seed.as_deref() == Some(seed_key.as_str()) {
-                    let urls: Vec<String> = tracks
-                        .iter()
-                        .filter_map(|t| t.thumbnail_url.clone())
-                        .collect();
-                    self.prefetch_thumbnails(urls);
                     self.prefetched_autoplay_tracks = tracks;
                 }
             }
@@ -2486,16 +2384,6 @@ impl BackendEngine {
                 self.album_loading = false;
                 self.album_error = error;
                 if let Some(ref alb) = album {
-                    let mut urls = Vec::new();
-                    if let Some(u) = &alb.cover_url {
-                        urls.push(u.clone());
-                    }
-                    for v in &alb.other_versions {
-                        if let Some(u) = &v.thumbnail_url {
-                            urls.push(u.clone());
-                        }
-                    }
-                    self.prefetch_thumbnails_urgent(urls);
                     self.active_nav = NavTarget::Album(alb.id.clone());
                     self.status_line =
                         sonata_runtime::i18n::fmt_loaded_item(self.ytm_language, &alb.title);
@@ -2521,39 +2409,7 @@ impl BackendEngine {
                 }
                 self.artist_loading = false;
                 self.artist_error = error;
-                self.artist_banner_url = banner_url.clone();
-                if let Some(ref page) = artist {
-                    let mut urls = Vec::new();
-                    if let Some(u) = banner_url {
-                        urls.push(u);
-                    }
-                    if let Some(u) = &page.thumbnail_url {
-                        urls.push(u.clone());
-                    }
-                    if let Some(u) = page
-                        .latest_release
-                        .as_ref()
-                        .and_then(|r| r.thumbnail_url.clone())
-                    {
-                        urls.push(u);
-                    }
-                    for tr in &page.popular_tracks {
-                        if let Some(u) = &tr.thumbnail_url {
-                            urls.push(u.clone());
-                        }
-                    }
-                    for rel in &page.releases {
-                        if let Some(u) = &rel.thumbnail_url {
-                            urls.push(u.clone());
-                        }
-                    }
-                    for sim in &page.related_artists {
-                        if let Some(u) = &sim.thumbnail_url {
-                            urls.push(u.clone());
-                        }
-                    }
-                    self.prefetch_thumbnails_urgent(urls);
-                }
+                self.artist_banner_url = banner_url;
                 self.artist_page = artist;
                 let s = sonata_runtime::i18n::strings(self.ytm_language);
                 self.status_line = self
@@ -2577,26 +2433,6 @@ impl BackendEngine {
                     self.status_line = format!("{}: {err}", s.search_failed);
                     return;
                 }
-                let mut urls: Vec<String> = tracks
-                    .iter()
-                    .filter_map(|t| t.thumbnail_url.clone())
-                    .collect();
-                for c in rich
-                    .albums
-                    .iter()
-                    .chain(rich.artists.iter())
-                    .chain(rich.playlists.iter())
-                {
-                    if let Some(u) = &c.thumbnail_url {
-                        urls.push(u.clone());
-                    }
-                }
-                for t in &rich.videos {
-                    if let Some(u) = &t.thumbnail_url {
-                        urls.push(u.clone());
-                    }
-                }
-                self.prefetch_thumbnails_urgent(urls);
                 let count = tracks.len();
                 self.search_results = tracks;
                 self.search_rich = rich;
@@ -2616,11 +2452,6 @@ impl BackendEngine {
                 self.playlist_loading = false;
                 self.playlist_id = Some(id);
                 self.playlist_heading = heading;
-                let urls: Vec<String> = tracks
-                    .iter()
-                    .filter_map(|t| t.thumbnail_url.clone())
-                    .collect();
-                self.prefetch_thumbnails_urgent(urls);
                 let count = tracks.len();
                 if self.playlist_id.as_deref() == Some("VLLM") {
                     self.liked_track_ids = tracks.iter().map(|t| t.id.clone()).collect();
@@ -2649,11 +2480,6 @@ impl BackendEngine {
                 if req_id != self.playlist_req_id || tracks.is_empty() {
                     return;
                 }
-                let urls: Vec<String> = tracks
-                    .iter()
-                    .filter_map(|t| t.thumbnail_url.clone())
-                    .collect();
-                self.prefetch_thumbnails_urgent(urls);
                 self.playlist_tracks.extend(tracks);
             }
             InternalEvent::LyricsReady {
@@ -2770,6 +2596,7 @@ impl BackendEngine {
                     self.art_path = art_path;
                     self.ambient_rgb = ambient_rgb;
                 }
+                crate::trim_allocator_heap();
             }
             InternalEvent::ArtworkEnhanced {
                 play_seq,
@@ -2805,6 +2632,7 @@ impl BackendEngine {
                     self.ambient_rgb = ambient_rgb;
                     self.sync_discord_rpc();
                 }
+                crate::trim_allocator_heap();
             }
             InternalEvent::AnimatedArtworkReady {
                 play_seq,
@@ -2820,9 +2648,6 @@ impl BackendEngine {
                 {
                     self.motion_cover_path = Some(path);
                 }
-            }
-            InternalEvent::ThumbnailsReady => {
-                self.thumb_rev = self.thumb_rev.wrapping_add(1);
             }
             InternalEvent::PlaylistCreated(pl) => {
                 self.ytm_playlists.push(pl.clone());
@@ -2882,16 +2707,6 @@ impl BackendEngine {
                 collections,
                 total_bytes,
             } => {
-                let mut urls: Vec<String> = tracks
-                    .iter()
-                    .filter_map(|t| t.artwork_url.clone())
-                    .collect();
-                for c in &collections {
-                    if let Some(u) = &c.artwork_url {
-                        urls.push(u.clone());
-                    }
-                }
-                self.prefetch_thumbnails(urls);
                 self.downloaded_track_ids = tracks.iter().map(|t| t.track_id.clone()).collect();
                 self.downloaded_tracks = tracks;
                 self.downloaded_collections = collections;
@@ -3072,23 +2887,6 @@ impl BackendEngine {
                 }
                 self.server_statuses
                     .insert(server_id, s.connected_label.to_string());
-                let mut urls = Vec::new();
-                for c in artists.iter().chain(albums.iter()) {
-                    if let Some(u) = &c.thumbnail_url {
-                        urls.push(u.clone());
-                    }
-                }
-                for p in &playlists {
-                    if let Some(u) = &p.thumbnail_url {
-                        urls.push(u.clone());
-                    }
-                }
-                for t in &tracks {
-                    if let Some(u) = &t.thumbnail_url {
-                        urls.push(u.clone());
-                    }
-                }
-                self.prefetch_thumbnails(urls);
                 self.server_libraries = libraries;
                 self.server_artists = artists;
                 self.server_albums = albums;
@@ -3407,7 +3205,6 @@ impl BackendEngine {
             spotify_notice: self.spotify_notice.clone(),
             update_info: self.update_info.clone(),
             checking_updates: self.checking_updates,
-            thumb_rev: self.thumb_rev,
             downloaded_tracks: self.downloaded_tracks.clone(),
             downloaded_collections: self.downloaded_collections.clone(),
             downloaded_track_ids: self.downloaded_track_ids.clone(),
@@ -3633,7 +3430,6 @@ mod tests {
             spotify_notice: None,
             update_info: None,
             checking_updates: false,
-            thumb_rev: 0,
             downloaded_tracks: Vec::new(),
             downloaded_collections: Vec::new(),
             downloaded_track_ids: HashSet::new(),
@@ -3743,6 +3539,7 @@ mod tests {
             share: None,
             domain: None,
             local_mount_path: None,
+            allow_insecure_lan_http: false,
         }
     }
 

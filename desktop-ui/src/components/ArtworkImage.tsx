@@ -3,8 +3,20 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { resolveArtworkSrc } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 
-const MAX_MOTION_BLOB_CACHE = 6;
+const MAX_MOTION_BLOB_CACHE = 2;
 const motionBlobCache = new Map<string, string>();
+
+export function evictInactiveMotionBlobs(keepKey?: string) {
+  for (const [key, blobUrl] of motionBlobCache.entries()) {
+    if (key === keepKey) continue;
+    motionBlobCache.delete(key);
+    URL.revokeObjectURL(blobUrl);
+  }
+}
+
+export function getMotionBlobCacheSizeForTest(): number {
+  return motionBlobCache.size;
+}
 
 function getCachedMotionBlob(key: string): string | undefined {
   const existing = motionBlobCache.get(key);
@@ -151,7 +163,10 @@ export function ArtworkImage({
   useEffect(() => {
     if (!videoSrc || videoFailed || motionPaused) return;
     const onResume = () => {
-      if (document.visibilityState !== "hidden") {
+      if (document.visibilityState === "hidden") {
+        videoRef.current?.pause();
+        evictInactiveMotionBlobs(directMotionUrl);
+      } else {
         ensurePlaying();
       }
     };
@@ -163,7 +178,7 @@ export function ArtworkImage({
       window.removeEventListener("resize", onResume);
       document.removeEventListener("visibilitychange", onResume);
     };
-  }, [ensurePlaying, motionPaused, videoFailed, videoSrc]);
+  }, [directMotionUrl, ensurePlaying, motionPaused, videoFailed, videoSrc]);
 
   const scheduleRecovery = useCallback(() => {
     if (motionPaused || videoFailed) return;

@@ -194,6 +194,9 @@ export const EN: UiStrings = {
   serverUrlPlaceholder: "https://music.example.com",
   serverUserPlaceholder: "Username (optional)",
   serverSecretPlaceholder: "Password / API token",
+  allowInsecureLanHttpLabel: "Allow insecure HTTP on private LAN",
+  allowInsecureLanHttpWarning:
+    "HTTP sends credentials and requests unencrypted on your local network. Public hosts remain blocked.",
 
   desktopPrefsSubtitle: "Cross-platform Tauri desktop preferences",
   appearance: "Appearance",

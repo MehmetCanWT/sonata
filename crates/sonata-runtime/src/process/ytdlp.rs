@@ -28,7 +28,9 @@ use sonata_core::providers::hifi::{
     audio_quality_badge, clean_search_title, extract_badge_kbps, is_bounded_fast_start_url,
     pick_best_ytm_match, should_upgrade_candidate, ResolvedStream, ResolverProfile, StreamResolver,
 };
-use sonata_core::providers::servers::{load_server_profiles, parse_server_item_id, ServerClient};
+use sonata_core::providers::servers::{
+    load_server_profiles, parse_server_item_id, validate_server_transport, ServerClient,
+};
 use sonata_core::providers::ytmusic::YtMusicClient;
 use sonata_core::providers::{jiosaavn, ProviderSource, Track};
 use sonata_core::redaction::{
@@ -644,6 +646,9 @@ impl LinuxStreamResolver {
         if !profile.enabled {
             return Err(anyhow!("Server '{}' is disabled", profile.name));
         }
+        validate_server_transport(&profile)
+            .await
+            .map_err(|err| anyhow!("{err}"))?;
         let client = ServerClient::new(self.http_client().clone());
         let stream = client
             .resolve_stream(&profile, track)

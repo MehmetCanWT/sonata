@@ -181,6 +181,7 @@ export interface ServerProfile {
   share?: string | null;
   domain?: string | null;
   local_mount_path?: string | null;
+  allow_insecure_lan_http?: boolean;
   enabled: boolean;
 }
 
@@ -532,6 +533,7 @@ export type BackendCmdDto =
       password?: string | null;
       api_key?: string | null;
       bearer_token?: string | null;
+      allow_insecure_lan_http?: boolean;
     }
   | { type: "ProbeServerHealth"; id: string }
   | { type: "RunServerSpeedTest"; id: string }

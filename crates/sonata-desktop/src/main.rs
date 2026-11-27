@@ -29,6 +29,28 @@ use tokio::sync::mpsc;
 static EXPLICIT_QUIT: AtomicBool = AtomicBool::new(false);
 static WINDOW_VISIBLE: AtomicBool = AtomicBool::new(true);
 
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn configure_allocator() {
+    // SAFETY: Called once at process startup before spawning worker threads; `libc::M_ARENA_MAX` is a valid glibc `mallopt` option.
+    unsafe {
+        libc::mallopt(libc::M_ARENA_MAX, 2);
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn configure_allocator() {}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+pub(crate) fn trim_allocator_heap() {
+    // SAFETY: `libc::malloc_trim(0)` is thread-safe in glibc and releases free arena pages back to the OS.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+pub(crate) fn trim_allocator_heap() {}
+
 #[cfg(not(target_os = "linux"))]
 use tauri::AppHandle;
 
@@ -56,36 +78,23 @@ fn print_help() {
 
 #[cfg(unix)]
 fn spawn_signal_watcher(win_tx: mpsc::UnboundedSender<UiWindowCmd>) {
-    if let Err(err) = std::thread::Builder::new()
-        .name("sonata-signals".into())
-        .spawn(move || {
-            let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            else {
-                return;
-            };
-            rt.block_on(async move {
-                let Ok(mut sigterm) =
-                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                else {
-                    return;
-                };
-                let Ok(mut sigint) =
-                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
-                else {
-                    return;
-                };
-                tokio::select! {
-                    _ = sigterm.recv() => {}
-                    _ = sigint.recv() => {}
-                }
-                let _ = win_tx.send(UiWindowCmd::QuitApp);
-            });
-        })
-    {
-        tracing::warn!(?err, "failed to spawn signal watcher thread");
-    }
+    tauri::async_runtime::spawn(async move {
+        let Ok(mut sigterm) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        else {
+            return;
+        };
+        let Ok(mut sigint) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+        else {
+            return;
+        };
+        tokio::select! {
+            _ = sigterm.recv() => {}
+            _ = sigint.recv() => {}
+        }
+        let _ = win_tx.send(UiWindowCmd::QuitApp);
+    });
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -191,18 +200,93 @@ fn setup_tray_icon(
     Ok(())
 }
 
-fn allow_asset_dir(app: &tauri::AppHandle, dir: &std::path::Path) {
+fn is_safe_asset_scope_dir(
+    dir: &std::path::Path,
+    allowed_art_cache: &std::path::Path,
+) -> Option<std::path::PathBuf> {
     if dir.as_os_str().is_empty() {
+        return None;
+    }
+    let canon = std::fs::canonicalize(dir).ok()?;
+    if !canon.is_dir() || canon.parent().is_none() {
+        return None;
+    }
+
+    let exact_forbidden: Vec<std::path::PathBuf> = [
+        dirs::home_dir(),
+        dirs::config_dir(),
+        dirs::cache_dir(),
+        dirs::data_dir(),
+        dirs::data_local_dir(),
+        dirs::state_dir(),
+        Some(std::path::PathBuf::from("/")),
+        Some(std::path::PathBuf::from("/home")),
+        Some(std::path::PathBuf::from("/Users")),
+        Some(std::path::PathBuf::from("/mnt")),
+        Some(std::path::PathBuf::from("/media")),
+        Some(std::path::PathBuf::from("/tmp")),
+        Some(std::path::PathBuf::from("/root")),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|p| std::fs::canonicalize(&p).ok().or(Some(p)))
+    .collect();
+    if exact_forbidden.iter().any(|bad| bad == &canon) {
+        return None;
+    }
+
+    for sys in [
+        "/etc", "/usr", "/var", "/proc", "/sys", "/dev", "/boot", "/bin", "/sbin", "/lib",
+        "/lib64", "/opt",
+    ] {
+        let sys_path = std::path::Path::new(sys);
+        if canon == sys_path || canon.starts_with(sys_path) {
+            return None;
+        }
+    }
+
+    for sensitive_root in [
+        dirs::config_dir(),
+        dirs::data_dir(),
+        dirs::data_local_dir(),
+        dirs::state_dir(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let root_canon = std::fs::canonicalize(&sensitive_root).unwrap_or(sensitive_root);
+        if canon.starts_with(&root_canon) {
+            return None;
+        }
+    }
+
+    if let Some(cache_root) = dirs::cache_dir() {
+        let cache_canon = std::fs::canonicalize(&cache_root).unwrap_or(cache_root);
+        let art_canon = std::fs::canonicalize(allowed_art_cache)
+            .unwrap_or_else(|_| allowed_art_cache.to_path_buf());
+        if canon.starts_with(&cache_canon) && !canon.starts_with(&art_canon) {
+            return None;
+        }
+    }
+
+    Some(canon)
+}
+
+fn allow_asset_dir(app: &tauri::AppHandle, dir: &std::path::Path) {
+    let art_cache = AppConfig::art_cache_dir();
+    let Some(canon) = is_safe_asset_scope_dir(dir, &art_cache) else {
+        if !dir.as_os_str().is_empty() {
+            tracing::warn!(path = %dir.display(), "refused overly broad or missing asset protocol scope");
+        }
         return;
-    }
+    };
     let scope = app.asset_protocol_scope();
-    let _ = scope.allow_directory(dir, true);
-    if let Ok(canon) = std::fs::canonicalize(dir) {
-        let _ = scope.allow_directory(canon, true);
-    }
+    let _ = scope.allow_directory(canon, true);
 }
 
 fn main() -> anyhow::Result<()> {
+    configure_allocator();
+
     #[cfg(target_os = "linux")]
     if std::env::var_os("GST_PLUGIN_FEATURE_RANK").is_none() {
         // Avoid NVDEC/VA-API zero-copy NV12 green chroma glitches in WebKitGTK <video>.
@@ -225,12 +309,19 @@ fn main() -> anyhow::Result<()> {
     let _telemetry_guard = sonata_runtime::telemetry::init("desktop");
     let desktop_settings = DesktopSettings::load();
 
+    let tauri_rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(4)
+        .thread_name("sonata-tauri")
+        .enable_all()
+        .build()?;
+    tauri::async_runtime::set(tauri_rt.handle().clone());
+
     let (win_tx, mut win_rx) = mpsc::unbounded_channel::<UiWindowCmd>();
     #[cfg(unix)]
     spawn_signal_watcher(win_tx.clone());
 
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             subscribe_state,
             dispatch_cmd,
@@ -253,6 +344,7 @@ fn main() -> anyhow::Result<()> {
                     if let Some(state) = window.app_handle().try_state::<AppState>() {
                         state.backend.send(BackendCmd::SetWindowVisible(false));
                     }
+                    trim_allocator_heap();
                 }
             }
         })
@@ -277,7 +369,9 @@ fn main() -> anyhow::Result<()> {
             backend.send(BackendCmd::SetWindowVisible(true));
 
             let startup_cfg = AppConfig::load();
-            allow_asset_dir(&handle, &AppConfig::art_cache_dir());
+            let art_cache = AppConfig::art_cache_dir();
+            let _ = sonata_core::auth::ensure_private_dir(&art_cache);
+            allow_asset_dir(&handle, &art_cache);
             allow_asset_dir(&handle, &startup_cfg.effective_downloads_dir());
             for dir in startup_cfg.effective_local_music_dirs() {
                 allow_asset_dir(&handle, &dir);
@@ -328,6 +422,7 @@ fn main() -> anyhow::Result<()> {
                             }
                             WINDOW_VISIBLE.store(false, Ordering::Relaxed);
                             backend_win.send(BackendCmd::SetWindowVisible(false));
+                            trim_allocator_heap();
                         }
                         UiWindowCmd::ToggleWindow => {
                             if let Some(win) = app_win.get_webview_window("main") {
@@ -336,6 +431,7 @@ fn main() -> anyhow::Result<()> {
                                     let _ = win.hide();
                                     WINDOW_VISIBLE.store(false, Ordering::Relaxed);
                                     backend_win.send(BackendCmd::SetWindowVisible(false));
+                                    trim_allocator_heap();
                                 } else {
                                     let _ = win.show();
                                     let _ = win.unminimize();
@@ -412,5 +508,38 @@ mod tests {
             );
         }
         assert!(entries.contains(&"$CACHE/sonata/art/**"));
+    }
+
+    #[test]
+    fn asset_scope_validator_rejects_broad_roots_and_allows_art_cache_and_music_subdirs() {
+        use super::is_safe_asset_scope_dir;
+        let art_cache = sonata_runtime::config::AppConfig::art_cache_dir();
+        assert!(is_safe_asset_scope_dir(std::path::Path::new("/"), &art_cache).is_none());
+        if let Some(home) = dirs::home_dir() {
+            assert!(is_safe_asset_scope_dir(&home, &art_cache).is_none());
+        }
+        if let Some(cfg) = dirs::config_dir() {
+            assert!(is_safe_asset_scope_dir(&cfg, &art_cache).is_none());
+        }
+        if let Some(cache) = dirs::cache_dir() {
+            assert!(is_safe_asset_scope_dir(&cache, &art_cache).is_none());
+        }
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let temp_art =
+            std::env::temp_dir().join(format!("sonata_scope_art_{}_{}", std::process::id(), nanos));
+        let temp_music = std::env::temp_dir().join(format!(
+            "sonata_scope_music_{}_{}",
+            std::process::id(),
+            nanos
+        ));
+        std::fs::create_dir_all(&temp_art).expect("mkdir art");
+        std::fs::create_dir_all(&temp_music).expect("mkdir music");
+        assert!(is_safe_asset_scope_dir(&temp_art, &temp_art).is_some());
+        assert!(is_safe_asset_scope_dir(&temp_music, &temp_art).is_some());
+        let _ = std::fs::remove_dir_all(&temp_art);
+        let _ = std::fs::remove_dir_all(&temp_music);
     }
 }

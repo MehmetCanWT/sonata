@@ -9,7 +9,8 @@
 
 use super::{
     default_http_timeout, encode_server_item_id, format_audio_badge, map_http_status,
-    no_redirect_http_client, ServerKind, ServerLibrary, ServerProfile, ServerSearchResult,
+    no_redirect_http_client, validate_server_transport, validate_server_transport_sync,
+    validate_url_transport, ServerKind, ServerLibrary, ServerProfile, ServerSearchResult,
     ServerStream,
 };
 use crate::error::CoreError;
@@ -65,7 +66,7 @@ fn active_token(profile: &ServerProfile) -> Option<&str> {
         })
 }
 
-fn auth_headers(profile: &ServerProfile) -> Result<Vec<(String, String)>, CoreError> {
+pub(crate) fn auth_headers(profile: &ServerProfile) -> Result<Vec<(String, String)>, CoreError> {
     let token = active_token(profile).ok_or_else(|| {
         CoreError::auth_required("Jellyfin profile requires an access_token or api_key")
     })?;
@@ -98,6 +99,7 @@ async fn send_json_get(
     url: &str,
     profile: &ServerProfile,
 ) -> Result<Value, CoreError> {
+    validate_server_transport(profile).await?;
     let req = no_redirect_http_client()
         .get(url)
         .timeout(default_http_timeout());
@@ -119,13 +121,15 @@ async fn send_json_get(
     })
 }
 
-/// Exchanges a Jellyfin username and password for an access token via `/Users/AuthenticateByName`.
-pub async fn authenticate_by_name(
+/// Exchanges a Jellyfin username and password for an access token via `/Users/AuthenticateByName`,
+/// requiring HTTPS unless `allow_insecure_lan_http` is explicitly enabled for a private LAN host.
+pub async fn authenticate_by_name_with_policy(
     http: &Client,
     base_url: &str,
     username: &str,
     password: &str,
     device_id: &str,
+    allow_insecure_lan_http: bool,
 ) -> Result<JellyfinAuthResult, CoreError> {
     let _ = http;
     let base = base_url.trim().trim_end_matches('/');
@@ -135,6 +139,7 @@ pub async fn authenticate_by_name(
             "Jellyfin base URL is empty",
         ));
     }
+    validate_url_transport(base, allow_insecure_lan_http, true).await?;
     let url = format!("{base}/Users/AuthenticateByName");
     let resp = no_redirect_http_client()
         .post(&url)
@@ -157,6 +162,18 @@ pub async fn authenticate_by_name(
         return Err(map_http_status("jellyfin", status, &body));
     }
     parse_auth_response_json(&body)
+}
+
+/// Exchanges a Jellyfin username and password for an access token via `/Users/AuthenticateByName`,
+/// strictly requiring HTTPS.
+pub async fn authenticate_by_name(
+    http: &Client,
+    base_url: &str,
+    username: &str,
+    password: &str,
+    device_id: &str,
+) -> Result<JellyfinAuthResult, CoreError> {
+    authenticate_by_name_with_policy(http, base_url, username, password, device_id, false).await
 }
 
 /// Checks connectivity and credentials via `GET /System/Info` (falling back to `/Users/Me`).
@@ -379,6 +396,7 @@ pub fn stream_request(
     item_id: &str,
     track: &Track,
 ) -> Result<ServerStream, CoreError> {
+    validate_server_transport_sync(profile)?;
     let base = profile.normalized_base_url();
     if base.is_empty() {
         return Err(CoreError::invalid_response(
@@ -420,6 +438,7 @@ pub async fn fetch_lyrics(
     item_id: &str,
 ) -> Result<Option<String>, CoreError> {
     let _ = http;
+    validate_server_transport(profile).await?;
     let base = profile.normalized_base_url();
     if base.is_empty() {
         return Ok(None);
@@ -1155,9 +1174,16 @@ mod tests {
             ServerKind::Jellyfin,
             format!("http://{redirect_addr}"),
         );
-        profile.access_token = Some("secret-jf-token".to_string());
+        profile.access_token = Some("test-jf-token".to_string());
 
         let http = crate::providers::build_http_client();
+        assert!(ping(&http, &profile).await.is_err());
+        assert!(
+            authenticate_by_name(&http, &profile.base_url, "alice", "test-pass", "dev")
+                .await
+                .is_err()
+        );
+        profile.allow_insecure_lan_http = true;
         let err = ping(&http, &profile)
             .await
             .expect_err("302 redirect must not be followed");

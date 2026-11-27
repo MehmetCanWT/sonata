@@ -530,6 +530,8 @@ pub struct UiStrings {
     pub field_protocol: &'static str,
     pub field_name: &'static str,
     pub field_base_url: &'static str,
+    pub field_allow_lan_http: &'static str,
+    pub insecure_lan_http_warning: &'static str,
     pub field_username: &'static str,
     pub field_password: &'static str,
     pub field_api_key_token: &'static str,

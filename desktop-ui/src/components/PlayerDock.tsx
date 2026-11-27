@@ -24,6 +24,44 @@ import {
 } from "@/lib/utils";
 import { useInterpolatedPosition, useSonataStore } from "@/store/useSonataStore";
 
+function PlayerScrubBar({
+  durSecs,
+  ariaLabel,
+  onSeek,
+}: {
+  durSecs: number;
+  ariaLabel: string;
+  onSeek: (secs: number) => void;
+}) {
+  const posSecs = useInterpolatedPosition({ intervalMs: 250 });
+  const remainingSecs = Math.max(0, durSecs - posSecs);
+
+  return (
+    <div className="mb-2.5 flex items-center gap-3">
+      <span className="w-10 shrink-0 text-[11px] font-medium text-[var(--ink-muted)] tabular-nums">
+        {formatDuration(posSecs)}
+      </span>
+      <Slider
+        aria-label={ariaLabel}
+        value={[durSecs > 0 ? Math.min(posSecs, durSecs) : 0]}
+        max={durSecs > 0 ? durSecs : 100}
+        step={0.5}
+        onValueChange={([val]) => {
+          if (durSecs > 0) {
+            onSeek(val);
+          }
+        }}
+        trackClassName="h-[4px] group-hover:h-[6px] bg-[var(--border-strong)]"
+        rangeClassName="bg-[var(--ink-primary)]"
+        className="flex-1"
+      />
+      <span className="w-11 shrink-0 text-right text-[11px] font-medium text-[var(--ink-muted)] tabular-nums">
+        {formatRemainingDuration(remainingSecs)}
+      </span>
+    </div>
+  );
+}
+
 interface PlayerDockProps {
   compact?: boolean;
 }
@@ -38,11 +76,9 @@ export function PlayerDock({ compact = false }: PlayerDockProps) {
   const setVolumeOptimistic = useSonataStore((s) => s.setVolumeOptimistic);
   const t = getStrings(snapshot.config.language);
 
-  const posSecs = useInterpolatedPosition();
   const currentTrack =
     snapshot.current_index != null ? snapshot.queue[snapshot.current_index] : undefined;
   const durSecs = Math.max(snapshot.duration_secs || currentTrack?.duration_secs || 0, 0);
-  const remainingSecs = Math.max(0, durSecs - posSecs);
   const liked = currentTrack
     ? currentTrack.liked || snapshot.liked_track_ids.includes(currentTrack.id)
     : false;
@@ -59,28 +95,11 @@ export function PlayerDock({ compact = false }: PlayerDockProps) {
       style={{ boxShadow: "var(--dock-shadow)" }}
     >
       {/* Top interactive scrub track + timestamps */}
-      <div className="mb-2.5 flex items-center gap-3">
-        <span className="w-10 shrink-0 text-[11px] font-medium text-[var(--ink-muted)] tabular-nums">
-          {formatDuration(posSecs)}
-        </span>
-        <Slider
-          aria-label={t.playbackPosition}
-          value={[durSecs > 0 ? Math.min(posSecs, durSecs) : 0]}
-          max={durSecs > 0 ? durSecs : 100}
-          step={0.5}
-          onValueChange={([val]) => {
-            if (durSecs > 0) {
-              void dispatch({ type: "SeekAbsolute", secs: val });
-            }
-          }}
-          trackClassName="h-[4px] group-hover:h-[6px] bg-[var(--border-strong)]"
-          rangeClassName="bg-[var(--ink-primary)]"
-          className="flex-1"
-        />
-        <span className="w-11 shrink-0 text-right text-[11px] font-medium text-[var(--ink-muted)] tabular-nums">
-          {formatRemainingDuration(remainingSecs)}
-        </span>
-      </div>
+      <PlayerScrubBar
+        durSecs={durSecs}
+        ariaLabel={t.playbackPosition}
+        onSeek={(secs) => void dispatch({ type: "SeekAbsolute", secs })}
+      />
 
       {/* Bottom 3-column dock: clean transport left, recessed now-playing capsule center, mic/queue/fullscreen right */}
       <div className="flex items-center justify-between gap-3 @[680px]:grid @[680px]:grid-cols-[1fr_minmax(260px,1.45fr)_1fr] @[680px]:gap-4">

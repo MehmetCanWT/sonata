@@ -38,6 +38,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - Fixed seamless looping of animated album covers (`yuv420p`, `start_time=0`), WebKitGTK NVDEC/VA-API green-frame glitches, desktop lyrics auto-follow stability during window moves, Library Artists detail layout/banner/downloads, and Android duet/parenthetical synced lyrics alignment.
   - Upgraded Android build tooling to AGP `9.5.3` and Gradle `9.6.0` with zero SDK XML or Kotlin deprecation warnings.
 
+### Performance
+
+- **Desktop & Runtime RAM Reduction (`sonata-desktop`, `desktop-ui`, `sonata-runtime`, `sonata-core`)**:
+  - Removed the legacy GPUI-era desktop thumbnail prefetcher, unbounded `REPAIRED_ART_PATHS` set, and `thumb_rev` snapshot churn in `sonata-desktop` (React loads card thumbnails directly via `https://`).
+  - Consolidated and capped desktop Tokio worker/blocking thread pools, eliminated the dedicated signal-watcher OS thread, and bounded Linux glibc malloc arenas (`M_ARENA_MAX=2`) with `malloc_trim(0)` on tray hide and cover decode.
+  - Lowered `mpv` demuxer cache budgets (`16M` audio / `32M` video, `8M` back-buffer, `20s` cache-secs) and capped `YtMusicClient::playlist_cache` at 24 entries.
+  - Isolated `PlayerScrubBar` (4Hz) and `QueueEtaPill` (5s) from 60fps `useInterpolatedPosition` re-renders, paused position/motion-video loops when hidden to tray, and reduced motion `.mp4` RAM blob cache from 6 to 2 entries.
+
 ### Security
 
 - **Sandboxed YouTube JS Cipher Solver (`sonata-runtime`, `sonata-core`)**: Switched `CliJsCipherBridge` runtime priority to prefer `deno` (`--no-prompt --no-remote --allow-read=...`) and require Node.js `--permission` / `--experimental-permission` (`--allow-fs-read=...`), refusing unsandboxed `node`/`bun` execution, clearing inherited environment secrets, canonicalizing script paths, and writing cipher cache files with `.create_new(true)` (`0o600`).
@@ -45,6 +53,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Sonata Connect Replay, Auth & CSRF Hardening (`sonata-core`, `sonata-runtime`, `android`)**: Replaced `/dev/urandom` fallback entropy in `sonata-core` with fail-closed OS CSPRNG (`getrandom`), bound Connect signatures to canonical `METHOD\nPATH\nTIMESTAMP\nNONCE\nBODY` with ±60s clock-skew checks and nonce replay tracking across `/connect/state`, `/connect/trust`, and `/connect/command`, removed empty-body trust fallback, enforced `X-Sonata-Device-Id` ownership on `/connect/pair/status`, rejected browser cross-origin requests (`403`) and non-JSON `POST`s (`415`), and capped pending pairing requests (`8`).
 - **WebDAV, SMB, FFmpeg & Runtime File Permissions (`sonata-core`, `sonata-runtime`, `sonata-tui`)**: Switched authenticated WebDAV requests (`send_propfind`, `fetch_url_bytes_bounded`) to `no_redirect_http_client()`, enforced canonical SMB mount containment during `walk_smb_audio` traversal, restricted local MP4 `ffmpeg` remux/decode calls with `-protocol_whitelist file,pipe -enable_drefs 0`, and enforced `0o700`/`0o600` permissions on `AppConfig` directories/saves and `sonata-tui.log`.
 - **Android Keystore Secret Encryption, Network Config & MediaSession IPC (`android`)**: Encrypted persisted Connect HMAC tokens and Discord tokens with `AndroidKeyStore` AES-256-GCM (`AndroidKeyStoreSecretCipher`) with transparent legacy plaintext migration, added missing public API/lyrics/artwork domains to HTTPS-only rules in `network_security_config.xml`, and enforced `onConnect` controller verification on exported `PlaybackService`.
+- **Self-Hosted Transport Policy, Artwork Proxy, Pages Pinning & Desktop Hardening (`sonata-core`, `sonata-runtime`, `sonata-desktop`, `sonata-tui`, `sonata-android`, `android`, `desktop-ui`, `.github/workflows/pages.yml`)**:
+  - Enforced HTTPS-by-default for credentialed Jellyfin, Subsonic, and WebDAV server profiles across Desktop, TUI, and Android, with an explicit per-profile `allow_insecure_lan_http` opt-in restricted after DNS resolution strictly to loopback/private/link-local addresses and localized warnings in all clients (`SEC-001`).
+  - Proxied self-hosted `http://` and authenticated Subsonic artwork through the Rust backend into the private `0o700`/`0o600` art cache served via scoped `asset://` URLs without relaxing Desktop CSP (`REL-001`).
+  - Pinned `.github/workflows/pages.yml` actions to full commit SHAs and split workflow permissions to job scope (`build`: `contents: read`; `deploy`: `pages: write`, `id-token: write`) (`SEC-002`).
+  - Removed the unused `tauri-plugin-opener` dependency and capability from `sonata-desktop` / `desktop-ui`, and constrained recursive `allow_asset_dir` scopes to reject filesystem roots, home/config directories, and unrelated cache/data paths.
 
 ## [1.0.9] - 2026-11-25
 

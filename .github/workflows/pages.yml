@@ -13,10 +13,7 @@ on:
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
+permissions: {}
 
 concurrency:
   group: "pages"
@@ -26,6 +23,8 @@ jobs:
   build:
     name: Build Website
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -37,32 +36,19 @@ jobs:
           cache: "npm"
           cache-dependency-path: website/package-lock.json
 
-      - name: Configure GitHub Pages
-        id: pages
-        if: github.event_name != 'pull_request'
-        uses: actions/configure-pages@v5
-
       - name: Install, typecheck, and build static site
         working-directory: website
         env:
-          PAGES_BASE_PATH: ${{ steps.pages.outputs.base_path }}
-          IS_PR: ${{ github.event_name == 'pull_request' }}
+          VITE_BASE_PATH: "/sonata/"
         run: |
           set -euo pipefail
-          if [[ "${IS_PR}" == "true" ]]; then
-            export VITE_BASE_PATH="/sonata/"
-          elif [[ -n "${PAGES_BASE_PATH}" ]]; then
-            export VITE_BASE_PATH="${PAGES_BASE_PATH}/"
-          else
-            export VITE_BASE_PATH="/"
-          fi
           npm ci
           npm run typecheck
           npm run build
 
       - name: Upload Pages artifact
         if: github.event_name != 'pull_request'
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         with:
           path: website/dist
 
@@ -71,10 +57,13 @@ jobs:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

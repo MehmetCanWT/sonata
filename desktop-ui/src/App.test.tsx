@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { App } from "@/App";
 import { PlayerDock } from "@/components/PlayerDock";
+import { QueuePanel } from "@/components/QueuePanel";
 import { ArtistView } from "@/views/ArtistView";
 import { ImmersiveLyricsView } from "@/views/ImmersiveLyricsView";
 import { isSafeReleaseUrl, SettingsView } from "@/views/SettingsView";
@@ -17,6 +18,7 @@ import { sanitizeAccentRgb } from "@/lib/utils";
 import {
   applySnapshotNavTransition,
   HOME_HISTORY_ENTRY,
+  useInterpolatedPosition,
   useSonataStore,
 } from "@/store/useSonataStore";
 
@@ -410,5 +412,72 @@ describe("Sonata Desktop UI", () => {
     const { container: validContainer } = render(<SettingsView />);
     const link = validContainer.querySelector("a");
     expect(link?.getAttribute("href")).toBe("https://github.com/MehmetCanWT/sonata/releases/tag/v1.0.11");
+  });
+
+  it("renders QueuePanel ETA pill and PlayerDock scrub bar while respecting disabled position polling", () => {
+    const baseSnap = createEmptySnapshot();
+    useSonataStore.setState({
+      snapshot: {
+        ...baseSnap,
+        paused: false,
+        position_secs: 45,
+        duration_secs: 180,
+        queue: [
+          {
+            id: "test-track-1",
+            title: "Test Track One",
+            artist: "Test Artist",
+            album: "Test Album",
+            duration_secs: 180,
+            source: "YouTubeMusic",
+            liked: false,
+            is_explicit: false,
+          },
+          {
+            id: "test-track-2",
+            title: "Test Track Two",
+            artist: "Test Artist",
+            album: "Test Album",
+            duration_secs: 120,
+            source: "YouTubeMusic",
+            liked: false,
+            is_explicit: false,
+          },
+        ],
+        current_index: 0,
+      },
+      progress: {
+        position_secs: 45,
+        duration_secs: 180,
+        paused: false,
+        loading_track: false,
+        playback_speed: 1,
+        syncedAtMs: performance.now(),
+      },
+    });
+
+    function Probe({ enabled }: { enabled: boolean }) {
+      const pos = useInterpolatedPosition({ enabled, intervalMs: 250 });
+      return <span data-testid="probe-pos">{pos.toFixed(1)}</span>;
+    }
+
+    const rafSpy = vi.spyOn(window, "requestAnimationFrame");
+    const intervalSpy = vi.spyOn(window, "setInterval");
+    render(
+      <>
+        <PlayerDock />
+        <QueuePanel />
+        <Probe enabled={false} />
+      </>,
+    );
+
+    expect(screen.getByLabelText("Playback position")).toBeTruthy();
+    expect(screen.getByLabelText("Playback Queue")).toBeTruthy();
+    expect(screen.getByTestId("probe-pos").textContent).toBe("45.0");
+    // PlayerDock + QueuePanel use throttled intervals rather than 60fps requestAnimationFrame.
+    expect(rafSpy).not.toHaveBeenCalled();
+    expect(intervalSpy).toHaveBeenCalled();
+    rafSpy.mockRestore();
+    intervalSpy.mockRestore();
   });
 });

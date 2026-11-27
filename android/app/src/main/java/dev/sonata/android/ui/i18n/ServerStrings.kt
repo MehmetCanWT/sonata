@@ -76,6 +76,9 @@ data class ServerStrings(
     val healthCheckFailed: String = "Health check failed",
     val speedTestFailed: String = "Speed test failed",
     val rescanFailed: String = "Rescan failed",
+    val allowInsecureLanHttpLabel: String = "Allow insecure HTTP on private LAN",
+    val allowInsecureLanHttpWarning: String =
+        "HTTP sends credentials and requests unencrypted on your local network. Public hosts remain blocked.",
 )
 
 val EnglishServerStrings = ServerStrings(
@@ -154,6 +157,8 @@ val EnglishServerStrings = ServerStrings(
     healthCheckFailed = "Health check failed",
     speedTestFailed = "Speed test failed",
     rescanFailed = "Rescan failed",
+    allowInsecureLanHttpLabel = "Allow insecure HTTP on private LAN",
+    allowInsecureLanHttpWarning = "HTTP sends credentials and requests unencrypted on your local network. Public hosts remain blocked.",
 )
 
 val TurkishServerStrings = ServerStrings(
@@ -232,6 +237,8 @@ val TurkishServerStrings = ServerStrings(
     healthCheckFailed = "Sağlık kontrolü başarısız",
     speedTestFailed = "Hız testi başarısız",
     rescanFailed = "Yeniden tarama başarısız",
+    allowInsecureLanHttpLabel = "Yerel ağda (LAN) güvensiz HTTP'ye izin ver",
+    allowInsecureLanHttpWarning = "HTTP kimlik bilgilerini yerel ağda şifresiz gönderir. Genel sunucular engellenmeye devam eder.",
 )
 
 val RussianServerStrings = ServerStrings(
@@ -310,4 +317,6 @@ val RussianServerStrings = ServerStrings(
     healthCheckFailed = "Проверка состояния не удалась",
     speedTestFailed = "Тест скорости не удался",
     rescanFailed = "Повторное сканирование не удалось",
+    allowInsecureLanHttpLabel = "Разрешить незашифрованный HTTP в LAN",
+    allowInsecureLanHttpWarning = "HTTP передаёт учётные данные без шифрования в локальной сети. Публичные хосты остаются заблокированы.",
 )

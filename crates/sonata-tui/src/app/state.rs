@@ -321,6 +321,7 @@ pub enum ServerFormField {
     Kind,
     Name,
     BaseUrl,
+    AllowLanHttp,
     Share,
     Domain,
     MountPath,
@@ -339,9 +340,10 @@ impl ServerFormField {
                 if is_smb {
                     Self::Share
                 } else {
-                    Self::Username
+                    Self::AllowLanHttp
                 }
             }
+            Self::AllowLanHttp => Self::Username,
             Self::Share => Self::Domain,
             Self::Domain => Self::MountPath,
             Self::MountPath => Self::Username,
@@ -369,6 +371,7 @@ impl ServerFormField {
             }
             Self::Name => Self::Kind,
             Self::BaseUrl => Self::Name,
+            Self::AllowLanHttp => Self::BaseUrl,
             Self::Share => Self::BaseUrl,
             Self::Domain => Self::Share,
             Self::MountPath => Self::Domain,
@@ -376,7 +379,7 @@ impl ServerFormField {
                 if is_smb {
                     Self::MountPath
                 } else {
-                    Self::BaseUrl
+                    Self::AllowLanHttp
                 }
             }
             Self::Password => Self::Username,
@@ -391,6 +394,7 @@ pub struct ServerFormState {
     pub kind: ServerKind,
     pub name: String,
     pub base_url: String,
+    pub allow_insecure_lan_http: bool,
     pub share: String,
     pub domain: String,
     pub mount_path: String,
@@ -408,6 +412,7 @@ impl Default for ServerFormState {
             kind: ServerKind::Jellyfin,
             name: String::new(),
             base_url: String::new(),
+            allow_insecure_lan_http: false,
             share: String::new(),
             domain: String::new(),
             mount_path: String::new(),
@@ -427,6 +432,7 @@ impl ServerFormState {
             kind: profile.kind,
             name: profile.name.clone(),
             base_url: profile.base_url.clone(),
+            allow_insecure_lan_http: profile.allow_insecure_lan_http,
             share: profile.share.clone().unwrap_or_default(),
             domain: profile.domain.clone().unwrap_or_default(),
             mount_path: profile
@@ -1331,6 +1337,7 @@ mod tests {
             share: None,
             domain: None,
             local_mount_path: None,
+            allow_insecure_lan_http: false,
             enabled,
         }
     }
@@ -1352,7 +1359,7 @@ mod tests {
         );
 
         let mut non_smb = ServerFormField::Kind;
-        for _ in 0..6 {
+        for _ in 0..7 {
             non_smb = non_smb.next_for_kind(ServerKind::Jellyfin);
         }
         assert_eq!(non_smb, ServerFormField::Kind);

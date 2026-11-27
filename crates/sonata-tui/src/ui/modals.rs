@@ -1193,8 +1193,20 @@ fn render_server_manager(frame: &mut Frame<'_>, area: Rect, app: &App, selected:
 
 fn render_add_server(frame: &mut Frame<'_>, area: Rect, app: &App, form: &ServerFormState) {
     let s = sonata_runtime::i18n::strings(app.config.language);
-    let target_h = if form.kind == ServerKind::Smb { 18 } else { 15 };
-    let popup = sized_popup(50, 80, target_h, area);
+    let show_http_warning = form.kind != ServerKind::Smb
+        && form
+            .base_url
+            .trim()
+            .to_ascii_lowercase()
+            .starts_with("http://");
+    let target_h = if form.kind == ServerKind::Smb {
+        18
+    } else if show_http_warning {
+        17
+    } else {
+        15
+    };
+    let popup = sized_popup(54, 82, target_h, area);
     frame.render_widget(Clear, popup);
 
     let kind_label = match form.kind {
@@ -1204,6 +1216,11 @@ fn render_add_server(frame: &mut Frame<'_>, area: Rect, app: &App, form: &Server
         ServerKind::WebDav => "WebDAV",
     };
     let mask = "*".repeat(form.password.chars().count());
+    let lan_http_label = if form.allow_insecure_lan_http {
+        s.enabled
+    } else {
+        s.disabled
+    };
     let mut rows = vec![
         (ServerFormField::Kind, s.field_protocol, kind_label),
         (ServerFormField::Name, s.field_name, form.name.as_str()),
@@ -1220,6 +1237,12 @@ fn render_add_server(frame: &mut Frame<'_>, area: Rect, app: &App, form: &Server
             ServerFormField::MountPath,
             s.smb_mount_path,
             form.mount_path.as_str(),
+        ));
+    } else {
+        rows.push((
+            ServerFormField::AllowLanHttp,
+            s.field_allow_lan_http,
+            lan_http_label,
         ));
     }
     rows.push((
@@ -1239,11 +1262,12 @@ fn render_add_server(frame: &mut Frame<'_>, area: Rect, app: &App, form: &Server
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(rows.len() + 4);
     for (field, label, val) in rows {
         let active = form.focused == field;
-        let cursor = if active && field != ServerFormField::Kind {
-            "▏"
-        } else {
-            ""
-        };
+        let cursor =
+            if active && !matches!(field, ServerFormField::Kind | ServerFormField::AllowLanHttp) {
+                "▏"
+            } else {
+                ""
+            };
         let label_style = if active {
             Style::default()
                 .fg(app.theme.accent)
@@ -1256,6 +1280,12 @@ fn render_add_server(frame: &mut Frame<'_>, area: Rect, app: &App, form: &Server
             Span::styled(format!("{label:<16} "), label_style),
             Span::styled(format!("{val}{cursor}"), Style::default().fg(app.theme.fg)),
         ]));
+    }
+    if show_http_warning {
+        lines.push(Line::from(Span::styled(
+            s.insecure_lan_http_warning,
+            Style::default().fg(Color::Yellow),
+        )));
     }
     if let Some(ref status) = form.status {
         lines.push(Line::from(""));

@@ -194,6 +194,9 @@ export const RU: UiStrings = {
   serverUrlPlaceholder: "https://music.example.com",
   serverUserPlaceholder: "Логин (необязательно)",
   serverSecretPlaceholder: "Пароль / API-ключ",
+  allowInsecureLanHttpLabel: "Разрешить незашифрованный HTTP в локальной сети",
+  allowInsecureLanHttpWarning:
+    "HTTP передаёт учётные данные без шифрования в локальной сети. Публичные хосты остаются заблокированы.",
 
   desktopPrefsSubtitle: "Настройки приложения",
   appearance: "Оформление",

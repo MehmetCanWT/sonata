@@ -14,11 +14,37 @@ import { getStrings } from "@/lib/i18n";
 import { cn, formatDuration, formatQueueEta } from "@/lib/utils";
 import { useInterpolatedPosition, useSonataStore } from "@/store/useSonataStore";
 
+function QueueEtaPill({
+  durationSecs,
+  upcomingSecs,
+  onOpenSleepTimer,
+}: {
+  durationSecs: number;
+  upcomingSecs: number;
+  onOpenSleepTimer: () => void;
+}) {
+  const posSecs = useInterpolatedPosition({ intervalMs: 5000 });
+  const currentRemaining = Math.max(0, durationSecs - posSecs);
+  const eta = formatQueueEta(currentRemaining + upcomingSecs);
+
+  return (
+    <button
+      type="button"
+      onClick={onOpenSleepTimer}
+      className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-full border border-[var(--border-strong)] bg-[var(--bg-dock)] px-3.5 py-1.5 text-[11px] font-medium text-[var(--ink-secondary)] shadow-xl hover:text-[var(--ink-primary)] transition-colors tabular-nums"
+    >
+      <Clock className="h-3.5 w-3.5 text-[var(--ink-muted)]" />
+      <span>
+        {eta.durationLabel} → {eta.finishTimeLabel}
+      </span>
+    </button>
+  );
+}
+
 export function QueuePanel() {
   const snapshot = useSonataStore((s) => s.snapshot);
   const dispatch = useSonataStore((s) => s.dispatch);
   const setModal = useSonataStore((s) => s.setModal);
-  const posSecs = useInterpolatedPosition();
 
   const t = getStrings(snapshot.config.language);
   const currentIdx = snapshot.current_index ?? 0;
@@ -28,15 +54,10 @@ export function QueuePanel() {
     .map((track, idx) => ({ track, idx }))
     .filter(({ idx }) => snapshot.current_index == null || idx > currentIdx);
 
-  const currentRemaining = Math.max(
-    0,
-    (snapshot.duration_secs || currentTrack?.duration_secs || 0) - posSecs,
-  );
   const upcomingSecs = upcomingEntries.reduce(
     (sum, { track }) => sum + (track.duration_secs ?? 180),
     0,
   );
-  const eta = formatQueueEta(currentRemaining + upcomingSecs);
 
   return (
     <aside
@@ -246,16 +267,11 @@ export function QueuePanel() {
 
       {/* Bottom floating ETA & Sleep Timer pill matching reference */}
       {snapshot.queue.length > 0 && (
-        <button
-          type="button"
-          onClick={() => setModal({ type: "sleepTimer" })}
-          className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-full border border-[var(--border-strong)] bg-[var(--bg-dock)] px-3.5 py-1.5 text-[11px] font-medium text-[var(--ink-secondary)] shadow-xl hover:text-[var(--ink-primary)] transition-colors tabular-nums"
-        >
-          <Clock className="h-3.5 w-3.5 text-[var(--ink-muted)]" />
-          <span>
-            {eta.durationLabel} → {eta.finishTimeLabel}
-          </span>
-        </button>
+        <QueueEtaPill
+          durationSecs={snapshot.duration_secs || currentTrack?.duration_secs || 0}
+          upcomingSecs={upcomingSecs}
+          onOpenSleepTimer={() => setModal({ type: "sleepTimer" })}
+        />
       )}
     </aside>
   );

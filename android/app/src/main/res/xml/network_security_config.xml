@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <!-- Self-hosted Jellyfin, Subsonic, WebDAV, and Sonata Connect servers often run over plain HTTP on arbitrary LAN IPs. -->
+    <!-- Self-hosted LAN Jellyfin/Subsonic/WebDAV opt-in and Sonata Connect use local HTTP; all credentialed server profiles default to HTTPS and reject public cleartext hosts in sonata-core. -->
     <base-config cleartextTrafficPermitted="true" />
 
     <!-- Strictly require HTTPS for all public API, auth, update, streaming, and lyrics domains. -->

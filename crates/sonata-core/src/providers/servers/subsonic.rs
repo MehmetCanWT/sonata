@@ -9,8 +9,8 @@
 
 use super::{
     default_http_timeout, encode_server_item_id, format_audio_badge, map_http_status,
-    no_redirect_http_client, ServerKind, ServerLibrary, ServerProfile, ServerSearchResult,
-    ServerStream,
+    no_redirect_http_client, validate_server_transport, validate_server_transport_sync, ServerKind,
+    ServerLibrary, ServerProfile, ServerSearchResult, ServerStream,
 };
 use crate::error::CoreError;
 use crate::providers::ytmusic::{AlbumDetail, HomeCard, HomeCardKind};
@@ -123,6 +123,7 @@ pub fn build_auth_url(
     salt: &str,
     extra_params: &[(&str, &str)],
 ) -> Result<String, CoreError> {
+    validate_server_transport_sync(profile)?;
     let base = profile.normalized_base_url();
     if base.is_empty() {
         return Err(CoreError::invalid_response(
@@ -164,6 +165,7 @@ async fn call_subsonic(
     endpoint: &str,
     extra_params: &[(&str, &str)],
 ) -> Result<Value, CoreError> {
+    validate_server_transport(profile).await?;
     let salt = generate_salt();
     let url = build_auth_url(profile, endpoint, &salt, extra_params)?;
     let resp = no_redirect_http_client()
@@ -913,6 +915,8 @@ mod tests {
         profile.password = Some("sesame".to_string());
 
         let http = crate::providers::build_http_client();
+        assert!(ping(&http, &profile).await.is_err());
+        profile.allow_insecure_lan_http = true;
         let err = ping(&http, &profile)
             .await
             .expect_err("302 redirect must not be followed");
