@@ -97,6 +97,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            appstream \
             libasound2-dev \
             libayatana-appindicator3-dev \
             libdbus-1-dev \
@@ -232,8 +233,9 @@ jobs:
           OUT="${APP_NAME}-v${DV}-x86_64.AppImage"
           REPO_NAME="${GITHUB_REPOSITORY#*/}"
           UPDATE_INFO="gh-releases-zsync|${GITHUB_REPOSITORY_OWNER}|${REPO_NAME}|latest|${APP_NAME}-*-x86_64.AppImage.zsync"
+          appstreamcli validate --no-net --pedantic Sonata.AppDir/usr/share/metainfo/dev.sonata.Sonata.appdata.xml
           ARCH=x86_64 ~/.cache/appimagetool/appimagetool-x86_64.AppImage --appimage-extract-and-run \
-            -u "${UPDATE_INFO}" Sonata.AppDir "dist/${OUT}"
+            --no-appstream -u "${UPDATE_INFO}" Sonata.AppDir "dist/${OUT}"
           chmod +x "dist/${OUT}"
           if [[ -f "${OUT}.zsync" ]]; then
             mv "${OUT}.zsync" "dist/${OUT}.zsync"
